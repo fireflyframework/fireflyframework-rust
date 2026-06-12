@@ -5,26 +5,41 @@ edition = "2021"
 description = "{{ name }} — a Firefly Framework for Rust application"
 
 [dependencies]
-firefly-kernel = { {{ dep_source }} }
-{% if has_web %}firefly-web = { {{ dep_source }} }
+firefly-kernel = { {{ deps["firefly-kernel"] }} }
+firefly-config = { {{ deps["firefly-config"] }} }
+{% if archetype == "core" %}firefly-starter-core = { {{ deps["firefly-starter-core"] }} }
+firefly-cqrs = { {{ deps["firefly-cqrs"] }} }
+firefly-lifecycle = { {{ deps["firefly-lifecycle"] }} }
 axum = "0.7"
-{% endif %}firefly-config = { {{ dep_source }} }
-firefly-lifecycle = { {{ dep_source }} }
-{% if has_data %}firefly-data = { {{ dep_source }} }
-firefly-migrations = { {{ dep_source }} }
-{% endif %}{% if has_cqrs %}firefly-cqrs = { {{ dep_source }} }
-{% endif %}{% if has_eda %}firefly-eda = { {{ dep_source }} }
-{% endif %}{% if has_cache %}firefly-cache = { {{ dep_source }} }
-{% endif %}{% if has_client %}firefly-client = { {{ dep_source }} }
-{% endif %}{% if has_security %}firefly-security = { {{ dep_source }} }
-{% endif %}{% if has_scheduling %}firefly-scheduling = { {{ dep_source }} }
-{% endif %}{% if has_observability %}firefly-observability = { {{ dep_source }} }
-{% endif %}{% if has_transactional %}firefly-transactional = { {{ dep_source }} }
-firefly-orchestration = { {{ dep_source }} }
-{% endif %}{% if has_shell %}firefly-shell = { {{ dep_source }} }
-{% endif %}tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+{% endif %}{% if has_web %}firefly-starter-core = { {{ deps["firefly-starter-core"] }} }
+firefly-starter-web = { {{ deps["firefly-starter-web"] }} }
+firefly-web = { {{ deps["firefly-web"] }} }
+firefly-cqrs = { {{ deps["firefly-cqrs"] }} }
+firefly-lifecycle = { {{ deps["firefly-lifecycle"] }} }
+axum = "0.7"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+{% endif %}{% if has_data %}firefly-data = { {{ deps["firefly-data"] }} }
+firefly-migrations = { {{ deps["firefly-migrations"] }} }
+{% endif %}{% if has_cqrs and not has_web and archetype != "core" %}firefly-cqrs = { {{ deps["firefly-cqrs"] }} }
+{% endif %}{% if has_eda %}firefly-eda = { {{ deps["firefly-eda"] }} }
+{% endif %}{% if has_cache %}firefly-cache = { {{ deps["firefly-cache"] }} }
+{% endif %}{% if has_client %}firefly-client = { {{ deps["firefly-client"] }} }
+{% endif %}{% if has_security %}firefly-security = { {{ deps["firefly-security"] }} }
+{% endif %}{% if has_scheduling %}firefly-scheduling = { {{ deps["firefly-scheduling"] }} }
+{% endif %}{% if has_observability %}firefly-observability = { {{ deps["firefly-observability"] }} }
+{% endif %}{% if has_transactional %}firefly-transactional = { {{ deps["firefly-transactional"] }} }
+firefly-orchestration = { {{ deps["firefly-orchestration"] }} }
+{% endif %}{% if has_shell %}firefly-shell = { {{ deps["firefly-shell"] }} }
+{% endif %}{% if archetype == "cli" %}clap = { version = "4", features = ["derive"] }
+{% endif %}tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+{% if has_web %}tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+http = "1"
+{% endif %}

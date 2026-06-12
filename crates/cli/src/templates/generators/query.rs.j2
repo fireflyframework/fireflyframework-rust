@@ -1,19 +1,14 @@
 //! {{ names.human }} CQRS query.
 
-use firefly_cqrs::Query;
+use firefly_cqrs::Message;
 use serde::{Deserialize, Serialize};
 
-/// The `{{ names.pascal }}` query. Produces an `Option<serde_json::Value>` result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The `{{ names.pascal }}` query. Dispatch it with `bus.query(q)`; the handler
+/// in `{{ names.snake }}_query_handler.rs` produces an `Option<serde_json::Value>`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct {{ names.pascal }} {
     /// Identifier to look up.
     pub id: String,
 }
 
-impl Query for {{ names.pascal }} {
-    type Result = Option<serde_json::Value>;
-
-    fn query_type(&self) -> &'static str {
-        "{{ names.pascal }}"
-    }
-}
+impl Message for {{ names.pascal }} {}

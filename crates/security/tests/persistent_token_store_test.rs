@@ -6,9 +6,11 @@
 //! so the equivalent fixture is a minimal in-process RESP server (the
 //! same shape `firefly-scheduling`'s `redis_lock` tests use) that
 //! handles `SET key val [EX secs]`, `GET key`, and `DEL key`. The
-//! Postgres round-trip is gated behind `#[ignore]` because it needs a
-//! real database; its table-name validation is covered by the unit
-//! tests in `token_store.rs`.
+//! Postgres round-trip is **env-gated** on `FIREFLY_TEST_POSTGRES_URL`
+//! (fallback `DATABASE_URL` / `POSTGRES_URL`): it skips with a one-line
+//! notice when unset and performs a genuine store / find / revoke cycle
+//! against a real database when set; its table-name validation is covered
+//! by the unit tests in `token_store.rs`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -176,16 +178,39 @@ async fn redis_token_store_revoke_missing_is_noop() {
     token_store.revoke("ghost").await.unwrap();
 }
 
-// Postgres round-trip needs a real database; the table-name guard
-// itself is unit-tested in `token_store.rs`. This exercises the full
-// store/find/revoke cycle against a live server when one is available.
+/// Process-wide monotonic suffix source for collision-free per-test table
+/// names — derived deterministically, not from a random source.
+static PG_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Reads the integration database URL from the standard env var, with the
+/// older `DATABASE_URL` / `POSTGRES_URL` fallbacks (tokio-postgres accepts the
+/// `postgres://` URL form directly). `None` ⇒ skip.
+fn pg_url() -> Option<String> {
+    std::env::var("FIREFLY_TEST_POSTGRES_URL")
+        .or_else(|_| std::env::var("DATABASE_URL"))
+        .or_else(|_| std::env::var("POSTGRES_URL"))
+        .ok()
+}
+
+// Postgres round-trip needs a real database; the table-name guard itself is
+// unit-tested in `token_store.rs`. Env-gated: reads FIREFLY_TEST_POSTGRES_URL
+// (fallback DATABASE_URL / POSTGRES_URL); a clean skip when unset, a genuine
+// store / find / revoke round-trip against a live server when set. The backing
+// table is uniquely named per process + call and dropped afterwards, so the
+// test is idempotent and parallel-safe.
 #[tokio::test]
-#[ignore = "requires a running Postgres on localhost:5432"]
 async fn postgres_token_store_roundtrip() {
     use firefly_security::oauth2::PostgresTokenStore;
 
-    let conn_str = "host=localhost user=postgres password=postgres dbname=postgres";
-    let store = PostgresTokenStore::new(conn_str);
+    let Some(conn_str) = pg_url() else {
+        eprintln!("skipping postgres_token_store_roundtrip: set FIREFLY_TEST_POSTGRES_URL to run");
+        return;
+    };
+
+    let n = PG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let table = format!("fftest_tokens_{}_{n}", std::process::id());
+    let store = PostgresTokenStore::with_table(&conn_str, &table)
+        .expect("generated table name is a valid identifier");
 
     store
         .store("pg-tok", json!({"client_id": "c1", "scope": "read"}))
@@ -195,6 +220,26 @@ async fn postgres_token_store_roundtrip() {
         store.find("pg-tok").await.unwrap(),
         Some(json!({"client_id": "c1", "scope": "read"}))
     );
+    // Revoking an unknown token is a no-op.
+    store.revoke("does-not-exist").await.unwrap();
     store.revoke("pg-tok").await.unwrap();
     assert_eq!(store.find("pg-tok").await.unwrap(), None);
+
+    // Clean up the per-test table so the suite is idempotent.
+    drop_test_table(&conn_str, &table).await;
+}
+
+/// Best-effort `DROP TABLE` for the per-test token table.
+async fn drop_test_table(conn_str: &str, table: &str) {
+    let Ok((client, connection)) = tokio_postgres::connect(conn_str, tokio_postgres::NoTls).await
+    else {
+        return;
+    };
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    // `table` is a validated identifier (constructed via with_table above).
+    let _ = client
+        .execute(&format!("DROP TABLE IF EXISTS {table}"), &[])
+        .await;
 }

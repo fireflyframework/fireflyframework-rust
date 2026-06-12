@@ -1,19 +1,54 @@
-//! The sample `TodoService` for {{ name }}.
+//! CQRS handler registration for {{ name }} — the `Todo` application service.
+//!
+//! [`wire`] registers the `CreateTodo` and `ListTodos` handlers onto the
+//! starter's [`firefly_cqrs::Bus`] over a fresh in-memory repository.
 
-use crate::models::todo::Todo;
+use std::sync::Arc;
 
-/// Application service for `Todo` items.
-#[derive(Debug, Default, Clone)]
-pub struct TodoService;
+use firefly_cqrs::CqrsError;
+use firefly_starter_web::WebStack;
 
-impl TodoService {
-    /// Construct a new service.
-    pub fn new() -> Self {
-        Self
+use crate::models::{CreateTodo, ListTodos, Todo, TodoList};
+use crate::repositories::TodoRepository;
+
+/// Register the `Todo` handlers on the stack's bus over an in-memory
+/// repository. Call once at startup, after the [`WebStack`] is built.
+pub fn wire(stack: &WebStack) {
+    let repo = Arc::new(TodoRepository::new());
+
+    let create_repo = Arc::clone(&repo);
+    stack.bus.register(move |cmd: CreateTodo| {
+        let repo = Arc::clone(&create_repo);
+        async move {
+            let todo = Todo {
+                id: new_id(),
+                title: cmd.title,
+                done: false,
+            };
+            repo.save(todo.clone());
+            Ok::<_, CqrsError>(todo)
+        }
+    });
+
+    let list_repo = Arc::clone(&repo);
+    stack.bus.register(move |_q: ListTodos| {
+        let repo = Arc::clone(&list_repo);
+        async move {
+            Ok::<_, CqrsError>(TodoList {
+                todos: repo.all(),
+            })
+        }
+    });
+}
+
+/// Returns `todo_` + 24 lowercase hex characters.
+fn new_id() -> String {
+    use std::fmt::Write as _;
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    let mut id = String::with_capacity(28);
+    id.push_str("todo_");
+    for b in &bytes[..12] {
+        let _ = write!(id, "{b:02x}");
     }
-
-    /// List all to-dos.
-    pub async fn list(&self) -> Vec<Todo> {
-        Vec::new()
-    }
+    id
 }

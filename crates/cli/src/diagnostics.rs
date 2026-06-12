@@ -17,6 +17,22 @@ pub struct Check {
     pub detail: String,
 }
 
+/// Facts about the firefly-rust project the CLI is being run inside, when one
+/// is detected by walking up for a `Cargo.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectFacts {
+    /// The Cargo package name.
+    pub package: String,
+    /// The detected archetype (`core`, `web-api`, …).
+    pub archetype: String,
+    /// The project root (the directory containing `Cargo.toml`).
+    pub root: String,
+    /// Whether a `firefly.yaml` is present at the root.
+    pub has_firefly_yaml: bool,
+    /// Whether a `migrations/` directory is present.
+    pub has_migrations: bool,
+}
+
 /// The result of a full `doctor` run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorReport {
@@ -24,6 +40,8 @@ pub struct DoctorReport {
     pub required: Vec<Check>,
     /// Optional tools (a missing one is merely noted).
     pub optional: Vec<Check>,
+    /// The detected project, when the CLI runs inside one (`None` otherwise).
+    pub project: Option<ProjectFacts>,
     /// `true` when every required tool was found.
     pub all_ok: bool,
 }
@@ -95,8 +113,22 @@ pub fn run_doctor() -> DoctorReport {
     DoctorReport {
         required,
         optional,
+        project: detect_project_facts(),
         all_ok,
     }
+}
+
+/// Detect the project the CLI is being run inside, returning its facts, or
+/// `None` when there is no `Cargo.toml` up the tree.
+fn detect_project_facts() -> Option<ProjectFacts> {
+    let info = crate::project::detect_project(None).ok()?;
+    Some(ProjectFacts {
+        package: info.package,
+        archetype: info.archetype,
+        has_firefly_yaml: info.root.join("firefly.yaml").is_file(),
+        has_migrations: info.root.join("migrations").is_dir(),
+        root: info.root.display().to_string(),
+    })
 }
 
 /// A single environment/info row for `firefly info`.
@@ -116,7 +148,7 @@ pub fn run_info() -> Vec<InfoRow> {
         key: k.to_string(),
         value: v,
     };
-    vec![
+    let mut rows = vec![
         row(
             "Framework",
             format!("Firefly for Rust v{FRAMEWORK_VERSION}"),
@@ -131,7 +163,14 @@ pub fn run_info() -> Vec<InfoRow> {
             "cargo",
             tool_version("cargo").unwrap_or_else(|| "not found".to_string()),
         ),
-    ]
+    ];
+    // When run inside a firefly-rust project, surface its identity too — the
+    // Rust spelling of pyfly's `info` project section.
+    if let Some(facts) = detect_project_facts() {
+        rows.push(row("Project", facts.package));
+        rows.push(row("Archetype", facts.archetype));
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -155,5 +194,48 @@ mod tests {
         assert!(fw.value.contains(FRAMEWORK_VERSION));
         assert!(rows.iter().any(|r| r.key == "OS"));
         assert!(rows.iter().any(|r| r.key == "Architecture"));
+    }
+
+    #[test]
+    fn doctor_reports_project_when_inside_one() {
+        use std::fs;
+        let tmp = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::create_dir_all(tmp.path().join("migrations")).unwrap();
+        fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"acme\"\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("firefly.yaml"),
+            "firefly:\n  app:\n    name: acme\n    archetype: web-api\n",
+        )
+        .unwrap();
+
+        // Run the detection against the temp project explicitly (the public
+        // `run_doctor` reads the CWD, which a test must not mutate globally).
+        let info = crate::project::detect_project(Some(tmp.path())).unwrap();
+        let facts = ProjectFacts {
+            package: info.package.clone(),
+            archetype: info.archetype.clone(),
+            has_firefly_yaml: info.root.join("firefly.yaml").is_file(),
+            has_migrations: info.root.join("migrations").is_dir(),
+            root: info.root.display().to_string(),
+        };
+        assert_eq!(facts.package, "acme");
+        assert_eq!(facts.archetype, "web-api");
+        assert!(facts.has_firefly_yaml);
+        assert!(facts.has_migrations);
+    }
+
+    #[test]
+    fn doctor_report_has_project_field() {
+        // The `project` field is always present in the report (Some when run
+        // inside a package, None otherwise). Asserting it is reachable guards
+        // the field against accidental removal without coupling the test to the
+        // test runner's working directory.
+        let report = run_doctor();
+        let _ = &report.project;
     }
 }

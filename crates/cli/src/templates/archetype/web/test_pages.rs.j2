@@ -1,0 +1,36 @@
+//! Page rendering tests for {{ name }}.
+//!
+//! Drives the page router in-process with `tower::ServiceExt::oneshot`.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+
+use {{ package_name }}::controllers;
+
+#[tokio::test]
+async fn home_page_renders() {
+    let res = controllers::routes()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains("{{ name }}"), "body: {body}");
+}
+
+#[tokio::test]
+async fn about_page_renders() {
+    let res = controllers::routes()
+        .oneshot(
+            Request::builder()
+                .uri("/about")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}

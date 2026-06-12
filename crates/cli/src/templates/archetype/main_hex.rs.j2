@@ -1,16 +1,69 @@
 //! {{ name }} — Firefly Framework `hexagonal` (ports & adapters) entry point.
+//!
+//! The driving HTTP adapter ([`api`](crate::api)) is the inbound port; the
+//! [`InMemoryItemRepository`](crate::infrastructure::adapters::persistence::InMemoryItemRepository)
+//! is an outbound adapter. `main` wires the web starter around the API router
+//! and runs the lifecycle application (public API + actuator admin).
 
-mod api;
-mod application;
-mod domain;
-mod infrastructure;
+use firefly_starter_core::InfoContributor;
+use firefly_starter_web::{CoreConfig, WebStack};
 
-use axum::Router;
-use firefly_web::FireflyServer;
+use {{ package_name }}::api;
+
+/// This service's name, surfaced on `/actuator/info` and the startup banner.
+const APP_NAME: &str = "{{ name }}";
+
+/// Default bind address of the public API server.
+const DEFAULT_ADDR: &str = "127.0.0.1:8080";
+
+/// Default bind address of the actuator admin server.
+const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8081";
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let router = Router::new().merge(api::routes());
-    FireflyServer::new(router).bind("0.0.0.0:8080").serve().await?;
-    Ok(())
+async fn main() {
+    let stack = WebStack::new(CoreConfig {
+        app_name: APP_NAME.into(),
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        ..CoreConfig::default()
+    });
+    let _ = stack.init_logging();
+
+    let api = stack.apply_middleware(api::routes());
+
+    let contributor: InfoContributor = Box::new(|| {
+        let mut info = serde_json::Map::new();
+        info.insert("service".into(), serde_json::json!(APP_NAME));
+        info
+    });
+    let admin = stack.actuator_router(vec![contributor]);
+
+    stack.print_banner();
+
+    let api_addr = std::env::var("API_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_owned());
+    let admin_addr =
+        std::env::var("ADMIN_ADDR").unwrap_or_else(|_| DEFAULT_ADMIN_ADDR.to_owned());
+
+    let app = stack
+        .new_application()
+        .on_server("api", move |shutdown| async move {
+            let listener = tokio::net::TcpListener::bind(&api_addr).await?;
+            axum::serve(listener, api)
+                .with_graceful_shutdown(shutdown.wait())
+                .await?;
+            Ok(())
+        })
+        .on_server("admin", move |shutdown| async move {
+            let listener = tokio::net::TcpListener::bind(&admin_addr).await?;
+            axum::serve(listener, admin)
+                .with_graceful_shutdown(shutdown.wait())
+                .await?;
+            Ok(())
+        });
+
+    if let Err(err) = app.run().await {
+        if !err.is_cancelled() {
+            eprintln!("application failed: {err}");
+            std::process::exit(1);
+        }
+    }
 }

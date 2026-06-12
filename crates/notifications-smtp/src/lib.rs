@@ -22,13 +22,15 @@
 //!   so callers (and tests) can inspect the exact `lettre::Message` that would
 //!   be transmitted without contacting a server.
 //!
-//! # Why structure tests, not a live server?
+//! # Structure tests plus an env-gated live round-trip
 //!
 //! Per the framework's test policy, the crate is verified on a bare machine.
-//! [`build_message`] is a pure function over [`EmailMessage`]; the test suite
-//! asserts the resulting `lettre::Message` (headers, MIME parts, envelope,
-//! bcc-not-leaked) without a live SMTP server. A real round-trip lives behind
-//! an `#[ignore]` test.
+//! [`build_message`] is a pure function over [`EmailMessage`]; the unit tests
+//! assert the resulting `lettre::Message` (headers, MIME parts, envelope,
+//! bcc-not-leaked) without a live SMTP server. A genuine end-to-end send lives
+//! in `tests/smtp_integration.rs`, **env-gated** on `FIREFLY_TEST_SMTP_ADDR`
+//! (MailHog): unset, it skips and `cargo test` stays green; set, it delivers a
+//! real e-mail and verifies it arrived via the MailHog HTTP API.
 //!
 //! # Example
 //!
@@ -819,28 +821,5 @@ mod tests {
         assert_send_sync::<EmailMessage>();
         assert_send_sync::<NotificationResult>();
         assert_send_sync::<std::sync::Arc<dyn EmailProvider>>();
-    }
-
-    /// Real STARTTLS round-trip against a live SMTP relay. Ignored by default
-    /// (the test suite must pass on a bare machine with no SMTP server).
-    #[tokio::test]
-    #[ignore = "requires a live SMTP server"]
-    async fn live_smtp_round_trip() {
-        let provider = SmtpEmailProvider::from_config(|k| match k {
-            "host" => std::env::var("FIREFLY_SMTP_HOST").ok(),
-            "port" => std::env::var("FIREFLY_SMTP_PORT").ok(),
-            "username" => std::env::var("FIREFLY_SMTP_USER").ok(),
-            "password" => std::env::var("FIREFLY_SMTP_PASS").ok(),
-            _ => None,
-        });
-        let msg = EmailMessage {
-            to: vec![std::env::var("FIREFLY_SMTP_TO").unwrap_or_default()],
-            sender: std::env::var("FIREFLY_SMTP_FROM").unwrap_or_default(),
-            subject: "firefly smtp round-trip".into(),
-            body_text: Some("hello from firefly".into()),
-            ..EmailMessage::default()
-        };
-        let result = EmailProvider::send(&provider, msg).await;
-        assert_eq!(result.status, EmailStatus::Sent);
     }
 }

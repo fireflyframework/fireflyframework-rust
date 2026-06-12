@@ -836,22 +836,58 @@ mod tests {
         assert_eq!(parse_headers(None), BTreeMap::new());
     }
 
-    // Real-server round-trip: outbox INSERT + NOTIFY-driven drain +
-    // cursor advance + at-least-once redelivery. Needs a live Postgres;
-    // set FIREFLY_TEST_POSTGRES_DSN.
+    /// Reads the integration database URL from the standard env var, with the
+    /// older `DATABASE_URL` / `POSTGRES_URL` fallbacks. `None` ⇒ skip.
+    fn pg_url() -> Option<String> {
+        std::env::var("FIREFLY_TEST_POSTGRES_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .or_else(|_| std::env::var("POSTGRES_URL"))
+            .ok()
+    }
+
+    /// Process-wide monotonic suffix source for collision-free per-test
+    /// consumer groups, channels, and event types — derived deterministically,
+    /// not from a random source.
+    static EDA_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn unique_suffix(slug: &str) -> String {
+        let n = EDA_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("{slug}_{}_{n}", std::process::id())
+    }
+
+    // Real-server round-trip: outbox INSERT + NOTIFY-driven drain + cursor
+    // advance. Env-gated: reads FIREFLY_TEST_POSTGRES_URL (fallback
+    // DATABASE_URL / POSTGRES_URL); a clean skip when unset, a genuine
+    // publish→consume round-trip when set.
+    //
+    // The broker's outbox/offset tables are framework-fixed and shared, so
+    // parallel-safety comes from a per-test consumer group + NOTIFY channel +
+    // event type. The append-only outbox is self-cleaning across runs because
+    // every group's cursor only advances forward; we publish a single event
+    // tagged with a unique event_type and assert exactly-one delivery to a
+    // subscriber matching only that type.
     #[tokio::test]
-    #[ignore = "requires postgres"]
     async fn publish_drain_round_trip_against_real_postgres() {
         use firefly_eda::handler;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let dsn = std::env::var("FIREFLY_TEST_POSTGRES_DSN")
-            .unwrap_or_else(|_| "host=localhost user=postgres dbname=postgres".to_string());
-        let group = format!("firefly-test-{}", std::process::id());
+        let Some(dsn) = pg_url() else {
+            eprintln!(
+                "skipping publish_drain_round_trip_against_real_postgres: \
+                 set FIREFLY_TEST_POSTGRES_URL to run"
+            );
+            return;
+        };
+
+        let group = unique_suffix("fftest_eda_grp");
+        let channel = format!("fftest_eda_{}", unique_suffix("ch"));
+        let event_type = format!("OrderCreated_{}", unique_suffix("ev"));
+        let event_type_for_handler = event_type.clone();
+
         let broker = PostgresBroker::new(
             PostgresConfig::new(&dsn)
                 .group(group)
-                .channel("firefly_eda_test")
+                .channel(channel)
                 .poll_interval(Duration::from_millis(200)),
         );
         broker.start().await.unwrap();
@@ -860,11 +896,12 @@ mod tests {
         let seen2 = seen.clone();
         broker
             .subscribe_pattern(
-                "OrderCreated",
+                &event_type,
                 handler(move |ev: Event| {
                     let seen = seen2.clone();
+                    let expected = event_type_for_handler.clone();
                     async move {
-                        assert_eq!(ev.event_type, "OrderCreated");
+                        assert_eq!(ev.event_type, expected);
                         seen.fetch_add(1, Ordering::SeqCst);
                         Ok(())
                     }
@@ -875,14 +912,14 @@ mod tests {
 
         let ev = Event::new(
             "orders.created",
-            "OrderCreated",
+            &event_type,
             "orders-svc",
             Some(br#"{"id":"o1"}"#.to_vec()),
         );
         broker.publish(ev).await.unwrap();
 
         // Poll for delivery (no fixed sleep > 200ms).
-        for _ in 0..25 {
+        for _ in 0..50 {
             if seen.load(Ordering::SeqCst) >= 1 {
                 break;
             }

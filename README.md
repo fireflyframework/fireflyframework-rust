@@ -12,6 +12,15 @@ _/ ____\__|______   _____/ ____\  | ___.__.
 **A production-grade platform for building reactive, event-driven, resilient
 microservices on Rust 1.85+ (tokio + axum).**
 
+> 📖 **Read the book — [Firefly Framework for Rust](docs/book/)** — the canonical,
+> best-in-class guide: a punchy [Quickstart](docs/book/src/02-quickstart.md)
+> (zero to a running reactive endpoint in minutes), the keystone
+> [Reactive Model](docs/book/src/05-reactive-model.md) chapter (`Mono`/`Flux`),
+> and full chapters on configuration, persistence, DDD, CQRS, EDA, event
+> sourcing, sagas, HTTP clients, security, observability, testing, and
+> production. Build it locally with `mdbook build docs/book` and open
+> `docs/book/book/index.html`.
+
 The Firefly Framework provides the cross-cutting machinery that every
 non-trivial business service needs — RFC 7807 error envelopes,
 idempotency, correlation propagation, CQRS, event-driven messaging,
@@ -191,6 +200,10 @@ Start from a **starter** and add only the adapters you need:
 ---
 
 ## Quickstart
+
+> For the full walkthrough — including a streaming reactive endpoint, the
+> actuator, and graceful shutdown — see the book's
+> [Quickstart chapter](docs/book/src/02-quickstart.md).
 
 Add the starter to a binary crate:
 

@@ -1,9 +1,8 @@
 //! {{ name }} — Firefly Framework `cli` application entry point.
 
-mod commands;
-mod services;
-
 use clap::Parser;
+
+use {{ package_name }}::commands::hello_command;
 
 /// {{ name }} command-line interface.
 #[derive(Debug, Parser)]
@@ -16,6 +15,5 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    let service = services::greeting_service::GreetingService::new();
-    println!("{}", service.greet(&cli.name));
+    println!("{}", hello_command::run(&cli.name));
 }

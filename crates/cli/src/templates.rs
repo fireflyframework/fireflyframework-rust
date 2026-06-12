@@ -83,9 +83,8 @@ impl Archetype {
     /// Default features selected for this archetype.
     pub fn default_features(self) -> Vec<&'static str> {
         match self {
-            Archetype::Core | Archetype::Library => vec![],
+            Archetype::Core | Archetype::Library | Archetype::Cli => vec![],
             Archetype::WebApi | Archetype::Web | Archetype::Hexagonal => vec!["web"],
-            Archetype::Cli => vec!["shell"],
         }
     }
 }
@@ -149,11 +148,13 @@ const ARCHETYPE_TEMPLATES: &[(&str, &str)] = &[
     atmpl!("gitignore.j2"),
     atmpl!("readme.md.j2"),
     atmpl!("dockerfile.j2"),
-    atmpl!("test_smoke.rs.j2"),
+    atmpl!("core_test.rs.j2"),
     atmpl!("main_core.rs.j2"),
     atmpl!("main_web_api.rs.j2"),
     atmpl!("main_hex.rs.j2"),
     atmpl!("lib_library.rs.j2"),
+    atmpl!("library_test.rs.j2"),
+    atmpl!("web_api_lib.rs.j2"),
     atmpl!("web_api_controllers.rs.j2"),
     atmpl!("web_api_todo_model.rs.j2"),
     atmpl!("web_api_todo_service.rs.j2"),
@@ -161,12 +162,16 @@ const ARCHETYPE_TEMPLATES: &[(&str, &str)] = &[
     atmpl!("web_api_models_mod.rs.j2"),
     atmpl!("web_api_services_mod.rs.j2"),
     atmpl!("web_api_repositories_mod.rs.j2"),
+    atmpl!("web_api_test.rs.j2"),
     atmpl!("web/main.rs.j2"),
+    atmpl!("web/lib.rs.j2"),
     atmpl!("web/home_controller.rs.j2"),
     atmpl!("web/page_service.rs.j2"),
     atmpl!("web/services_mod.rs.j2"),
     atmpl!("web/home.html.j2"),
     atmpl!("web/about.html.j2"),
+    atmpl!("web/test_pages.rs.j2"),
+    atmpl!("hex/lib.rs.j2"),
     atmpl!("hex/domain_mod.rs.j2"),
     atmpl!("hex/domain_models.rs.j2"),
     atmpl!("hex/ports.rs.j2"),
@@ -177,10 +182,12 @@ const ARCHETYPE_TEMPLATES: &[(&str, &str)] = &[
     atmpl!("hex/api.rs.j2"),
     atmpl!("hex/test_models.rs.j2"),
     atmpl!("cli/main.rs.j2"),
+    atmpl!("cli/lib.rs.j2"),
     atmpl!("cli/hello_command.rs.j2"),
     atmpl!("cli/greeting_service.rs.j2"),
     atmpl!("cli/commands_mod.rs.j2"),
     atmpl!("cli/services_mod.rs.j2"),
+    atmpl!("cli/test_hello.rs.j2"),
 ];
 
 /// `(template_name, output_path)` mapping per archetype. Output paths use the
@@ -199,11 +206,12 @@ fn archetype_files(archetype: Archetype) -> Vec<(&'static str, &'static str)> {
         Archetype::Core => {
             files.extend_from_slice(shared);
             files.push(("main_core.rs.j2", "src/main.rs"));
-            files.push(("test_smoke.rs.j2", "tests/smoke.rs"));
+            files.push(("core_test.rs.j2", "tests/smoke.rs"));
         }
         Archetype::WebApi => {
             files.extend_from_slice(shared);
             files.push(("main_web_api.rs.j2", "src/main.rs"));
+            files.push(("web_api_lib.rs.j2", "src/lib.rs"));
             files.push(("web_api_controllers.rs.j2", "src/controllers.rs"));
             files.push(("web_api_models_mod.rs.j2", "src/models.rs"));
             files.push(("web_api_todo_model.rs.j2", "src/models/todo.rs"));
@@ -214,21 +222,23 @@ fn archetype_files(archetype: Archetype) -> Vec<(&'static str, &'static str)> {
                 "web_api_todo_repository.rs.j2",
                 "src/repositories/todo_repository.rs",
             ));
-            files.push(("test_smoke.rs.j2", "tests/smoke.rs"));
+            files.push(("web_api_test.rs.j2", "tests/api.rs"));
         }
         Archetype::Web => {
             files.extend_from_slice(shared);
             files.push(("web/main.rs.j2", "src/main.rs"));
+            files.push(("web/lib.rs.j2", "src/lib.rs"));
             files.push(("web/home_controller.rs.j2", "src/controllers.rs"));
             files.push(("web/services_mod.rs.j2", "src/services.rs"));
             files.push(("web/page_service.rs.j2", "src/services/page_service.rs"));
             files.push(("web/home.html.j2", "src/templates/home.html"));
             files.push(("web/about.html.j2", "src/templates/about.html"));
-            files.push(("test_smoke.rs.j2", "tests/smoke.rs"));
+            files.push(("web/test_pages.rs.j2", "tests/pages.rs"));
         }
         Archetype::Hexagonal => {
             files.extend_from_slice(shared);
             files.push(("main_hex.rs.j2", "src/main.rs"));
+            files.push(("hex/lib.rs.j2", "src/lib.rs"));
             files.push(("hex/domain_mod.rs.j2", "src/domain.rs"));
             files.push(("hex/domain_models.rs.j2", "src/domain/models.rs"));
             files.push(("hex/ports.rs.j2", "src/domain/ports.rs"));
@@ -249,11 +259,12 @@ fn archetype_files(archetype: Archetype) -> Vec<(&'static str, &'static str)> {
                 ("readme.md.j2", "README.md"),
             ]);
             files.push(("lib_library.rs.j2", "src/lib.rs"));
-            files.push(("test_smoke.rs.j2", "tests/smoke.rs"));
+            files.push(("library_test.rs.j2", "tests/lib.rs"));
         }
         Archetype::Cli => {
             files.extend_from_slice(shared);
             files.push(("cli/main.rs.j2", "src/main.rs"));
+            files.push(("cli/lib.rs.j2", "src/lib.rs"));
             files.push(("cli/commands_mod.rs.j2", "src/commands.rs"));
             files.push(("cli/hello_command.rs.j2", "src/commands/hello_command.rs"));
             files.push(("cli/services_mod.rs.j2", "src/services.rs"));
@@ -261,7 +272,7 @@ fn archetype_files(archetype: Archetype) -> Vec<(&'static str, &'static str)> {
                 "cli/greeting_service.rs.j2",
                 "src/services/greeting_service.rs",
             ));
-            files.push(("test_smoke.rs.j2", "tests/smoke.rs"));
+            files.push(("cli/test_hello.rs.j2", "tests/hello.rs"));
         }
     }
     files
@@ -274,22 +285,44 @@ fn to_package_name(name: &str) -> String {
     name.replace(' ', "-").to_lowercase()
 }
 
+/// Maps a `firefly-<name>` crate to its workspace subdirectory under
+/// `crates/`. Every crate the archetypes/generators can reference lives in a
+/// directory named after the crate's suffix (e.g. `firefly-starter-core` →
+/// `crates/starter-core`), so a `--dep-path <base>` must be joined with that
+/// subdirectory to resolve a path dependency correctly. (A `git` source needs
+/// no mapping — Cargo locates every package inside the repo automatically.)
+fn crate_subdir(crate_name: &str) -> &str {
+    crate_name.strip_prefix("firefly-").unwrap_or(crate_name)
+}
+
 /// Where to fetch the `firefly-*` crates from in the generated `Cargo.toml`.
+///
+/// The rendered dependency spec is *per crate*: a `git` source is identical for
+/// every crate (Cargo resolves the package within the repo), but a `path`
+/// source must append each crate's `crates/<subdir>` so the generated project
+/// compiles against a local checkout.
 #[derive(Debug, Clone)]
 pub enum DepSource {
     /// `git = "<url>"` (default: the canonical GitHub repo).
     Git(String),
-    /// `path = "<relative-path>"` — for local workspace development.
+    /// `path = "<base>"` — joined with `crates/<crate-subdir>` per dependency
+    /// for local workspace development (e.g. `--dep-path ../firefly`).
     Path(String),
     /// `version = "<semver>"` — once published to crates.io.
     Version(String),
 }
 
 impl DepSource {
-    fn render(&self) -> String {
+    /// Render the inline-table body of a dependency on `crate_name`
+    /// (everything between the braces in `firefly-x = { ... }`).
+    fn render_for(&self, crate_name: &str) -> String {
         match self {
             DepSource::Git(url) => format!("git = \"{url}\""),
-            DepSource::Path(path) => format!("path = \"{path}\""),
+            DepSource::Path(base) => {
+                let base = base.trim_end_matches('/');
+                let sub = crate_subdir(crate_name);
+                format!("path = \"{base}/crates/{sub}\"")
+            }
             DepSource::Version(v) => format!("version = \"{v}\""),
         }
     }
@@ -299,6 +332,42 @@ impl Default for DepSource {
     fn default() -> Self {
         DepSource::Git("https://github.com/fireflyframework/fireflyframework-rust".to_string())
     }
+}
+
+/// Every `firefly-*` crate a generated `Cargo.toml` template can reference,
+/// rendered into a `crate_name -> "<source spec>"` map so the template emits
+/// the correct per-crate dependency line (path deps resolve into each crate's
+/// `crates/<subdir>`; git/version deps are uniform).
+const TEMPLATED_FIREFLY_CRATES: &[&str] = &[
+    "firefly-kernel",
+    "firefly-config",
+    "firefly-lifecycle",
+    "firefly-starter-core",
+    "firefly-starter-web",
+    "firefly-web",
+    "firefly-cqrs",
+    "firefly-data",
+    "firefly-migrations",
+    "firefly-eda",
+    "firefly-cache",
+    "firefly-client",
+    "firefly-security",
+    "firefly-scheduling",
+    "firefly-observability",
+    "firefly-eventsourcing",
+    "firefly-orchestration",
+    "firefly-transactional",
+    "firefly-shell",
+];
+
+/// Build the `deps` map exposed to the `cargo.toml.j2` template: each
+/// `firefly-*` crate name mapped to its rendered inline-table body for the
+/// chosen [`DepSource`].
+fn dep_specs(dep_source: &DepSource) -> std::collections::BTreeMap<String, String> {
+    TEMPLATED_FIREFLY_CRATES
+        .iter()
+        .map(|name| ((*name).to_string(), dep_source.render_for(name)))
+        .collect()
 }
 
 /// Build the minijinja environment with every archetype template registered.
@@ -337,7 +406,7 @@ pub fn plan_project(
         package_name => package_name.clone(),
         archetype => archetype.as_str(),
         features => features,
-        dep_source => dep_source.render(),
+        deps => dep_specs(dep_source),
         has_web => has("web"),
         has_data => has("data"),
         has_mongodb => has("mongodb"),
@@ -414,7 +483,9 @@ mod tests {
     fn default_features_match_pyfly() {
         assert!(Archetype::Core.default_features().is_empty());
         assert_eq!(Archetype::WebApi.default_features(), vec!["web"]);
-        assert_eq!(Archetype::Cli.default_features(), vec!["shell"]);
+        // The CLI archetype is a plain clap binary by default (no firefly-shell
+        // unless the user opts into `--features shell`).
+        assert!(Archetype::Cli.default_features().is_empty());
         assert!(Archetype::Library.default_features().is_empty());
     }
 
@@ -431,15 +502,23 @@ mod tests {
 
     #[test]
     fn dep_source_render_variants() {
+        // Path deps resolve into each crate's `crates/<subdir>`.
         assert_eq!(
-            DepSource::Path("../firefly".into()).render(),
-            "path = \"../firefly\""
+            DepSource::Path("../firefly".into()).render_for("firefly-web"),
+            "path = \"../firefly/crates/web\""
         );
         assert_eq!(
-            DepSource::Version("26.6.1".into()).render(),
+            DepSource::Path("../firefly/".into()).render_for("firefly-starter-core"),
+            "path = \"../firefly/crates/starter-core\""
+        );
+        // Version/git deps are uniform across crates.
+        assert_eq!(
+            DepSource::Version("26.6.1".into()).render_for("firefly-kernel"),
             "version = \"26.6.1\""
         );
-        assert!(DepSource::default().render().starts_with("git ="));
+        assert!(DepSource::default()
+            .render_for("firefly-kernel")
+            .starts_with("git ="));
     }
 
     #[test]
@@ -463,12 +542,18 @@ mod tests {
         let cargo = &by_name("Cargo.toml").content;
         assert!(cargo.contains("name = \"shop\""));
         assert!(cargo.contains("firefly-web = { git ="));
-        assert!(cargo.contains("firefly-kernel = { git ="));
+        assert!(cargo.contains("firefly-starter-web = { git ="));
         // firefly.yaml records the archetype (parity with pyfly persistence test).
         let yaml = &by_name("firefly.yaml").content;
         assert!(yaml.contains("archetype: web-api"));
-        // main.rs + the layered tree exist.
-        assert!(by_name("src/main.rs").content.contains("FireflyServer"));
+        // main.rs boots the real web starter (WebStack) and runs the
+        // lifecycle application; the layered tree exists.
+        let main = &by_name("src/main.rs").content;
+        assert!(main.contains("WebStack::new"));
+        assert!(main.contains("new_application"));
+        assert!(by_name("src/lib.rs")
+            .content
+            .contains("pub mod controllers"));
         assert!(by_name("src/controllers.rs").content.contains("fn routes"));
         assert!(by_name("src/models/todo.rs")
             .content
@@ -534,7 +619,7 @@ mod tests {
             Archetype::Core,
             &[],
             None,
-            &DepSource::Path("../../crates".into()),
+            &DepSource::Path("../firefly".into()),
         )
         .unwrap();
         let cargo = arts
@@ -543,9 +628,10 @@ mod tests {
             .unwrap();
         // "My Service" -> "my-service" Cargo name.
         assert!(cargo.content.contains("name = \"my-service\""));
+        // Path deps resolve into each crate's own `crates/<subdir>`.
         assert!(cargo
             .content
-            .contains("firefly-kernel = { path = \"../../crates\" }"));
+            .contains("firefly-kernel = { path = \"../firefly/crates/kernel\" }"));
     }
 
     #[test]

@@ -1,3 +1,5 @@
-//! Services for {{ name }}.
+//! Application services and CQRS wiring for {{ name }}.
 
 pub mod todo_service;
+
+pub use todo_service::wire;

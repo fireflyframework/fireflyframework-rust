@@ -3,13 +3,17 @@
 use super::models::Item;
 
 /// Inbound port: the use cases the application exposes.
-pub trait ItemUseCase {
+///
+/// `Send + Sync` so the service can be shared as `Arc<dyn ItemUseCase>` across
+/// async request handlers.
+pub trait ItemUseCase: Send + Sync {
     /// Fetch an item by id.
     fn get(&self, id: &str) -> Option<Item>;
 }
 
-/// Outbound port: the persistence the domain depends on (implemented by an adapter).
-pub trait ItemRepositoryPort {
+/// Outbound port: the persistence the domain depends on (implemented by an
+/// adapter). `Send + Sync` so a service holding it stays shareable.
+pub trait ItemRepositoryPort: Send + Sync {
     /// Load an item by id.
     fn load(&self, id: &str) -> Option<Item>;
     /// Store an item.

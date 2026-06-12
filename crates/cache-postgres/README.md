@@ -96,6 +96,44 @@ Unlike pyfly (which has explicit `start()`/`stop()` hooks over an injected
 SQLAlchemy engine), this adapter's `init()` runs the DDL and there is no
 `stop` — the `Client`'s lifecycle belongs to its owner.
 
+## Custom table name
+
+By default every statement targets `firefly_cache_entries`. To point an
+adapter at a **different** table — to give two logical caches their own
+storage, or to isolate parallel integration tests — use the additive
+`_with_table` constructors:
+
+```rust,no_run
+use firefly_cache_postgres::PostgresCacheAdapter;
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+// From a connection string:
+let cache = PostgresCacheAdapter::connect_with_table(
+    "postgresql://localhost/app",
+    "orders_cache",
+).await?;
+cache.init().await?;                 // CREATE TABLE IF NOT EXISTS orders_cache (…)
+assert_eq!(cache.table(), "orders_cache");
+
+// Or from an already-built client (returns Result — the name is validated):
+# let client: tokio_postgres::Client = unreachable!();
+let cache = PostgresCacheAdapter::from_client_with_table(client, "orders_cache")?;
+# Ok(())
+# }
+```
+
+Every statement (DDL / UPSERT / SELECT / EXISTS / DELETE / DELETE-prefix /
+CLEAR / COUNT / SELECT-KEYS) is rendered once at construction from the chosen
+name. The table name is **validated strictly** before it ever reaches SQL —
+ASCII `[a-z0-9_]` only, must start with a letter or underscore, at most 63
+bytes (Postgres's identifier limit) — and an invalid name (e.g. anything with
+spaces, quotes, dots, or a `; DROP TABLE …` payload) is rejected with
+`CacheError::Backend` rather than being interpolated, so there is no SQL
+injection surface. The plain `connect` / `from_client` constructors and the
+public `TABLE` / `DDL` / `UPSERT_SQL` / … consts are unchanged and still
+default to `firefly_cache_entries`. The standalone `validate_table_name`
+helper is public for callers who want to validate a candidate name up front.
+
 ## Testing
 
 Unit tests (`src/lib.rs`) cover everything verifiable without a live database:
@@ -103,10 +141,21 @@ the SQL/DDL string shapes, the glob→`LIKE` / TTL→timestamp / DSN-normalisati
 logic, and `Adapter` object-safety. They run with a plain `cargo test`.
 
 The behavioural round-trips (`tests/postgres_cache_adapter_test.rs`, ported
-from pyfly's `tests/cache/test_postgres_cache_adapter.py`) need a real
-Postgres and are `#[ignore]`-gated:
+from pyfly's `tests/cache/test_postgres_cache_adapter.py`) are **env-gated**:
+they read `FIREFLY_TEST_POSTGRES_URL` (falling back to `DATABASE_URL` /
+`POSTGRES_URL`). When it is unset each test prints a one-line `skipping …` and
+returns, so a plain `cargo test` on a bare machine is green; when it is set
+they run the genuine set / get / delete / stats round-trip against a live
+database:
 
 ```sh
-export FIREFLY_TEST_PG="postgresql://postgres:postgres@localhost:5432/postgres"
-cargo test -p firefly-cache-postgres -- --ignored
+export FIREFLY_TEST_POSTGRES_URL="postgres://firefly:firefly@localhost:5432/firefly"
+cargo test -p firefly-cache-postgres
 ```
+
+Each test gets its **own uniquely-named table** (via `connect_with_table`,
+named `fftest_cache_<slug>_<pid>_<n>`), `init()`s it, and `DROP`s it on
+teardown (even on panic). Because no two tests touch the same table,
+assertions on table-wide state — `stats`' `COUNT(*)`, `keys`, hit/miss
+semantics — are immune to other tests' rows, so the suite is correct under the
+**default parallel** test runner with no `--test-threads=1` needed.

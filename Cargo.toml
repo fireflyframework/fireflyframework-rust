@@ -69,6 +69,7 @@ members = [
     "crates/starter-web",
     "tests/integration",
     "samples/orders",
+    "samples/reactive-banking",
 ]
 
 [workspace.package]

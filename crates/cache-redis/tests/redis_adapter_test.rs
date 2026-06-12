@@ -310,28 +310,8 @@ async fn usable_as_dyn_adapter() {
 }
 
 // ---------------------------------------------------------------------------
-// Docker-gated round-trip against a real Redis (mirrors pyfly's
-// test_cache_redis_integration.py). Run with `--ignored` and a Redis at
-// REDIS_URL (default redis://127.0.0.1:6379/0).
+// The live round-trip against a real Redis now lives in
+// `redis_integration_test.rs` as an env-gated test reading
+// `FIREFLY_TEST_REDIS_URL` (fallback `REDIS_URL`) — no `#[ignore]`: it skips
+// cleanly when the var is unset and performs a genuine round-trip when set.
 // ---------------------------------------------------------------------------
-
-#[tokio::test]
-#[ignore = "requires a real Redis at REDIS_URL"]
-async fn real_redis_round_trip() {
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_owned());
-    let a = RedisAdapter::connect(&url).await.unwrap();
-    a.clear().await.unwrap();
-
-    a.set("user:1", b"alice", None).await.unwrap();
-    a.set("user:2", b"bob", None).await.unwrap();
-    assert_eq!(a.get("user:1").await.unwrap(), b"alice");
-    assert!(a.exists("user:1").await.unwrap());
-
-    assert!(!a.set_if_absent("user:1", b"nope", None).await.unwrap());
-    assert!(a.set_if_absent("user:3", b"carol", None).await.unwrap());
-
-    assert_eq!(a.delete_prefix("user:").await.unwrap(), 3);
-    assert!(!a.exists("user:1").await.unwrap());
-
-    a.health_check().await.unwrap();
-}

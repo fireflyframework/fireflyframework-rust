@@ -1,18 +1,19 @@
 //! {{ names.human }} CQRS query handler.
 
-use firefly_cqrs::{query_handler, QueryHandler};
+use firefly_cqrs::{Bus, CqrsError};
+use serde_json::Value;
 
 use super::{{ names.snake }}_query::{{ names.pascal }};
 
-/// Handles [`{{ names.pascal }}`] queries.
-#[derive(Debug, Default, Clone)]
-pub struct {{ names.pascal }}QueryHandler;
-
-#[query_handler]
-impl QueryHandler<{{ names.pascal }}, Option<serde_json::Value>> for {{ names.pascal }}QueryHandler {
-    async fn do_handle(&self, query: {{ names.pascal }}) -> Option<serde_json::Value> {
-        // TODO: implement {{ names.human }} query handling.
+/// Register the `{{ names.pascal }}` query handler on `bus`.
+///
+/// Call once at startup. The handler returns `Some(value)` when the
+/// {{ names.human }} is found, `None` otherwise; implement the lookup inside the
+/// closure (e.g. read from a repository).
+pub fn register_{{ names.snake }}_handler(bus: &Bus) {
+    bus.register(|query: {{ names.pascal }}| async move {
+        // Look up the {{ names.human }} for `query.id` here.
         let _ = query;
-        None
-    }
+        Ok::<Option<Value>, CqrsError>(None)
+    });
 }

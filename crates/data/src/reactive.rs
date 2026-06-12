@@ -859,14 +859,21 @@ mod tests {
         )
     }
 
-    /// Real Postgres round-trip. Streams rows lazily as a `Flux`. Reads
-    /// `DATABASE_URL` / `POSTGRES_URL`; W4 runs it against live infra.
+    /// Real Postgres round-trip. Streams rows lazily as a `Flux`. Env-gated:
+    /// reads `FIREFLY_TEST_POSTGRES_URL` (fallbacks `DATABASE_URL` /
+    /// `POSTGRES_URL`) and runs against live infra; skips cleanly when unset so
+    /// `cargo test` stays green on a bare machine.
     #[tokio::test]
-    #[ignore = "requires postgres"]
     async fn postgres_reactive_round_trip() {
-        let url = std::env::var("DATABASE_URL")
+        let Ok(url) = std::env::var("FIREFLY_TEST_POSTGRES_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
             .or_else(|_| std::env::var("POSTGRES_URL"))
-            .expect("DATABASE_URL or POSTGRES_URL must be set");
+        else {
+            eprintln!(
+                "skipping postgres_reactive_round_trip: set FIREFLY_TEST_POSTGRES_URL to run"
+            );
+            return;
+        };
 
         let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await

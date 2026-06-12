@@ -179,15 +179,35 @@ impl BlobStore {
         }
     }
 
-    /// Canonical resource for Shared Key signing — always names the account:
-    /// `/<account>/<container>/<blob>`.
+    /// Canonical resource for Shared Key signing.
+    ///
+    /// Per the Shared Key spec the canonical resource is the credential
+    /// **account name** followed by the **URL path** of the request:
+    /// `/<account>` + `<url-path>`. Crucially the URL path is taken verbatim
+    /// from the request that is actually sent, so the signature is correct for
+    /// both endpoint styles:
+    ///
+    /// * **host-style** (real Azure, `https://<account>.blob.core.windows.net/
+    ///   <container>/<blob>`): the path is `/<container>/<blob>`, giving
+    ///   `/<account>/<container>/<blob>`.
+    /// * **path-style** (Azurite / the emulator, `http://host/<account>/
+    ///   <container>/<blob>`): the path already begins with the account, so the
+    ///   canonical resource is `/<account>/<account>/<container>/<blob>` — which
+    ///   is exactly what Azurite (and the path-style real-Azure form) compute.
+    ///
+    /// Deriving it from the URL path — rather than hard-coding
+    /// `/<account>/<container>/<blob>` — is what makes the emulator round-trip
+    /// authorize instead of 403.
     fn canonical_resource(&self, key: &str) -> String {
-        format!(
-            "/{}/{}/{}",
-            self.cfg.account,
-            self.cfg.container,
-            encode_blob(key)
-        )
+        let (url, _host) = self.endpoint(key);
+        self.canonical_resource_for_url(&url)
+    }
+
+    /// Builds `/<account>` + the (already percent-encoded) path of `url`. The
+    /// path is everything from the first `/` after the host; the leading `/` is
+    /// kept so the result is `/<account>/<rest…>`.
+    fn canonical_resource_for_url(&self, url: &str) -> String {
+        format!("/{}{}", self.cfg.account, path_of(url))
     }
 
     /// Signs and dispatches one request, returning the [`reqwest::Response`].
@@ -276,7 +296,7 @@ impl BlobStore {
         }
         params.sort_by(|a, b| a.0.cmp(b.0));
 
-        let canonical_resource = self.container_canonical_resource(&params);
+        let canonical_resource = self.container_canonical_resource(&base_url, &params);
         let query_string = params
             .iter()
             .map(|(k, v)| format!("{}={}", k, encode_query_value(v)))
@@ -402,10 +422,13 @@ impl BlobStore {
     }
 
     /// Builds the Shared Key canonical resource for a container-scoped request
-    /// with query params: `/<account>/<container>` followed by one
+    /// (e.g. List Blobs) with query params: the URL-derived
+    /// `/<account>` + `<container-url-path>` (see [`Self::canonical_resource`]
+    /// for why the path is taken from the URL, so both host-style and
+    /// path-style endpoints sign correctly) followed by one
     /// `\n<lowercase-name>:<value>` line per param, sorted by name.
-    fn container_canonical_resource(&self, params: &[(&str, &str)]) -> String {
-        let mut out = format!("/{}/{}", self.cfg.account, self.cfg.container);
+    fn container_canonical_resource(&self, base_url: &str, params: &[(&str, &str)]) -> String {
+        let mut out = self.canonical_resource_for_url(base_url);
         let mut sorted: Vec<(String, String)> = params
             .iter()
             .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))
@@ -560,6 +583,22 @@ fn host_of(url: &str) -> String {
         .next()
         .unwrap_or(after_scheme)
         .to_string()
+}
+
+/// Extracts the path component (everything from the first `/` after the host,
+/// **including** that leading `/`, but excluding any `?query`) from an
+/// `http(s)://host[:port]/path?query` URL, without a URL-parsing crate. The
+/// path is returned exactly as it appears in the URL (already percent-encoded),
+/// because the Shared Key canonical resource is built over the encoded path.
+/// Returns `/` when the URL has no path segment.
+fn path_of(url: &str) -> String {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    // Everything after the authority, up to an optional query string.
+    let path = match after_scheme.find('/') {
+        Some(i) => &after_scheme[i..],
+        None => "/",
+    };
+    path.split('?').next().unwrap_or(path).to_string()
 }
 
 #[async_trait]
@@ -725,19 +764,61 @@ mod tests {
 
     #[test]
     fn canonical_resource_always_names_account() {
+        // No endpoint override -> host-style URL whose path is just
+        // `/<container>/<blob>`, so the canonical resource names the account
+        // once: `/<account>/<container>/<blob>`.
         assert_eq!(
             store().canonical_resource("doc-1/v1"),
             "/devstoreaccount1/my-container/doc-1/v1"
         );
         // Container-scoped list resource folds sorted query params in.
+        let (base_url, _host) = store().container_endpoint();
         assert_eq!(
-            store().container_canonical_resource(&[
-                ("restype", "container"),
-                ("comp", "list"),
-                ("prefix", "docs/"),
-            ]),
+            store().container_canonical_resource(
+                &base_url,
+                &[
+                    ("restype", "container"),
+                    ("comp", "list"),
+                    ("prefix", "docs/"),
+                ]
+            ),
             "/devstoreaccount1/my-container\ncomp:list\nprefix:docs/\nrestype:container"
         );
+    }
+
+    #[test]
+    fn canonical_resource_doubles_account_for_path_style_endpoint() {
+        // A path-style (emulator / Azurite) endpoint whose URL path *already*
+        // begins with the account name must produce `/<account>/<account>/…`,
+        // matching what Azurite computes — this is the fix for the 403.
+        let store = BlobStore::new(Config {
+            account: ACCOUNT.into(),
+            key: KEY.into(),
+            container: "my-container".into(),
+            endpoint: format!("http://127.0.0.1:10000/{ACCOUNT}"),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            store.canonical_resource("doc-1/v1"),
+            "/devstoreaccount1/devstoreaccount1/my-container/doc-1/v1"
+        );
+        let (base_url, _host) = store.container_endpoint();
+        assert_eq!(
+            store.container_canonical_resource(&base_url, &[("restype", "container")]),
+            "/devstoreaccount1/devstoreaccount1/my-container\nrestype:container"
+        );
+    }
+
+    #[test]
+    fn path_of_extracts_url_path_without_query() {
+        assert_eq!(path_of("https://h.example.com/c/b"), "/c/b");
+        assert_eq!(path_of("http://127.0.0.1:10000/acct/c/b"), "/acct/c/b");
+        assert_eq!(
+            path_of("http://h/acct/c?restype=container&comp=list"),
+            "/acct/c"
+        );
+        assert_eq!(path_of("https://h.example.com"), "/");
     }
 
     #[test]

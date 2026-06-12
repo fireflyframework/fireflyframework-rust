@@ -14,7 +14,8 @@ services:
       POSTGRES_USER: firefly
       POSTGRES_PASSWORD: firefly
       POSTGRES_DB: firefly
-    ports: ["5432:5432"]
+    # Host port 5442 (not 5432) to avoid collisions with other local Postgres.
+    ports: ["5442:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U firefly"]
       interval: 3s

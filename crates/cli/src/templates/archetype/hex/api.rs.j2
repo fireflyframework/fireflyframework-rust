@@ -1,14 +1,45 @@
 //! API layer (driving adapter) for {{ name }}.
+//!
+//! The inbound HTTP port. It drives the [`ItemUseCase`] application service over
+//! the in-memory outbound adapter, seeded with one example item so the route
+//! returns real data out of the box.
 
-use axum::{routing::get, Json, Router};
+use std::sync::Arc;
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Json, Response};
+use axum::{routing::get, Router};
 use serde_json::json;
 
-/// Assemble the inbound HTTP routes.
+use crate::application::ItemService;
+use crate::domain::models::Item;
+use crate::domain::ports::{ItemRepositoryPort, ItemUseCase};
+use crate::infrastructure::adapters::persistence::InMemoryItemRepository;
+
+/// Shared application state: the use-case service behind a trait object.
+type SharedUseCase = Arc<dyn ItemUseCase>;
+
+/// Assemble the inbound HTTP routes over a seeded in-memory repository.
 pub fn routes() -> Router {
-    Router::new().route("/items/:id", get(get_item))
+    let repo = InMemoryItemRepository::default();
+    if let Ok(item) = Item::new("1", "example") {
+        repo.store(&item);
+    }
+    let service: SharedUseCase = Arc::new(ItemService::new(repo));
+    Router::new()
+        .route("/items/:id", get(get_item))
+        .with_state(service)
 }
 
 /// `GET /items/:id` — fetch an item through the inbound port.
-async fn get_item() -> Json<serde_json::Value> {
-    Json(json!({ "item": null }))
+async fn get_item(State(service): State<SharedUseCase>, Path(id): Path<String>) -> Response {
+    match service.get(&id) {
+        Some(item) => Json(json!({ "id": item.id, "name": item.name })).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "item not found" })),
+        )
+            .into_response(),
+    }
 }

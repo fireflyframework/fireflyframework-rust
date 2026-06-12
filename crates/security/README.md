@@ -280,7 +280,9 @@ strings → typed predicates).
   mismatch, provider errors, verified-id-token vs userinfo paths.
 * `persistent_token_store_test.rs` — `RedisTokenStore` round-trip with
   TTL against an in-process fake RESP server; `PostgresTokenStore`
-  round-trip behind `#[ignore]` (true Postgres required).
+  store / find / revoke round-trip env-gated on `FIREFLY_TEST_POSTGRES_URL`
+  (fallback `DATABASE_URL` / `POSTGRES_URL`), skipping when unset and
+  using a per-test table that is dropped afterwards when set.
 * `pyfly_parity_test.rs` — `CsrfLayer` (pyfly `TestCsrfFilter`) and the
   `FilterChain` glob / `deny` / `authenticated` / `require_authority`
   / role-hierarchy behaviours through the real tower stack.

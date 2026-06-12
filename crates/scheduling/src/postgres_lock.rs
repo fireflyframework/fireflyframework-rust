@@ -141,21 +141,54 @@ mod tests {
         let _lock: Arc<dyn DistributedLock> = Arc::new(PostgresAdvisoryLock::new("host=db"));
     }
 
+    /// Reads the integration database URL from the standard env var, with the
+    /// older `DATABASE_URL` / `POSTGRES_URL` fallbacks (tokio-postgres accepts
+    /// the `postgres://` URL form directly). `None` ⇒ skip.
+    fn pg_url() -> Option<String> {
+        std::env::var("FIREFLY_TEST_POSTGRES_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .or_else(|_| std::env::var("POSTGRES_URL"))
+            .ok()
+    }
+
+    /// Process-wide monotonic suffix source for collision-free per-test lock
+    /// names — derived deterministically, not from a random source.
+    static LOCK_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn unique_lock_name(slug: &str) -> String {
+        let n = LOCK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("fftest-{slug}-{}-{n}", std::process::id())
+    }
+
     // Port of pyfly test_acquire_holds_connection_then_release_unlocks_and_
     // closes + test_acquire_failure_does_not_leak_connection, against a real
-    // server (tokio-postgres has no injectable fake engine).
+    // server (tokio-postgres has no injectable fake engine). Env-gated: reads
+    // FIREFLY_TEST_POSTGRES_URL (fallback DATABASE_URL / POSTGRES_URL); a clean
+    // skip when unset, a genuine pg_try_advisory_lock acquire / contend /
+    // release round-trip when set. The lock name is unique per process + call,
+    // and every acquired lock is released, so the test is idempotent and
+    // parallel-safe.
     #[tokio::test]
-    #[ignore = "requires postgres"]
     async fn acquire_release_round_trip_against_real_postgres() {
-        let dsn = std::env::var("FIREFLY_TEST_POSTGRES_DSN")
-            .unwrap_or_else(|_| "host=localhost user=postgres dbname=postgres".to_string());
+        let Some(dsn) = pg_url() else {
+            eprintln!(
+                "skipping acquire_release_round_trip_against_real_postgres: \
+                 set FIREFLY_TEST_POSTGRES_URL to run"
+            );
+            return;
+        };
+        let name = unique_lock_name("job");
         let a = PostgresAdvisoryLock::new(&dsn);
         let b = PostgresAdvisoryLock::new(&dsn);
         let ttl = Duration::from_secs(30);
-        assert!(a.try_acquire("firefly-test-job", ttl).await.unwrap());
-        assert!(!b.try_acquire("firefly-test-job", ttl).await.unwrap()); // held by a
-        a.release("firefly-test-job").await.unwrap();
-        assert!(b.try_acquire("firefly-test-job", ttl).await.unwrap());
-        b.release("firefly-test-job").await.unwrap();
+        // a acquires the session-held advisory lock.
+        assert!(a.try_acquire(&name, ttl).await.unwrap());
+        // b cannot acquire the same key while a holds it (separate session).
+        assert!(!b.try_acquire(&name, ttl).await.unwrap());
+        // a releases; the lock becomes available again.
+        a.release(&name).await.unwrap();
+        assert!(b.try_acquire(&name, ttl).await.unwrap());
+        // Clean up so the suite is idempotent.
+        b.release(&name).await.unwrap();
     }
 }

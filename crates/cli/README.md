@@ -1,163 +1,247 @@
 # firefly-cli
 
-The `firefly` developer CLI for the Firefly Framework for Rust: scaffold new
-projects, generate code artifacts, introspect a running app's actuator, and
-diagnose your toolchain.
+The `firefly` developer CLI for the **Firefly Framework for Rust**: scaffold new
+projects that *actually compile*, generate code artifacts into them, export an
+OpenAPI document, manage SQLite migrations, introspect a running app's actuator,
+and diagnose your toolchain and project.
 
 ```bash
 cargo install --path crates/cli   # installs the `firefly` binary
 firefly --help
 ```
 
-## Commands
+## Command reference
 
 | Command | Purpose |
 | --- | --- |
-| `firefly new <name>` | Scaffold a new firefly-rust project. |
+| `firefly new <name>` | Scaffold a new firefly-rust project (compiles out of the box). |
 | `firefly generate <kind> <name>` (alias `g`) | Generate a code artifact into the current project. |
-| `firefly info` | Framework + environment information. |
-| `firefly doctor` | Toolchain checks (`rustc`, `cargo`, `git`, clippy, rustfmt, docker). |
-| `firefly db <init\|migrate\|upgrade\|downgrade\|status>` | Migration management (firefly-migrations). |
-| `firefly openapi --format json\|yaml [-o file]` | Export an OpenAPI 3.1 document. |
-| `firefly actuator <endpoint> --url <base>` | Query a running app's `/actuator/*` endpoints. |
+| `firefly info` | Framework + environment + project information. |
+| `firefly doctor` | Toolchain + project health checks. |
+| `firefly db <init\|migrate\|upgrade\|downgrade\|status>` | SQLite migration management (firefly-migrations). |
+| `firefly openapi --format json\|yaml [-o file]` | Export an OpenAPI 3.1 document for the project. |
+| `firefly actuator <health\|info\|metrics\|env> --url <base>` | Query a running app's `/actuator/*`. |
 | `firefly routes\|env\|health\|metrics --url <base>` | Remote introspection of a running app. |
-| `firefly beans\|conditions` | Documented no-op (no Rust runtime analog). |
+| `firefly beans\|conditions [--url <base>]` | No local Rust analog (documented; pass-through with `--url`). |
+
+Run `firefly <command> --help` for the full flag list of any command.
+
+---
 
 ### `firefly new`
 
 ```bash
 firefly new my-service --archetype web-api --features web,data,cqrs --git
-firefly new my-lib --archetype library --dep-path ../../crates   # local dev deps
-firefly new --list                                               # archetypes + features
-firefly new svc --dry-run                                        # plan without writing
+firefly new my-lib     --archetype library --dep-path ../fireflyframework-rust  # local dev deps
+firefly new --list                                                             # archetypes + features
+firefly new svc --dry-run                                                       # plan without writing
 ```
 
-Archetypes: `core`, `web-api`, `web`, `hexagonal`, `library`, `cli`.
+**Flags**
 
-Each project is a workspace-less Cargo crate with git/path/version-configurable
-`firefly-*` dependencies (`--dep-path` / `--dep-version`, defaulting to the
-canonical GitHub repo), a `src/` tree appropriate to the archetype,
-`firefly.yaml`, `.gitignore`, `README.md`, a `Dockerfile`, and `tests/`.
-`--git` initializes a repository with an initial commit; `--force` overwrites
-existing files.
+| Flag | Effect |
+| --- | --- |
+| `--archetype <core\|web-api\|web\|hexagonal\|library\|cli>` | Project shape (default `core`). |
+| `--features <a,b,c>` | Comma-separated feature set (default: the archetype's defaults). |
+| `--directory <dir>` | Parent directory for the new project (default `.`). |
+| `--git` | Initialize a git repo with an initial commit. |
+| `--force` | Overwrite existing files in the target directory. |
+| `--dry-run` | Show what would be created without writing. |
+| `--dep-path <base>` | Point generated `firefly-*` deps at a local checkout (resolved per crate to `<base>/crates/<name>`). |
+| `--dep-version <semver>` | Point generated `firefly-*` deps at a crates.io version. |
+| `--list` | Print the archetype + feature catalog and exit. |
 
-### `firefly generate`
+**Archetypes** — each generates a workspace-less Cargo crate with
+git/path/version-configurable `firefly-*` dependencies, `firefly.yaml`,
+`.gitignore`, `README.md`, a `Dockerfile`, real source, and a passing test:
+
+| Archetype | What you get |
+| --- | --- |
+| `core` | A `firefly_starter_core::Core` service: CQRS bus + validation, cache, health, metrics, scheduler; lifecycle app with graceful shutdown; actuator admin server. |
+| `web-api` | A `firefly_starter_web::WebStack` REST service: a `Todo` resource with CQRS `CreateTodo`/`ListTodos` handlers dispatched through the bus, an in-memory repository, public API + actuator admin servers, and a `tower::oneshot` integration test. |
+| `web` | A server-rendered `WebStack` app: HTML page controllers + `PageService`, public + admin servers, page-render tests. |
+| `hexagonal` | Ports & adapters: framework-free `domain` (models + ports), an `application` service, an in-memory outbound adapter, a driving HTTP `api`, and a real domain/adapter test. |
+| `library` | A reusable library crate with a documented public API and a unit + integration test. |
+| `cli` | A `clap` binary with a command/service split and a command test. |
+
+**Compiles out of the box.** Generated projects are validated by the crate's own
+test suite: `tests/compile_generated.rs` scaffolds every archetype (pointing
+`firefly-*` deps at the local workspace) and runs `cargo check --tests` over the
+result under `FIREFLY_CLI_COMPILE_TEST=1`. The always-on portion of that test
+asserts each scaffold carries the real API markers (`Core::new` /
+`WebStack::new` / `new_application`).
+
+**Features** (`--features a,b,c`) toggle `firefly-*` dependencies and the
+generated `firefly.yaml`:
+
+`web`, `data`, `mongodb`, `eda`, `cache`, `client`, `security`, `scheduling`,
+`observability`, `cqrs`, `shell`, `transactional`. See `firefly new --list`.
+
+---
+
+### `firefly generate` (alias `g`)
 
 ```bash
-firefly generate handler Order
-firefly generate entity Product          # data-aware when firefly.yaml enables relational data
-firefly generate command OpenWallet      # command + handler in src/cqrs/
-firefly generate migration AddUsers      # V###__add_users.sql in migrations/
-firefly g saga MoneyTransfer --dry-run
+firefly generate handler Order            # src/handlers/order_handler.rs (axum)
+firefly generate route Catalog            # src/routes/catalog_route.rs (axum Router)
+firefly generate entity Product           # data-aware when firefly.yaml enables relational data
+firefly generate repository Product       # firefly_data::MemoryRepository when data is enabled
+firefly generate dto Order                # request/response DTOs
+firefly generate aggregate Wallet         # firefly_eventsourcing::AggregateRoot-backed aggregate
+firefly generate command OpenWallet       # CQRS command + a `register_*_handler(bus)` registrar
+firefly generate query GetWallet          # CQRS query + registrar
+firefly generate saga MoneyTransfer       # firefly_orchestration::Saga builder with compensation
+firefly generate migration AddUsers       # migrations/V###__add_users.sql
+firefly g saga MoneyTransfer --dry-run    # plan without writing
 ```
 
-Artifact kinds: `handler`, `route`, `entity`, `repository`, `dto`, `aggregate`,
-`command`, `query`, `saga`, `migration`. Names are accepted in any case and
-converted as needed; `--force` overwrites and `--dry-run` plans without writing.
+**Flags** (shared by every subcommand): `--force` overwrites existing files,
+`--dry-run` plans without writing. The artifact name is accepted in any case
+(`kebab`, `snake`, `camel`, `Pascal`, or spaced) and converted as needed.
+
+**Artifact kinds**: `handler`, `route`, `entity`, `repository`, `dto`,
+`aggregate`, `command`, `query`, `saga`, `migration`. Every template renders
+real Rust against the live `firefly-*` APIs — no `todo!()` / placeholder bodies.
+The CQRS handlers are `bus.register(|msg| async { ... })` closures (the real
+closure-based bus model), not a fictional `#[command_handler]` macro.
+
 The current project's package, archetype, and feature flags are detected from
-`Cargo.toml` + `firefly.yaml`.
+`Cargo.toml` + `firefly.yaml`, so an `entity` becomes a data-aware persistent
+model when `firefly.data.relational.enabled: true`, and a plain serializable
+struct otherwise. `migration` auto-increments the `V###` version from the
+highest existing file in `migrations/`.
+
+> Generated artifacts are written as files; wire them into your module tree
+> (`mod handlers;` etc.) to compile them. The crate's tests verify that, once
+> wired, every artifact kind compiles against the real framework.
+
+---
+
+### `firefly info`
+
+Prints the framework version, host OS/architecture, the `rustc`/`cargo`
+versions, and — when run inside a firefly-rust project — the detected package
+name and archetype.
+
+### `firefly doctor`
+
+Reports **real** toolchain and project facts:
+
+- **Required tools** — `rustc`, `cargo` (a missing one fails the run).
+- **Optional tools** — `git`, `clippy-driver`, `rustfmt`, `docker`.
+- **Project** — when run inside a firefly-rust project: the package name,
+  archetype, root, and whether `firefly.yaml` / `migrations/` are present.
+
+```text
+$ firefly doctor
+Firefly Doctor
+  Required tools:
+    ✓ rustc — rustc 1.96.0 ...
+    ✓ cargo — cargo 1.96.0 ...
+  Optional tools:
+    ✓ git — git version 2.50.1 ...
+    ✓ clippy-driver — clippy 0.1.96
+    ✓ rustfmt — rustfmt 1.9.0
+    ✓ docker — Docker version 29.4.1 ...
+  Project:
+    ✓ package    my-service
+    ✓ archetype  web-api
+    ✓ root       /path/to/my-service
+    ✓ firefly.yaml present
+    ✓ migrations/ present
+  All required checks passed!
+```
+
+---
 
 ### `firefly db`
 
 ```bash
-firefly db init                                  # migrations/ + starter V001__init.sql
-firefly db migrate -m "create users"             # writes V002__create_users.sql
+firefly db init                                   # migrations/ + starter V001__init.sql
+firefly db migrate -m "create users"              # writes V002__create_users.sql
 firefly db upgrade --url sqlite://app.db          # apply pending migrations
-firefly db status --url sqlite://app.db           # show applied + pending
+firefly db status  --url sqlite://app.db          # show applied + pending
+firefly db downgrade                              # unsupported (forward-only) — fails loudly
 ```
 
-Migration management on top of `firefly-migrations` (the runner the generated
-projects already ship with). The subcommand *names* mirror pyfly's `pyfly db`
-(`init`/`migrate`/`upgrade`/`downgrade`/status), but the engine differs: pyfly
-drives **Alembic**, this drives the framework's own **forward-only** runner.
+Migration management on top of `firefly-migrations` (the runner generated
+projects ship with). Subcommand *names* mirror pyfly's `pyfly db`, but the
+engine differs: pyfly drives **Alembic**; this drives the framework's own
+**forward-only** runner.
 
 The database URL resolves from `--url`, then `$DATABASE_URL`, then
 `firefly.datasource.url` in `firefly.yaml`, defaulting to `sqlite://firefly.db`.
 The fully-wired CLI backend is **SQLite via `rusqlite`**; a `postgres://` /
 `mysql://` URL returns a clear "not wired into the CLI" error (adapt the
 `firefly_migrations::Database` port to your driver and call `run` directly).
+`db downgrade` is unsupported by design — write a corrective migration instead.
+
+---
 
 ### `firefly openapi`
 
 ```bash
-firefly openapi                                  # OpenAPI 3.1 JSON to stdout
+firefly openapi                                   # OpenAPI 3.1 JSON to stdout
 firefly openapi --format yaml -o openapi.yaml     # YAML to a file
 ```
 
 Exports an OpenAPI 3.1 document built with `firefly-openapi`. The flags
-(`--format json|yaml`, `-o/--output`) and wire shape match pyfly; the document
-metadata (`info.title` / `info.version` / `description`) is read from
-`firefly.yaml` (`firefly.app.*`) then `Cargo.toml`.
+(`--format json|yaml`, `-o/--output`) and the wire shape (3.1, an
+always-present `ProblemDetail` component) match pyfly; the document metadata
+(`info.title` / `info.version` / `description`) is read from `firefly.yaml`
+(`firefly.app.*`) then `Cargo.toml`. A compiled binary cannot boot an arbitrary
+app to enumerate live routes, so the document has empty `paths` — wire real
+routes with `firefly_openapi::Builder` and serve them via `Builder::router()`.
+
+---
 
 ### `firefly actuator` / remote introspection
 
 ```bash
-firefly actuator health --url http://localhost:8080
-firefly actuator metrics requests --url http://localhost:8080 --json
-firefly routes --url http://localhost:8080         # -> /actuator/mappings
-firefly env    --url http://localhost:8080         # -> /actuator/env
-firefly health --url http://localhost:8080         # -> /actuator/health
-firefly metrics requests --url http://localhost:8080
+firefly actuator health  --url http://localhost:8081
+firefly actuator info    --url http://localhost:8081
+firefly actuator metrics requests --url http://localhost:8081 --json
+firefly actuator env     --url http://localhost:8081
+firefly routes  --url http://localhost:8081        # -> /actuator/mappings
+firefly env     --url http://localhost:8081        # -> /actuator/env
+firefly health  --url http://localhost:8081        # -> /actuator/health
+firefly metrics requests --url http://localhost:8081
 ```
 
 Remote-only: a compiled binary has no offline DI context to boot, so `--url` is
-required. `routes` maps to `/actuator/mappings`; `env`/`health`/`metrics` map
-1:1. `beans` and `conditions` have **no local Rust analog** (generated apps
-have no runtime DI container to enumerate and no auto-configuration condition
-report); they fail with an explanatory message unless `--url` is given to a
-running app that happens to expose those endpoints.
+required. The client GETs `<base>/actuator/<endpoint>` with a 10-second timeout
+and pretty-prints the JSON (`--json` emits the raw body only). `routes` maps to
+`/actuator/mappings`; `env`/`health`/`metrics` map 1:1. `beans` and
+`conditions` have **no local Rust analog** (generated apps have no runtime DI
+container to enumerate and no auto-configuration condition report); they fail
+with an explanatory message unless `--url` is given to a running app that
+happens to expose those endpoints.
 
-## pyfly parity
+> The generated `core` / `web-api` / `web` / `hexagonal` projects bind their
+> actuator admin surface on `127.0.0.1:8081` by default (override with the
+> `ADMIN_ADDR` env var), so `firefly actuator health --url http://localhost:8081`
+> works against a project you just scaffolded and ran.
+
+---
+
+## pyfly parity & deliberate divergences
 
 This crate is the Rust port of pyfly's `pyfly.cli` package, adapted to a
-compiled Cargo workspace:
+compiled Cargo workspace. The naming table, project-detection rules,
+`write_artifacts` force/dry-run semantics, and generator dispatch are ported
+test-case for test-case from `tests/cli/`.
 
-- **`naming`** — `Names` case-conversion, a hand-rolled port of `naming.py`
-  (no `heck`); the naming table tests are ported verbatim from
-  `tests/cli/test_naming.py`.
-- **`project`** — `detect_project` / `feature_flags`, ported from `_project.py`
-  but keyed off `Cargo.toml` + `firefly.yaml` and Rust's flat `src/` layout.
-- **`generate`** — `Artifact` / `write_artifacts` with the same `force`/`dry_run`
-  semantics as `generate.py`, plus a per-kind dispatcher; the engine and
-  dispatch tests are ported from `test_generate_engine.py` and
-  `test_generate_commands.py`.
-- **`templates`** — `generate_project` / archetype catalog, ported from
-  `templates.py`; templates are embedded with `include_str!` and rendered with
-  minijinja using the same `has_*` / `package_name` context keys.
-- **`actuator`** — the remote half of `_introspect.py` only; tests use an
-  in-process axum server on port 0 (no external services).
-- **`db`** — `db.py`'s command group, retargeted from Alembic to
-  `firefly-migrations`; tests drive an in-memory / temp-file SQLite database
-  via `rusqlite` (no external server), mirroring `test_db.py`/`test_db_extra.py`.
-- **`openapi`** — `openapi.py`'s export command; since a compiled binary can't
-  boot an app to enumerate live routes, it emits a project-metadata-stamped
-  OpenAPI 3.1 *skeleton* via `firefly-openapi`. Tests mirror `test_openapi.py`
-  (3.1 version marker, `paths` present, file output).
-- **`diagnostics`** — `info` / `doctor`, retargeted from Python interpreter
-  probes to Rust toolchain probes.
-
-### Deliberate divergences from pyfly
+Deliberate divergences (a compiled tool cannot do everything an interpreter can):
 
 - The `fastapi-api` archetype is dropped (Rust has a single web stack, Axum).
-- Generated projects are **plausible Rust** and are intentionally **not**
-  compiled by the test-suite; template snapshot + tempfile tests assert the
-  structural markers, exactly as the pyfly suite does.
-- The interactive `questionary` wizard, Python-runtime-only commands
-  (`run`/`shell`/quality wrappers/`upgrade`), and the entry-point plugin
-  mechanism are out of scope per the cli brief.
-- `firefly migration` numbering uses the framework's `V###__name.sql`
-  convention (auto-incremented from the highest existing version) rather than
-  Alembic revisions.
+- The interactive `questionary` wizard and Python-runtime-only commands
+  (`run`/`shell`/quality wrappers/`upgrade`) and the entry-point plugin
+  mechanism are out of scope.
 - `firefly db` drives the **forward-only** `firefly-migrations` runner instead
-  of Alembic: `db migrate` writes a `V###__msg.sql` file (not an Alembic
-  autogenerate diff), and `db downgrade` is **unsupported** (the append-only
-  history has no rollback — write a corrective migration instead). pyfly's
-  `current`/`history`/`heads`/`show`/`revision`/`stamp`/`merge`/`reset`
-  collapse to `db status`. Only the SQLite backend is wired into the CLI.
-- `firefly openapi` emits a metadata-stamped **skeleton** (empty `paths`):
-  a compiled binary can't boot an arbitrary app to enumerate routes the way
-  pyfly's `boot_context()` does. Wire real routes via
-  `firefly_openapi::Builder` and serve them with `Builder::router()`.
-- `firefly beans` / `conditions` have **no local Rust analog** (no runtime DI
-  container or condition report in generated apps); they are kept as commands
-  that explain the gap and can pass through to a remote app via `--url`.
+  of Alembic; `db downgrade` is unsupported; pyfly's
+  `current`/`history`/`heads`/… collapse to `db status`; only SQLite is wired.
+- `firefly openapi` emits a metadata-stamped **skeleton** (empty `paths`).
+- `firefly actuator` and the remote introspection commands are **remote-only**
+  (`--url`); `beans`/`conditions` have no local analog.
+- The CQRS code generators target the real **closure-based bus**
+  (`bus.register(|msg| async { ... })`), not a macro-based handler model.

@@ -34,9 +34,15 @@ CREATE TABLE IF NOT EXISTS firefly_eda_offsets (
 ";
 
 /// `INSERT` that appends an event to the outbox and returns its id.
+// `$3::text::jsonb` (not `$3::jsonb`): the inner `::text` pins the BIND type
+// of the parameter to `text` so tokio-postgres serializes the Rust `String`
+// as text, then Postgres casts text -> jsonb. With a bare `$3::jsonb`, the
+// server infers the parameter's own type as `jsonb`, and tokio-postgres
+// (built without the serde_json feature) cannot serialize a `String` as jsonb
+// -> "error serializing parameter". The read path already uses `payload::text`.
 pub(crate) const INSERT_OUTBOX: &str = "\
 INSERT INTO firefly_eda_outbox (destination, event_type, payload, headers)
-VALUES ($1, $2, $3::jsonb, $4::jsonb)
+VALUES ($1, $2, $3::text::jsonb, $4::text::jsonb)
 RETURNING id";
 
 /// Seeds the offset row for a consumer group (idempotent).
@@ -288,7 +294,7 @@ mod tests {
     fn publish_sql_inserts_and_returns_id() {
         assert!(INSERT_OUTBOX.contains("INSERT INTO firefly_eda_outbox"));
         assert!(INSERT_OUTBOX.contains("(destination, event_type, payload, headers)"));
-        assert!(INSERT_OUTBOX.contains("VALUES ($1, $2, $3::jsonb, $4::jsonb)"));
+        assert!(INSERT_OUTBOX.contains("VALUES ($1, $2, $3::text::jsonb, $4::text::jsonb)"));
         assert!(INSERT_OUTBOX.contains("RETURNING id"));
     }
 

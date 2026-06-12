@@ -1,8 +1,26 @@
-//! Domain model tests for {{ name }}.
+//! Domain + adapter tests for {{ name }}.
+//!
+//! Exercises the real domain invariant and the application service over the
+//! in-memory outbound adapter — the hexagon end to end, without HTTP.
+
+use {{ package_name }}::application::ItemService;
+use {{ package_name }}::domain::models::Item;
+use {{ package_name }}::domain::ports::{ItemRepositoryPort, ItemUseCase};
+use {{ package_name }}::infrastructure::adapters::persistence::InMemoryItemRepository;
 
 #[test]
 fn item_rejects_empty_name() {
-    // Mirrors the domain invariant in src/domain/models.rs.
-    let empty = "";
-    assert!(empty.trim().is_empty());
+    assert!(Item::new("1", "   ").is_err());
+    assert!(Item::new("1", "valid").is_ok());
+}
+
+#[test]
+fn service_loads_a_stored_item_through_ports() {
+    let repo = InMemoryItemRepository::default();
+    repo.store(&Item::new("1", "example").unwrap());
+    let service = ItemService::new(repo);
+
+    let found = service.get("1").expect("item is present");
+    assert_eq!(found.name, "example");
+    assert!(service.get("missing").is_none());
 }

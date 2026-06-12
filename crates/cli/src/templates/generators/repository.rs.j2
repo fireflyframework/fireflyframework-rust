@@ -1,16 +1,53 @@
 //! {{ names.human }} repository.
 
-{% if has_data %}use firefly_data::{Repository, RepositoryPort};
+{% if has_data %}use firefly_data::{DataError, MemoryRepository, Repository};
 {% endif %}use crate::models::{{ names.snake }}::{{ names.pascal }};
 
-/// Repository for [`{{ names.pascal }}`] aggregates.
+/// Repository for [`{{ names.pascal }}`] entities.
 {% if has_data %}///
-/// Backed by the framework's `Repository<{{ names.pascal }}, i64>` over the
-/// configured relational data source.
-{% endif %}#[derive(Debug, Default, Clone)]
-pub struct {{ names.pascal }}Repository{% if has_data %} {
-    inner: Repository<{{ names.pascal }}, i64>,
-}{% else %};{% endif %}
+/// Wraps a `firefly_data::MemoryRepository<{{ names.pascal }}, i64>` keyed by `id`.
+/// Swap the inner store for a SQL-backed `Repository` implementation when you
+/// move off the in-memory adapter — the public methods stay the same.
+pub struct {{ names.pascal }}Repository {
+    inner: MemoryRepository<{{ names.pascal }}, i64>,
+}
+
+impl Default for {{ names.pascal }}Repository {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl {{ names.pascal }}Repository {
+    /// Construct a new in-memory repository keyed by `{{ names.pascal }}::id`.
+    pub fn new() -> Self {
+        Self {
+            inner: MemoryRepository::new(|e: &{{ names.pascal }}| e.id),
+        }
+    }
+
+    /// Find a {{ names.human }} by its identifier.
+    pub async fn find_by_id(&self, id: i64) -> Option<{{ names.pascal }}> {
+        self.inner.find_by_id(&id).await.ok()
+    }
+
+    /// Insert or update a {{ names.human }}, returning the persisted value.
+    pub async fn save(&self, entity: {{ names.pascal }}) -> Result<{{ names.pascal }}, DataError> {
+        self.inner.save(entity).await
+    }
+
+    /// Delete a {{ names.human }} by id.
+    pub async fn delete(&self, id: i64) -> Result<(), DataError> {
+        self.inner.delete(&id).await
+    }
+}
+{% else %}///
+/// No relational data source is configured, so this is a stand-in keyed map.
+/// Add the `data` feature to back it with a `firefly_data::Repository`.
+#[derive(Debug, Default)]
+pub struct {{ names.pascal }}Repository {
+    store: std::sync::Mutex<Vec<{{ names.pascal }}>>,
+}
 
 impl {{ names.pascal }}Repository {
     /// Construct a new repository.
@@ -20,7 +57,22 @@ impl {{ names.pascal }}Repository {
 
     /// Find a {{ names.human }} by its identifier.
     pub async fn find_by_id(&self, id: i64) -> Option<{{ names.pascal }}> {
-        {% if has_data %}self.inner.find_by_id(id).await{% else %}let _ = id;
-        None{% endif %}
+        self.store
+            .lock()
+            .expect("repository lock poisoned")
+            .iter()
+            .find(|e| e.id == id)
+            .cloned()
+    }
+
+    /// Insert or replace a {{ names.human }}.
+    pub async fn save(&self, entity: {{ names.pascal }}) {
+        let mut store = self.store.lock().expect("repository lock poisoned");
+        if let Some(slot) = store.iter_mut().find(|e| e.id == entity.id) {
+            *slot = entity;
+        } else {
+            store.push(entity);
+        }
     }
 }
+{% endif %}

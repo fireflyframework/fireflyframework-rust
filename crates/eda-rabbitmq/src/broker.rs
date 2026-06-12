@@ -10,7 +10,8 @@ use lapin::options::{
 };
 use lapin::types::FieldTable;
 use lapin::{
-    BasicProperties, Channel, Connection, ConnectionProperties, ExchangeKind, Result as LapinResult,
+    BasicProperties, Channel, ChannelState, Connection, ConnectionProperties, ConnectionState,
+    ExchangeKind, Result as LapinResult,
 };
 use tokio::task::JoinHandle;
 
@@ -254,6 +255,14 @@ impl RabbitMqBroker {
 
     /// Aborts the consumers and closes the AMQP connection. Idempotent
     /// and safe to call when never started (parity with pyfly's `stop`).
+    ///
+    /// The close path is tolerant of an **already-closing or already-closed**
+    /// connection or channel: a consumer task can race ahead and begin closing
+    /// its channel (and, with it, the underlying connection) before `stop` runs,
+    /// in which case `lapin` reports `InvalidChannelState(Closing|Closed)` /
+    /// `InvalidConnectionState(Closing|Closed)`. Those mean the resource is
+    /// already (being) torn down — exactly the outcome `stop` wants — so they are
+    /// treated as success rather than propagated as a 500.
     pub async fn stop(&self) -> EdaResult<()> {
         let (connection, consumers) = {
             let mut state = self
@@ -272,10 +281,36 @@ impl RabbitMqBroker {
             c.abort();
         }
         if let Some(connection) = connection {
-            connection.close(0, "stopped").await.map_err(map_lapin)?;
+            match connection.close(0, "stopped").await {
+                Ok(()) => {}
+                Err(e) if is_already_closing(&e) => {
+                    // The connection/channel was already (being) closed — for a
+                    // `stop()` that is the desired end state, so swallow it.
+                    tracing::debug!(
+                        error = %e,
+                        "firefly/eda-rabbitmq: connection already closing/closed on stop; treating as stopped"
+                    );
+                }
+                Err(e) => return Err(map_lapin(e)),
+            }
         }
         Ok(())
     }
+}
+
+/// Returns `true` for the `lapin` errors that mean a channel or connection is
+/// already closing or fully closed — the benign outcomes a `stop()`/`close()`
+/// should treat as "already stopped" rather than propagate. Covers both the
+/// channel-level (`InvalidChannelState`) and connection-level
+/// (`InvalidConnectionState`) `Closing`/`Closed` states.
+fn is_already_closing(err: &lapin::Error) -> bool {
+    matches!(
+        err,
+        lapin::Error::InvalidChannelState(ChannelState::Closing | ChannelState::Closed)
+            | lapin::Error::InvalidConnectionState(
+                ConnectionState::Closing | ConnectionState::Closed
+            )
+    )
 }
 
 /// The per-queue consume loop: for each delivery, [`decide`] the
@@ -472,5 +507,39 @@ mod tests {
     async fn stop_when_never_started_is_safe() {
         let broker = RabbitMqBroker::new(RabbitMqBrokerConfig::default());
         assert!(broker.stop().await.is_ok());
+    }
+
+    #[test]
+    fn already_closing_states_are_treated_as_stopped() {
+        // Channel-level closing/closed and connection-level closing/closed are
+        // the benign outcomes a `stop()` swallows.
+        assert!(is_already_closing(&lapin::Error::InvalidChannelState(
+            ChannelState::Closing
+        )));
+        assert!(is_already_closing(&lapin::Error::InvalidChannelState(
+            ChannelState::Closed
+        )));
+        assert!(is_already_closing(&lapin::Error::InvalidConnectionState(
+            ConnectionState::Closing
+        )));
+        assert!(is_already_closing(&lapin::Error::InvalidConnectionState(
+            ConnectionState::Closed
+        )));
+    }
+
+    #[test]
+    fn other_states_and_errors_are_not_swallowed() {
+        // A channel in `Error` / `Initial` / `Connected` is a genuine failure,
+        // as is any non-state error — those must still propagate.
+        assert!(!is_already_closing(&lapin::Error::InvalidChannelState(
+            ChannelState::Error
+        )));
+        assert!(!is_already_closing(&lapin::Error::InvalidChannelState(
+            ChannelState::Connected
+        )));
+        assert!(!is_already_closing(&lapin::Error::InvalidConnectionState(
+            ConnectionState::Connected
+        )));
+        assert!(!is_already_closing(&lapin::Error::ChannelsLimitReached));
     }
 }

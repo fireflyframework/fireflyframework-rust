@@ -2,39 +2,45 @@
 
 use firefly_eventsourcing::{AggregateRoot, DomainEvent};
 
-/// The `{{ names.pascal }}` DDD aggregate root.
+/// The `{{ names.pascal }}` DDD aggregate.
 ///
-/// Raises domain events into `_events`, drained by the repository when the
-/// aggregate is persisted.
-#[derive(Debug, Default, Clone)]
+/// Embeds the framework's [`AggregateRoot`], which buffers uncommitted events
+/// (the `_events` it tracks internally). Raise events with [`Self::raise`], then
+/// hand [`Self::take_events`] to a `firefly_eventsourcing::EventStore::append`
+/// to persist them.
+#[derive(Debug)]
 pub struct {{ names.pascal }} {
-    /// Aggregate identifier.
-    pub id: String,
-    /// Uncommitted domain events raised since the last load/save.
-    _events: Vec<DomainEvent>,
+    /// The event-sourcing root: identity, version, and the uncommitted
+    /// `_events` buffer.
+    root: AggregateRoot,
 }
 
 impl {{ names.pascal }} {
-    /// Create a new {{ names.human }} aggregate.
+    /// Create a new {{ names.human }} aggregate at version 0.
     pub fn new(id: impl Into<String>) -> Self {
         Self {
-            id: id.into(),
-            _events: Vec::new(),
+            root: AggregateRoot::new(id, "{{ names.pascal }}"),
         }
     }
 
-    /// Record a domain event onto this aggregate.
-    pub fn record(&mut self, event: DomainEvent) {
-        self._events.push(event);
-    }
-}
-
-impl AggregateRoot for {{ names.pascal }} {
-    fn aggregate_id(&self) -> &str {
-        &self.id
+    /// The aggregate identifier.
+    pub fn id(&self) -> &str {
+        &self.root.id
     }
 
-    fn pending_events(&mut self) -> Vec<DomainEvent> {
-        std::mem::take(&mut self._events)
+    /// The current version (number of events raised or loaded).
+    pub fn version(&self) -> i64 {
+        self.root.version
+    }
+
+    /// Raise a state-changing domain event onto this aggregate. The event is
+    /// buffered until persisted.
+    pub fn raise(&mut self, event_type: impl Into<String>, payload: impl Into<Vec<u8>>) {
+        self.root.raise(event_type, payload);
+    }
+
+    /// Drain the uncommitted events for persistence, leaving the buffer empty.
+    pub fn take_events(&mut self) -> Vec<DomainEvent> {
+        self.root.take_uncommitted()
     }
 }

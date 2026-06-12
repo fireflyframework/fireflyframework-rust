@@ -1,12 +1,59 @@
 //! {{ name }} — Firefly Framework `core` service entry point.
+//!
+//! Wires the infrastructure tier with a single [`Core::new`] call (CQRS bus
+//! with validation, in-memory cache, health composite, metric registry, task
+//! scheduler), then runs the lifecycle application: it traps SIGINT/SIGTERM,
+//! serves the actuator admin surface on `127.0.0.1:8081`, and drains
+//! gracefully on shutdown.
 
-use firefly_lifecycle::Application;
+use firefly_starter_core::{Core, CoreConfig, InfoContributor};
+
+/// This service's name, surfaced on `/actuator/info` and the startup banner.
+const APP_NAME: &str = "{{ name }}";
+
+/// Default bind address of the actuator admin server. Management endpoints
+/// bind on their own port so `/actuator/*` never leaks onto a public network.
+const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8081";
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = Application::builder()
-        .name("{{ name }}")
-        .build();
-    app.run().await?;
-    Ok(())
+async fn main() {
+    let core = Core::new(CoreConfig {
+        app_name: APP_NAME.into(),
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        ..CoreConfig::default()
+    });
+    // Best-effort: a test harness may already own the global subscriber.
+    let _ = core.init_logging();
+
+    // Register your CQRS handlers on `core.bus` here, e.g.
+    //   core.bus.register(move |cmd: MyCommand| async move { Ok::<_, CqrsError>(()) });
+
+    let contributor: InfoContributor = Box::new(|| {
+        let mut info = serde_json::Map::new();
+        info.insert("service".into(), serde_json::json!(APP_NAME));
+        info
+    });
+    let admin = core.actuator_router(vec![contributor]);
+
+    core.print_banner();
+
+    let admin_addr =
+        std::env::var("ADMIN_ADDR").unwrap_or_else(|_| DEFAULT_ADMIN_ADDR.to_owned());
+
+    let app = core
+        .new_application()
+        .on_server("admin", move |shutdown| async move {
+            let listener = tokio::net::TcpListener::bind(&admin_addr).await?;
+            axum::serve(listener, admin)
+                .with_graceful_shutdown(shutdown.wait())
+                .await?;
+            Ok(())
+        });
+
+    if let Err(err) = app.run().await {
+        if !err.is_cancelled() {
+            eprintln!("application failed: {err}");
+            std::process::exit(1);
+        }
+    }
 }

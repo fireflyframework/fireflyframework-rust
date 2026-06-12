@@ -400,6 +400,22 @@ fn cmd_doctor() {
         let mark = if c.ok { "\u{2713}" } else { "-" };
         println!("    {mark} {} — {}", c.name, c.detail);
     }
+    match &report.project {
+        Some(p) => {
+            println!("\n  Project:");
+            println!("    \u{2713} package    {}", p.package);
+            println!("    \u{2713} archetype  {}", p.archetype);
+            println!("    \u{2713} root       {}", p.root);
+            let yaml = if p.has_firefly_yaml { "\u{2713}" } else { "-" };
+            println!("    {yaml} firefly.yaml present");
+            let mig = if p.has_migrations { "\u{2713}" } else { "-" };
+            println!("    {mig} migrations/ present");
+        }
+        None => {
+            println!("\n  Project:");
+            println!("    - not inside a firefly-rust project (no Cargo.toml found)");
+        }
+    }
     println!();
     if report.all_ok {
         println!("  All required checks passed!\n");

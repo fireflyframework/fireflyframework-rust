@@ -72,12 +72,21 @@ let result = provider.send(msg).await; // NotificationResult { status: SENT | FA
 cargo test -p firefly-notifications-smtp
 ```
 
-Per the framework's bare-machine test policy there is **no live SMTP server**
-in the test suite. `build_message` is a pure function over `EmailMessage`; the
+Per the framework's bare-machine test policy the unit suite needs **no live
+SMTP server**. `build_message` is a pure function over `EmailMessage`; the
 tests assert the resulting `lettre::Message` — its headers, MIME parts,
 envelope recipients, and the bcc-not-leaked invariant — directly, the Rust
 analogue of `tests/notifications/test_smtp_behavior.py` (which captures the
 delivered MIME via an in-process `aiosmtpd`). Connection-failure mapping is
-exercised against a closed port. A real STARTTLS round-trip lives behind an
-`#[ignore = "requires a live SMTP server"]` test driven by `FIREFLY_SMTP_*`
-environment variables.
+exercised against a closed port.
+
+A genuine end-to-end send lives in `tests/smtp_integration.rs` as an
+**env-gated** integration test (no `#[ignore]`): with `FIREFLY_TEST_SMTP_ADDR`
+unset it prints `skipping …` and returns, so `cargo test` stays green; with it
+set (e.g. `localhost:1026`, MailHog) it delivers a real e-mail and verifies it
+arrived via the MailHog HTTP API.
+
+```bash
+export FIREFLY_TEST_SMTP_ADDR="localhost:1026"
+cargo test -p firefly-notifications-smtp --test smtp_integration
+```

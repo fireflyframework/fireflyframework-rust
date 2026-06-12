@@ -107,9 +107,13 @@ Tests port pyfly's `tests/eda/test_rabbitmq_event_bus.py`: the
 declaration plan (exchange + one bound queue per destination,
 `<group>.<destination>` names), routing-key/envelope mapping, matching
 vs non-matching dispatch, the undeserializable-body drop, and the
-handler-failure nack-with-requeue. A live publish/consume round-trip
-lives in `tests/roundtrip.rs` behind `#[ignore = "requires rabbitmq"]`.
+handler-failure nack-with-requeue. A live declare → publish → consume → ack
+round-trip lives in `tests/roundtrip.rs` as an **env-gated** integration test
+(no `#[ignore]`): it reads `FIREFLY_TEST_RABBITMQ_URL` (falling back to the
+legacy `RABBITMQ_URL` then `AMQP_URL`) and skips with a one-line notice when
+unset, so a bare `cargo test` stays green.
 ```sh
-cargo test -p firefly-eda-rabbitmq            # unit + doc tests (no broker)
-cargo test -p firefly-eda-rabbitmq -- --ignored   # round-trip (needs RabbitMQ)
+cargo test -p firefly-eda-rabbitmq            # unit + doc tests, round-trip skips (no broker)
+FIREFLY_TEST_RABBITMQ_URL=amqp://guest:guest@localhost:5672/%2f \
+  cargo test -p firefly-eda-rabbitmq          # runs the real round-trip
 ```

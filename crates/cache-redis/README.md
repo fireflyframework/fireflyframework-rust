@@ -93,10 +93,16 @@ cargo test -p firefly-cache-redis
 Every unit test runs against an **in-process fake RESP server** (a
 `TcpListener` speaking just enough RESP2) — there is no external Redis
 dependency, mirroring pyfly's `FakeRedis` stub in
-`tests/cache/test_redis_adapter.py`. A docker-gated round-trip against a
-real Redis (mirroring pyfly's
-`tests/integration/test_cache_redis_integration.py`) runs with:
+`tests/cache/test_redis_adapter.py`.
+
+Live round-trip tests against a real Redis (mirroring pyfly's
+`tests/integration/test_cache_redis_integration.py`) live in
+`tests/redis_integration_test.rs`. They are **env-gated, not `#[ignore]`d**:
+set `FIREFLY_TEST_REDIS_URL` (the older `REDIS_URL` is accepted as a
+fallback) and they exercise the genuine wire protocol; leave it unset and
+they print a one-line `skipping …` and pass, so `cargo test` is green on a
+bare machine:
 
 ```bash
-REDIS_URL=redis://127.0.0.1:6379/0 cargo test -p firefly-cache-redis -- --ignored
+FIREFLY_TEST_REDIS_URL=redis://localhost:6379 cargo test -p firefly-cache-redis
 ```

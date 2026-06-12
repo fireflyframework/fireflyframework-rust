@@ -43,6 +43,18 @@
 //! [`PostgresCacheAdapter::init`]. There is no `stop`: the client's lifecycle
 //! belongs to its owner.
 //!
+//! # Custom table names
+//!
+//! By default every statement targets the [`TABLE`] (`firefly_cache_entries`).
+//! To point an adapter at a different table — e.g. to give two logical caches
+//! their own storage, or to isolate parallel integration tests — construct it
+//! with [`PostgresCacheAdapter::connect_with_table`] or
+//! [`PostgresCacheAdapter::from_client_with_table`]. The table name is
+//! validated strictly (ASCII `[a-z0-9_]`, must start with a letter or
+//! underscore, at most 63 bytes — Postgres's identifier limit) and an invalid
+//! name is rejected with [`CacheError::Backend`] rather than being
+//! interpolated into SQL, so there is no injection surface.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -139,14 +151,84 @@ pub const SELECT_KEYS_SQL: &str = "SELECT cache_key FROM firefly_cache_entries \
 /// expose per-adapter hit counts.
 pub struct PostgresCacheAdapter {
     client: Client,
+    /// The per-instance SQL, rendered once at construction from the validated
+    /// table name. For the default table these are byte-for-byte the public
+    /// [`DDL`] / [`UPSERT_SQL`] / … consts.
+    sql: TableSql,
     hits: AtomicU64,
     misses: AtomicU64,
     evictions: AtomicU64,
 }
 
+/// The set of statements an adapter runs, rendered from a single validated
+/// table name. Building these once (rather than `format!`-ing on every call)
+/// keeps the hot path allocation-free and guarantees every statement targets
+/// the same, already-validated identifier.
+struct TableSql {
+    table: String,
+    ddl: String,
+    upsert: String,
+    insert_if_absent: String,
+    select: String,
+    exists: String,
+    delete: String,
+    delete_prefix: String,
+    clear: String,
+    count: String,
+    select_keys: String,
+}
+
+impl TableSql {
+    /// Renders the full statement set for `table`, which **must** already have
+    /// passed [`validate_table_name`].
+    fn new(table: &str) -> Self {
+        Self {
+            table: table.to_owned(),
+            ddl: format!(
+                "CREATE TABLE IF NOT EXISTS {table} (\n    \
+                 cache_key   TEXT PRIMARY KEY,\n    \
+                 value       BYTEA NOT NULL,\n    \
+                 expires_at  TIMESTAMPTZ NULL\n)"
+            ),
+            upsert: format!(
+                "INSERT INTO {table} (cache_key, value, expires_at) \
+                 VALUES ($1, $2, $3) \
+                 ON CONFLICT (cache_key) DO UPDATE \
+                 SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at"
+            ),
+            insert_if_absent: format!(
+                "INSERT INTO {table} (cache_key, value, expires_at) \
+                 VALUES ($1, $2, $3) \
+                 ON CONFLICT (cache_key) DO NOTHING"
+            ),
+            select: format!(
+                "SELECT value FROM {table} \
+                 WHERE cache_key = $1 AND (expires_at IS NULL OR expires_at > $2)"
+            ),
+            exists: format!(
+                "SELECT 1 FROM {table} \
+                 WHERE cache_key = $1 AND (expires_at IS NULL OR expires_at > $2)"
+            ),
+            delete: format!("DELETE FROM {table} WHERE cache_key = $1"),
+            delete_prefix: format!("DELETE FROM {table} WHERE cache_key LIKE $1 ESCAPE '\\'"),
+            clear: format!("DELETE FROM {table}"),
+            count: format!(
+                "SELECT COUNT(*) FROM {table} \
+                 WHERE expires_at IS NULL OR expires_at > $1"
+            ),
+            select_keys: format!(
+                "SELECT cache_key FROM {table} \
+                 WHERE cache_key LIKE $1 ESCAPE '\\' AND (expires_at IS NULL OR expires_at > $2) \
+                 LIMIT $3"
+            ),
+        }
+    }
+}
+
 impl std::fmt::Debug for PostgresCacheAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PostgresCacheAdapter")
+            .field("table", &self.sql.table)
             .field("hits", &self.hits.load(Ordering::Relaxed))
             .field("misses", &self.misses.load(Ordering::Relaxed))
             .field("evictions", &self.evictions.load(Ordering::Relaxed))
@@ -169,6 +251,24 @@ impl PostgresCacheAdapter {
     /// Returns [`CacheError::Backend`] if the connection string is malformed
     /// or the initial connection cannot be established.
     pub async fn connect(conn: &str) -> Result<Self, CacheError> {
+        Self::connect_with_table(conn, TABLE).await
+    }
+
+    /// Like [`connect`](PostgresCacheAdapter::connect) but targets a custom
+    /// `table` instead of the default [`TABLE`] — every statement
+    /// (DDL/UPSERT/SELECT/EXISTS/DELETE/DELETE-prefix/CLEAR/COUNT/SELECT-KEYS)
+    /// is rendered against it. Useful to give two logical caches separate
+    /// storage or to isolate parallel integration tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheError::Backend`] if `table` is not a valid, safe
+    /// identifier (ASCII `[a-z0-9_]`, starting with a letter or underscore, at
+    /// most 63 bytes) — the name is validated, never interpolated blindly — or
+    /// if the connection string is malformed or the connection cannot be
+    /// established.
+    pub async fn connect_with_table(conn: &str, table: &str) -> Result<Self, CacheError> {
+        let sql = build_table_sql(table)?;
         let dsn = normalise_dsn(conn);
         let (client, connection) = tokio_postgres::connect(&dsn, NoTls)
             .await
@@ -177,7 +277,7 @@ impl PostgresCacheAdapter {
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        Ok(Self::from_client(client))
+        Ok(Self::from_sql(client, sql))
     }
 
     /// Wraps an already-established [`tokio_postgres::Client`] — the
@@ -186,23 +286,53 @@ impl PostgresCacheAdapter {
     /// [`init`](PostgresCacheAdapter::init).
     #[must_use]
     pub fn from_client(client: Client) -> Self {
+        // The default TABLE is a compile-time-valid identifier, so building its
+        // SQL cannot fail.
+        Self::from_sql(client, TableSql::new(TABLE))
+    }
+
+    /// Like [`from_client`](PostgresCacheAdapter::from_client) but targets a
+    /// custom `table`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheError::Backend`] if `table` is not a valid, safe
+    /// identifier (see [`connect_with_table`](PostgresCacheAdapter::connect_with_table)).
+    pub fn from_client_with_table(client: Client, table: &str) -> Result<Self, CacheError> {
+        Ok(Self::from_sql(client, build_table_sql(table)?))
+    }
+
+    /// Shared constructor: wraps `client` with an already-rendered statement
+    /// set and zeroed counters.
+    fn from_sql(client: Client, sql: TableSql) -> Self {
         Self {
             client,
+            sql,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
         }
     }
 
-    /// Runs the create-table-if-not-exists DDL ([`DDL`]) — pyfly's `start`.
-    /// Idempotent: safe to call more than once and on a table that already
-    /// exists.
+    /// The table this adapter targets (the default [`TABLE`] unless built with
+    /// a `_with_table` constructor).
+    #[must_use]
+    pub fn table(&self) -> &str {
+        &self.sql.table
+    }
+
+    /// Runs the create-table-if-not-exists DDL ([`DDL`] for the default table)
+    /// — pyfly's `start`. Idempotent: safe to call more than once and on a
+    /// table that already exists.
     ///
     /// # Errors
     ///
     /// Returns [`CacheError::Backend`] on a transport / DDL failure.
     pub async fn init(&self) -> Result<(), CacheError> {
-        self.client.batch_execute(DDL).await.map_err(backend_err)
+        self.client
+            .batch_execute(&self.sql.ddl)
+            .await
+            .map_err(backend_err)
     }
 
     /// Returns up to `limit` non-expired keys matching the glob-style
@@ -221,7 +351,7 @@ impl PostgresCacheAdapter {
         let now = Utc::now();
         let rows = self
             .client
-            .query(SELECT_KEYS_SQL, &[&like, &now, &limit])
+            .query(&self.sql.select_keys, &[&like, &now, &limit])
             .await
             .map_err(backend_err)?;
         Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
@@ -251,7 +381,7 @@ impl Adapter for PostgresCacheAdapter {
         let now = Utc::now();
         let row = self
             .client
-            .query_opt(SELECT_SQL, &[&key, &now])
+            .query_opt(&self.sql.select, &[&key, &now])
             .await
             .map_err(backend_err)?;
         match row {
@@ -269,7 +399,7 @@ impl Adapter for PostgresCacheAdapter {
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<(), CacheError> {
         let expires_at = expires_at(ttl);
         self.client
-            .execute(UPSERT_SQL, &[&key, &value, &expires_at])
+            .execute(&self.sql.upsert, &[&key, &value, &expires_at])
             .await
             .map_err(backend_err)?;
         Ok(())
@@ -278,7 +408,7 @@ impl Adapter for PostgresCacheAdapter {
     async fn delete(&self, key: &str) -> Result<(), CacheError> {
         let removed = self
             .client
-            .execute(DELETE_SQL, &[&key])
+            .execute(&self.sql.delete, &[&key])
             .await
             .map_err(backend_err)?;
         if removed > 0 {
@@ -289,7 +419,7 @@ impl Adapter for PostgresCacheAdapter {
 
     async fn clear(&self) -> Result<(), CacheError> {
         self.client
-            .execute(CLEAR_SQL, &[])
+            .execute(&self.sql.clear, &[])
             .await
             .map_err(backend_err)?;
         Ok(())
@@ -321,7 +451,7 @@ impl Adapter for PostgresCacheAdapter {
         let expires_at = expires_at(ttl);
         let inserted = self
             .client
-            .execute(INSERT_IF_ABSENT_SQL, &[&key, &value, &expires_at])
+            .execute(&self.sql.insert_if_absent, &[&key, &value, &expires_at])
             .await
             .map_err(backend_err)?;
         Ok(inserted > 0)
@@ -333,7 +463,7 @@ impl Adapter for PostgresCacheAdapter {
         let now = Utc::now();
         let row = self
             .client
-            .query_opt(EXISTS_SQL, &[&key, &now])
+            .query_opt(&self.sql.exists, &[&key, &now])
             .await
             .map_err(backend_err)?;
         Ok(row.is_some())
@@ -347,7 +477,7 @@ impl Adapter for PostgresCacheAdapter {
         let pattern = format!("{}%", like_escape(prefix));
         let removed = self
             .client
-            .execute(DELETE_PREFIX_SQL, &[&pattern])
+            .execute(&self.sql.delete_prefix, &[&pattern])
             .await
             .map_err(backend_err)?;
         self.evictions.fetch_add(removed, Ordering::Relaxed);
@@ -358,7 +488,7 @@ impl Adapter for PostgresCacheAdapter {
     /// hit/miss/eviction counters — pyfly's `get_stats`.
     async fn stats(&self) -> Option<CacheStats> {
         let now = Utc::now();
-        let row = self.client.query_one(COUNT_SQL, &[&now]).await.ok()?;
+        let row = self.client.query_one(&self.sql.count, &[&now]).await.ok()?;
         let size: i64 = row.get(0);
         Some(CacheStats::from_counters(
             size.max(0) as u64,
@@ -452,6 +582,69 @@ pub fn normalise_dsn(dsn: &str) -> String {
         }
     }
     dsn.to_string()
+}
+
+/// Validates a cache table name as a safe, plain SQL identifier so it can be
+/// rendered into statements without an injection risk: ASCII lowercase
+/// letters, digits and underscores only, a leading letter or underscore (not a
+/// digit), and at most 63 bytes (Postgres's identifier length limit). Returns
+/// the name on success, or [`CacheError::Backend`] describing the violation.
+///
+/// Only `[a-z0-9_]` is accepted — no quoting, no mixed case, no dots — so the
+/// validated name is always usable bare and never needs escaping.
+///
+/// ```
+/// use firefly_cache_postgres::validate_table_name;
+/// assert!(validate_table_name("firefly_cache_entries").is_ok());
+/// assert!(validate_table_name("fftest_cache_put_123").is_ok());
+/// assert!(validate_table_name("x; DROP TABLE y").is_err());
+/// assert!(validate_table_name("").is_err());
+/// assert!(validate_table_name("9leading").is_err());
+/// assert!(validate_table_name("Mixed").is_err());
+/// ```
+///
+/// # Errors
+///
+/// Returns [`CacheError::Backend`] when the name is empty, too long, starts
+/// with a digit, or contains any character outside `[a-z0-9_]`.
+pub fn validate_table_name(table: &str) -> Result<&str, CacheError> {
+    fn invalid(table: &str, why: &str) -> CacheError {
+        CacheError::Backend(format!(
+            "firefly/cache-postgres: invalid table name {table:?}: {why}"
+        ))
+    }
+
+    if table.is_empty() {
+        return Err(invalid(table, "must not be empty"));
+    }
+    if table.len() > 63 {
+        return Err(invalid(
+            table,
+            "must be at most 63 bytes (Postgres identifier limit)",
+        ));
+    }
+    let mut chars = table.chars();
+    let first = chars.next().expect("non-empty checked above");
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return Err(invalid(
+            table,
+            "must start with an ASCII lowercase letter or underscore",
+        ));
+    }
+    for ch in std::iter::once(first).chain(chars) {
+        if !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_') {
+            return Err(invalid(
+                table,
+                "may contain only ASCII lowercase letters, digits and underscores",
+            ));
+        }
+    }
+    Ok(table)
+}
+
+/// Validates `table` and renders its statement set.
+fn build_table_sql(table: &str) -> Result<TableSql, CacheError> {
+    validate_table_name(table).map(TableSql::new)
 }
 
 /// Wraps a [`tokio_postgres::Error`] as the cache port's
@@ -661,5 +854,94 @@ mod tests {
     fn adapter_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<PostgresCacheAdapter>();
+    }
+
+    // ----------------------------------------------------------------------
+    // validate_table_name / custom-table SQL rendering — the configurable
+    // table feature. No live DB is needed: validation and string rendering
+    // are pure.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn validate_table_name_accepts_plain_identifiers() {
+        for ok in [
+            "firefly_cache_entries",
+            "t",
+            "_private",
+            "fftest_cache_put_12345_0",
+            "a1_b2_c3",
+        ] {
+            assert!(validate_table_name(ok).is_ok(), "should accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn validate_table_name_rejects_injection_and_bad_shapes() {
+        for bad in [
+            "x; DROP TABLE y",       // the classic injection attempt
+            "firefly cache entries", // spaces
+            "Mixed_Case",            // uppercase
+            "9leading",              // leading digit
+            "tbl;",                  // statement terminator
+            "tbl--",                 // comment
+            "tbl)",                  // closing paren
+            "schema.table",          // qualified name / dot
+            "\"quoted\"",            // quotes
+            "",                      // empty
+        ] {
+            assert!(validate_table_name(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn validate_table_name_rejects_overlong_identifiers() {
+        let long = "a".repeat(64);
+        assert!(validate_table_name(&long).is_err());
+        let max = "a".repeat(63);
+        assert!(validate_table_name(&max).is_ok());
+    }
+
+    #[test]
+    fn from_client_with_table_rejects_injection_name() {
+        // The injection-y name must be rejected before any client is touched,
+        // so a None/placeholder client is never dereferenced. We exercise the
+        // validation path directly via build_table_sql.
+        assert!(build_table_sql("x; DROP TABLE y").is_err());
+    }
+
+    #[test]
+    fn default_table_sql_matches_public_consts() {
+        // Backward-compat guard: the rendered statements for the default TABLE
+        // are byte-for-byte the long-standing public consts, so existing
+        // callers and the const-shape unit tests above stay valid.
+        let sql = TableSql::new(TABLE);
+        assert_eq!(sql.table, TABLE);
+        assert_eq!(sql.ddl, DDL);
+        assert_eq!(sql.upsert, UPSERT_SQL);
+        assert_eq!(sql.insert_if_absent, INSERT_IF_ABSENT_SQL);
+        assert_eq!(sql.select, SELECT_SQL);
+        assert_eq!(sql.exists, EXISTS_SQL);
+        assert_eq!(sql.delete, DELETE_SQL);
+        assert_eq!(sql.delete_prefix, DELETE_PREFIX_SQL);
+        assert_eq!(sql.clear, CLEAR_SQL);
+        assert_eq!(sql.count, COUNT_SQL);
+        assert_eq!(sql.select_keys, SELECT_KEYS_SQL);
+    }
+
+    #[test]
+    fn custom_table_sql_targets_the_given_table() {
+        let sql = TableSql::new("fftest_cache_demo");
+        assert!(sql
+            .ddl
+            .contains("CREATE TABLE IF NOT EXISTS fftest_cache_demo"));
+        assert!(sql.upsert.contains("INSERT INTO fftest_cache_demo"));
+        assert!(sql.select.contains("FROM fftest_cache_demo"));
+        assert!(sql.clear.contains("DELETE FROM fftest_cache_demo"));
+        // The DDL keeps the canonical column shape regardless of table name.
+        assert!(sql.ddl.contains("cache_key   TEXT PRIMARY KEY"));
+        assert!(sql.ddl.contains("value       BYTEA NOT NULL"));
+        assert!(sql.ddl.contains("expires_at  TIMESTAMPTZ NULL"));
+        // No leakage of the default table name.
+        assert!(!sql.upsert.contains("firefly_cache_entries"));
     }
 }

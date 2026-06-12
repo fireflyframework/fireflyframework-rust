@@ -1,0 +1,69 @@
+/* Firefly Framework for Rust — book theme polish.
+   Layered on top of mdBook's "navy" theme. Keeps the default theme intact;
+   only adds a warm Firefly accent, tighter typography, and styled callouts. */
+
+:root {
+    --firefly-amber: #f5a623;
+    --firefly-amber-soft: rgba(245, 166, 35, 0.12);
+    --firefly-red: #d64545;
+}
+
+/* Warm the link + sidebar-active accent toward the Firefly amber. */
+.content a:link,
+.content a:visited {
+    color: #e0922f;
+    text-decoration: none;
+}
+.content a:hover {
+    text-decoration: underline;
+}
+
+/* Chapter titles get an amber underline rule. */
+.content h1 {
+    border-bottom: 2px solid var(--firefly-amber);
+    padding-bottom: 0.3em;
+}
+.content h2 {
+    margin-top: 1.8em;
+}
+
+/* Tables: a touch more breathing room and a subtle header. */
+.content table {
+    margin: 1em 0;
+}
+.content table thead th {
+    background: var(--firefly-amber-soft);
+}
+
+/* Inline code + blocks: slightly rounder. */
+.content code {
+    border-radius: 4px;
+}
+.content pre > .buttons {
+    opacity: 0.6;
+}
+
+/* Blockquote callouts. A leading bold word — Note/Tip/Warning/Spring —
+   tints the bar. Authored as plain Markdown blockquotes so they render
+   everywhere, with this CSS just making them prettier. */
+blockquote {
+    border-inline-start: 4px solid var(--firefly-amber);
+    background: var(--firefly-amber-soft);
+    padding: 0.6em 1em;
+    border-radius: 0 6px 6px 0;
+}
+blockquote p:first-child strong:first-child {
+    color: #e0922f;
+}
+
+/* The mapping tables (Reactor / Spring → firefly) deserve to feel canonical. */
+.content table td code,
+.content table th code {
+    white-space: nowrap;
+}
+
+/* Sidebar: highlight the active chapter with an amber tick. */
+.chapter li.chapter-item a.active {
+    color: var(--firefly-amber) !important;
+    font-weight: 600;
+}

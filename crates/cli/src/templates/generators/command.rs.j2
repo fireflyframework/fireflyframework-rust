@@ -1,19 +1,22 @@
 //! {{ names.human }} CQRS command.
 
-use firefly_cqrs::Command;
+use firefly_cqrs::{CqrsError, Message};
 use serde::{Deserialize, Serialize};
 
-/// The `{{ names.pascal }}` command. Produces a `String` result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The `{{ names.pascal }}` command. Dispatch it with `bus.send(cmd)`; the
+/// handler in `{{ names.snake }}_command_handler.rs` produces a `String` result.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct {{ names.pascal }} {
     /// Target aggregate identifier.
     pub id: String,
 }
 
-impl Command for {{ names.pascal }} {
-    type Result = String;
-
-    fn command_type(&self) -> &'static str {
-        "{{ names.pascal }}"
+impl Message for {{ names.pascal }} {
+    /// Domain validation, run by the `ValidationMiddleware` before the handler.
+    fn validate(&self) -> Result<(), CqrsError> {
+        if self.id.trim().is_empty() {
+            return Err(CqrsError::validation("id is required"));
+        }
+        Ok(())
     }
 }

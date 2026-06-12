@@ -1,37 +1,74 @@
-//! Round-trip integration test against a real Kafka broker.
+//! Round-trip integration test against a **real** Kafka broker.
 //!
-//! This exercises the full publish -> consume path through
-//! `librdkafka` and therefore needs a Kafka cluster reachable at
-//! `localhost:9092` (override with the `KAFKA_BROKERS` env var). It is
-//! `#[ignore]` by default so `cargo test` stays green on a bare machine;
-//! run it explicitly against a live broker with:
+//! This exercises the full publish -> consume-group consume path through
+//! `librdkafka`, so it needs a live cluster. It is **env-gated**, not
+//! `#[ignore]`d: it reads the broker list from `FIREFLY_TEST_KAFKA_BROKERS`
+//! (falling back to the older `KAFKA_BROKERS`). When neither is set the test
+//! prints a one-line `skipping` notice and returns `Ok` — so `cargo test` on a
+//! bare machine stays green — and when set it performs the genuine round-trip.
 //!
 //! ```text
-//! KAFKA_BROKERS=localhost:9092 cargo test -p firefly-eda-kafka -- --ignored
+//! FIREFLY_TEST_KAFKA_BROKERS=localhost:9092 cargo test -p firefly-eda-kafka
 //! ```
+//!
+//! Resource names are unique per test (test fn name + pid + an atomic
+//! counter — never `rand`), so runs are idempotent and safe in parallel.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use firefly_eda::{handler, Event, Publisher, Subscriber};
 use firefly_eda_kafka::{KafkaBroker, KafkaConfig};
 use tokio::sync::mpsc;
 
-/// Publishes one event and asserts the subscriber receives it back
-/// intact through a real broker.
+/// Process-wide monotonic counter for unique resource suffixes. Combined
+/// with the pid and the test name this yields a collision-free topic /
+/// group per test invocation without relying on randomness.
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Reads the Kafka broker list, preferring the standard
+/// `FIREFLY_TEST_KAFKA_BROKERS` and falling back to the legacy
+/// `KAFKA_BROKERS`. Returns `None` when neither is set.
+fn brokers_from_env() -> Option<String> {
+    std::env::var("FIREFLY_TEST_KAFKA_BROKERS")
+        .or_else(|_| std::env::var("KAFKA_BROKERS"))
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
+/// Builds a unique resource suffix from `test_name`, the process id, and
+/// the atomic counter — deterministic and collision-free, no randomness.
+fn unique_suffix(test_name: &str) -> String {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("{test_name}.{}.{n}", std::process::id())
+}
+
+/// Publishes one event and asserts the subscriber receives it back intact
+/// through a real broker, via a freshly-named consumer group on a
+/// uniquely-named topic.
 #[tokio::test]
-#[ignore = "requires kafka"]
 async fn publish_then_consume_round_trips_the_event() {
-    let brokers = std::env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".into());
-    // A unique topic + group per run avoids cross-test offset bleed.
-    let suffix = firefly_eda::Event::new("x", "x", "x", None).id;
+    let Some(brokers) = brokers_from_env() else {
+        eprintln!(
+            "skipping publish_then_consume_round_trips_the_event: \
+             FIREFLY_TEST_KAFKA_BROKERS (or KAFKA_BROKERS) not set"
+        );
+        return;
+    };
+
+    let suffix = unique_suffix("publish_then_consume_round_trips_the_event");
     let topic = format!("firefly.eda.kafka.it.{suffix}");
 
     let broker = KafkaBroker::new(KafkaConfig {
-        brokers: brokers.split(',').map(String::from).collect(),
+        brokers: brokers
+            .split(',')
+            .map(str::trim)
+            .map(String::from)
+            .collect(),
         consumer_group: format!("firefly-it-{suffix}"),
         ..Default::default()
     })
-    .expect("broker");
+    .expect("construct kafka broker");
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     broker
@@ -46,19 +83,21 @@ async fn publish_then_consume_round_trips_the_event() {
             }),
         )
         .await
-        .expect("subscribe");
+        .expect("subscribe to topic");
 
-    // Give the consumer a moment to join the group before producing.
+    // Give the consumer a moment to join the group before producing, so the
+    // record is not produced into a partition no one is reading yet.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let mut sent = Event::new(&topic, "ItHappened", "it-svc", Some(b"{\"n\":42}".to_vec()));
-    sent = sent.with_header("tenant", "acme");
-    broker.publish(sent.clone()).await.expect("publish");
+    let sent = Event::new(&topic, "ItHappened", "it-svc", Some(b"{\"n\":42}".to_vec()))
+        .with_header("tenant", "acme");
+    broker.publish(sent.clone()).await.expect("publish event");
 
-    let received = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+    // Bounded wait: a missing message fails (not hangs) within a few seconds.
+    let received = tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
-        .expect("did not receive event in time")
-        .expect("channel closed");
+        .expect("did not receive event within timeout")
+        .expect("subscriber channel closed before delivery");
 
     assert_eq!(received.id, sent.id);
     assert_eq!(received.event_type, sent.event_type);
@@ -66,5 +105,6 @@ async fn publish_then_consume_round_trips_the_event() {
     assert_eq!(received.payload, sent.payload);
     assert_eq!(received.headers, sent.headers);
 
-    Publisher::close(&broker).await.expect("close");
+    // Close releases the consumer loop and flushes the producer.
+    Publisher::close(&broker).await.expect("close broker");
 }

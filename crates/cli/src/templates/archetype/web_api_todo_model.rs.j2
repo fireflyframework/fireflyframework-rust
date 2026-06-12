@@ -1,14 +1,52 @@
-//! The sample `Todo` model for {{ name }}.
+//! The sample `Todo` resource and its CQRS messages for {{ name }}.
+//!
+//! `Todo` is the wire/domain shape; `CreateTodo` and `ListTodos` are the CQRS
+//! messages dispatched through the [`firefly_cqrs::Bus`]. Each implements
+//! [`firefly_cqrs::Message`] so the validation middleware installed by the
+//! starter is honoured automatically.
 
+use firefly_cqrs::{CqrsError, Message};
 use serde::{Deserialize, Serialize};
 
 /// A to-do item.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Todo {
-    /// Identifier.
-    pub id: i64,
+    /// Identifier (`todo_` + a hex suffix).
+    pub id: String,
     /// Title.
     pub title: String,
     /// Completion flag.
     pub done: bool,
+}
+
+/// `POST /api/v1/todos` command — create a to-do. Produces a [`Todo`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CreateTodo {
+    /// Title of the new to-do; must be non-empty.
+    pub title: String,
+}
+
+impl Message for CreateTodo {
+    /// Domain validation, run by the starter's `ValidationMiddleware` before
+    /// the handler is reached.
+    fn validate(&self) -> Result<(), CqrsError> {
+        if self.title.trim().is_empty() {
+            return Err(CqrsError::validation("title is required"));
+        }
+        Ok(())
+    }
+}
+
+/// `GET /api/v1/todos` query — list to-dos. Produces a [`TodoList`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListTodos;
+
+impl Message for ListTodos {}
+
+/// The list response for [`ListTodos`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TodoList {
+    /// The to-dos currently stored.
+    pub todos: Vec<Todo>,
 }

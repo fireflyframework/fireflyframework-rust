@@ -1,17 +1,17 @@
 //! {{ names.human }} CQRS command handler.
 
-use firefly_cqrs::{command_handler, CommandHandler};
+use firefly_cqrs::{Bus, CqrsError};
 
 use super::{{ names.snake }}_command::{{ names.pascal }};
 
-/// Handles [`{{ names.pascal }}`] commands.
-#[derive(Debug, Default, Clone)]
-pub struct {{ names.pascal }}CommandHandler;
-
-#[command_handler]
-impl CommandHandler<{{ names.pascal }}, String> for {{ names.pascal }}CommandHandler {
-    async fn do_handle(&self, command: {{ names.pascal }}) -> String {
-        // TODO: implement {{ names.human }} command handling.
-        command.id
-    }
+/// Register the `{{ names.pascal }}` command handler on `bus`.
+///
+/// Call once at startup. The handler receives a validated [`{{ names.pascal }}`]
+/// (the `ValidationMiddleware` runs first) and returns a `String` result;
+/// implement the real behaviour inside the closure.
+pub fn register_{{ names.snake }}_handler(bus: &Bus) {
+    bus.register(|command: {{ names.pascal }}| async move {
+        // Implement the {{ names.human }} command behaviour here.
+        Ok::<_, CqrsError>(command.id)
+    });
 }

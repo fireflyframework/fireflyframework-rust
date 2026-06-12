@@ -1,20 +1,47 @@
-//! The sample `TodoRepository` for {{ name }}.
+//! The in-memory `Todo` repository for {{ name }}.
+//!
+//! A thread-safe map keyed by id. Swap this for a `firefly-data`
+//! `Repository<Todo, String>` over a real relational store when you add the
+//! `data` feature (`firefly new ... --features web,data`).
 
-use crate::models::todo::Todo;
+use std::sync::Mutex;
 
-/// Repository for `Todo` items.
-#[derive(Debug, Default, Clone)]
-pub struct TodoRepository;
+use crate::models::Todo;
+
+/// In-memory repository for [`Todo`] items.
+#[derive(Debug, Default)]
+pub struct TodoRepository {
+    store: Mutex<Vec<Todo>>,
+}
 
 impl TodoRepository {
-    /// Construct a new repository.
+    /// Construct an empty repository.
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
-    /// Find a to-do by id.
-    pub async fn find_by_id(&self, id: i64) -> Option<Todo> {
-        let _ = id;
-        None
+    /// Insert (or replace by id) a to-do.
+    pub fn save(&self, todo: Todo) {
+        let mut store = self.store.lock().expect("repository lock poisoned");
+        if let Some(existing) = store.iter_mut().find(|t| t.id == todo.id) {
+            *existing = todo;
+        } else {
+            store.push(todo);
+        }
+    }
+
+    /// Return every stored to-do.
+    pub fn all(&self) -> Vec<Todo> {
+        self.store.lock().expect("repository lock poisoned").clone()
+    }
+
+    /// Find a to-do by its identifier.
+    pub fn find_by_id(&self, id: &str) -> Option<Todo> {
+        self.store
+            .lock()
+            .expect("repository lock poisoned")
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
     }
 }

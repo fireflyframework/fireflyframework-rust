@@ -1,0 +1,76 @@
+//! HTTP integration tests for {{ name }}.
+//!
+//! Drives the wired router in-process with `tower::ServiceExt::oneshot` — no
+//! network, no running server. Mirrors the framework's own router tests.
+
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use firefly_starter_web::{CoreConfig, WebStack};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+
+use {{ package_name }}::{controllers, services};
+
+fn app() -> axum::Router {
+    let stack = WebStack::new(CoreConfig {
+        app_name: "{{ name }}".into(),
+        ..CoreConfig::default()
+    });
+    services::wire(&stack);
+    stack.apply_middleware(controllers::routes(Arc::clone(&stack.bus)))
+}
+
+#[tokio::test]
+async fn create_then_list_todos() {
+    let router = app();
+
+    // POST a new to-do.
+    let create = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/todos")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"write docs"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+
+    // GET the list — it now contains the created to-do.
+    let list = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/todos")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let bytes = list.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(body.contains("write docs"), "body: {body}");
+}
+
+#[tokio::test]
+async fn rejects_empty_title() {
+    let router = app();
+    let res = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/todos")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":""}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // The validation middleware rejects an empty title (422 problem).
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}

@@ -1,0 +1,36 @@
+//! Smoke test for {{ name }}.
+//!
+//! Verifies the infrastructure tier wires up: a [`Core`] built with this
+//! service's config carries the configured name and a ready CQRS bus.
+
+use firefly_starter_core::{Core, CoreConfig};
+
+#[test]
+fn core_wires_with_app_name() {
+    let core = Core::new(CoreConfig {
+        app_name: "{{ name }}".into(),
+        ..CoreConfig::default()
+    });
+    assert_eq!(core.app_name, "{{ name }}");
+    // The banner identifies the app — proves the core composed successfully.
+    assert!(core.banner().contains("{{ name }}"));
+}
+
+#[tokio::test]
+async fn cqrs_bus_dispatches_a_registered_handler() {
+    use firefly_cqrs::{CqrsError, Message};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Serialize, Deserialize)]
+    struct Ping(String);
+    impl Message for Ping {}
+
+    let core = Core::new(CoreConfig {
+        app_name: "{{ name }}".into(),
+        ..CoreConfig::default()
+    });
+    core.bus
+        .register(|p: Ping| async move { Ok::<_, CqrsError>(format!("pong:{}", p.0)) });
+    let out: String = core.bus.send(Ping("hi".into())).await.unwrap();
+    assert_eq!(out, "pong:hi");
+}

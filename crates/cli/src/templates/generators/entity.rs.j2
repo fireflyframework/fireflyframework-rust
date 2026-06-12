@@ -1,18 +1,31 @@
 //! {{ names.human }} entity.
 
 use serde::{Deserialize, Serialize};
-{% if has_data %}
-use firefly_data::Entity;
-{% endif %}
 
-/// The `{{ names.human }}` {% if has_data %}persistent entity{% else %}domain model{% endif %}.
+/// The `{{ names.human }}` {% if has_data %}persistent Entity.
 ///
-/// {% if has_data %}Maps to the `{{ names.snake_plural }}` table.{% else %}A plain serializable model (no persistence configured).{% endif %}
-#[derive(Debug, Clone, Serialize, Deserialize{% if has_data %}, Entity{% endif %})]
-{% if has_data %}#[firefly(table = "{{ names.snake_plural }}")]
-{% endif %}pub struct {{ names.pascal }} {
+/// Maps to the `{{ names.snake_plural }}` relational table (`table = "{{ names.snake_plural }}"`).
+/// Persist it through a `firefly_data::Repository<{{ names.pascal }}, i64>` — e.g. the
+/// in-memory `firefly_data::MemoryRepository` for tests, or a SQL-backed
+/// repository over your configured data source.{% else %}domain model.
+///
+/// A plain serializable model — no persistence is configured. Add the `data`
+/// feature (`firefly new ... --features web,data`) to back it with a
+/// `firefly_data::Repository`.{% endif %}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct {{ names.pascal }} {
     /// Primary identifier.
     pub id: i64,
     /// Display name.
     pub name: String,
+}
+
+impl {{ names.pascal }} {
+    /// Construct a new {{ names.human }}.
+    pub fn new(id: i64, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+        }
+    }
 }

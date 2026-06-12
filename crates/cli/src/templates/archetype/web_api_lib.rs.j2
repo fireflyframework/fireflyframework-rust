@@ -1,0 +1,10 @@
+//! {{ name }} — Firefly Framework `web-api` service library.
+//!
+//! Exposes the composition modules so both the binary (`src/main.rs`) and the
+//! integration tests (`tests/`) share one wiring. The HTTP layer dispatches
+//! through the CQRS [`firefly_cqrs::Bus`]; handlers live in [`services`].
+
+pub mod controllers;
+pub mod models;
+pub mod repositories;
+pub mod services;

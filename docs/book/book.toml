@@ -1,0 +1,35 @@
+[book]
+title = "Firefly Framework for Rust"
+authors = ["Firefly Framework contributors"]
+description = "The canonical guide to building reactive, event-driven, resilient microservices on Rust with the Firefly Framework."
+language = "en"
+src = "src"
+
+[rust]
+edition = "2021"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/fireflyframework/fireflyframework-rust"
+edit-url-template = "https://github.com/fireflyframework/fireflyframework-rust/edit/main/docs/book/{path}"
+additional-css = ["theme/firefly.css"]
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+editable = false
+copyable = true
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2

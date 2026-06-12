@@ -1,0 +1,16 @@
+//! Command tests for {{ name }}.
+
+use {{ package_name }}::commands::hello_command;
+use {{ package_name }}::services::greeting_service::GreetingService;
+
+#[test]
+fn hello_command_greets() {
+    let out = hello_command::run("firefly");
+    assert!(out.contains("firefly"), "out: {out}");
+}
+
+#[test]
+fn greeting_service_is_reusable() {
+    let service = GreetingService::new();
+    assert!(service.greet("ada").contains("ada"));
+}

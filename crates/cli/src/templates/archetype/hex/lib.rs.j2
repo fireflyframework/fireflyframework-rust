@@ -1,0 +1,14 @@
+//! {{ name }} — Firefly Framework `hexagonal` (ports & adapters) library.
+//!
+//! The hexagon, layered inside-out:
+//!
+//! - [`domain`] — the framework-free core: [`models`](domain::models) and the
+//!   [`ports`](domain::ports) (inbound use cases + outbound dependencies).
+//! - [`application`] — orchestrates the domain through the ports.
+//! - [`infrastructure`] — outbound adapters implementing the ports.
+//! - [`api`] — the driving HTTP adapter (inbound port).
+
+pub mod api;
+pub mod application;
+pub mod domain;
+pub mod infrastructure;

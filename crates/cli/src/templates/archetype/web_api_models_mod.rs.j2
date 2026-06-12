@@ -1,3 +1,5 @@
-//! Models for {{ name }}.
+//! Domain models and CQRS messages for {{ name }}.
 
 pub mod todo;
+
+pub use todo::{CreateTodo, ListTodos, Todo, TodoList};

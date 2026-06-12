@@ -65,12 +65,14 @@ credentials, `auto.offset.reset`, …). The consumer defaults mirror pyfly's
 
 Unit tests cover config building and the `Event` ↔ record mapping (using
 `rdkafka`'s `OwnedMessage`/`OwnedHeaders` directly). The broker round-trip
-against a live cluster lives in `tests/kafka_roundtrip.rs` behind
-`#[ignore = "requires kafka"]`; run it with a broker reachable at
-`localhost:9092` (or `KAFKA_BROKERS=...`):
+against a live cluster lives in `tests/kafka_roundtrip.rs` as an **env-gated**
+integration test (no `#[ignore]`): it reads `FIREFLY_TEST_KAFKA_BROKERS`
+(falling back to the legacy `KAFKA_BROKERS`) and skips with a one-line notice
+when unset, so a bare `cargo test` stays green. Point it at a live broker to run
+the real produce → consumer-group consume round-trip:
 
 ```text
-KAFKA_BROKERS=localhost:9092 cargo test -p firefly-eda-kafka -- --ignored
+FIREFLY_TEST_KAFKA_BROKERS=localhost:9092 cargo test -p firefly-eda-kafka
 ```
 
 ## pyfly parity

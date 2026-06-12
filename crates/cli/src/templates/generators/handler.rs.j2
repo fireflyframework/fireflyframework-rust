@@ -1,11 +1,18 @@
 //! {{ names.human }} request handler.
 
-use firefly_web::Json;
+use axum::response::Json;
+use serde_json::{json, Value};
 
-/// HTTP handler for the `{{ names.kebab }}` resource.
+/// Axum handler for the `{{ names.kebab }}` resource.
 ///
-/// Wire this into your router, e.g.
-/// `router.route("/{{ names.kebab_plural }}", get({{ names.snake }}_handler))`.
+/// Wire it into your router, e.g.
+/// `Router::new().route("/{{ names.kebab_plural }}", get({{ names.snake }}_handler))`.
+pub async fn {{ names.snake }}_handler() -> Json<Value> {
+    Json(json!({ "resource": "{{ names.kebab }}" }))
+}
+
+/// A grouping struct for `{{ names.human }}` handlers, in case you prefer the
+/// method-per-handler style and want shared state on `self`.
 #[derive(Debug, Default, Clone)]
 pub struct {{ names.pascal }}Handler;
 
@@ -16,7 +23,7 @@ impl {{ names.pascal }}Handler {
     }
 
     /// Handle an incoming `{{ names.human }}` request.
-    pub async fn handle(&self) -> Json<serde_json::Value> {
-        Json(serde_json::json!({ "resource": "{{ names.kebab }}" }))
+    pub async fn handle(&self) -> Json<Value> {
+        Json(json!({ "resource": "{{ names.kebab }}" }))
     }
 }

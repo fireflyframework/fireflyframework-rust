@@ -1,6 +1,11 @@
-//! Server-rendered home controller for {{ name }}.
+//! Server-rendered page controller for {{ name }}.
+//!
+//! Renders static HTML pages. The [`PageService`](crate::services::PageService)
+//! supplies view-model data (here, the site title injected into a placeholder).
 
 use axum::{response::Html, routing::get, Router};
+
+use crate::services::PageService;
 
 /// Assemble the server-rendered page routes.
 pub fn routes() -> Router {
@@ -9,12 +14,13 @@ pub fn routes() -> Router {
         .route("/about", get(about))
 }
 
-/// `GET /` — render the home page.
-async fn home() -> Html<&'static str> {
-    Html(include_str!("../templates/home.html"))
+/// `GET /` — render the home page with the site title injected.
+async fn home() -> Html<String> {
+    let service = PageService::new();
+    Html(include_str!("templates/home.html").replace("{{ '{{title}}' }}", service.title()))
 }
 
 /// `GET /about` — render the about page.
 async fn about() -> Html<&'static str> {
-    Html(include_str!("../templates/about.html"))
+    Html(include_str!("templates/about.html"))
 }

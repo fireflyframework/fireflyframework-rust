@@ -85,10 +85,13 @@ This crate ports `pyfly.eda.adapters.postgres.PostgresEventBus`.
 SQL/DDL strings, identifier validation, DSN normalisation, the advisory-key
 fold (cross-checked against pyfly's exact arithmetic), and payload/header
 round-trips are unit-tested with no database. The end-to-end publish →
-NOTIFY-driven drain → cursor-advance round trip is `#[ignore]`d and needs a
-live Postgres:
+NOTIFY-driven drain → cursor-advance round trip is **env-gated**: it reads
+`FIREFLY_TEST_POSTGRES_URL` (falling back to `DATABASE_URL` / `POSTGRES_URL`),
+skips with a one-line notice when unset, and runs the genuine outbox
+INSERT + NOTIFY/LISTEN → consume round-trip when set (a per-test consumer
+group, NOTIFY channel, and event type keep it parallel-safe):
 
 ```sh
-FIREFLY_TEST_POSTGRES_DSN='host=localhost user=postgres dbname=postgres' \
-  cargo test -p firefly-eda-postgres -- --ignored
+FIREFLY_TEST_POSTGRES_URL='postgres://firefly:firefly@localhost:5432/firefly' \
+  cargo test -p firefly-eda-postgres
 ```

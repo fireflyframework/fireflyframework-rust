@@ -2,9 +2,13 @@
 //!
 //! Port of pyfly's `generate.py` core: the [`Artifact`] record, the
 //! [`write_artifacts`] engine (with `force`/`dry_run` semantics), and a
-//! per-kind dispatcher that mirrors the pyfly subcommands. Templates render
-//! plausible Rust (they are *not* compiled by the test-suite; snapshot and
-//! tempfile tests assert their key markers, exactly as the pyfly suite does).
+//! per-kind dispatcher that mirrors the pyfly subcommands. Every template
+//! renders real Rust against the live `firefly-*` APIs (axum handlers, the
+//! closure-based `firefly_cqrs::Bus`, `firefly_data::MemoryRepository`,
+//! `firefly_eventsourcing::AggregateRoot`, the `firefly_orchestration::Saga`
+//! builder) — no `todo!()` / placeholder bodies. Dispatch and marker tests are
+//! ported from `test_generate_engine.py` / `test_generate_commands.py`; the
+//! workspace's own suite compiles each artifact kind once wired into a crate.
 
 use std::path::{Path, PathBuf};
 
@@ -486,10 +490,12 @@ mod tests {
             .path
             .ends_with("src/cqrs/open_wallet_command_handler.rs"));
         assert!(arts[0].content.contains("struct OpenWallet"));
-        assert!(arts[0].content.contains("impl Command for OpenWallet"));
-        assert!(arts[1].content.contains("OpenWalletCommandHandler"));
-        assert!(arts[1].content.contains("async fn do_handle"));
-        assert!(arts[1].content.contains("#[command_handler]"));
+        assert!(arts[0].content.contains("impl Message for OpenWallet"));
+        // The handler is a `bus.register(...)` registrar function.
+        assert!(arts[1]
+            .content
+            .contains("pub fn register_open_wallet_handler(bus: &Bus)"));
+        assert!(arts[1].content.contains("bus.register("));
     }
 
     #[test]
@@ -501,8 +507,10 @@ mod tests {
         assert!(arts[1]
             .path
             .ends_with("src/cqrs/get_wallet_query_handler.rs"));
-        assert!(arts[1].content.contains("GetWalletQueryHandler"));
-        assert!(arts[1].content.contains("#[query_handler]"));
+        assert!(arts[1]
+            .content
+            .contains("pub fn register_get_wallet_handler(bus: &Bus)"));
+        assert!(arts[0].content.contains("impl Message for GetWallet"));
     }
 
     #[test]
@@ -512,9 +520,10 @@ mod tests {
         let arts = plan_artifacts(&info, ArtifactKind::Saga, "MoneyTransfer").unwrap();
         assert!(arts[0].path.ends_with("src/sagas/money_transfer_saga.rs"));
         let text = &arts[0].content;
-        assert!(text.contains("#[saga(name = \"money-transfer\")]"));
-        assert!(text.contains("#[saga_step("));
-        assert!(text.contains("compensate ="));
+        assert!(text.contains("Saga::new(\"money-transfer\")"));
+        assert!(text.contains("Step::new("));
+        assert!(text.contains(".with_compensation("));
+        assert!(text.contains("pub fn build_money_transfer_saga()"));
     }
 
     #[test]

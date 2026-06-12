@@ -18,9 +18,17 @@
 //! # pyfly parity
 //! The naming table, project-detection inference rules, `write_artifacts`
 //! force/dry-run semantics, and generator dispatch are ported test-case for
-//! test-case from `tests/cli/`. Generated projects are *plausible* Rust and are
-//! intentionally **not** compiled by this crate's test-suite; instead, template
-//! snapshot tests assert the structural markers (as the pyfly suite does).
+//! test-case from `tests/cli/`.
+//!
+//! # Generated projects compile
+//! Unlike the first cut, the archetypes target the **real** `firefly-*` APIs
+//! (`firefly_starter_core::Core`, `firefly_starter_web::WebStack`,
+//! `firefly_lifecycle::Application`, the closure-based `firefly_cqrs::Bus`) and
+//! produce projects that build out of the box. `tests/compile_generated.rs`
+//! verifies this: it scaffolds every archetype with `firefly-*` deps pointed at
+//! the local workspace and runs `cargo check --tests` over each one (under the
+//! `FIREFLY_CLI_COMPILE_TEST=1` gate, since the full framework check is heavy),
+//! with always-on assertions that each scaffold carries the real API markers.
 
 #![forbid(unsafe_code)]
 

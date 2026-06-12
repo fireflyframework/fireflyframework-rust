@@ -1,21 +1,58 @@
 //! HTTP controllers for {{ name }}.
+//!
+//! The routes dispatch every request through the CQRS [`Bus`], so the handlers
+//! registered in [`crate::services::wire`] do the work. Errors render as
+//! RFC 7807 `application/problem+json` via [`firefly_web::WebError`].
 
-use axum::{routing::get, Json, Router};
-use serde_json::json;
+use std::sync::Arc;
 
-/// Assemble all controller routes.
-pub fn routes() -> Router {
+use axum::body::{Body, Bytes};
+use axum::extract::State;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::Response;
+use axum::routing::post;
+use axum::Router;
+use firefly_cqrs::Bus;
+use firefly_kernel::FireflyError;
+use firefly_web::{WebError, WebResult};
+use serde::Serialize;
+
+use crate::models::{CreateTodo, ListTodos, Todo, TodoList};
+
+/// Assemble all controller routes over the shared CQRS bus.
+pub fn routes(bus: Arc<Bus>) -> Router {
     Router::new()
-        .route("/health", get(health))
-        .route("/todos", get(list_todos))
+        .route("/api/v1/todos", post(create_todo).get(list_todos))
+        .with_state(bus)
 }
 
-/// Liveness probe.
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "status": "UP" }))
+/// `POST /api/v1/todos` — create a to-do via the `CreateTodo` command.
+async fn create_todo(State(bus): State<Arc<Bus>>, body: Bytes) -> WebResult<Response> {
+    let cmd: CreateTodo = serde_json::from_slice(&body)
+        .map_err(|e| WebError::from(FireflyError::bad_request(format!("invalid json: {e}"))))?;
+    let todo: Todo = bus
+        .send(cmd)
+        .await
+        .map_err(|e| WebError::from(FireflyError::validation(e.to_string())))?;
+    Ok(json_response(StatusCode::CREATED, &todo))
 }
 
-/// List the sample `todos` resource.
-async fn list_todos() -> Json<serde_json::Value> {
-    Json(json!({ "todos": [] }))
+/// `GET /api/v1/todos` — list to-dos via the `ListTodos` query.
+async fn list_todos(State(bus): State<Arc<Bus>>) -> WebResult<Response> {
+    let list: TodoList = bus
+        .query(ListTodos)
+        .await
+        .map_err(|e| WebError::from(FireflyError::internal(e.to_string())))?;
+    Ok(json_response(StatusCode::OK, &list))
+}
+
+/// Render `value` as JSON under `Content-Type: application/json`.
+fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response {
+    let body = serde_json::to_vec(value).unwrap_or_default();
+    let mut res = Response::new(Body::from(body));
+    *res.status_mut() = status;
+    res.headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    res
 }

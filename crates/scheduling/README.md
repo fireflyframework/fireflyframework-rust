@@ -159,7 +159,10 @@ Adaptation decisions vs pyfly:
   derives the signed 64-bit advisory key from SHA-256 (pyfly: blake2b,
   which is not in the workspace catalog) — same stable-key property,
   different values, so do not share lock names across the two runtimes.
-  Its round-trip test is `#[ignore = "requires postgres"]`.
+  Its acquire / contend / release round-trip test is **env-gated** on
+  `FIREFLY_TEST_POSTGRES_URL` (fallback `DATABASE_URL` / `POSTGRES_URL`):
+  it skips with a one-line notice when unset and runs a genuine
+  `pg_try_advisory_lock` round-trip against a live Postgres when set.
 * The `FieldCount` error message keeps the Go wording ("want 5 fields")
   even though 6-field expressions are now accepted — existing logs and
   tests depend on it.
@@ -193,4 +196,5 @@ tests port `tests/scheduling/test_cron.py`, `test_cron_timezone.py`,
 `test_wave_scheduling_fixes.py` (5- and 6-field), `test_distributed_lock.py`,
 `test_redis_lock.py` (against an in-process fake RESP server on a
 `TcpListener`), and `test_postgres_lock.py` (key derivation + no-op release
-offline; the real round trip is `#[ignore = "requires postgres"]`).
+offline; the real acquire / contend / release round trip is env-gated on
+`FIREFLY_TEST_POSTGRES_URL`, skipping when unset).

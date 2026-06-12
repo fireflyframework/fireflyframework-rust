@@ -1,0 +1,48 @@
+[package]
+name = "firefly-sample-reactive-banking"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — full-ecosystem reactive banking reference service"
+publish = false
+
+[dependencies]
+firefly-kernel = { workspace = true }
+firefly-reactive = { workspace = true }
+firefly-web = { workspace = true }
+firefly-cqrs = { workspace = true }
+firefly-eda = { workspace = true }
+firefly-eventsourcing = { workspace = true }
+firefly-orchestration = { workspace = true }
+firefly-data = { workspace = true }
+firefly-cache = { workspace = true }
+firefly-security = { workspace = true }
+firefly-observability = { workspace = true }
+firefly-actuator = { workspace = true }
+firefly-starter-web = { workspace = true }
+firefly-starter-core = { workspace = true }
+firefly-client = { workspace = true }
+firefly-eda-kafka = { workspace = true }
+firefly-sse = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+http = { workspace = true }
+jsonwebtoken = { workspace = true }
+tokio-postgres = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
+http-body-util = { workspace = true }
+reqwest = { workspace = true }
+bytes = { workspace = true }
