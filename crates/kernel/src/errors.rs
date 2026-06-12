@@ -170,22 +170,136 @@ impl FireflyError {
     /// The code is `DOMAIN_AGGREGATE_NOT_FOUND`; the aggregate type and
     /// id are carried in the structured `aggregate_type` / `id` fields
     /// and in the detail (`<type> with id=<id> not found`).
-    pub fn aggregate_not_found(
-        aggregate_type: impl Into<String>,
-        id: impl std::fmt::Display,
-    ) -> Self {
+    ///
+    /// The detail mirrors pyfly, which builds the message with the
+    /// `{id!r}` (Python `repr`) conversion: string ids are wrapped in
+    /// single quotes (`'o-1'`) while numeric ids are left bare (`42`).
+    /// The structured `id` field carries the unquoted `str(id)` form in
+    /// both ports. See [`AggregateId`].
+    pub fn aggregate_not_found(aggregate_type: impl Into<String>, id: impl AggregateId) -> Self {
         let aggregate_type = aggregate_type.into();
-        let id = id.to_string();
+        let detail = format!(
+            "{aggregate_type} with id={} not found",
+            id.aggregate_id_repr()
+        );
         Self::new(
             "DOMAIN_AGGREGATE_NOT_FOUND",
             "Aggregate Not Found",
             404,
-            format!("{aggregate_type} with id={id} not found"),
+            detail,
         )
         .with_field("aggregate_type", aggregate_type)
-        .with_field("id", id)
+        .with_field("id", id.aggregate_id_str())
     }
 }
+
+/// The id of an aggregate, formatted for [`FireflyError::aggregate_not_found`]
+/// with pyfly parity.
+///
+/// pyfly's `AggregateNotFound` builds its message with Python's `{id!r}`
+/// (`repr`) conversion and stores `str(id)` in the structured context.
+/// This trait reproduces both: [`aggregate_id_repr`](AggregateId::aggregate_id_repr)
+/// returns the Python-`repr` form (string ids wrapped in single quotes,
+/// numeric ids bare) for the human-readable detail, while
+/// [`aggregate_id_str`](AggregateId::aggregate_id_str) returns the bare
+/// `str(id)` form for the structured `id` field.
+pub trait AggregateId {
+    /// The Python-`repr`-equivalent rendering used in the error detail.
+    fn aggregate_id_repr(&self) -> String;
+
+    /// The bare `str(id)` rendering used in the structured `id` field.
+    fn aggregate_id_str(&self) -> String;
+}
+
+/// Renders `s` the way Python's `repr(str)` does, for pyfly parity.
+///
+/// Python wraps the string in single quotes by default. If the string
+/// contains a single quote but no double quote, it switches to a
+/// double-quote delimiter (so the inner quote need not be escaped);
+/// otherwise it uses single quotes and escapes any embedded single
+/// quote. Backslashes are always doubled.
+fn python_str_repr(s: &str) -> String {
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(quote);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
+}
+
+/// String-like ids are quoted in the detail, matching Python's
+/// `repr('o-1') == "'o-1'"`.
+macro_rules! impl_aggregate_id_quoted {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl AggregateId for $ty {
+                fn aggregate_id_repr(&self) -> String {
+                    python_str_repr(self)
+                }
+                fn aggregate_id_str(&self) -> String {
+                    self.to_string()
+                }
+            }
+        )*
+    };
+}
+
+impl_aggregate_id_quoted!(str, String, &str);
+
+impl AggregateId for &String {
+    fn aggregate_id_repr(&self) -> String {
+        (**self).aggregate_id_repr()
+    }
+    fn aggregate_id_str(&self) -> String {
+        (**self).aggregate_id_str()
+    }
+}
+
+/// Numeric ids are left bare in the detail, matching Python's
+/// `repr(42) == "42"`.
+macro_rules! impl_aggregate_id_bare {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl AggregateId for $ty {
+                fn aggregate_id_repr(&self) -> String {
+                    self.to_string()
+                }
+                fn aggregate_id_str(&self) -> String {
+                    self.to_string()
+                }
+            }
+        )*
+    };
+}
+
+impl_aggregate_id_bare!(
+    u8,
+    u16,
+    u32,
+    u64,
+    u128,
+    usize,
+    i8,
+    i16,
+    i32,
+    i64,
+    i128,
+    isize,
+    uuid::Uuid
+);
 
 /// Walks the [`std::error::Error::source`] chain looking for a
 /// [`FireflyError`] — the Rust analog of Go's `errors.As`.

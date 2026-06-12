@@ -359,8 +359,35 @@ async fn filter_chain_permit_method_is_method_scoped_and_case_insensitive() {
 }
 
 #[tokio::test]
-async fn filter_chain_default_allows_unmatched_paths() {
+async fn filter_chain_denies_unmatched_paths_by_default() {
+    // Deny-by-default (fail-closed): once any rule is configured, an
+    // unmatched path is rejected with 403 — pyfly `HttpSecurity` /
+    // Spring Security 6 parity, NOT Go's old fail-open default-allow.
     let chain = FilterChain::new().require("/admin/", &["ADMIN"]);
+    let app = Router::new().fallback(ok).layer(chain.layer());
+
+    let resp = app.oneshot(get_req("/totally/elsewhere")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn filter_chain_empty_is_a_no_op() {
+    // A chain with no rules at all never locks anything out (pyfly:
+    // "an empty HttpSecurity (no rules) is a no-op").
+    let chain = FilterChain::new();
+    let app = Router::new().fallback(ok).layer(chain.layer());
+
+    let resp = app.oneshot(get_req("/anything")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn filter_chain_any_request_permit_reopens_unmatched_tail() {
+    // The explicit catch-all (pyfly `any_request().permit_all()`)
+    // restores serving of otherwise-unmatched paths.
+    let chain = FilterChain::new()
+        .require("/admin/", &["ADMIN"])
+        .any_request_permit();
     let app = Router::new().fallback(ok).layer(chain.layer());
 
     let resp = app.oneshot(get_req("/totally/elsewhere")).await.unwrap();

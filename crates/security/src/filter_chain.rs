@@ -47,6 +47,10 @@ pub struct Rule {
     /// When true, every matching request is rejected with 403 (pyfly
     /// `deny_all`).
     pub deny: bool,
+    /// When true, the rule matches every path regardless of `prefix`
+    /// or `pattern` (pyfly `any_request()`). Used to build explicit
+    /// catch-all tails.
+    pub catch_all: bool,
 }
 
 impl Rule {
@@ -70,6 +74,9 @@ impl CompiledRule {
     fn matches(&self, method: &str, path: &str) -> bool {
         if !self.rule.method_matches(method) {
             return false;
+        }
+        if self.rule.catch_all {
+            return true;
         }
         match &self.glob {
             Some(glob) => glob.is_match(path),
@@ -103,6 +110,16 @@ fn compile_glob(pattern: &str) -> GlobMatcher {
 ///     .deny("/internal/**")
 ///     .with_role_hierarchy(RoleHierarchy::from_string("ADMIN > USER"));
 /// ```
+///
+/// # Deny-by-default (fail-closed)
+///
+/// Once **any** rule is declared, requests that match **no** rule are
+/// rejected with 403 — pyfly's [`HttpSecurity`] deny-by-default
+/// (Spring Security 6) semantics. To allow unmatched paths, declare a
+/// catch-all last via [`any_request_permit`](Self::any_request_permit)
+/// (pyfly `any_request().permit_all()`). A chain with **no** rules at
+/// all is a no-op and passes every request through, so it never becomes
+/// a blanket lockout.
 #[derive(Debug, Clone, Default)]
 pub struct FilterChain {
     rules: Vec<Rule>,
@@ -236,6 +253,42 @@ impl FilterChain {
         self
     }
 
+    /// Appends a catch-all public rule that matches every path (pyfly:
+    /// `any_request().permit_all()`). Declare it **last** to re-open
+    /// the deny-by-default tail so unmatched requests are served.
+    pub fn any_request_permit(mut self) -> Self {
+        self.rules.push(Rule {
+            allow: true,
+            catch_all: true,
+            ..Rule::default()
+        });
+        self
+    }
+
+    /// Appends a catch-all "any authenticated principal" rule matching
+    /// every path (pyfly: `any_request().authenticated()`). Declare it
+    /// last so any unmatched path requires authentication.
+    pub fn any_request_authenticated(mut self) -> Self {
+        self.rules.push(Rule {
+            catch_all: true,
+            ..Rule::default()
+        });
+        self
+    }
+
+    /// Appends a catch-all deny rule matching every path (pyfly:
+    /// `any_request().deny_all()`). This is the explicit form of the
+    /// implicit deny-by-default tail; rejects every unmatched request
+    /// with 403, authenticated or not.
+    pub fn any_request_deny(mut self) -> Self {
+        self.rules.push(Rule {
+            deny: true,
+            catch_all: true,
+            ..Rule::default()
+        });
+        self
+    }
+
     /// Installs a [`RoleHierarchy`] consulted by role and authority
     /// checks, so `require(..., &["USER"])` is satisfied for an
     /// `ADMIN` under `ADMIN > USER`.
@@ -288,9 +341,11 @@ impl<S> Layer<S> for FilterChainLayer {
 }
 
 /// The tower service produced by [`FilterChainLayer`]. Evaluates the
-/// rules in declaration order; the first match decides. When no rule
-/// matches, the request is allowed through — default-allow keeps the
-/// chain composable with any upstream auth middleware.
+/// rules in declaration order; the first match decides. When at least
+/// one rule is configured but none match, the request is rejected with
+/// 403 — deny-by-default (fail-closed), matching pyfly's `HttpSecurity`
+/// / Spring Security 6 semantics. A chain with no rules at all is a
+/// no-op and passes every request through.
 #[derive(Clone)]
 pub struct FilterChainService<S> {
     inner: S,
@@ -343,8 +398,15 @@ fn decide(rules: &[CompiledRule], hierarchy: Option<&RoleHierarchy>, req: &Reque
         }
         return Verdict::Pass;
     }
-    // No rule matched — default-allow.
-    Verdict::Pass
+    // No rule matched. Deny by default when rules are configured
+    // (fail-closed, pyfly `HttpSecurity` / Spring Security 6 parity);
+    // an empty chain (no rules) is a no-op and passes through. Declare
+    // a catch-all (`any_request_permit`) to re-open the unmatched tail.
+    if rules.is_empty() {
+        Verdict::Pass
+    } else {
+        Verdict::Forbidden("Access to this resource is denied (no matching security rule).")
+    }
 }
 
 impl<S> Service<Request> for FilterChainService<S>

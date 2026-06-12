@@ -126,7 +126,7 @@ impl GrpcBuilder {
         if self.target.is_empty() {
             return Err(GrpcError::MissingTarget);
         }
-        let uri = normalize_target(&self.target);
+        let uri = normalize_target(&self.target, self.secure);
         let mut endpoint =
             Endpoint::from_shared(uri).map_err(|e| GrpcError::InvalidTarget(e.to_string()))?;
         if self.secure {
@@ -183,9 +183,11 @@ impl GrpcBuilder {
 
 /// Prefixes a bare `host:port` target with `http://` (or `https://` when
 /// secured); leaves an explicit scheme untouched.
-fn normalize_target(target: &str) -> String {
+fn normalize_target(target: &str, secure: bool) -> String {
     if target.contains("://") {
         target.to_owned()
+    } else if secure {
+        format!("https://{target}")
     } else {
         format!("http://{target}")
     }
@@ -201,4 +203,37 @@ fn apply_tls(endpoint: Endpoint) -> Result<Endpoint, GrpcError> {
 #[cfg(not(feature = "grpc-tls"))]
 fn apply_tls(_endpoint: Endpoint) -> Result<Endpoint, GrpcError> {
     Err(GrpcError::TlsUnsupported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_target;
+
+    // Regression: `normalize_target` is documented to prefix a bare
+    // `host:port` with `http://` when insecure and `https://` when
+    // secured. It previously ignored the secure flag entirely and always
+    // emitted `http://`, contradicting its doc comment.
+    #[test]
+    fn normalize_target_uses_https_for_secured_bare_target() {
+        assert_eq!(
+            normalize_target("127.0.0.1:50051", true),
+            "https://127.0.0.1:50051"
+        );
+    }
+
+    #[test]
+    fn normalize_target_uses_http_for_insecure_bare_target() {
+        assert_eq!(
+            normalize_target("127.0.0.1:50051", false),
+            "http://127.0.0.1:50051"
+        );
+    }
+
+    // An explicit scheme is always left untouched, regardless of the
+    // secure flag — the builder never rewrites a caller-supplied scheme.
+    #[test]
+    fn normalize_target_leaves_explicit_scheme_untouched() {
+        assert_eq!(normalize_target("http://host:1", true), "http://host:1");
+        assert_eq!(normalize_target("https://host:1", false), "https://host:1");
+    }
 }

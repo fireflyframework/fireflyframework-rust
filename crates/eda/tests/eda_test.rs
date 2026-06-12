@@ -481,6 +481,85 @@ async fn consumer_group_round_robins_across_members() {
     broker.close().unwrap();
 }
 
+/// Regression: a consumer group spanning two topics with differently
+/// sized matching sets must keep an independent round-robin cursor per
+/// topic, so dispatches to one topic do not perturb the modulo base used
+/// for the other (pyfly keys its cursor by the `(topic, group)` pair —
+/// `messaging/adapters/memory.py`). Before the fix the cursor was keyed
+/// by group alone: interleaving `orders`/`payments` left handler B on
+/// `orders` starved (A=4, B=0 over four `orders` events instead of 2/2).
+#[tokio::test]
+async fn consumer_group_cursor_is_per_topic_not_starved_across_topics() {
+    let broker = InMemoryBroker::new();
+    let a = Arc::new(AtomicU32::new(0));
+    let b = Arc::new(AtomicU32::new(0));
+    let c = Arc::new(AtomicU32::new(0));
+
+    // Group `workers` has TWO members on `orders` ...
+    let ac = Arc::clone(&a);
+    broker
+        .subscribe_group(
+            "orders",
+            "workers",
+            handler(move |_ev: Event| {
+                let ac = Arc::clone(&ac);
+                async move {
+                    ac.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            }),
+        )
+        .unwrap();
+    let bc = Arc::clone(&b);
+    broker
+        .subscribe_group(
+            "orders",
+            "workers",
+            handler(move |_ev: Event| {
+                let bc = Arc::clone(&bc);
+                async move {
+                    bc.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            }),
+        )
+        .unwrap();
+    // ... and ONE member on `payments` (a different-sized matching set).
+    let cc = Arc::clone(&c);
+    broker
+        .subscribe_group(
+            "payments",
+            "workers",
+            handler(move |_ev: Event| {
+                let cc = Arc::clone(&cc);
+                async move {
+                    cc.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            }),
+        )
+        .unwrap();
+
+    // Interleave orders/payments four times each.
+    for _ in 0..4 {
+        broker
+            .publish(Event::new("orders", "X", "s", None))
+            .await
+            .unwrap();
+        broker
+            .publish(Event::new("payments", "Y", "s", None))
+            .await
+            .unwrap();
+    }
+
+    // The `orders` events must split fairly between A and B (2/2), and
+    // every `payments` event hits the sole member C.
+    assert_eq!(a.load(Ordering::SeqCst), 2, "handler A on orders");
+    assert_eq!(b.load(Ordering::SeqCst), 2, "handler B on orders");
+    assert_eq!(c.load(Ordering::SeqCst), 4, "handler C on payments");
+    broker.close().unwrap();
+}
+
 /// Distinct groups each receive their own copy of an event; ungrouped
 /// subscribers also receive it independently.
 #[tokio::test]

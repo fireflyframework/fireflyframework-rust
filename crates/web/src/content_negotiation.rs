@@ -264,7 +264,12 @@ pub fn value_to_xml(value: &Value, root_tag: &str) -> Result<String, FireflyErro
 fn parse_children(reader: &mut quick_xml::Reader<&[u8]>) -> Result<Value, FireflyError> {
     let bad = |err: String| FireflyError::bad_request(format!("invalid XML: {err}"));
     let mut children: Vec<(String, Value)> = Vec::new();
-    let mut text = String::new();
+    // `None` until a Text/CData event fires, mirroring ElementTree's
+    // `element.text`: a genuinely empty `<foo></foo>` leaves `text` as
+    // `None` (→ null), whereas any text content — including
+    // whitespace-only — is preserved verbatim (no trimming), exactly
+    // like pyfly's `_element_to_dict` returning `element.text` unchanged.
+    let mut text: Option<String> = None;
     loop {
         match reader.read_event().map_err(|e| bad(e.to_string()))? {
             Event::Start(e) => {
@@ -277,10 +282,12 @@ fn parse_children(reader: &mut quick_xml::Reader<&[u8]>) -> Result<Value, Firefl
                 children.push((name, Value::Null));
             }
             Event::Text(t) => {
-                text.push_str(&t.unescape().map_err(|e| bad(e.to_string()))?);
+                text.get_or_insert_with(String::new)
+                    .push_str(&t.unescape().map_err(|e| bad(e.to_string()))?);
             }
             Event::CData(c) => {
-                text.push_str(&String::from_utf8_lossy(&c.into_inner()));
+                text.get_or_insert_with(String::new)
+                    .push_str(&String::from_utf8_lossy(&c.into_inner()));
             }
             Event::End(_) => break,
             Event::Eof => return Err(bad("unexpected end of document".to_string())),
@@ -288,11 +295,12 @@ fn parse_children(reader: &mut quick_xml::Reader<&[u8]>) -> Result<Value, Firefl
         }
     }
     if children.is_empty() {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return Ok(Value::Null);
-        }
-        return Ok(Value::String(trimmed.to_string()));
+        // ElementTree preserves leaf text verbatim (no trim); a leaf with
+        // no text node at all is `None`.
+        return Ok(match text {
+            Some(s) => Value::String(s),
+            None => Value::Null,
+        });
     }
     let mut map = Map::new();
     for (key, value) in children {
@@ -313,9 +321,10 @@ fn parse_children(reader: &mut quick_xml::Reader<&[u8]>) -> Result<Value, Firefl
 /// Parses an XML string into a [`Value`] — the Rust port of pyfly's
 /// `xml_to_dict`. The root element becomes the single top-level key;
 /// repeated sibling tags collect into arrays; leaf text stays a string
-/// (XML is untyped — callers coerce, as pydantic does on the Python
-/// side); empty elements become `null`. Attributes are ignored, exactly
-/// like the ElementTree original.
+/// preserved verbatim, including leading/trailing whitespace (XML is
+/// untyped — callers coerce, as pydantic does on the Python side);
+/// elements with no text node (`<foo></foo>` or `<foo/>`) become `null`.
+/// Attributes are ignored, exactly like the ElementTree original.
 pub fn xml_to_value(xml: &str) -> Result<Value, FireflyError> {
     let bad = |err: String| FireflyError::bad_request(format!("invalid XML: {err}"));
     let mut reader = quick_xml::Reader::from_str(xml);

@@ -79,6 +79,41 @@ pub trait PersistenceProvider: Send + Sync {
         before: DateTime<Utc>,
     ) -> Result<Vec<ExecutionState>, PersistenceError>;
 
+    /// Atomically claims a single stale execution for recovery.
+    ///
+    /// Transitions the execution `correlation_id` to `claimed_status`
+    /// (bumping `updated_at`) **only if** it is still non-terminal and its
+    /// `updated_at` is older than `before` — i.e. it still matches the
+    /// [`Self::list_stale`] predicate. Returns the freshly-claimed
+    /// [`ExecutionState`] when this caller won the claim, or `Ok(None)` when
+    /// the row no longer exists, is already terminal, has been refreshed, or
+    /// was claimed by a concurrent recovery pass.
+    ///
+    /// This is the compare-and-swap guard that makes recovery safe under
+    /// overlapping scans: two passes that both observe the same stale row via
+    /// [`Self::list_stale`] cannot both run a side-effecting Resume/Compensate
+    /// handler, because only one `claim_stale` succeeds — the loser sees
+    /// `None` because the winner already bumped `updated_at` past `before`.
+    ///
+    /// The default implementation is a best-effort load-check-save and is
+    /// **not** atomic; durable adapters override it with a conditional update.
+    async fn claim_stale(
+        &self,
+        correlation_id: &str,
+        before: DateTime<Utc>,
+        claimed_status: ExecutionStatus,
+    ) -> Result<Option<ExecutionState>, PersistenceError> {
+        let Some(mut state) = self.load(correlation_id).await? else {
+            return Ok(None);
+        };
+        if state.is_terminal() || state.updated_at >= before {
+            return Ok(None);
+        }
+        state.transition(claimed_status);
+        self.save(state.clone()).await?;
+        Ok(Some(state))
+    }
+
     /// Deletes one execution; `Ok(false)` when absent.
     async fn delete(&self, correlation_id: &str) -> Result<bool, PersistenceError>;
 
@@ -145,6 +180,25 @@ impl PersistenceProvider for MemoryPersistence {
             .filter(|s| !s.is_terminal() && s.updated_at < before)
             .cloned()
             .collect())
+    }
+
+    async fn claim_stale(
+        &self,
+        correlation_id: &str,
+        before: DateTime<Utc>,
+        claimed_status: ExecutionStatus,
+    ) -> Result<Option<ExecutionState>, PersistenceError> {
+        // The whole compare-and-swap runs under the store mutex so two
+        // overlapping recovery passes cannot both claim the same row.
+        let mut store = self.locked();
+        let Some(state) = store.get_mut(correlation_id) else {
+            return Ok(None);
+        };
+        if state.is_terminal() || state.updated_at >= before {
+            return Ok(None);
+        }
+        state.transition(claimed_status);
+        Ok(Some(state.clone()))
     }
 
     async fn delete(&self, correlation_id: &str) -> Result<bool, PersistenceError> {
@@ -378,6 +432,51 @@ impl PersistenceProvider for SqlitePersistence {
         )
     }
 
+    async fn claim_stale(
+        &self,
+        correlation_id: &str,
+        before: DateTime<Utc>,
+        claimed_status: ExecutionStatus,
+    ) -> Result<Option<ExecutionState>, PersistenceError> {
+        let now = Utc::now();
+        // A terminal claim (e.g. mark-failed) stamps `completed_at`, matching
+        // `ExecutionState::transition`; a non-terminal marker leaves it as-is.
+        let completed_at = claimed_status.is_terminal().then(|| encode_ts(now));
+        let conn = self.locked();
+        // Conditional update guarded by the same predicate `list_stale` uses;
+        // the held mutex makes the update-then-read atomic for this adapter,
+        // so only one overlapping recovery pass can claim a given row.
+        let claimed = conn
+            .execute(
+                "UPDATE orchestration_executions
+                 SET status = ?1,
+                     terminal = ?2,
+                     updated_at = ?3,
+                     completed_at = COALESCE(?4, completed_at)
+                 WHERE correlation_id = ?5 AND terminal = 0 AND updated_at < ?6",
+                rusqlite::params![
+                    claimed_status.as_str(),
+                    claimed_status.is_terminal() as i64,
+                    encode_ts(now),
+                    completed_at,
+                    correlation_id,
+                    encode_ts(before),
+                ],
+            )
+            .map_err(|e| PersistenceError(e.to_string()))?;
+        if claimed == 0 {
+            return Ok(None);
+        }
+        let mut found = collect_states(
+            &conn,
+            &format!(
+                "SELECT {STATE_COLUMNS} FROM orchestration_executions WHERE correlation_id = ?1"
+            ),
+            &[&correlation_id],
+        )?;
+        Ok(found.pop())
+    }
+
     async fn delete(&self, correlation_id: &str) -> Result<bool, PersistenceError> {
         let n = self
             .locked()
@@ -581,6 +680,95 @@ mod tests {
                 provider.list(ExecutionFilter::all()).await.unwrap().len(),
                 1
             );
+        }
+    }
+
+    // Regression for Bug 2: claim_stale is an atomic compare-and-swap — only
+    // the first claim of a stale row succeeds; a second claim with the same
+    // cutoff (the loser of an overlapping recovery pass) sees None because the
+    // winner already bumped updated_at past the cutoff. Verified on both the
+    // memory and the sqlite adapters.
+    #[tokio::test]
+    async fn claim_stale_is_a_single_winner_cas() {
+        for provider in providers() {
+            let mut s = state("t", ExecutionStatus::Running);
+            s.updated_at = Utc::now() - Duration::hours(2);
+            let cid = s.correlation_id.clone();
+            provider.save(s).await.unwrap();
+
+            let cutoff = Utc::now() - Duration::hours(1);
+            // First claim wins and transitions to the in-recovery marker.
+            let first = provider
+                .claim_stale(&cid, cutoff, ExecutionStatus::Compensating)
+                .await
+                .expect("claim ok");
+            let claimed = first.expect("first claim wins");
+            assert_eq!(claimed.status, ExecutionStatus::Compensating);
+
+            // Second claim with the same cutoff loses: the row is no longer
+            // older than the cutoff (its updated_at was bumped to now).
+            let second = provider
+                .claim_stale(&cid, cutoff, ExecutionStatus::Compensating)
+                .await
+                .expect("claim ok");
+            assert!(second.is_none(), "second claim must lose the CAS");
+        }
+    }
+
+    // Regression for Bug 2: a terminal claim (mark-failed) stamps completed_at
+    // on both adapters, matching ExecutionState::transition.
+    #[tokio::test]
+    async fn claim_stale_terminal_marks_completed_at() {
+        for provider in providers() {
+            let mut s = state("t", ExecutionStatus::Running);
+            s.updated_at = Utc::now() - Duration::hours(2);
+            let cid = s.correlation_id.clone();
+            provider.save(s).await.unwrap();
+            let cutoff = Utc::now() - Duration::hours(1);
+            let claimed = provider
+                .claim_stale(&cid, cutoff, ExecutionStatus::Failed)
+                .await
+                .expect("claim ok")
+                .expect("claim wins");
+            assert_eq!(claimed.status, ExecutionStatus::Failed);
+            assert!(claimed.completed_at.is_some());
+            let reloaded = provider.load(&cid).await.unwrap().expect("present");
+            assert!(reloaded.completed_at.is_some());
+        }
+    }
+
+    // Regression for Bug 2: a row that is no longer stale (refreshed, or
+    // already terminal) cannot be claimed.
+    #[tokio::test]
+    async fn claim_stale_rejects_fresh_and_terminal() {
+        for provider in providers() {
+            // Fresh (recently updated) running row.
+            let fresh = state("t", ExecutionStatus::Running);
+            let fresh_cid = fresh.correlation_id.clone();
+            provider.save(fresh).await.unwrap();
+            // Old but terminal row.
+            let mut done = state("t", ExecutionStatus::Completed);
+            done.updated_at = Utc::now() - Duration::hours(2);
+            done.completed_at = Some(done.updated_at);
+            let done_cid = done.correlation_id.clone();
+            provider.save(done).await.unwrap();
+
+            let cutoff = Utc::now() - Duration::hours(1);
+            assert!(provider
+                .claim_stale(&fresh_cid, cutoff, ExecutionStatus::Failed)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(provider
+                .claim_stale(&done_cid, cutoff, ExecutionStatus::Failed)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(provider
+                .claim_stale("missing", cutoff, ExecutionStatus::Failed)
+                .await
+                .unwrap()
+                .is_none());
         }
     }
 

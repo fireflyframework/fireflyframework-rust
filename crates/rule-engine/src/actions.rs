@@ -24,8 +24,11 @@
 //! seed three handlers, keyed by the action's `type`:
 //!
 //! * `set` — writes `params["value"]` into the dot-path `params["target"]`.
-//! * `increment` — adds `params["value"]` (default `1`) to the current
-//!   numeric value at `params["target"]` (absent ⇒ `0`).
+//! * `increment` — adds `params["value"]` to the current value at
+//!   `params["target"]`, mirroring pyfly's `current + (action.value or 1)`
+//!   with `current = read(...) or 0`: a falsy current (absent / `null` /
+//!   `0` / `false` / …) reads as `0`, and a falsy `value` operand
+//!   (including an explicit `0`) reads as `1`.
 //! * `log` — a side-effect-only handler that never mutates the context
 //!   (matching pyfly's logger-only `log` action).
 //!
@@ -149,26 +152,37 @@ impl ActionHandler for SetHandler {
     }
 }
 
-/// Builtin `increment` handler: adds `params["value"]` (default `1`) to
-/// the current numeric value at the dot-path `params["target"]` (an absent
-/// or null value reads as `0`).
+/// Builtin `increment` handler: adds `params["value"]` to the current value
+/// at the dot-path `params["target"]`, mirroring pyfly's
+/// `current + (action.value or 1)` with `current = read(...) or 0`.
+///
+/// pyfly applies Python's `or` to both operands, so any *falsy* value is
+/// coerced before the addition: an absent / `null` / falsy current value
+/// reads as `0`, and an absent / `null` / falsy `value` operand (including an
+/// explicit `0`, `false`, `""`, `[]`, or `{}`) reads as `1`. A JSON `true`
+/// survives the `or` (it is truthy) and, because Python `bool` is a subclass
+/// of `int`, participates in the addition as `1` (`false` as `0`).
 ///
 /// Integer + integer arithmetic stays integral; any float operand promotes
 /// the result to a float, matching pyfly's Python `int`/`float` addition. A
-/// missing `target` raises [`ActionError::MissingParam`]; a non-numeric
-/// current value or operand raises [`ActionError::NonNumericIncrement`].
+/// missing `target` raises [`ActionError::MissingParam`]; a current value or
+/// operand that is neither numeric nor boolean (a non-empty string, list, or
+/// object) raises [`ActionError::NonNumericIncrement`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IncrementHandler;
 
 impl ActionHandler for IncrementHandler {
     fn apply(&self, action: &Action, facts: &mut Fact) -> Result<(), ActionError> {
         let target = require_target(action, "increment")?;
+        // pyfly: `current = self._read(action.target, ctx) or 0`.
         let current = read_path(facts, target).cloned().unwrap_or(Value::Null);
-        let by = action
-            .params
-            .get("value")
-            .cloned()
-            .unwrap_or(Value::from(1));
+        let current = py_or(current, || Value::from(0));
+        // pyfly: `action.value or 1` — an explicit falsy `value` (0, false,
+        // "", …) is coerced to 1 exactly like the absent default.
+        let by = py_or(
+            action.params.get("value").cloned().unwrap_or(Value::Null),
+            || Value::from(1),
+        );
         let sum = add_numeric(&current, &by)?;
         write_path(facts, target, sum);
         Ok(())
@@ -374,24 +388,65 @@ fn write_path(facts: &mut Fact, path: &str, value: Value) {
     current.insert((*last).to_owned(), value);
 }
 
-/// Adds two JSON numbers, keeping integer arithmetic integral and promoting
-/// to `f64` when either operand is a float — mirroring Python's `int`/`float`
-/// addition that pyfly's `increment` relies on. A null current value reads as
-/// `0`; any non-numeric operand raises [`ActionError::NonNumericIncrement`].
-fn add_numeric(current: &Value, by: &Value) -> Result<Value, ActionError> {
-    let current = if current.is_null() {
-        &Value::from(0)
+/// Mirrors Python's `value or default`: returns `default()` when `value` is
+/// *falsy* (`null`, `0`, `0.0`, `false`, `""`, `[]`, or `{}`), and `value`
+/// itself otherwise. A JSON `true` is truthy and passes through unchanged.
+fn py_or(value: Value, default: impl FnOnce() -> Value) -> Value {
+    if py_truthy(&value) {
+        value
     } else {
-        current
-    };
-    match (current, by) {
-        (Value::Number(a), Value::Number(b)) => {
-            if let (Some(ai), Some(bi)) = (a.as_i64(), b.as_i64()) {
-                Ok(Value::from(ai + bi))
+        default()
+    }
+}
+
+/// Python truthiness for a JSON [`Value`]: `null`, `false`, numeric zero, the
+/// empty string, the empty array, and the empty object are *falsy*; every
+/// other value is truthy.
+fn py_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// Adds two JSON operands, keeping integer arithmetic integral and promoting
+/// to `f64` when either operand is a float — mirroring Python's `int`/`float`
+/// addition that pyfly's `increment` relies on. Because Python `bool` is a
+/// subclass of `int`, a JSON `true`/`false` operand participates as `1`/`0`
+/// (pyfly's `True + 1 == 2`). Any operand that is neither numeric nor boolean
+/// (a non-empty string, list, or object) raises
+/// [`ActionError::NonNumericIncrement`].
+fn add_numeric(current: &Value, by: &Value) -> Result<Value, ActionError> {
+    let (ai, af) = numeric_operand(current)?;
+    let (bi, bf) = numeric_operand(by)?;
+    match (ai, bi) {
+        (Some(a), Some(b)) => Ok(Value::from(a + b)),
+        _ => Ok(Value::from(af + bf)),
+    }
+}
+
+/// Decomposes a numeric-or-boolean operand into `(integral, float)` views.
+///
+/// Integers and booleans (Python `bool` ⊂ `int`) yield `(Some(i64), f64)` so
+/// integer arithmetic stays integral; floats yield `(None, f64)` to force
+/// float promotion. A non-empty string, list, or object — which Python would
+/// reject with a `TypeError` — raises [`ActionError::NonNumericIncrement`].
+fn numeric_operand(value: &Value) -> Result<(Option<i64>, f64), ActionError> {
+    match value {
+        Value::Bool(b) => {
+            let i = i64::from(*b);
+            Ok((Some(i), i as f64))
+        }
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok((Some(i), i as f64))
             } else {
-                let af = a.as_f64().ok_or(ActionError::NonNumericIncrement)?;
-                let bf = b.as_f64().ok_or(ActionError::NonNumericIncrement)?;
-                Ok(Value::from(af + bf))
+                let f = n.as_f64().ok_or(ActionError::NonNumericIncrement)?;
+                Ok((None, f))
             }
         }
         _ => Err(ActionError::NonNumericIncrement),
@@ -487,6 +542,43 @@ mod tests {
         let action = Action::new("increment").with_param("target", "count");
         let err = registry.apply(&action, &mut facts).unwrap_err();
         assert_eq!(err, ActionError::NonNumericIncrement);
+    }
+
+    #[test]
+    fn increment_with_explicit_zero_value_bumps_by_one() {
+        // Bug 1 regression / pyfly parity: pyfly evaluates `action.value or 1`,
+        // so an explicit falsy `value: 0` is coerced to 1. With current=5,
+        // pyfly yields 5 + 1 = 6, not 5 + 0 = 5.
+        let registry = ActionRegistry::default();
+        let mut facts = fact(json!({"count": 5}));
+        let action = Action::new("increment")
+            .with_param("target", "count")
+            .with_param("value", 0);
+        registry.apply(&action, &mut facts).unwrap();
+        assert_eq!(facts["count"], json!(6));
+    }
+
+    #[test]
+    fn increment_over_boolean_current_treats_true_as_one() {
+        // Bug 2 regression / pyfly parity: a JSON boolean current value passes
+        // `read(...) or 0` (True is truthy) and `True + 1 == 2` because Python
+        // `bool` is a subclass of `int`. Rust must yield 2, not a
+        // NonNumericIncrement error.
+        let registry = ActionRegistry::default();
+        let mut facts = fact(json!({"flag": true}));
+        let action = Action::new("increment").with_param("target", "flag");
+        registry.apply(&action, &mut facts).unwrap();
+        assert_eq!(facts["flag"], json!(2));
+    }
+
+    #[test]
+    fn increment_over_false_current_reads_as_zero() {
+        // pyfly parity: `False or 0` is `0`, then `0 + 1 == 1`.
+        let registry = ActionRegistry::default();
+        let mut facts = fact(json!({"flag": false}));
+        let action = Action::new("increment").with_param("target", "flag");
+        registry.apply(&action, &mut facts).unwrap();
+        assert_eq!(facts["flag"], json!(1));
     }
 
     #[test]

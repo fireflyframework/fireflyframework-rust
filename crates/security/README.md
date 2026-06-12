@@ -220,8 +220,14 @@ strings → typed predicates).
   and authority checks via `with_role_hierarchy`.
 * **`FilterChain` URL DSL** (pyfly `HttpSecurity`) — `permit_pattern`,
   `require_pattern`, `require_authority`, `authenticated`, and `deny`
-  use fnmatch-style globs (`/api/admin/**`); first matching rule wins,
-  unmatched paths default-allow.
+  use fnmatch-style globs (`/api/admin/**`); first matching rule wins.
+  **Deny-by-default (fail-closed):** once any rule is declared, a
+  request matching no rule is rejected with 403 — pyfly's
+  deny-by-default (Spring Security 6) semantics. Re-open the unmatched
+  tail with the catch-all `any_request_permit` /
+  `any_request_authenticated` / `any_request_deny` (pyfly
+  `any_request().permit_all()` etc.). A chain with no rules at all is a
+  no-op and passes every request through (never a blanket lockout).
 * **`guards`** — typed `AuthorizationGuard` predicates
   (`has_role` / `has_any_role` / `has_authority` / `has_any_authority`
   / `authenticated` / `permit_all` / `deny_all` plus `require(|auth|

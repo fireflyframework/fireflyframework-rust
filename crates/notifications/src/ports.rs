@@ -69,6 +69,13 @@ pub trait PushProvider: Send + Sync {
 /// Unlike a raw [`EmailProvider`], a service never errors back to the caller:
 /// it always returns a [`NotificationResult`] whose `status` reflects the
 /// outcome (`SENT` / `SUPPRESSED` / `FAILED`), matching pyfly's contract.
+///
+/// A *provider* failure is folded into a `FAILED` result (and increments the
+/// `failed` metric) per pyfly's `_send_safely`. A local *template-render*
+/// failure is also reported as `FAILED` — the service contract cannot raise —
+/// but, matching pyfly (which calls `engine.render(...)` outside any
+/// try/except and so never touches the `failed` counter on a render error),
+/// a render failure increments **no** metric counter.
 #[async_trait]
 pub trait EmailService: Send + Sync {
     /// Sends `message`, returning the resulting [`NotificationResult`].

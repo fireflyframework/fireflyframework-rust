@@ -245,10 +245,44 @@ pub fn resolve_pattern(pattern: &str, payload: &serde_json::Value) -> String {
 /// Stringifies a payload field the way Python's `str(value)` would for
 /// the JSON scalar types the bridge cares about; `None` for missing
 /// fields, `null`, or non-object payloads.
+///
+/// Booleans are the one scalar where serde_json's lowercase
+/// `true`/`false` diverges from Python's title-cased `True`/`False`, so
+/// they are rendered explicitly to keep cache keys byte-compatible with
+/// pyfly's `_resolve_pattern` (which uses `str(value)`).
 fn field_as_string(payload: &serde_json::Value, field: &str) -> Option<String> {
     match payload.get(field)? {
         serde_json::Value::Null => None,
         serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Bool(b) => Some(if *b { "True" } else { "False" }.to_string()),
         other => Some(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Booleans must resolve to Python's title-cased `True`/`False` —
+    /// pyfly's `_resolve_pattern` uses `str(value)`, so a JSON `true`
+    /// becomes `"True"` (not serde_json's lowercase `"true"`). Diverging
+    /// here yields a mismatched cache key and a missed eviction against
+    /// pyfly-flavoured producers/consumers.
+    #[test]
+    fn resolve_pattern_stringifies_booleans_like_python_str() {
+        let payload = serde_json::json!({"enabled": true, "disabled": false});
+        assert_eq!(resolve_pattern("flag:{enabled}", &payload), "flag:True");
+        assert_eq!(resolve_pattern("flag:{disabled}", &payload), "flag:False");
+    }
+
+    /// Integers, floats and strings already match Python `str(value)` on
+    /// both runtimes; lock that in so the boolean fix does not regress the
+    /// other scalar types.
+    #[test]
+    fn resolve_pattern_matches_python_str_for_other_scalars() {
+        let payload = serde_json::json!({"id": 7, "ratio": 1.0, "name": "acme"});
+        assert_eq!(resolve_pattern("order:{id}", &payload), "order:7");
+        assert_eq!(resolve_pattern("ratio:{ratio}", &payload), "ratio:1.0");
+        assert_eq!(resolve_pattern("tenant:{name}", &payload), "tenant:acme");
     }
 }

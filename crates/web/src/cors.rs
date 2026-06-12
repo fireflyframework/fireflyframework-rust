@@ -28,6 +28,23 @@ use tower::{Layer, Service};
 /// no methods are configured explicitly.
 pub const PERMIT_DEFAULT_METHODS: [&str; 3] = ["GET", "HEAD", "POST"];
 
+/// The method set Starlette expands `["*"]` into at construction
+/// (`ALL_METHODS`), echoed verbatim on preflight — so a wildcard method
+/// list never emits a literal `*` (invalid with credentials). Mirrors
+/// `starlette.middleware.cors.ALL_METHODS`.
+const ALL_METHODS: [&str; 7] = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
+
+/// The CORS-safelisted request headers Starlette always merges into the
+/// preflight allow-list (`SAFELISTED_HEADERS`), so an explicit
+/// `allowed_headers` list still accepts `Accept`, `Accept-Language`,
+/// `Content-Language`, and `Content-Type` (sent on ordinary JSON POSTs).
+const SAFELISTED_HEADERS: [&str; 4] = [
+    "Accept",
+    "Accept-Language",
+    "Content-Language",
+    "Content-Type",
+];
+
 fn default_origins() -> Vec<String> {
     vec!["*".to_string()]
 }
@@ -126,18 +143,54 @@ impl CorsConfig {
                 .any(|m| m.eq_ignore_ascii_case(method))
     }
 
+    /// The method list echoed in `Access-Control-Allow-Methods` — a
+    /// wildcard `["*"]` expands to [`ALL_METHODS`], exactly as Starlette
+    /// does at construction (so `*` is never emitted verbatim).
+    fn effective_methods(&self) -> Vec<String> {
+        if self.allow_all_methods() {
+            ALL_METHODS.iter().map(ToString::to_string).collect()
+        } else {
+            self.allowed_methods.clone()
+        }
+    }
+
+    /// The sorted union of the configured
+    /// [`allowed_headers`](Self::allowed_headers) and the CORS-safelisted
+    /// headers ([`SAFELISTED_HEADERS`]) — Starlette's
+    /// `sorted(SAFELISTED_HEADERS | set(allow_headers))`, used to both
+    /// validate requested headers and build `Access-Control-Allow-Headers`.
+    fn effective_allowed_headers(&self) -> Vec<String> {
+        let mut union: Vec<String> = SAFELISTED_HEADERS.iter().map(ToString::to_string).collect();
+        for header in &self.allowed_headers {
+            if !union.iter().any(|h| h.eq_ignore_ascii_case(header)) {
+                union.push(header.clone());
+            }
+        }
+        union.sort();
+        union
+    }
+
+    fn header_allowed(&self, header: &str) -> bool {
+        self.effective_allowed_headers()
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(header))
+    }
+
     fn headers_allowed(&self, requested: &str) -> bool {
         if self.allow_all_headers() {
             return true;
         }
         requested.split(',').all(|h| {
             let h = h.trim();
-            h.is_empty()
-                || self
-                    .allowed_headers
-                    .iter()
-                    .any(|a| a.eq_ignore_ascii_case(h))
+            h.is_empty() || self.header_allowed(h)
         })
+    }
+
+    /// Starlette's `preflight_explicit_allow_origin`: the per-request
+    /// origin is echoed (and `Vary: Origin` emitted) whenever origins are
+    /// not a bare wildcard, or credentials are allowed.
+    fn preflight_explicit_allow_origin(&self) -> bool {
+        !self.allow_all_origins() || self.allow_credentials
     }
 }
 
@@ -183,7 +236,7 @@ pub struct CorsService<S> {
     config: Arc<CorsConfig>,
 }
 
-fn plain_text(status: StatusCode, body: &'static str) -> Response {
+fn plain_text(status: StatusCode, body: String) -> Response {
     let mut res = Response::new(Body::from(body));
     *res.status_mut() = status;
     res.headers_mut().insert(
@@ -195,9 +248,11 @@ fn plain_text(status: StatusCode, body: &'static str) -> Response {
 
 /// Builds the preflight short-circuit response, mirroring Starlette's
 /// `CORSMiddleware.preflight_response` (which pyfly wires from
-/// `CORSConfig`): a disallowed origin/method/header produces a 400 with
-/// the offending part named; success produces a 200 with the
-/// `Access-Control-Allow-*` set.
+/// `CORSConfig`): the preflight CORS headers (`Vary`, `Allow-Methods`,
+/// `Max-Age`, and — once validated — `Allow-Origin`/`Allow-Headers`) are
+/// built up regardless of outcome; a disallowed origin/method/header
+/// produces a `400` whose body is `"Disallowed CORS "` + the joined list
+/// of offenders, carrying those same headers; success produces a `200`.
 fn preflight_response(config: &CorsConfig, req: &Request<Body>) -> Response {
     let origin = req
         .headers()
@@ -217,51 +272,21 @@ fn preflight_response(config: &CorsConfig, req: &Request<Body>) -> Response {
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
 
-    let mut failures = Vec::new();
-    if !config.origin_allowed(&origin) {
-        failures.push("origin");
-    }
-    if !config.method_allowed(&requested_method) {
-        failures.push("method");
-    }
-    if let Some(requested) = requested_headers.as_deref() {
-        if !config.headers_allowed(requested) {
-            failures.push("headers");
-        }
-    }
-    if !failures.is_empty() {
-        let reason: &'static str = match failures.as_slice() {
-            ["origin"] => "Disallowed CORS origin",
-            ["method"] => "Disallowed CORS method",
-            ["headers"] => "Disallowed CORS headers",
-            _ => "Disallowed CORS origin, method, headers",
-        };
-        return plain_text(StatusCode::BAD_REQUEST, reason);
-    }
-
-    let mut res = plain_text(StatusCode::OK, "OK");
+    // Seed the preflight headers exactly like Starlette's
+    // `self.preflight_headers`, attached to BOTH the 200 and the 400.
+    let mut res = plain_text(StatusCode::OK, "OK".to_string());
     let headers = res.headers_mut();
-    let allow_origin = if config.allow_all_origins() && !config.allow_credentials {
-        HeaderValue::from_static("*")
-    } else {
-        HeaderValue::from_str(&origin).unwrap_or_else(|_| HeaderValue::from_static("*"))
-    };
-    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin);
-    if !config.allow_all_origins() {
+    if config.preflight_explicit_allow_origin() {
+        // The origin value is filled in below if it is allowed.
         headers.insert(header::VARY, HeaderValue::from_static("Origin"));
-    }
-    if let Ok(value) = HeaderValue::from_str(&config.allowed_methods.join(", ")) {
-        headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, value);
-    }
-    let allow_headers = if config.allow_all_headers() {
-        requested_headers.unwrap_or_default()
     } else {
-        config.allowed_headers.join(", ")
-    };
-    if !allow_headers.is_empty() {
-        if let Ok(value) = HeaderValue::from_str(&allow_headers) {
-            headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, value);
-        }
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+    }
+    if let Ok(value) = HeaderValue::from_str(&config.effective_methods().join(", ")) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, value);
     }
     if let Ok(value) = HeaderValue::from_str(&config.max_age.to_string()) {
         headers.insert(header::ACCESS_CONTROL_MAX_AGE, value);
@@ -271,6 +296,54 @@ fn preflight_response(config: &CorsConfig, req: &Request<Body>) -> Response {
             header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
             HeaderValue::from_static("true"),
         );
+    }
+
+    let mut failures: Vec<&str> = Vec::new();
+
+    if config.origin_allowed(&origin) {
+        if config.preflight_explicit_allow_origin() {
+            // The "else" case (bare wildcard) already emitted `*` above.
+            if let Ok(value) = HeaderValue::from_str(&origin) {
+                headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+            }
+        }
+    } else {
+        failures.push("origin");
+    }
+
+    if !config.method_allowed(&requested_method) {
+        failures.push("method");
+    }
+
+    // When all headers are allowed, mirror the requested headers back;
+    // otherwise validate each against the safelist ∪ allowed list.
+    if config.allow_all_headers() {
+        if let Some(requested) = requested_headers.as_deref() {
+            if let Ok(value) = HeaderValue::from_str(requested) {
+                headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, value);
+            }
+        }
+    } else {
+        if let Some(requested) = requested_headers.as_deref() {
+            if !config.headers_allowed(requested) {
+                failures.push("headers");
+            }
+        }
+        // Echo the safelist ∪ configured allow-list (Starlette emits its
+        // precomputed `Access-Control-Allow-Headers` from
+        // `preflight_headers`: `sorted(SAFELISTED_HEADERS | allow_headers)`).
+        let allow_headers = config.effective_allowed_headers();
+        if !allow_headers.is_empty() {
+            if let Ok(value) = HeaderValue::from_str(&allow_headers.join(", ")) {
+                headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, value);
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        let reason = format!("Disallowed CORS {}", failures.join(", "));
+        *res.status_mut() = StatusCode::BAD_REQUEST;
+        *res.body_mut() = Body::from(reason);
     }
     res
 }

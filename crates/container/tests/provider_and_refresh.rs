@@ -82,12 +82,10 @@ fn container_is_send_sync_and_shareable() {
         })
         .collect();
 
-    let first = handles
-        .into_iter()
-        .map(|h| h.join().unwrap())
-        .next()
-        .unwrap();
-    // All threads observe the same singleton; resolution_count == 8 + this read path's bumps.
-    assert_eq!(first.0, 0);
-    assert!(c.bean_metrics::<Shared>().unwrap().resolution_count >= 8);
+    // Join EVERY handle: `.map(..).next()` is lazy and would detach the other
+    // seven threads, racing the resolution-count assertion below.
+    let resolved: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    // All threads observe the same default singleton instance.
+    assert!(resolved.iter().all(|s| s.0 == 0));
+    assert_eq!(c.bean_metrics::<Shared>().unwrap().resolution_count, 8);
 }

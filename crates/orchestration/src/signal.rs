@@ -25,6 +25,20 @@ pub enum SignalError {
 
 type Waiters = HashMap<String, HashMap<String, Vec<oneshot::Sender<serde_json::Value>>>>;
 
+/// Payloads delivered before any waiter parked, keyed by
+/// `(correlation_id, signal)` — pyfly's per-context `_delivered_signals`
+/// buffer. A subsequent [`SignalService::wait_for`]/[`SignalService::subscribe`]
+/// drains the buffer before parking, so a deliver-before-wait is not lost.
+type Buffered = HashMap<String, HashMap<String, serde_json::Value>>;
+
+#[derive(Debug, Default)]
+struct Inner {
+    waiters: Waiters,
+    /// Buffered payloads for `(correlation_id, signal)` pairs that had no
+    /// waiter when [`SignalService::deliver`] was called.
+    delivered: Buffered,
+}
+
 /// Routes named signals to specific workflow executions.
 ///
 /// A waiting step calls [`SignalService::wait_for`] (or embeds a
@@ -33,9 +47,15 @@ type Waiters = HashMap<String, HashMap<String, Vec<oneshot::Sender<serde_json::V
 /// `(correlation_id, signal)` resumes with it. The Python port parks the
 /// execution context on an `asyncio.Event`; the Rust spelling parks the
 /// task on a `oneshot` receiver.
+///
+/// When [`SignalService::deliver`] runs before anything is waiting, the
+/// payload is buffered (mirroring pyfly's `_delivered_signals`) and the next
+/// `wait_for`/`subscribe` for that `(correlation_id, signal)` consumes it
+/// immediately rather than parking — avoiding a lost-wakeup when a signal
+/// (e.g. an approval) arrives before the workflow step that awaits it.
 #[derive(Debug, Default)]
 pub struct SignalService {
-    waiters: Mutex<Waiters>,
+    inner: Mutex<Inner>,
 }
 
 impl SignalService {
@@ -44,8 +64,8 @@ impl SignalService {
         Self::default()
     }
 
-    fn locked(&self) -> std::sync::MutexGuard<'_, Waiters> {
-        self.waiters
+    fn locked(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner
             .lock()
             .expect("firefly/orchestration: lock poisoned")
     }
@@ -53,16 +73,36 @@ impl SignalService {
     /// Registers a waiter for `(correlation_id, signal)` and returns the
     /// receiving half. Prefer [`Self::wait_for`] unless you need to select
     /// over the receiver yourself.
+    ///
+    /// If a payload was already buffered for `(correlation_id, signal)` by an
+    /// earlier [`Self::deliver`] (deliver-before-wait), the returned receiver
+    /// is pre-resolved with that buffered payload — pyfly's
+    /// `wait_for_signal` draining `_delivered_signals` first.
     pub fn subscribe(
         &self,
         correlation_id: impl Into<String>,
         signal: impl Into<String>,
     ) -> oneshot::Receiver<serde_json::Value> {
+        let correlation_id = correlation_id.into();
+        let signal = signal.into();
         let (tx, rx) = oneshot::channel();
-        self.locked()
-            .entry(correlation_id.into())
+        let mut inner = self.locked();
+        // Drain a previously buffered payload (deliver-before-wait) before
+        // parking, mirroring pyfly's `if name in self._delivered_signals`.
+        if let Some(by_signal) = inner.delivered.get_mut(&correlation_id) {
+            if let Some(payload) = by_signal.remove(&signal) {
+                if by_signal.is_empty() {
+                    inner.delivered.remove(&correlation_id);
+                }
+                let _ = tx.send(payload);
+                return rx;
+            }
+        }
+        inner
+            .waiters
+            .entry(correlation_id)
             .or_default()
-            .entry(signal.into())
+            .entry(signal)
             .or_default()
             .push(tx);
         rx
@@ -83,46 +123,67 @@ impl SignalService {
     }
 
     /// Delivers `payload` to every waiter registered under
-    /// `(correlation_id, signal)`. Returns `false` when nothing was
-    /// waiting — pyfly's `deliver` returning `False` for unknown
-    /// correlation ids.
+    /// `(correlation_id, signal)`. Returns `true` when at least one live
+    /// waiter consumed it.
+    ///
+    /// When nothing is waiting (or every waiter has already dropped its
+    /// receiver), the payload is **buffered** for `(correlation_id, signal)`
+    /// and `false` is returned — pyfly's `deliver_signal` storing into
+    /// `_delivered_signals` and returning `False`. The next
+    /// [`Self::wait_for`]/[`Self::subscribe`] for that pair then resolves
+    /// immediately with the buffered payload, so a signal that arrives before
+    /// the workflow step parks is not lost.
     pub fn deliver(&self, correlation_id: &str, signal: &str, payload: serde_json::Value) -> bool {
-        let senders = {
-            let mut waiters = self.locked();
-            let Some(by_signal) = waiters.get_mut(correlation_id) else {
-                return false;
-            };
-            let Some(senders) = by_signal.remove(signal) else {
-                return false;
-            };
-            if by_signal.is_empty() {
-                waiters.remove(correlation_id);
+        let mut inner = self.locked();
+        let mut senders = Vec::new();
+        if let Some(by_signal) = inner.waiters.get_mut(correlation_id) {
+            if let Some(found) = by_signal.remove(signal) {
+                senders = found;
             }
-            senders
-        };
-        if senders.is_empty() {
-            return false;
+            if by_signal.is_empty() {
+                inner.waiters.remove(correlation_id);
+            }
         }
+
+        // Deliver to live waiters; a waiter that timed out between
+        // registration and delivery just dropped its receiver.
+        let mut consumed = false;
         for tx in senders {
-            // A waiter that timed out between registration and delivery just
-            // drops its receiver; ignore it.
-            let _ = tx.send(payload.clone());
+            if tx.send(payload.clone()).is_ok() {
+                consumed = true;
+            }
         }
-        true
+        if consumed {
+            return true;
+        }
+
+        // No live waiter: buffer the payload (last write wins per pair) so a
+        // later wait_for can consume it, then report `false`.
+        inner
+            .delivered
+            .entry(correlation_id.to_string())
+            .or_default()
+            .insert(signal.to_string(), payload);
+        false
     }
 
-    /// Correlation ids that currently have at least one waiter — pyfly's
-    /// `list_active`. Sorted for deterministic output.
+    /// Correlation ids that currently have at least one waiter **or** a
+    /// buffered payload — pyfly's `list_active`. Sorted for deterministic
+    /// output.
     pub fn list_active(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.locked().keys().cloned().collect();
-        ids.sort();
-        ids
+        let inner = self.locked();
+        let mut ids: std::collections::BTreeSet<String> = inner.waiters.keys().cloned().collect();
+        ids.extend(inner.delivered.keys().cloned());
+        ids.into_iter().collect()
     }
 
-    /// Discards every waiter of one execution; their `wait_for` calls
-    /// resolve to [`SignalError::Cancelled`] — pyfly's `unregister`.
+    /// Discards every waiter and buffered payload of one execution; pending
+    /// `wait_for` calls resolve to [`SignalError::Cancelled`] — pyfly's
+    /// `unregister`.
     pub fn unregister(&self, correlation_id: &str) {
-        self.locked().remove(correlation_id);
+        let mut inner = self.locked();
+        inner.waiters.remove(correlation_id);
+        inner.delivered.remove(correlation_id);
     }
 }
 
@@ -193,11 +254,65 @@ mod tests {
         assert!(signals.list_active().is_empty());
     }
 
-    // Port of pyfly SignalService.deliver returning False for unknown ids.
+    // Port of pyfly SignalService.deliver returning False when no waiter is
+    // present (the payload is buffered, not consumed).
     #[tokio::test]
     async fn deliver_to_unknown_returns_false() {
         let signals = SignalService::new();
         assert!(!signals.deliver("nope", "approved", serde_json::Value::Null));
+    }
+
+    // Regression for Bug 1: a signal delivered *before* any waiter parks must
+    // be buffered (pyfly's `_delivered_signals`), not dropped. Port of pyfly
+    // tests/transactional/core/test_context.py::test_signal_buffered_when_no_waiter:
+    // deliver returns False yet a subsequent wait_for resolves with the
+    // buffered payload immediately rather than hanging until timeout.
+    #[tokio::test]
+    async fn signal_buffered_when_delivered_before_waiter() {
+        let signals = SignalService::new();
+        // Deliver-before-wait: no waiter exists yet.
+        let consumed = signals.deliver("run-1", "approved", serde_json::json!({"by": "boss"}));
+        assert!(!consumed, "deliver with no waiter returns false");
+        // The buffered execution shows up as active until drained.
+        assert_eq!(signals.list_active(), ["run-1"]);
+
+        // A wait issued *after* the deliver resolves immediately with the
+        // buffered payload instead of blocking until timeout/unregister.
+        let payload = tokio::time::timeout(
+            Duration::from_millis(200),
+            signals.wait_for("run-1", "approved"),
+        )
+        .await
+        .expect("wait_for must resolve from the buffer, not hang")
+        .expect("buffered payload");
+        assert_eq!(payload, serde_json::json!({"by": "boss"}));
+
+        // The buffer is consumed: nothing left active and a second wait would
+        // park (so a fresh deliver is needed again).
+        assert!(signals.list_active().is_empty());
+    }
+
+    // Regression for Bug 1 at the engine layer: an approval delivered before
+    // the wait_for_signal node's wave runs must still let the workflow
+    // complete (no lost-wakeup), since the node drains the buffer on park.
+    #[tokio::test]
+    async fn wait_for_signal_node_consumes_pre_delivered_signal() {
+        let signals = Arc::new(SignalService::new());
+        // Signal arrives before the workflow is even started.
+        assert!(!signals.deliver("run-7", "approved", serde_json::json!("manager-A")));
+
+        let workflow = Workflow::new("approval")
+            .node(crate::Node::new("submit", || async { Ok(()) }))
+            .node(
+                Node::wait_for_signal("approve", &signals, "run-7", "approved")
+                    .depends_on(["submit"]),
+            );
+
+        tokio::time::timeout(Duration::from_millis(200), workflow.run())
+            .await
+            .expect("workflow must complete from the buffered signal")
+            .expect("workflow should complete");
+        assert!(signals.list_active().is_empty());
     }
 
     // Rust-specific: wait_for resolves with the delivered payload.

@@ -156,6 +156,64 @@ async fn send_success_builds_request_and_parses_message_name() {
     assert_eq!(result.error, None);
 }
 
+// --- regression: FCM data-map stringification matches pyfly's str(v) -------
+//
+// pyfly builds `data` as `{k: str(v) for k, v in message.data.items()}`, so
+// every non-string value is rendered by CPython's `str()`/`repr()`: a JSON
+// bool `true` -> "True", `false` -> "False", null -> "None", an array -> the
+// `", "`-separated Python list repr, and an object -> the Python dict repr with
+// single-quoted keys. serde_json's `to_string()` would instead emit "true",
+// "null", "[1,2]", and `{"a":1}` — all wire-divergent from the reference. This
+// asserts the exact strings the adapter puts on the wire.
+#[tokio::test]
+async fn send_stringifies_data_values_like_pythons_str() {
+    let (base, calls) = spawn_mock(vec![CannedResponse::ok(r#"{"name":"n/1"}"#)]).await;
+
+    let provider = FirebasePushProvider::new("my-proj", "ya29.token").with_base_url(&base);
+
+    let mut data = serde_json::Map::new();
+    // scalars that already matched (kept to guard against regressions).
+    data.insert("int".into(), json!(42));
+    data.insert("float".into(), json!(1.5));
+    data.insert("str".into(), json!("plain"));
+    // the divergent cases.
+    data.insert("bool_t".into(), json!(true));
+    data.insert("bool_f".into(), json!(false));
+    data.insert("nil".into(), Value::Null);
+    data.insert("arr".into(), json!([1, 2]));
+    data.insert("mixed_arr".into(), json!([1, "x", true, null]));
+    data.insert("obj".into(), json!({ "a": 1 }));
+    data.insert(
+        "nested".into(),
+        json!({ "a": [1, true], "b": { "c": null } }),
+    );
+    // a string whose Python repr would switch to double quotes (lives inside an
+    // array, so it is repr'd, not passed through).
+    data.insert("apostrophe".into(), json!(["it's"]));
+
+    let msg = PushMessage::new(["device-1"], "t", "b").with_data(data);
+    provider.send(msg).await.expect("send");
+
+    let recorded = calls.lock().unwrap();
+    let sent = &recorded[0].body["message"]["data"];
+    assert_eq!(
+        *sent,
+        json!({
+            "int": "42",
+            "float": "1.5",
+            "str": "plain",
+            "bool_t": "True",
+            "bool_f": "False",
+            "nil": "None",
+            "arr": "[1, 2]",
+            "mixed_arr": "[1, 'x', True, None]",
+            "obj": "{'a': 1}",
+            "nested": "{'a': [1, True], 'b': {'c': None}}",
+            "apostrophe": "[\"it's\"]",
+        }),
+    );
+}
+
 // --- pyfly: test_send_error_response_maps_to_failed_result -----------------
 
 #[tokio::test]

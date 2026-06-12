@@ -17,12 +17,17 @@
 //! * **Template precedence** — when a [`TemplateEngine`] is injected and the
 //!   email has a `template_id`, the engine renders it into `body_html` and the
 //!   provider-native `template_id` / `template_data` are cleared. Without an
-//!   engine, those fields are forwarded untouched.
-//! * **Error → FAILED** — a provider `Err(...)` is folded into a
+//!   engine, those fields are forwarded untouched. A render failure is reported
+//!   as a [`DeliveryStatus::Failed`] result but — matching pyfly, where
+//!   `engine.render(...)` is called outside any try/except and so a render
+//!   error raises out of `send()` before the metrics tail — it increments
+//!   **no** metric counter.
+//! * **Provider error → FAILED** — a provider `Err(...)` is folded into a
 //!   [`DeliveryStatus::Failed`] result (never propagated), matching pyfly's
 //!   `_send_safely`.
-//! * **Metrics** — on `SENT` the sent counter is incremented; on `FAILED` the
-//!   failed counter; suppressed recipients increment the suppressed counter.
+//! * **Metrics** — on `SENT` the sent counter is incremented; on a *provider*
+//!   `FAILED` the failed counter; suppressed recipients increment the
+//!   suppressed counter. A template-render failure increments no counter.
 
 use std::sync::Arc;
 
@@ -126,6 +131,12 @@ impl EmailService for DefaultEmailService {
         }
 
         // 2. Local template rendering (takes priority over provider-native).
+        //    A render failure is reported as FAILED (the `EmailService` contract
+        //    cannot raise), but — matching pyfly, which calls
+        //    `engine.render(...)` outside any try/except, so a render error
+        //    raises out of `send()` BEFORE the metrics tail and never touches
+        //    the `failed` counter — it increments NO metric. Only a *provider*
+        //    failure (step 4 via `record_outcome`) bumps the `failed` counter.
         if let Some(engine) = self.template_engine.as_deref() {
             if let Some(template_id) = message.template_id.clone() {
                 match engine.render(&template_id, &message.template_data).await {
@@ -135,15 +146,12 @@ impl EmailService for DefaultEmailService {
                         message.template_data.clear();
                     }
                     Err(e) => {
-                        let result = NotificationResult::failed(
+                        // No metric side-effect on render failure (pyfly parity).
+                        return NotificationResult::failed(
                             message.id,
                             self.provider.name(),
                             e.to_string(),
                         );
-                        if let Some(m) = metrics {
-                            m.record_failed("email", &result.provider);
-                        }
-                        return result;
                     }
                 }
             }

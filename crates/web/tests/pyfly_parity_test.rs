@@ -262,6 +262,145 @@ async fn no_cors_when_not_configured() {
     assert!(headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
 }
 
+// Bug 1: a preflight requesting a CORS-safelisted header (Content-Type,
+// sent on every JSON POST) must be allowed even when `allowed_headers`
+// is an explicit, non-wildcard list — Starlette merges SAFELISTED_HEADERS
+// into the allow-list.
+#[tokio::test]
+async fn cors_preflight_allows_safelisted_header_with_explicit_allow_list() {
+    let app = hello_router().layer(CorsLayer::new(CorsConfig {
+        allowed_origins: vec!["http://example.com".into()],
+        allowed_methods: vec!["GET".into(), "POST".into()],
+        allowed_headers: vec!["Authorization".into()],
+        ..CorsConfig::default()
+    }));
+    let req = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/hello")
+        .header(header::ORIGIN, "http://example.com")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "Content-Type")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = send(app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    // Allow-Headers echoes the sorted union (safelist ∪ configured),
+    // byte-identical to Starlette's precomputed header value.
+    assert_eq!(
+        headers.get(header::ACCESS_CONTROL_ALLOW_HEADERS).unwrap(),
+        "Accept, Accept-Language, Authorization, Content-Language, Content-Type"
+    );
+
+    // A header genuinely outside the union is still rejected.
+    let app = hello_router().layer(CorsLayer::new(CorsConfig {
+        allowed_origins: vec!["http://example.com".into()],
+        allowed_methods: vec!["GET".into(), "POST".into()],
+        allowed_headers: vec!["Authorization".into()],
+        ..CorsConfig::default()
+    }));
+    let req = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/hello")
+        .header(header::ORIGIN, "http://example.com")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "X-Forbidden")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = send(app, req).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(String::from_utf8(body).unwrap(), "Disallowed CORS headers");
+}
+
+// Bug 2: wildcard origins + credentials echoes the specific request
+// origin on preflight, and MUST carry `Vary: Origin` (Starlette's
+// preflight_explicit_allow_origin = not allow_all_origins or
+// allow_credentials).
+#[tokio::test]
+async fn cors_preflight_wildcard_with_credentials_adds_vary_origin() {
+    let app = hello_router().layer(CorsLayer::new(CorsConfig {
+        allow_credentials: true,
+        ..CorsConfig::default()
+    }));
+    let req = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/hello")
+        .header(header::ORIGIN, "http://app.test")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = send(app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+        "http://app.test"
+    );
+    assert_eq!(headers.get(header::VARY).unwrap(), "Origin");
+    assert_eq!(
+        headers
+            .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+            .unwrap(),
+        "true"
+    );
+}
+
+// Bug 3: a wildcard method list expands to ALL_METHODS on preflight;
+// it must never emit a literal `*` (forbidden with credentials).
+#[tokio::test]
+async fn cors_preflight_expands_wildcard_methods() {
+    let app = hello_router().layer(CorsLayer::new(CorsConfig {
+        allowed_origins: vec!["http://example.com".into()],
+        allowed_methods: vec!["*".into()],
+        allow_credentials: true,
+        ..CorsConfig::default()
+    }));
+    let req = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/hello")
+        .header(header::ORIGIN, "http://example.com")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "DELETE")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = send(app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    let methods = headers
+        .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(methods, "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT");
+    assert!(!methods.contains('*'));
+}
+
+// Bug 4: a multi-failure preflight names every offender in the reason
+// text (Starlette: "Disallowed CORS " + ", ".join(failures)) and still
+// carries the preflight CORS headers (Allow-Methods, Max-Age) on the 400.
+#[tokio::test]
+async fn cors_preflight_multi_failure_reason_and_headers() {
+    let app = hello_router().layer(CorsLayer::new(CorsConfig {
+        allowed_origins: vec!["http://example.com".into()],
+        allowed_methods: vec!["GET".into()],
+        ..CorsConfig::default()
+    }));
+    let req = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/hello")
+        .header(header::ORIGIN, "http://evil.com")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "DELETE")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = send(app, req).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        String::from_utf8(body).unwrap(),
+        "Disallowed CORS origin, method"
+    );
+    // The preflight headers ride along with the 400, as in Starlette.
+    assert!(headers.get(header::ACCESS_CONTROL_ALLOW_METHODS).is_some());
+    assert_eq!(headers.get(header::ACCESS_CONTROL_MAX_AGE).unwrap(), "600");
+    // Disallowed origin under an explicit list is never echoed.
+    assert!(headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+}
+
 // ========= Security headers (pyfly test_security_headers.py) =========
 
 #[tokio::test]
@@ -872,6 +1011,33 @@ fn xml_value_mapping_lists_nulls_and_nesting() {
     assert_eq!(
         parsed,
         json!({"root": {"a": ["1", "2"], "b": {"c": "x"}, "d": null}})
+    );
+}
+
+// Bug 5: leaf text is preserved verbatim (no trimming), matching pyfly's
+// ElementTree-based `_element_to_dict` (returns `element.text` as-is).
+// Whitespace-only text is a non-empty string, NOT null; only an element
+// with no text node at all (`<foo></foo>`/`<foo/>`) becomes null.
+#[test]
+fn xml_to_value_preserves_leaf_whitespace_verbatim() {
+    // Leading/trailing whitespace around real content is kept.
+    assert_eq!(
+        xml_to_value("<root><foo>  bar  </foo></root>").unwrap(),
+        json!({"root": {"foo": "  bar  "}})
+    );
+    // Whitespace-only text stays a (non-empty) string.
+    assert_eq!(
+        xml_to_value("<root><foo>   </foo></root>").unwrap(),
+        json!({"root": {"foo": "   "}})
+    );
+    // A genuinely empty element (no text node) is null.
+    assert_eq!(
+        xml_to_value("<root><foo></foo></root>").unwrap(),
+        json!({"root": {"foo": null}})
+    );
+    assert_eq!(
+        xml_to_value("<root><foo/></root>").unwrap(),
+        json!({"root": {"foo": null}})
     );
 }
 

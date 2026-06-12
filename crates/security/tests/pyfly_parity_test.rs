@@ -325,3 +325,127 @@ async fn first_matching_rule_wins_with_globs() {
         StatusCode::FORBIDDEN
     );
 }
+
+// Regression for Bug 1: FilterChain must be fail-CLOSED (deny-by-default)
+// on unmatched paths once any rule is configured — matching pyfly's
+// HttpSecurityFilter ("Access to this resource is denied (no matching
+// security rule).") and Spring Security 6, NOT fail-open / default-allow.
+#[tokio::test]
+async fn unmatched_path_is_denied_when_rules_configured() {
+    // A pyfly-style config declaring only known paths and relying on the
+    // implicit deny-all tail. /api/me is declared; an *undeclared* path
+    // (here the existing /public/docs route) must be denied, not served.
+    let chain = FilterChain::new()
+        .permit("/api/admin")
+        .authenticated("/api/**");
+
+    // The declared, authenticated path still works for a principal.
+    let app = chain_app(chain.clone());
+    assert_eq!(
+        status_of(app, req_as("/api/me", Some(auth("u1", &[], &[])))).await,
+        StatusCode::OK
+    );
+
+    // An undeclared path matches no rule -> 403 (fail-closed), even for an
+    // authenticated admin. Pre-fix this returned 200 (fail-open).
+    let app = chain_app(chain.clone());
+    assert_eq!(
+        status_of(
+            app,
+            req_as("/public/docs", Some(auth("admin", &["ADMIN"], &[])))
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+
+    // Anonymous on the undeclared path is likewise denied (403, not 200).
+    let app = chain_app(chain);
+    assert_eq!(
+        status_of(app, req_as("/public/docs", None)).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+// Regression for Bug 1: a chain with NO rules is a no-op (never a blanket
+// lockout), matching pyfly ("An HttpSecurity with no rules at all is a
+// no-op").
+#[tokio::test]
+async fn empty_chain_passes_everything_through() {
+    let app = chain_app(FilterChain::new());
+    assert_eq!(
+        status_of(app, req_as("/public/docs", None)).await,
+        StatusCode::OK
+    );
+}
+
+// Regression for Bug 1: the any_request_* catch-all (pyfly
+// `any_request().permit_all()` / `.authenticated()` / `.deny_all()`)
+// re-opens the deny-by-default tail with explicit, declaration-ordered
+// semantics.
+#[tokio::test]
+async fn any_request_permit_reopens_unmatched_tail() {
+    // Gate /api/** behind a role, then permit everything else.
+    let chain = FilterChain::new()
+        .require_pattern("/api/admin/**", &["ADMIN"])
+        .any_request_permit();
+
+    // The catch-all serves an otherwise-unmatched path, even anonymous.
+    let app = chain_app(chain.clone());
+    assert_eq!(
+        status_of(app, req_as("/public/docs", None)).await,
+        StatusCode::OK
+    );
+
+    // The earlier, more-specific rule still wins for its path.
+    let app = chain_app(chain);
+    assert_eq!(
+        status_of(app, req_as("/api/admin/users", None)).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+// Regression for Bug 1: any_request_authenticated forces auth on the tail.
+#[tokio::test]
+async fn any_request_authenticated_gates_unmatched_tail() {
+    let chain = FilterChain::new()
+        .permit("/public")
+        .any_request_authenticated();
+
+    // Unmatched-by-permit path requires a principal.
+    let app = chain_app(chain.clone());
+    assert_eq!(
+        status_of(app, req_as("/api/me", None)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let app = chain_app(chain.clone());
+    assert_eq!(
+        status_of(app, req_as("/api/me", Some(auth("u1", &[], &[])))).await,
+        StatusCode::OK
+    );
+
+    // The permit rule still serves the public path anonymously.
+    let app = chain_app(chain);
+    assert_eq!(
+        status_of(app, req_as("/public/docs", None)).await,
+        StatusCode::OK
+    );
+}
+
+// Regression for Bug 1: any_request_deny is the explicit form of the
+// implicit deny-by-default tail (pyfly `any_request().deny_all()`).
+#[tokio::test]
+async fn any_request_deny_rejects_unmatched_tail() {
+    let chain = FilterChain::new().permit("/public").any_request_deny();
+
+    let app = chain_app(chain.clone());
+    assert_eq!(
+        status_of(app, req_as("/api/me", Some(auth("admin", &["ADMIN"], &[])))).await,
+        StatusCode::FORBIDDEN
+    );
+
+    let app = chain_app(chain);
+    assert_eq!(
+        status_of(app, req_as("/public/docs", None)).await,
+        StatusCode::OK
+    );
+}

@@ -159,20 +159,49 @@ impl RecoveryService {
     ///   [`ExecutionStatus::Failed`].
     /// * [`RecoveryAction::Skip`] — leaves the run untouched and does not
     ///   count it.
+    ///
+    /// # Concurrency
+    ///
+    /// Each stuck execution is *claimed* with an atomic compare-and-swap
+    /// ([`PersistenceProvider::claim_stale`]) before its handler runs: the row
+    /// is transitioned to an in-recovery marker (`RUNNING` for resume,
+    /// `COMPENSATING` for compensate, `FAILED` for mark-failed) only if it is
+    /// still stale. This makes overlapping recovery passes — e.g. a scheduled
+    /// scan racing an operator-triggered scan — safe: the loser of the claim
+    /// observes the row as no longer stale and skips it, so the side-effecting
+    /// Resume/Compensate handler is never double-executed and the recovered
+    /// count is not double-incremented.
     pub async fn recover_stale(&self) -> Result<usize, PersistenceError> {
-        let stale = self.find_stale().await?;
+        let cutoff = Utc::now() - self.stale_threshold;
+        let stale = self.persistence.list_stale(cutoff).await?;
         let mut recovered = 0;
-        for mut state in stale {
+        for candidate in stale {
             let action = self
                 .decider
                 .as_ref()
-                .map_or(RecoveryAction::MarkFailed, |d| d(&state));
-            match action {
+                .map_or(RecoveryAction::MarkFailed, |d| d(&candidate));
+            // The in-recovery marker each action claims the row with. Skip
+            // never claims; the others atomically take ownership so a
+            // concurrent scan that saw the same row in `list_stale` loses the
+            // claim and moves on.
+            let claim_status = match action {
                 RecoveryAction::Skip => continue,
-                RecoveryAction::MarkFailed => {
-                    state.transition(ExecutionStatus::Failed);
-                    self.persistence.save(state).await?;
-                }
+                RecoveryAction::MarkFailed => ExecutionStatus::Failed,
+                RecoveryAction::Resume => ExecutionStatus::Running,
+                RecoveryAction::Compensate => ExecutionStatus::Compensating,
+            };
+            let Some(mut state) = self
+                .persistence
+                .claim_stale(&candidate.correlation_id, cutoff, claim_status)
+                .await?
+            else {
+                // Lost the claim (already recovered, refreshed, or another
+                // pass owns it) — do not run the handler or count it.
+                continue;
+            };
+            match action {
+                // Already transitioned to FAILED by the atomic claim.
+                RecoveryAction::MarkFailed => {}
                 RecoveryAction::Resume => {
                     let outcome = match &self.resume {
                         Some(handler) => handler(state.clone()).await,
@@ -199,6 +228,7 @@ impl RecoveryService {
                     state.transition(status);
                     self.persistence.save(state).await?;
                 }
+                RecoveryAction::Skip => unreachable!("skip handled above"),
             }
             recovered += 1;
         }
@@ -414,6 +444,83 @@ mod tests {
         assert_eq!(rolled_state.status, ExecutionStatus::Compensated);
         let skipped = persistence.load("skip-me").await.unwrap().unwrap();
         assert_eq!(skipped.status, ExecutionStatus::Running);
+    }
+
+    // Regression for Bug 2: two overlapping recovery passes that both observe
+    // the same stale execution must not both run the side-effecting resume
+    // handler. The atomic claim lets only one pass win, so the handler runs
+    // exactly once and only one pass counts the recovery.
+    #[tokio::test]
+    async fn overlapping_scans_run_resume_handler_once() {
+        let persistence = Arc::new(MemoryPersistence::new());
+        persistence
+            .save(stale_state("contested", "order-saga"))
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicU32::new(0));
+        // The handler yields and sleeps so the two passes overlap: the second
+        // scan reaches its claim before the first finishes, exercising the
+        // race the claim/CAS protects against.
+        let make = || {
+            let calls = calls.clone();
+            RecoveryService::new(persistence.clone() as Arc<dyn PersistenceProvider>)
+                .stale_threshold(Duration::seconds(60))
+                .decider(|_| RecoveryAction::Resume)
+                .on_resume(move |_state| {
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        tokio::task::yield_now().await;
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        Ok(())
+                    }
+                })
+        };
+        let a = make();
+        let b = make();
+
+        let (ra, rb) = tokio::join!(a.recover_stale(), b.recover_stale());
+        let total = ra.unwrap() + rb.unwrap();
+        assert_eq!(total, 1, "exactly one pass may recover the contested row");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "resume handler must run exactly once across overlapping scans"
+        );
+        let state = persistence.load("contested").await.unwrap().unwrap();
+        assert_eq!(state.status, ExecutionStatus::Completed);
+    }
+
+    // Regression for Bug 2: a stale row already recovered (terminal) by a
+    // prior pass is not picked up again by a subsequent scan, so the handler
+    // is not re-run.
+    #[tokio::test]
+    async fn second_scan_does_not_rerun_recovered_execution() {
+        let persistence = Arc::new(MemoryPersistence::new());
+        persistence
+            .save(stale_state("once", "order-saga"))
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        let recovery = service(&persistence)
+            .decider(|_| RecoveryAction::Compensate)
+            .on_compensate({
+                let calls = calls.clone();
+                move |_state| {
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                }
+            });
+        assert_eq!(recovery.recover_stale().await.unwrap(), 1);
+        // Second scan sees the row as terminal (Compensated) and skips it.
+        assert_eq!(recovery.recover_stale().await.unwrap(), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let state = persistence.load("once").await.unwrap().unwrap();
+        assert_eq!(state.status, ExecutionStatus::Compensated);
     }
 
     // Rust-specific: a failing resume handler marks the run failed.

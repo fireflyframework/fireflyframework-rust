@@ -479,18 +479,60 @@ fn aggregate_not_found_carries_type_and_id() {
     assert_eq!(err.code, "DOMAIN_AGGREGATE_NOT_FOUND");
     assert_eq!(err.status, 404);
     assert_eq!(err.fields.get("aggregate_type"), Some(&json!("Order")));
+    // Structured `id` carries the bare `str(id)` form (unquoted), as in pyfly.
     assert_eq!(err.fields.get("id"), Some(&json!("o-1")));
     assert!(err.to_string().contains("Order"));
     assert!(err.to_string().contains("o-1"));
-    assert_eq!(err.detail, "Order with id=o-1 not found");
+    // pyfly builds the detail with `{id!r}` (Python repr), which quotes
+    // string ids: AggregateNotFound("Order", "o-1") ==
+    //   "Order with id='o-1' not found".
+    assert_eq!(err.detail, "Order with id='o-1' not found");
 }
 
 #[test]
 fn aggregate_not_found_stringifies_non_string_ids() {
-    // pyfly: context["id"] = str(id).
+    // pyfly: context["id"] = str(id); the detail uses `{id!r}`, which for an
+    // int is unquoted: AggregateNotFound("Account", 42) ==
+    //   "Account with id=42 not found".
     let err = FireflyError::aggregate_not_found("Account", 42);
     assert_eq!(err.fields.get("id"), Some(&json!("42")));
     assert_eq!(err.detail, "Account with id=42 not found");
+}
+
+// Regression: bug 1 — the detail must mirror pyfly's `{id!r}` (Python repr).
+// String ids are wrapped in single quotes; numeric ids are left bare; the
+// structured `id` field stays the unquoted `str(id)` form in every case.
+#[test]
+fn aggregate_not_found_detail_matches_pyfly_repr() {
+    // Owned String id is quoted, like a &str id.
+    let owned = FireflyError::aggregate_not_found("Wallet", String::from("wlt-7"));
+    assert_eq!(owned.detail, "Wallet with id='wlt-7' not found");
+    assert_eq!(owned.fields.get("id"), Some(&json!("wlt-7")));
+
+    // A &String reference id is quoted too.
+    let id = String::from("wlt-7");
+    let by_ref = FireflyError::aggregate_not_found("Wallet", &id);
+    assert_eq!(by_ref.detail, "Wallet with id='wlt-7' not found");
+
+    // Signed/unsigned integers and a wide id are left bare.
+    let signed = FireflyError::aggregate_not_found("Account", -3i64);
+    assert_eq!(signed.detail, "Account with id=-3 not found");
+    assert_eq!(signed.fields.get("id"), Some(&json!("-3")));
+
+    let wide = FireflyError::aggregate_not_found("Account", 9_000_000_000u64);
+    assert_eq!(wide.detail, "Account with id=9000000000 not found");
+
+    // Python repr switches to a double-quote delimiter when the id contains a
+    // single quote but no double quote: repr("o'1") == "\"o'1\"".
+    let apostrophe = FireflyError::aggregate_not_found("Order", "o'1");
+    assert_eq!(apostrophe.detail, "Order with id=\"o'1\" not found");
+    assert_eq!(apostrophe.fields.get("id"), Some(&json!("o'1")));
+
+    // With both quote kinds present, repr keeps single-quote delimiters and
+    // escapes the embedded single quote: repr("a'b\"c") == "'a\\'b\"c'".
+    let both = FireflyError::aggregate_not_found("Order", "a'b\"c");
+    assert_eq!(both.detail, "Order with id='a\\'b\"c' not found");
+    assert_eq!(both.fields.get("id"), Some(&json!("a'b\"c")));
 }
 
 // ---------------------------------------------------------------------------

@@ -367,11 +367,88 @@ impl PushProvider for FirebasePushProvider {
     }
 }
 
-/// Renders a JSON value the way Python's `str()` would for FCM `data`:
-/// strings pass through unquoted, everything else uses its JSON text.
+/// Renders a JSON value the way Python's `str()` would for FCM `data`, matching
+/// pyfly's `{k: str(v) for k, v in message.data.items()}`.
+///
+/// This is the top-level `str()` call: a string value passes through unquoted
+/// (`str("x") == "x"`), while every other value is rendered by [`python_repr`]
+/// (`str()` and `repr()` coincide for `bool`/`None`/numbers/`list`/`dict`).
+///
+/// The recursive cases matter on the wire: a JSON boolean `true` becomes
+/// `"True"` (not `"true"`), `null` becomes `"None"`, an array `[1, 2]` becomes
+/// `"[1, 2]"` (with the `", "` separator), and an object `{"a": 1}` becomes
+/// `"{'a': 1}"` — exactly what CPython's `str()` produces for the equivalent
+/// `bool`/`None`/`list`/`dict`.
 fn stringify_value(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
-        other => other.to_string(),
+        other => python_repr(other),
     }
+}
+
+/// Renders a JSON value the way CPython's `repr()` would for the equivalent
+/// Python object, which is what `str()` delegates to for every non-`str` type.
+///
+/// * `bool` → `True` / `False`
+/// * `null` → `None`
+/// * numbers → their JSON text (integers and simple floats are byte-equal to
+///   Python's `str()`; serde_json already renders `1.0` as `"1.0"`)
+/// * `str` → Python string repr (see [`python_str_repr`])
+/// * arrays → `[<repr>, <repr>, ...]` with a `", "` separator
+/// * objects → `{<key repr>: <value repr>, ...}` with `", "` separators
+fn python_repr(v: &Value) -> String {
+    match v {
+        Value::Null => "None".to_string(),
+        Value::Bool(true) => "True".to_string(),
+        Value::Bool(false) => "False".to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => python_str_repr(s),
+        Value::Array(items) => {
+            let inner = items.iter().map(python_repr).collect::<Vec<_>>().join(", ");
+            format!("[{inner}]")
+        }
+        Value::Object(map) => {
+            let inner = map
+                .iter()
+                .map(|(k, val)| format!("{}: {}", python_str_repr(k), python_repr(val)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{inner}}}")
+        }
+    }
+}
+
+/// Renders a string the way CPython's `repr()` would: it prefers single quotes,
+/// but switches to double quotes when the string contains a single quote and no
+/// double quote, and escapes the backslash, the active quote, and the `\n`,
+/// `\r`, `\t` control characters (other ASCII control chars are emitted as
+/// `\xNN`). Non-control, printable characters — including non-ASCII — are passed
+/// through verbatim, matching Python 3's Unicode-aware repr.
+fn python_str_repr(s: &str) -> String {
+    let has_single = s.contains('\'');
+    let has_double = s.contains('"');
+    // CPython uses single quotes unless the string has a single quote but no
+    // double quote, in which case it uses double quotes to avoid escaping.
+    let quote = if has_single && !has_double { '"' } else { '\'' };
+
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(quote);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
 }

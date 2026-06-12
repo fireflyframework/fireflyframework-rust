@@ -532,3 +532,93 @@ async fn sms_optout_normalizes_phone_formatting() {
     prefs.opt_out("+1 (555) 123-4567", "sms");
     assert!(!prefs.is_opted_in("+15551234567", "sms").await);
 }
+
+// ===========================================================================
+// Regression tests for confirmed parity bugs.
+// ===========================================================================
+
+/// Bug 1 regression: a template-render failure is reported as FAILED but must
+/// NOT increment the `failed` metric. pyfly calls `engine.render(...)` outside
+/// any try/except, so a render error raises out of `send()` before the metrics
+/// tail and the `failed` counter is never touched. The earlier Rust port folded
+/// the render error into a FAILED result AND bumped `failed`, an undocumented
+/// metric side-effect that diverged from pyfly.
+#[tokio::test]
+async fn render_failure_is_failed_but_records_no_metric() {
+    // NoOpTemplateEngine always errors on render (pyfly's NoOpTemplateEngine).
+    let engine = Arc::new(NoOpTemplateEngine::new());
+    let provider = Arc::new(DummyEmailProvider::new());
+    let metrics = Arc::new(InMemoryNotificationMetrics::new());
+    let service = DefaultEmailService::new(provider.clone())
+        .with_template_engine(engine)
+        .with_metrics(metrics.clone());
+
+    let msg = EmailMessage {
+        to: vec!["u@example.com".to_string()],
+        sender: "s@example.com".to_string(),
+        subject: "Test".to_string(),
+        template_id: Some("never-registered".to_string()),
+        ..EmailMessage::new()
+    };
+    let result = service.send(msg).await;
+
+    // The render error surfaces as a FAILED result carrying the error string.
+    assert_eq!(result.status, DeliveryStatus::Failed);
+    assert!(result.error.is_some());
+    // The provider was never called (render happens before delivery).
+    assert_eq!(provider.sent().len(), 0);
+    // Crucially: NO metric was incremented on a render failure (pyfly parity).
+    assert!(
+        metrics.failed_calls().is_empty(),
+        "render failure must not bump the `failed` counter"
+    );
+    assert!(metrics.sent_calls().is_empty());
+    assert!(metrics.suppressed_calls().is_empty());
+}
+
+/// Bug 2 regression: SMS opt-out normalization must use Unicode-aware digit
+/// detection (pyfly's `str.isdigit()`), not an ASCII-only filter.
+///
+/// pyfly's `_normalize` *keeps* every `isdigit()` character verbatim (it does
+/// not transliterate to ASCII), so a Unicode-digit phone number preserves its
+/// digits in the opt-out key. The earlier Rust port filtered with
+/// `is_ascii_digit`, which **stripped** every non-ASCII digit — collapsing
+/// distinct Unicode-digit numbers to the same key (e.g. both `+１` and `+２`
+/// normalize to just `"+"`), causing false suppression collisions and a
+/// cross-port mismatch with pyfly.
+#[tokio::test]
+async fn sms_optout_uses_unicode_digit_filter() {
+    // --- Distinct fullwidth-digit numbers must NOT collide. ---
+    // Fullwidth digits ０-９ (U+FF10..) are Unicode `Nd` — Python isdigit True.
+    let prefs = InMemoryPreferenceService::new();
+    prefs.opt_out("+\u{FF11}", "sms"); // "+１"
+                                       // Opting out "+１" must NOT suppress the different number "+２".
+                                       // Under the old ASCII filter both collapsed to "+", a false match.
+    assert!(
+        prefs.is_opted_in("+\u{FF12}", "sms").await, // "+２" still opted IN
+        "distinct fullwidth-digit numbers must not collide to the same opt-out key"
+    );
+    // The exact same fullwidth number IS suppressed (digits are preserved).
+    assert!(!prefs.is_opted_in("+\u{FF11}", "sms").await);
+    // And an ASCII "+1" is a DIFFERENT key (digits kept verbatim, pyfly parity).
+    assert!(prefs.is_opted_in("+1", "sms").await);
+
+    // --- Arabic-Indic digits ٠-٩ (U+0660..) are also `Nd` and preserved. ---
+    let prefs2 = InMemoryPreferenceService::new();
+    prefs2.opt_out("+\u{0661}\u{0662}\u{0663}", "sms"); // "+١٢٣"
+    assert!(!prefs2.is_opted_in("+\u{0661}\u{0662}\u{0663}", "sms").await);
+    // Distinct Arabic-Indic number stays opted in (no ASCII-strip collision).
+    assert!(prefs2.is_opted_in("+\u{0664}\u{0665}\u{0666}", "sms").await); // "+٤٥٦"
+
+    // --- Superscript digits ¹²³ are NOT decimal but ARE isdigit-True in
+    //     Python (`Numeric_Type=Digit`); they must be KEPT by the filter,
+    //     matching pyfly. An ASCII-only filter would have stripped them. ---
+    let prefs3 = InMemoryPreferenceService::new();
+    prefs3.opt_out("\u{00B2}\u{00B3}", "sms"); // "²³"
+    assert!(
+        !prefs3.is_opted_in("\u{00B2}\u{00B3}", "sms").await,
+        "superscript digits are isdigit-True and must be kept (pyfly parity)"
+    );
+    // Distinct superscript pair stays opted in (digits preserved, not stripped).
+    assert!(prefs3.is_opted_in("\u{2074}\u{2075}", "sms").await); // "⁴⁵"
+}

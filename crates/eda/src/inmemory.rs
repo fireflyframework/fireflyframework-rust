@@ -41,11 +41,18 @@ pub struct InMemoryBroker {
 #[derive(Default)]
 struct Inner {
     subscriptions: Vec<Subscription>,
-    /// Round-robin cursor per consumer group (shared across topics, as
-    /// the competing handlers are selected from the per-event matching
-    /// set). Kept in an `Arc` so it can be cloned out of the lock and
-    /// advanced without holding the write guard during dispatch.
-    group_cursors: HashMap<String, Arc<AtomicUsize>>,
+    /// Round-robin cursor keyed by the `(event topic, consumer group)`
+    /// pair. pyfly's `InMemoryMessageBroker` keys its cursor by the same
+    /// `(topic, group)` pair (`messaging/adapters/memory.py`), so a group
+    /// that spans multiple topics keeps an *independent* cursor per topic.
+    /// Sharing one cursor across topics — when the per-event matching set
+    /// differs in size between topics — perturbs the modulo base and
+    /// starves members of one topic's set. Cursors are created lazily on
+    /// first dispatch for a given pair (so they survive new members joining
+    /// without resetting fairness mid-stream) and kept in an `Arc` so the
+    /// chosen cursor can be cloned out of the read lock and advanced
+    /// without holding the write guard during dispatch.
+    group_cursors: HashMap<(String, String), Arc<AtomicUsize>>,
     closed: bool,
 }
 
@@ -83,15 +90,22 @@ impl InMemoryBroker {
     /// every matching ungrouped handler in subscription order, plus one
     /// round-robin-selected handler per group with matching members.
     fn select_handlers(&self, ev: &Event) -> EdaResult<Vec<Handler>> {
-        let inner = self.inner.read().expect("firefly/eda: lock poisoned");
+        // Round-robin cursors are keyed by the `(event topic, group)` pair,
+        // which is only known once we have the event topic, so we may need
+        // to lazily create cursors. Take the write lock unconditionally —
+        // dispatch under the in-memory broker is cheap and this keeps the
+        // cursor lookup/creation atomic without a read→write upgrade dance.
+        let inner = &mut *self.inner.write().expect("firefly/eda: lock poisoned");
         if inner.closed {
             return Err(EdaError::Closed);
         }
 
         let mut to_invoke: Vec<Handler> = Vec::new();
         // Per-group matching handlers, preserving subscription order so
-        // the round-robin sequence is deterministic.
-        let mut group_matches: HashMap<&str, Vec<Handler>> = HashMap::new();
+        // the round-robin sequence is deterministic. The group name is
+        // cloned (owned) so the borrow of `inner.subscriptions` ends before
+        // we mutate `inner.group_cursors` below.
+        let mut group_matches: HashMap<String, Vec<Handler>> = HashMap::new();
 
         for sub in &inner.subscriptions {
             if !sub.matcher.is_match(ev.topic.as_str()) {
@@ -100,17 +114,19 @@ impl InMemoryBroker {
             match &sub.group {
                 None => to_invoke.push(Arc::clone(&sub.handler)),
                 Some(group) => group_matches
-                    .entry(group.as_str())
+                    .entry(group.clone())
                     .or_default()
                     .push(Arc::clone(&sub.handler)),
             }
         }
 
+        // For each group with matching members, advance its per-`(topic,
+        // group)` cursor — independent across topics, matching pyfly.
         for (group, handlers) in group_matches {
             let cursor = inner
                 .group_cursors
-                .get(group)
-                .expect("firefly/eda: group cursor present for any grouped subscription");
+                .entry((ev.topic.clone(), group))
+                .or_insert_with(|| Arc::new(AtomicUsize::new(0)));
             let idx = cursor.fetch_add(1, Ordering::Relaxed) % handlers.len();
             to_invoke.push(handlers[idx].clone());
         }
@@ -153,12 +169,9 @@ impl InMemoryBroker {
         if inner.closed {
             return Err(EdaError::Closed);
         }
-        if let Some(group) = &group {
-            inner
-                .group_cursors
-                .entry(group.clone())
-                .or_insert_with(|| Arc::new(AtomicUsize::new(0)));
-        }
+        // Cursors are keyed by `(event topic, group)` and created lazily on
+        // first dispatch, since the concrete event topic (not the glob
+        // subscription pattern) is only known at publish time.
         inner.subscriptions.push(Subscription {
             matcher,
             group,
