@@ -6,7 +6,7 @@ Date: 2026-06-12 · Status: founding design record (historical)
 > framework has since grown well beyond it — full **pyfly parity** (DI container,
 > AOP, sessions, shell, websockets, admin dashboard, real vendor adapters) and a
 > **WebFlux-style reactive core** (`Mono`/`Flux`). The vendor adapters described
-> below as "Stubs" are now **real integrations**, and the workspace has 68 crates,
+> below as "Stubs" are now **real integrations**, and the workspace has 66 crates,
 > not 52. For current scope see [`CHANGELOG.md`](../CHANGELOG.md), the
 > [reactive-completeness spec](superpowers/specs/2026-06-12-reactive-completeness-design.md),
 > [`MODULES.md`](../MODULES.md), and the [mdBook](book/src/SUMMARY.md).
