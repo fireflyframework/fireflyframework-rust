@@ -98,7 +98,7 @@ pub use registry::{parse_duration, RegistryError, ResilienceRegistry};
 pub use timeout::Timeout;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.1";
+pub const VERSION: &str = "26.6.2";
 
 #[cfg(test)]
 mod tests {

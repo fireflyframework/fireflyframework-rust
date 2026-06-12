@@ -1143,7 +1143,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "firefly-actuator"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-admin"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1187,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-aop"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "regex",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-backoffice"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cache"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "serde",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cache-postgres"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cache-redis"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "firefly-cache",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-callbacks"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1276,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cli"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "axum",
  "clap",
@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-client"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-stream",
  "axum",
@@ -1317,7 +1317,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-config"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "axum",
  "regex",
@@ -1332,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-config-server"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1348,7 +1348,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-container"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "futures",
  "serde_json",
@@ -1358,7 +1358,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cqrs"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "chrono",
  "firefly-eda",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-data"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1409,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-esignature-adobe-sign"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-esignature-docusign"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-esignature-logalty"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-storage-aws"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-storage-azure"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -1519,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda-kafka"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "firefly-eda",
@@ -1534,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda-postgres"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda-rabbitmq"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "firefly-eda",
@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda-redis"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "firefly-eda",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eventsourcing"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -1601,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-i18n"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "axum",
  "http",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1632,7 +1632,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp-aws-cognito"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp-azure-ad"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp-internal-db"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1692,7 +1692,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp-keycloak"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-integration-tests"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1744,7 +1744,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-kernel"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "chrono",
  "serde",
@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-lifecycle"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "thiserror 1.0.69",
  "tokio",
@@ -1765,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-migrations"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "chrono",
  "hex",
@@ -1778,7 +1778,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1793,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-firebase"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1809,7 +1809,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-resend"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1826,7 +1826,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-sendgrid"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-smtp"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -1860,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-twilio"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1876,7 +1876,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-observability"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1899,7 +1899,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-openapi"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "axum",
  "chrono",
@@ -1914,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-orchestration"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-plugins"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1947,7 +1947,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-reactive"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-stream",
  "firefly-kernel",
@@ -1959,7 +1959,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-resilience"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "firefly-config",
@@ -1970,7 +1970,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-rule-engine"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1989,7 +1989,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-orders"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -2012,7 +2012,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-reactive-banking"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-scheduling"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2071,7 +2071,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-security"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -2095,7 +2095,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-session"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -2120,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-shell"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -2130,7 +2130,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sse"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "axum",
  "bytes",
@@ -2146,7 +2146,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-application"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "firefly-cqrs",
@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-core"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -2185,7 +2185,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-data"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "axum",
  "firefly-cqrs",
@@ -2198,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-domain"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "firefly-eventsourcing",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-web"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "axum",
  "firefly-kernel",
@@ -2224,7 +2224,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-testkit"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "base64",
  "hex",
@@ -2236,7 +2236,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-transactional"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "rusqlite",
  "thiserror 1.0.69",
@@ -2244,7 +2244,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-utils"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-validators"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "chrono",
  "regex",
@@ -2269,7 +2269,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-web"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -2303,7 +2303,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-webhooks"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -2330,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-websocket"
-version = "26.6.1"
+version = "26.6.2"
 dependencies = [
  "async-trait",
  "axum",

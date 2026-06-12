@@ -73,7 +73,7 @@ use redis::{AsyncCommands, Client, ExistenceCheck, SetExpiry, SetOptions};
 use tokio::sync::Mutex;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.1";
+pub const VERSION: &str = "26.6.2";
 
 /// A [`firefly_cache::Adapter`] backed by a single Redis logical database.
 ///

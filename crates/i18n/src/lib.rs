@@ -68,7 +68,7 @@ use thiserror::Error;
 use tower::{Layer, Service};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.1";
+pub const VERSION: &str = "26.6.2";
 
 /// Errors produced when bulk-loading messages from serialized maps.
 #[derive(Debug, Error)]

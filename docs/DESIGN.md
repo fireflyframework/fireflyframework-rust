@@ -1,6 +1,15 @@
 # Firefly Framework for Rust — Design
 
-Date: 2026-06-12 · Status: approved (autonomous port, mirrors prior-port precedent)
+Date: 2026-06-12 · Status: founding design record (historical)
+
+> **Note:** this is the original design for the first (Go-parity) milestone. The
+> framework has since grown well beyond it — full **pyfly parity** (DI container,
+> AOP, sessions, shell, websockets, admin dashboard, real vendor adapters) and a
+> **WebFlux-style reactive core** (`Mono`/`Flux`). The vendor adapters described
+> below as "Stubs" are now **real integrations**, and the workspace has 68 crates,
+> not 52. For current scope see [`CHANGELOG.md`](../CHANGELOG.md), the
+> [reactive-completeness spec](superpowers/specs/2026-06-12-reactive-completeness-design.md),
+> [`MODULES.md`](../MODULES.md), and the [mdBook](book/src/SUMMARY.md).
 
 ## Goal
 
@@ -35,7 +44,7 @@ Success criteria:
   matching `go.work`.
 - **Crate naming**: `firefly-<module>` with hyphenation following the Java repo names
   (`firefly-idp-aws-cognito`, `firefly-ecm-storage-aws`, `firefly-starter-core`, …).
-- **Version**: `26.6.1` — the Go port's CalVer scheme (`v26.05.01`) expressed as valid semver,
+- **Version**: `26.6.2` — the Go port's CalVer scheme (`v26.05.01`) expressed as valid semver,
   bumped to the June 2026 release window. Edition 2021, MSRV 1.85.
 - **Dependency policy**: all external deps are declared once in `[workspace.dependencies]`;
   member crates only reference `{ workspace = true }`. Core stack: tokio, axum 0.7, tower,

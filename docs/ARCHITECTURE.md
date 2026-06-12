@@ -53,13 +53,14 @@ that bypasses the layering.
 
 ## Workspace of crates
 
-The Rust port is a single Cargo workspace of 67 members: 65 crates
-under `crates/` (named `firefly-<dir>`, hyphenation following the Java
-repo names), plus `tests/integration` and `samples/orders`. The
-Go-parity core matches the Go port's module set one-for-one; the
-remaining crates are the PyFly-parity layer (DI / AOP / sessions /
+The Rust port is a single Cargo workspace of **69 members**: **66
+crates** under `crates/` (named `firefly-<dir>`, hyphenation following
+the Java repo names), plus `tests/integration`, `samples/orders`, and
+`samples/reactive-banking`. The Go-parity core matches the Go port's
+module set one-for-one; the remaining crates are the reactive core
+(`firefly-reactive`) and the PyFly-parity layer (DI / AOP / sessions /
 shell / websockets / CLI / admin and the real infrastructure adapters).
-One version (`26.6.1`), one edition (2021), one MSRV (1.85) — set once
+One version (`26.6.2`), one edition (2021), one MSRV (1.85) — set once
 in `[workspace.package]` and inherited by every member.
 
 The runtime stack is deliberate and small:
@@ -84,10 +85,11 @@ Primitives every service uses, no transitive infrastructure dependencies.
 
 | Crate                | Purpose                                                                               |
 |----------------------|----------------------------------------------------------------------------------------|
+| `firefly-reactive`   | The `Mono<T>` / `Flux<T>` reactive core — the Project Reactor / WebFlux analog: lazy `FireflyError`-typed publishers, `Scheduler`, `FluxSink`, `Backoff`, the full operator surface. Every reactive surface above is built on it |
 | `firefly-kernel`     | RFC 7807 `ProblemDetail`, `FireflyResult<T>`, `Clock`, `FireflyError` hierarchy, task-local correlation |
 | `firefly-utils`      | Try helpers, retry with exponential backoff + jitter, slug, AES-256-GCM crypto, template rendering |
 | `firefly-validators` | IBAN (mod-97), BIC, Luhn, credit card, E.164 phone, currency (ISO 4217), email, password strength, sort code, VAT, Spanish DNI/NIE/NIF |
-| `firefly-web`        | Problem-Details renderer, correlation layer, idempotency layer (pluggable store), PII masking |
+| `firefly-web`        | Problem-Details renderer, correlation layer, idempotency layer (pluggable store), PII masking, and the reactive `MonoJson`/`NdJson`/`Sse`/`SseEvents` responders (NDJSON/SSE streaming with backpressure) |
 | `firefly-config`     | Layered Static / YAML / Env / Flag sources, profile selection, serde-driven binder; `${...}` placeholders, reload/refresh, masked property sources, config-server client |
 | `firefly-i18n`       | Locale-aware message bundles, Accept-Language picker, region→language fallback        |
 | `firefly-session`    | Server-side HTTP `Session` + `SessionStore` + `SessionLayer` (cookie load/save, rotation, HMAC signing, concurrency control) |
@@ -100,9 +102,9 @@ The infrastructure layer.
 |------------------------|-------------------------------------------------------------------------------|
 | `firefly-cache`        | `Adapter` trait port + Memory / NoOp / Fallback implementations + typed `Typed<T>` |
 | `firefly-observability`| `tracing` + correlation enrichment, health composite, startup banner          |
-| `firefly-data`         | Generic `Filter` DSL, `Page<T>` envelope, `Repository<T, K>` + memory impl    |
-| `firefly-cqrs`         | Generic command/query `Bus`, `TypeId`-dispatched handlers, validation + caching middleware |
-| `firefly-eda`          | `Event` envelope, `Publisher`/`Subscriber`, in-memory broker, Kafka/RabbitMQ scaffolds |
+| `firefly-data`         | Generic `Filter` DSL, `Page<T>` envelope, `Repository<T, K>` + memory impl, and the reactive `ReactiveCrudRepository<T, ID>` (memory + real `PostgresReactiveRepository` streaming `Flux<T>`) |
+| `firefly-cqrs`         | Generic command/query `Bus`, `TypeId`-dispatched handlers, validation + caching middleware, reactive `send_mono`/`query_mono` |
+| `firefly-eda`          | `Event` envelope, `Publisher`/`Subscriber`, in-memory broker, reactive `subscribe_reactive` → `Flux<Event>`, real transports in `eda-*` |
 | `firefly-eventsourcing`| Aggregate roots + event store (in-memory), snapshots, projection runner       |
 | `firefly-orchestration`| `Saga` (sequential + reverse-order compensation), `Workflow` (DAG), `Tcc`     |
 | `firefly-rule-engine`  | YAML DSL → AST → recursive evaluator (interfaces / models / core / web / sdk sub-modules) |
@@ -131,12 +133,12 @@ traits, injected as `Arc<dyn Trait>` at wiring time.
 
 | Parent / port            | Default impl in crate                                | Provider adapters                                        |
 |--------------------------|------------------------------------------------------|---------------------------------------------------------|
-| `firefly-client`         | REST builder (reqwest, retry, problem decode)        | SOAP, gRPC, WebSocket placeholders                      |
+| `firefly-client`         | REST builder (reqwest, retry, problem decode) + reactive `WebClient` (`body_to_mono`/`body_to_flux`) | SOAP, gRPC, WebSocket scaffolds                          |
 | `firefly-config-server`  | Spring-Cloud-Config-compatible handler + memory store| —                                                       |
 | `firefly-idp`            | `firefly-idp-internal-db` (bcrypt + HS256 JWT)       | **real:** `idp-keycloak`, `idp-azure-ad`, `idp-aws-cognito` |
 | `firefly-ecm`            | local-fs `ContentStore` + in-memory document service | **real:** `ecm-storage-aws` (S3), `ecm-storage-azure` (Blob), `ecm-esignature-docusign`, `ecm-esignature-adobe-sign`, `ecm-esignature-logalty` |
-| `firefly-notifications`  | Memory channel + dispatcher                          | **real:** `notifications-smtp`, `notifications-twilio`, `notifications-firebase`; **stub:** `notifications-sendgrid`, `notifications-resend` |
-| `firefly-cache`          | `MemoryAdapter` / `NoOpAdapter` / `FallbackAdapter`  | **real:** `cache-redis` (`RedisAdapter`); **stub:** `cache-postgres` (port pending) |
+| `firefly-notifications`  | Memory channel + dispatcher                          | **real (all):** `notifications-smtp`, `-sendgrid`, `-resend`, `-twilio`, `-firebase` |
+| `firefly-cache`          | `MemoryAdapter` / `NoOpAdapter` / `FallbackAdapter`  | **real:** `cache-redis` (`RedisAdapter`), `cache-postgres` (`PostgresCacheAdapter`) |
 | `firefly-eda`            | `InMemoryBroker`                                     | **real:** `eda-kafka`, `eda-rabbitmq`, `eda-postgres` (outbox), `eda-redis` (Streams) |
 | `firefly-callbacks`      | Full impl (HMAC-signing dispatcher + audit + REST admin + SDK) | —                                             |
 | `firefly-webhooks`       | Full impl (HMAC / Stripe / GitHub / Twilio validators + pipeline + DLQ + ingest endpoint + SDK) | —            |
@@ -208,7 +210,7 @@ One-call composition.
 | `firefly-starter-application`| starter-core + plugins registry                                    |
 | `firefly-starter-domain`     | starter-core + in-memory event-sourcing stores                     |
 | `firefly-starter-data`       | starter-core (consumer supplies its own DB)                        |
-| `firefly-starter-web`        | starter-core + web middleware + security + actuator wiring (**stub**, port pending) |
+| `firefly-starter-web`        | `WebStack` — `Core` + CORS + security headers + request metrics + access log (web batteries on by default), optional `FilterChain` security |
 | `firefly-backoffice`         | starter-application + back-office context middleware               |
 
 Each starter ships an embedded banner printed at startup (via
@@ -306,19 +308,41 @@ their way to a correct `application/problem+json` response.
 
 The Java framework is built on Project Reactor (`Mono`, `Flux`); the
 .NET port uses `Task`/`IAsyncEnumerable`; the Go port uses
-`(T, error)` + channels. Async Rust is Reactor's most natural analog —
-the translation rules are:
+`(T, error)` + channels. The Rust port ships a **first-class reactive
+core** — `firefly-reactive`'s `Mono<T>` / `Flux<T>` — that is the
+faithful Reactor analog, *and* it interoperates with plain async Rust,
+so authors pick the level that fits.
+
+The **reactive translation** (first-class types):
+
+| Java (Reactor)               | firefly-reactive                                              |
+|------------------------------|---------------------------------------------------------------|
+| `Mono<T>`                    | `Mono<T>` (lazy, `FireflyError`-typed)                        |
+| `Flux<T>`                    | `Flux<T>` (lazy, terminal error)                             |
+| `Mono.empty()` / `onComplete`| `Ok(None)` from a `Mono`                                      |
+| `Mono.error(...)`            | `Mono::error(FireflyError::...)` / a terminal `Err`           |
+| `Mono.block()`               | `Mono::block` — `async`, never parks a Tokio worker          |
+| `Schedulers.{immediate,parallel,boundedElastic}` | `Scheduler::{Immediate,Parallel,BoundedElastic}` |
+| `Retry.backoff(..)`          | `Backoff` + `*::retry_backoff`                               |
+| `Mono.timeout(...)`          | `Mono::timeout` / `Flux::timeout` (→ 504 `FireflyError`)      |
+| `Flux.onBackpressureBuffer`  | `Flux::on_backpressure_buffer` (bounded channels underneath)  |
+| `FluxSink` / `Flux.create`   | `FluxSink` / `Flux::create`                                   |
+| `Mono.toFuture()` / `Flux.toStream()` | `Mono::into_future` / `Flux::into_stream` (escape hatches) |
+
+The **plain-async translation** still applies wherever a service prefers
+ordinary `async`/`await` over the reactive types (most internal code):
 
 | Java (Reactor)               | Rust idiom                                                     |
 |------------------------------|----------------------------------------------------------------|
 | `Mono<T>`                    | `async fn(..) -> FireflyResult<T>`                             |
 | `Flux<T>`                    | `impl Stream<Item = T>` (`futures` / `tokio-stream`)           |
-| `Mono.error(...)`            | `Err(FireflyError::...)`                                       |
 | `Mono.deferContextual(...)`  | Task-local read (`correlation_id()`) or explicit handle        |
 | Subscribers                  | Spawned tasks (`tokio::spawn`)                                 |
-| `Mono.timeout(...)`          | `tokio::time::timeout(d, fut)`                                 |
-| Backpressure (`Flux.onBackpressureBuffer`) | Bounded `mpsc` channels                          |
 | Cancellation                 | Future drop + `CancellationToken` for cooperative engines      |
+
+The reactive types convert to and from raw `Stream` / `Future` at the
+edges (`Flux::from_stream` / `Mono::from_future` in, `into_stream` /
+`into_future` out), so the two styles compose freely.
 
 ## Dependency waves (build order)
 
@@ -360,5 +384,5 @@ Wave 4 ── composition:
 
 Calendar-versioned, expressed as valid semver (`YY.M.PATCH`) — kept in
 lock-step with the Java, .NET, Go, and Python releases. The current
-version is exposed as `firefly_kernel::VERSION = "26.6.1"` and set once
+version is exposed as `firefly_kernel::VERSION = "26.6.2"` and set once
 in the workspace `Cargo.toml`.

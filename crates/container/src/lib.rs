@@ -92,7 +92,7 @@ pub use registration::{BeanMetrics, Factory, Registration, HIGHEST_PRECEDENCE, L
 pub use scope::{RefreshScope, Scope, ScopeHandler, ScopeSpec, SharedInstance, REFRESH_SCOPE_NAME};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.1";
+pub const VERSION: &str = "26.6.2";
 
 /// Type-erased boxed `Arc<T>` — a sized fat pointer wrapped in `Box<dyn Any>`
 /// so resolution can return `Arc<T>` for both sized and `?Sized` (trait-object)

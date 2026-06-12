@@ -55,7 +55,7 @@ reference afterward.
   define the vocabulary.
 
 > **Note** — Every code block in this book is real, compiling Rust against the
-> actual crate APIs at version 26.6.1. Where a snippet elides setup for brevity
+> actual crate APIs at version 26.6.2. Where a snippet elides setup for brevity
 > it is marked, but the API names, types, and method signatures are exactly what
 > the crates expose.
 

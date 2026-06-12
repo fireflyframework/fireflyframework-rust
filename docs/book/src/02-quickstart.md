@@ -47,9 +47,9 @@ cd orders
 ```toml
 # Cargo.toml
 [dependencies]
-firefly-starter-core = "26.6.1"
-firefly-reactive = "26.6.1"
-firefly-web = "26.6.1"
+firefly-starter-core = "26.6.2"
+firefly-reactive = "26.6.2"
+firefly-web = "26.6.2"
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 serde_json = "1"

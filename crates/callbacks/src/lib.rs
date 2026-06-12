@@ -116,4 +116,4 @@ pub use crate::sdk::CallbacksClient;
 pub use crate::web::handler;
 
 /// The released framework version stamp shared by every Firefly crate.
-pub const VERSION: &str = "26.6.1";
+pub const VERSION: &str = "26.6.2";

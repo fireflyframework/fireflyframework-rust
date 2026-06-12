@@ -9,10 +9,11 @@
 
 | Crate | What it provides |
 |-------|------------------|
+| [`firefly-reactive`](crates/reactive/README.md) | The **`Mono<T>` / `Flux<T>` reactive core** — the Project Reactor / WebFlux analog and keystone of every reactive surface: lazy `FireflyError`-typed publishers, `Scheduler` (`Immediate`/`Parallel`/`BoundedElastic`), `FluxSink`, `Backoff` retry, full operator set (map/flat_map/filter/reduce/merge/zip/retry/timeout/backpressure/window) |
 | [`firefly-kernel`](crates/kernel/README.md) | RFC 7807 `ProblemDetail`, `FireflyResult<T>`, `Clock`, `FireflyError` hierarchy, task-local correlation/request/tenant scopes, `ddd` module (`Entity`/`Specification`/domain events), typed `ErrorResponse` |
 | [`firefly-utils`](crates/utils/README.md) | Try helpers, retry with exponential backoff, slug, AES-256-GCM, templates |
 | [`firefly-validators`](crates/validators/README.md) | IBAN, BIC, Luhn, currency, phone, password, sort code, VAT, Spanish IDs, `national_id`/`tax_id` |
-| [`firefly-web`](crates/web/README.md) | Problem renderer, correlation, idempotency, PII masking, CORS, CSRF (double-submit cookie), security headers, server metrics, content negotiation, `ServerProperties`/TLS bootstrap — composable `tower` layers |
+| [`firefly-web`](crates/web/README.md) | Problem renderer, correlation, idempotency, PII masking, CORS, CSRF (double-submit cookie), security headers, server metrics, content negotiation, `ServerProperties`/TLS bootstrap, the reactive `MonoJson`/`NdJson`/`Sse`/`SseEvents` responders (NDJSON/SSE streaming with backpressure) — composable `tower` layers |
 | [`firefly-config`](crates/config/README.md) | Typed YAML+env+flag binding with profile selection, `${key:default}` placeholders, runtime reload/refresh, masked property sources, `accepts_profiles`, `ApplicationEventBus`, config-server client |
 | [`firefly-i18n`](crates/i18n/README.md) | Locale-aware message `Bundle` + Accept-Language picker |
 
@@ -22,9 +23,9 @@
 |-------|------------------|
 | [`firefly-cache`](crates/cache/README.md) | `Adapter` trait port + Memory (LRU + stats) / NoOp / Fallback + typed `Typed<T>` (Redis/Postgres adapters in `cache-*`) |
 | [`firefly-observability`](crates/observability/README.md) | `tracing` + correlation enrichment, health composite, startup banner, W3C trace-context propagation, log redaction, rolling file appender, console renderer, labeled metrics |
-| [`firefly-data`](crates/data/README.md) | Filter DSL, `Page<T>`, `Repository<T, K>`, `Mapper`/`Projection` object mapper, `QueryMethodParser` derived queries, `Pageable`/`Sort`/`Order` |
-| [`firefly-cqrs`](crates/cqrs/README.md) | Command + query `Bus` with validation + caching middleware |
-| [`firefly-eda`](crates/eda/README.md) | `Event` envelope, `Publisher`/`Subscriber`/`Broker` ports, `InMemoryBroker`, glob topics, consumer groups, `EventFilter` chain, queryable `EdaDeadLetterStore`, `EventPublisherHealthIndicator`, `wrap_listener` retry/DLQ (transports in `eda-*`) |
+| [`firefly-data`](crates/data/README.md) | Filter DSL, `Page<T>`, `Repository<T, K>`, `Mapper`/`Projection` object mapper, `QueryMethodParser` derived queries, `Pageable`/`Sort`/`Order`, and the **reactive** `ReactiveCrudRepository<T, ID>` (in-memory `ReactiveMemoryRepository` + real `PostgresReactiveRepository` streaming rows as `Flux<T>`) |
+| [`firefly-cqrs`](crates/cqrs/README.md) | Command + query `Bus` with validation + caching middleware, plus **reactive** `send_mono`/`query_mono` (+ `_with_context`) returning `Mono<R>` |
+| [`firefly-eda`](crates/eda/README.md) | `Event` envelope, `Publisher`/`Subscriber`/`Broker` ports, `InMemoryBroker`, glob topics, consumer groups, `EventFilter` chain, queryable `EdaDeadLetterStore`, `EventPublisherHealthIndicator`, `wrap_listener` retry/DLQ, plus **reactive** `subscribe_reactive` → `Flux<Event>` and `publish_mono` (transports in `eda-*`) |
 | [`firefly-eventsourcing`](crates/eventsourcing/README.md) | Aggregate roots + event store + snapshots + projections, global `stream_all` + cross-aggregate projections, multi-tenancy, `EventSourcedRepository` |
 | [`firefly-orchestration`](crates/orchestration/README.md) | `Saga` (compensation), `Workflow` (DAG) with step compensation / `wait_all`·`wait_any` / `ChildWorkflowService` / `ContinueAsNew` / conditional + async steps / per-step retry·backoff·timeout · `StepContext` data passing, `Tcc` |
 | [`firefly-rule-engine`](crates/rule-engine/README.md) | YAML DSL → AST → evaluator with `between`/null/`regex` operators, `Rule.otherwise`, `EvaluationMode`, ruleset validator + `ActionHandler` (sub-modules: interfaces, models, core, web, sdk) |
@@ -46,7 +47,7 @@
 
 | Crate | What it provides |
 |-------|------------------|
-| [`firefly-client`](crates/client/README.md) | REST builder with retry, problem decode, correlation propagation; SOAP/gRPC/WS scaffolds |
+| [`firefly-client`](crates/client/README.md) | REST builder with retry, problem decode, correlation propagation; the **reactive `WebClient`** (`WebClientBuilder` → `get`/`post`/… → `retrieve().body_to_mono::<T>()` / `body_to_flux::<T>()` / `exchange()`); SOAP/gRPC/WS scaffolds |
 | [`firefly-config-server`](crates/config-server/README.md) | Spring-Cloud-Config-compatible REST endpoint |
 
 ### Identity providers
@@ -64,11 +65,11 @@
 | Crate | Backing |
 |-------|---------|
 | [`firefly-ecm`](crates/ecm/README.md) | Adapter framework + LocalStore — **Full** |
-| [`firefly-ecm-storage-aws`](crates/ecm-storage-aws/README.md) | AWS S3 (`S3Store`) — **Full** (+ back-compat stub) |
-| [`firefly-ecm-storage-azure`](crates/ecm-storage-azure/README.md) | Azure Blob Storage (`BlobStore`) — **Full** (+ back-compat stub) |
-| [`firefly-ecm-esignature-docusign`](crates/ecm-esignature-docusign/README.md) | DocuSign REST v2.1 — **Full** (+ legacy stub) |
-| [`firefly-ecm-esignature-adobe-sign`](crates/ecm-esignature-adobe-sign/README.md) | Adobe Sign REST v6 — **Full** (+ legacy stub) |
-| [`firefly-ecm-esignature-logalty`](crates/ecm-esignature-logalty/README.md) | Logalty eIDAS REST — **Full** (+ legacy stub) |
+| [`firefly-ecm-storage-aws`](crates/ecm-storage-aws/README.md) | AWS S3 (`S3Store`, real REST + SigV4) — **Full** |
+| [`firefly-ecm-storage-azure`](crates/ecm-storage-azure/README.md) | Azure Blob Storage (`BlobStore`, real REST) — **Full** |
+| [`firefly-ecm-esignature-docusign`](crates/ecm-esignature-docusign/README.md) | DocuSign eSignature REST v2.1 (`RestProvider`) — **Full** |
+| [`firefly-ecm-esignature-adobe-sign`](crates/ecm-esignature-adobe-sign/README.md) | Adobe Sign REST v6 — **Full** |
+| [`firefly-ecm-esignature-logalty`](crates/ecm-esignature-logalty/README.md) | Logalty eIDAS REST — **Full** |
 
 ### Notifications
 
@@ -76,10 +77,10 @@
 |-------|---------|
 | [`firefly-notifications`](crates/notifications/README.md) | Dispatcher + MemoryChannel — **Full** |
 | [`firefly-notifications-smtp`](crates/notifications-smtp/README.md) | SMTP email via `lettre` (`SmtpEmailProvider`, real MIME, STARTTLS) — **Full** |
-| [`firefly-notifications-sendgrid`](crates/notifications-sendgrid/README.md) | SendGrid (email) — Stub |
-| [`firefly-notifications-resend`](crates/notifications-resend/README.md) | Resend (email) — Stub |
-| [`firefly-notifications-twilio`](crates/notifications-twilio/README.md) | Twilio (SMS) — **Full** real provider (+ Go-parity stub) |
-| [`firefly-notifications-firebase`](crates/notifications-firebase/README.md) | Firebase Cloud Messaging (push) — **Full** real provider (+ Go-parity stub) |
+| [`firefly-notifications-sendgrid`](crates/notifications-sendgrid/README.md) | SendGrid email via v3 `/mail/send` over `reqwest` (`SendGridEmailProvider` + envelope `Channel`) — **Full** |
+| [`firefly-notifications-resend`](crates/notifications-resend/README.md) | Resend email via `POST /emails` over `reqwest` (`ResendEmailProvider` + envelope `Channel`) — **Full** |
+| [`firefly-notifications-twilio`](crates/notifications-twilio/README.md) | Twilio SMS via the Messages REST API — **Full** |
+| [`firefly-notifications-firebase`](crates/notifications-firebase/README.md) | Firebase Cloud Messaging (push) via the FCM HTTP v1 API — **Full** |
 
 ### Webhooks (outbound + inbound)
 
@@ -98,7 +99,7 @@ in only by services that select that backend.
 | Crate | Port → backend |
 |-------|----------------|
 | [`firefly-cache-redis`](crates/cache-redis/README.md) | `cache::Adapter` → Redis (`RedisAdapter`, RESP via `redis`) — **Full** |
-| [`firefly-cache-postgres`](crates/cache-postgres) | `cache::Adapter` → Postgres key/value table with TTL (`tokio-postgres`) — **Stub** (port pending) |
+| [`firefly-cache-postgres`](crates/cache-postgres/README.md) | `cache::Adapter` → Postgres key/value table with TTL (`PostgresCacheAdapter`, real SQL over `tokio-postgres`) — **Full** |
 | [`firefly-eda-kafka`](crates/eda-kafka/README.md) | `eda::Broker` → Apache Kafka (`KafkaBroker`, `new_kafka_broker`, `rdkafka`) — **Full** |
 | [`firefly-eda-rabbitmq`](crates/eda-rabbitmq/README.md) | `eda::Broker` → RabbitMQ (`RabbitMqBroker`, durable direct exchange, publisher confirms, `lapin`) — **Full** |
 | [`firefly-eda-postgres`](crates/eda-postgres/README.md) | `eda::Broker` → Postgres transactional outbox + `LISTEN`/`NOTIFY` (`PostgresBroker`, advisory-lock drain) — **Full** |
@@ -114,7 +115,7 @@ in only by services that select that backend.
 | [`firefly-starter-application`](crates/starter-application/README.md) | starter-core + plugins registry |
 | [`firefly-starter-domain`](crates/starter-domain/README.md) | starter-core + in-memory event-sourcing stores |
 | [`firefly-starter-data`](crates/starter-data/README.md) | starter-core (consumer supplies their own DB) |
-| [`firefly-starter-web`](crates/starter-web) | starter-core + web middleware + security + actuator wiring — **Stub** (port pending) |
+| [`firefly-starter-web`](crates/starter-web/README.md) | `WebStack` — `Core` + CORS + security headers + request metrics + access log (web batteries on by default, optional `FilterChain` security) — **Full** |
 | [`firefly-backoffice`](crates/backoffice/README.md) | starter-application + back-office context middleware |
 
 ## 05 — DI / AOP / Shell / Sessions / WebSockets
@@ -134,13 +135,13 @@ Go-parity core or the starters require them.
 
 | Crate | What it provides |
 |-------|------------------|
-| [`firefly-admin`](crates/admin) | Spring-Boot-Admin-style embedded dashboard: single-page UI (overview / health / metrics / loggers / mappings / caches / scheduled tasks / traces / CQRS / transactions / beans / config / instances), JSON API over `firefly-actuator`, and SSE live streams |
+| [`firefly-admin`](crates/admin/README.md) | Spring-Boot-Admin-style embedded dashboard: single-page UI (overview / health / metrics / loggers / mappings / caches / scheduled tasks / traces / CQRS / transactions / beans / config / instances), JSON API over `firefly-actuator`, and SSE live streams |
 
 ## 07 — Tooling
 
 | Crate | What it provides |
 |-------|------------------|
-| [`firefly-cli`](crates/cli/README.md) | The `firefly` developer binary: `new` (project scaffold), `generate`/`g` (handler / entity / command / saga / migration / …), `info`, `doctor` (toolchain checks), `actuator` (remote `/actuator/*` introspection) |
+| [`firefly-cli`](crates/cli/README.md) | The `firefly` developer binary: `new` (project scaffold), `generate`/`g` (handler / entity / command / saga / migration / …), `info`, `doctor` (toolchain checks), `db` (migrate / upgrade), `openapi` (spec gen), and remote actuator introspection (`actuator` / `routes` / `env` / `health` / `metrics`) |
 
 ## 08 — Tests
 
@@ -153,3 +154,4 @@ Go-parity core or the starters require them.
 | Path | Purpose |
 |------|---------|
 | [`samples/orders/`](samples/orders) | Reference service demonstrating idempotent POST + cached GET + actuator + lifecycle |
+| [`samples/reactive-banking/`](samples/reactive-banking) | End-to-end **reactive** service (`firefly-sample-reactive-banking`): reactive CQRS (`Bus::send_mono`/`query_mono`), event sourcing, a saga-backed money transfer, a `Flux<AccountEvent>` NDJSON/SSE stream, JWT-secured `starter-web`, and a `WebClient` SDK — running on in-memory defaults or real Postgres/Kafka |

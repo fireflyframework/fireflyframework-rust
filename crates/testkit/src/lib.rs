@@ -52,4 +52,4 @@ pub use json::{must_decode, must_encode};
 pub use signers::{sign_github, sign_hmac, sign_stripe, sign_twilio};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.1";
+pub const VERSION: &str = "26.6.2";

@@ -2,6 +2,117 @@
 
 All notable changes to the Rust port of Firefly Framework.
 
+## v26.6.2 — 2026-06-13
+
+The **reactive milestone**. This release adds a WebFlux-style reactive
+core and threads it through the framework, makes every vendor adapter
+real (no stubs remain), introduces real-infrastructure Docker testing
+and an mdBook documentation site, and ships the `firefly` developer CLI
+and an end-to-end reactive sample. The Go-parity wire contract is
+unchanged; everything here is additive.
+
+### Added
+
+**Reactive core (the keystone)**
+
+- `firefly-reactive` — a faithful Project Reactor / WebFlux analog:
+  `Mono<T>` (0-or-1 + error) and `Flux<T>` (0..N + terminal error) over
+  `tokio` futures/streams, fixed to `firefly_kernel::FireflyError`. Ships
+  a `Scheduler` (`Immediate` / `Parallel` / `BoundedElastic`), a
+  `FluxSink` for imperative emission (`Flux::create`), a `Backoff` retry
+  policy, and the full operator surface — transform (`map` / `flat_map` /
+  `concat_map` / `scan`), combine (`merge` / `concat` / `zip` /
+  `combine_latest`), reduce/terminal (`reduce` / `collect_list` /
+  `collect_map`), error (`on_error_resume` / `on_error_continue` /
+  `retry` / `retry_backoff`), time (`timeout` / `debounce` / `sample` /
+  `interval`), backpressure (`on_backpressure_{buffer,drop,latest}` /
+  `limit_rate`), and windowing (`buffer` / `window` / `group_by`).
+
+**Reactive integration across the framework**
+
+- `firefly-web` — reactive HTTP responders: `MonoJson<T>` (renders a
+  `Mono` as JSON, `Ok(None)` → 404 problem+json, `Err` → RFC 7807),
+  `NdJson<T>` and `Sse<T>` (stream a `Flux` as `application/x-ndjson` /
+  `text/event-stream` with **true backpressure** — never buffered),
+  and `SseEvents` (pre-built `firefly_sse::Event` frames).
+- `firefly-data` — the reactive `ReactiveCrudRepository<T, ID>` (with
+  `find_all` / `find_by_id` / `save` / `delete_by_id` / `count` returning
+  `Mono`/`Flux`), an in-memory `ReactiveMemoryRepository`, a
+  `ReactiveSpecificationRepository`, and a real `PostgresReactiveRepository`
+  that streams rows out of `find_all()` as a `Flux<T>` over
+  `tokio-postgres` (with `RowMapper` / `TableConfig`).
+- `firefly-client` — the reactive `WebClient` (`WebClientBuilder` →
+  `get`/`post`/`put`/`delete`/`patch` → `RequestSpec` →
+  `retrieve()` → `ResponseSpec::body_to_mono::<T>()` /
+  `body_to_flux::<T>()` / `exchange()`), the Rust analog of WebFlux's
+  `WebClient`.
+- `firefly-eda` — reactive subscription: `InMemoryBroker::subscribe_reactive`
+  (and `_with_buffer`) yields a `Flux<Event>` with bounded backpressure,
+  and `publish_mono` is a cold reactive publish.
+- `firefly-cqrs` — reactive bus: `Bus::send_mono` / `query_mono` (and the
+  `_with_context` variants) wrap dispatch in a lazy `Mono<R>`, running the
+  same handler lookup and validation/authorization/caching middleware;
+  `cqrs_error_to_firefly` maps `CqrsError` onto the right HTTP status.
+
+**Real vendor adapters — zero stubs**
+
+- The SendGrid and Resend email channels are now real: `SendGridEmailProvider`
+  POSTs to SendGrid v3 `/mail/send`, `ResendEmailProvider` POSTs to Resend
+  `/emails`, both over `reqwest`; their Go-parity envelope `Channel`s
+  delegate to the real provider. No notification, IDP, or ECM adapter
+  ships a `NotImplemented` sentinel any longer.
+- `firefly-cache-postgres` is a real `cache::Adapter` (`PostgresCacheAdapter`)
+  backed by a Postgres key/value table with TTL over `tokio-postgres`
+  (upsert, `set_if_absent`, `delete_prefix`, key scan, health check).
+- `firefly-starter-web` is a real web-stack starter: `WebStack` layers
+  `Core` with CORS, security headers, request metrics, and an access log
+  by default, with optional `FilterChain` security.
+
+**Real-infrastructure testing**
+
+- A `docker-compose.yml` stack (Postgres, Redis, RabbitMQ, Redpanda,
+  Keycloak, LocalStack S3, Azurite Blob, MailHog SMTP) plus
+  `make infra-up` / `make test-integration` / `make infra-down`. The
+  env-gated integration tests run the cache, EDA, IDP, ECM, notification,
+  and reactive-Postgres adapters — and the reactive-banking sample —
+  against the **real** services, while `cargo test --workspace` stays
+  green offline (each test skips when its connection env var is unset).
+
+**Documentation, tooling, and samples**
+
+- `docs/book` — an mdBook guide (builds with mdBook) covering why-Firefly,
+  quickstart, configuration, dependency wiring, the keystone reactive
+  model, HTTP APIs, persistence, DDD, CQRS, EDA, event sourcing, sagas,
+  HTTP clients, security, observability, scheduling/notifications,
+  caching, testing, the CLI, production, and appendices (Spring mapping,
+  module index, glossary).
+- `firefly-cli` — the `firefly` developer binary (`new`, `generate`/`g`,
+  `info`, `doctor`, `db`, `openapi`, and remote actuator introspection),
+  installable via `make cli-install` / `cargo install --path crates/cli`.
+- `samples/reactive-banking` — `firefly-sample-reactive-banking`, an
+  end-to-end reactive service: reactive CQRS, event sourcing, a
+  saga-backed money transfer, a `Flux<AccountEvent>` NDJSON/SSE stream,
+  JWT-secured `starter-web`, and a `WebClient` SDK, running on in-memory
+  defaults or real Postgres/Kafka.
+
+### Changed
+
+- Every source file now carries the Apache 2.0 license header (Firefly
+  Software Foundation, 2026).
+- Documentation refreshed end to end (README, `MODULES.md`, the `docs/`
+  guides, and the book): the reactive core and integrations are now
+  prominent, all vendor adapters are documented as real/Full, the
+  real-infra testing path is described, and the workspace count is
+  current (66 framework crates; 69 workspace members).
+
+### Fixed
+
+- Adversarial-review fixes across the reactive surfaces and adapters
+  (error mapping, backpressure/termination semantics, and connection
+  handling), and corrected documentation that previously described
+  SendGrid/Resend, `cache-postgres`, and `starter-web` as port-pending
+  stubs.
+
 ## v26.6.1 — 2026-06-12
 
 **First public release** of the Rust port at

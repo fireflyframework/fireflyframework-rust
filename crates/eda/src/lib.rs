@@ -135,4 +135,4 @@ pub use rabbitmq::{new_rabbitmq_broker, RabbitMqConfig};
 pub use reactive::DEFAULT_REACTIVE_BUFFER;
 
 /// The released framework version, shared across all Firefly crates.
-pub const VERSION: &str = "26.6.1";
+pub const VERSION: &str = "26.6.2";

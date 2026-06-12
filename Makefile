@@ -1,7 +1,7 @@
 .PHONY: help build test test-v clippy fmt fmt-check sample cli cli-install clean ci \
         infra-up infra-down infra-status test-integration book book-serve
 
-VERSION := 26.6.1
+VERSION := 26.6.2
 
 # cargo may live outside the default make PATH (e.g. Homebrew installs).
 export PATH := $(PATH):/opt/homebrew/bin:$(HOME)/.cargo/bin
