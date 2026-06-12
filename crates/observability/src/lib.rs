@@ -14,8 +14,11 @@
 //! 2. **Health indicators** — composable [`Indicator`] probes with a
 //!    [`Composite`] aggregator producing the canonical
 //!    UP / DEGRADED / DOWN / UNKNOWN rollup and per-check timing.
-//! 3. **Startup banner** — the ASCII Firefly banner + framework version +
-//!    runtime identifying line ([`print_banner`]).
+//! 3. **Startup banner** — the ASCII Firefly banner + canonical metadata
+//!    block (framework version, foundation/license, app, runtime, active
+//!    profiles, optional Swagger-UI URL). [`print_banner`] renders it
+//!    plainly; [`BannerPrinter`] adds [`BannerMode`] selection, custom
+//!    banner files, and TTY-aware ANSI colour.
 //!
 //! OpenTelemetry SDK wiring (exporters, sampling, resource attributes) is
 //! left to the application's `main.rs` — this crate exposes only the
@@ -74,7 +77,10 @@ mod redaction;
 mod trace_context;
 
 pub use appender::{parse_size, FileConfig, RollingFileWriter, TeeWriter};
-pub use banner::{banner_string, print_banner, render_banner, BannerData, RUSTC_VERSION};
+pub use banner::{
+    banner_string, print_banner, render_banner, BannerConfig, BannerData, BannerMode,
+    BannerPrinter, RUSTC_VERSION,
+};
 pub use config_loader::{apply_external_config, load_log_config, ConfigLoadError};
 pub use health::{Composite, HealthResult, Indicator, IndicatorFn, Status};
 pub use logging::{
@@ -115,6 +121,8 @@ mod tests {
         assert_send_sync::<BufferWriter>();
         assert_send_sync::<LogConfig>();
         assert_send_sync::<BannerData>();
+        assert_send_sync::<BannerPrinter>();
+        assert_send_sync::<BannerMode>();
         // pyfly-parity surface
         assert_send_sync::<MetricsRegistry>();
         assert_send_sync::<Counter>();

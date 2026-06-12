@@ -1,0 +1,25 @@
+[package]
+name = "firefly-reactive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — reactive core: Mono/Flux (Reactor-style) over futures and streams"
+
+[dependencies]
+firefly-kernel = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+pin-project-lite = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+# `test-util` enables tokio's paused-clock test runtime (`start_paused`),
+# which lets the timing operator tests (timeout/interval/sample/debounce/
+# retry-backoff) assert deterministically without real wall-clock sleeps.
+tokio = { workspace = true, features = ["test-util"] }
+futures = { workspace = true }
+async-stream = { workspace = true }

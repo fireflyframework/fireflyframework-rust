@@ -107,19 +107,71 @@ result is stamped with its check duration and UTC start time.
 
 ### Banner
 
+The banner is aligned with the canonical Java (`firefly-application`
+`banner.txt`) and pyfly (`pyfly.core.banner`) banners: the red `firefly`
+script-figlet, a `:: Firefly Framework for Rust ::  (v<version>)` tagline,
+`(c) 2026 Firefly Software Foundation`, `Licensed under Apache 2.0`, then
+app / starter / runtime / active-profiles metadata and an optional
+Swagger-UI URL line.
+
+Two layers of API:
+
 ```rust,ignore
+// Simple, always-plain (no ANSI) — the Go-parity surface.
 pub struct BannerData { pub version, starter, app, rust_version: String }
 pub fn print_banner(w: &mut impl Write, starter: &str, app: &str) -> io::Result<()>;
 pub fn render_banner(w: &mut impl Write, data: BannerData) -> io::Result<()>;
 pub fn banner_string(starter: &str, app: &str) -> String;
 pub const RUSTC_VERSION: &str;               // Go: runtime.Version() minus the "go" prefix
+
+// Rich — mode selection, profiles, Swagger, custom files, TTY colour
+// (the pyfly `BannerPrinter` analog).
+pub enum BannerMode { Text, Minimal, Off }   // pyfly BannerMode; Spring Boot Banner.Mode
+impl BannerMode { pub fn from_name(&str) -> Self; }  // case-insensitive, unknown -> Text
+
+pub trait BannerConfig { fn get(&self, key: &str) -> Option<String>; }
+// blanket impl for `Fn(&str) -> Option<String>` so a closure works too
+
+pub struct BannerPrinter { /* … */ }
+impl BannerPrinter {
+    pub fn new() -> Self;                                  // Text mode, kernel + rustc versions
+    pub fn from_config<C: BannerConfig>(&C) -> Self;       // firefly.banner.{mode,location}
+    pub fn with_mode(self, BannerMode) -> Self;
+    pub fn with_version / with_starter / with_app / with_app_version
+          / with_rust_version (self, impl Into<String>) -> Self;
+    pub fn with_profiles<I, S>(self, I) -> Self;           // I: IntoIterator<Item = S: Into<String>>
+    pub fn with_swagger(self, impl Into<String>) -> Self;  // adds the SwaggerUI line
+    pub fn with_location(self, impl Into<String>) -> Self; // custom banner file
+    pub fn with_color(self, bool) -> Self;                 // force ANSI on/off
+    pub fn render(&self) -> String;                        // always plain
+    pub fn write_to(&self, w: &mut impl Write) -> io::Result<()>;  // plain unless forced
+    pub fn print(&self) -> io::Result<()>;                 // stdout, colour when TTY
+}
 ```
 
-Emits the ASCII art + framework version + runtime identifier. Called by
-`firefly-starter-core` on startup. The template lives in
-`crates/observability/banner.txt` (embedded via `include_str!`, the
-analog of `go:embed`); the compiler version is captured by the build
-script from `rustc --version`.
+- **`Text`** — full art + metadata block (the default).
+- **`Minimal`** — one line:
+  `:: Firefly Framework for Rust :: (v..) app=.. profiles=..`.
+- **`Off`** — renders nothing.
+
+`from_config` reads `firefly.banner.mode` (`text` / `minimal` / `off`,
+case-insensitive, unknown → `Text`) and `firefly.banner.location` (a custom
+banner file; missing/unreadable falls back to the embedded template).
+Observability stays decoupled from `firefly-config`: `from_config` takes
+any `BannerConfig` (or a `Fn(&str) -> Option<String>` closure), mirroring how
+pyfly passes the resolved `mode`/`location` in.
+
+**Colour.** `render()` and `write_to` are plain by default (so
+captured/log output stays clean); `print()` colourises when stdout is a
+terminal — red art, green foundation/license lines, bold tagline (Java's
+`${AnsiColor.RED}` / `${AnsiColor.GREEN}` markers). `with_color(true|false)`
+forces it either way.
+
+The template lives in `crates/observability/banner.txt` (embedded via
+`include_str!`, the analog of `go:embed`); placeholders `{version}`,
+`{starter}`, `{app}`, `{rust_version}`, `{profiles}` are substituted at
+render time. The compiler version is captured by the build script from
+`rustc --version`. Called by `firefly-starter-core` on startup.
 
 ## Quick start
 
@@ -171,7 +223,7 @@ The `firefly-actuator` crate mounts a composite like this on
 | `Indicator.Check(ctx)` | `async fn check(&self)` — cancellation via future drop |
 | `IndicatorFunc{NameValue, Fn}` | `IndicatorFn::new(name, async closure)` |
 | `CheckAll` returning `map[string]HealthResult` | `BTreeMap<String, HealthResult>` (deterministic order) |
-| `go:embed banner.txt` + `text/template` | `include_str!` + `{placeholder}` substitution |
+| `go:embed banner.txt` + `text/template` | `include_str!` + `{placeholder}` substitution (`{version}`/`{starter}`/`{app}`/`{rust_version}`/`{profiles}`) |
 | `runtime.Version()` minus `"go"` prefix | `RUSTC_VERSION` captured by `build.rs` from `rustc --version` |
 
 ## pyfly parity
@@ -364,6 +416,31 @@ are Python-stdlib `logging` constructs with no Rust equivalent, so this
 reproduces the *intent* (file-driven reconfiguration) over a small,
 language-neutral schema that maps onto the `LogConfig` builder.
 
+### Banner modes + colour (pyfly `core/banner.py` / Java `banner.txt`)
+
+```rust,ignore
+pub enum BannerMode { Text, Minimal, Off }   // pyfly BannerMode
+pub trait BannerConfig { fn get(&self, key: &str) -> Option<String>; }
+pub struct BannerPrinter;                     // pyfly BannerPrinter
+impl BannerPrinter {
+    pub fn from_config<C: BannerConfig>(&C) -> Self; // firefly.banner.{mode,location}
+    // with_mode/with_version/with_app/with_starter/with_app_version/
+    // with_rust_version/with_profiles/with_swagger/with_location/with_color
+    pub fn render(&self) -> String;           // plain; pyfly render()
+    pub fn write_to(&self, &mut impl Write) -> io::Result<()>;
+    pub fn print(&self) -> io::Result<()>;    // stdout, ANSI when TTY
+}
+```
+
+The richer banner surface mirrors pyfly's `BannerPrinter` and the Java
+`firefly-application` `banner.txt`: a `BannerMode` (`Text` full art +
+metadata, `Minimal` one line, `Off` nothing), a `from_config` that reads
+`firefly.banner.mode` / `firefly.banner.location` through a decoupled
+`BannerConfig` trait (or a `Fn(&str) -> Option<String>` closure), active
+profiles, an optional Swagger-UI line, custom banner files, and TTY-aware
+ANSI colour (red art, green foundation/license, bold tagline) with a plain
+default for non-terminal/file writers.
+
 ## Testing
 
 ```bash
@@ -384,3 +461,9 @@ inject/extract round trips, the tracing-filter inbound-trace test) and
 `parse_size`, rotation + backup pruning, per-logger levels and runtime
 `set_level`, the `ConsoleRenderer` branch of `test_structlog_adapter`, and
 `test_config_loader` for external-file reconfiguration) suites.
+
+The banner is covered by `tests/banner_parity_test.rs`, porting pyfly's
+`tests/core/test_banner.py` (mode selection, text/minimal/off rendering,
+custom file location, `from_config`, metadata content) plus Rust-specific
+cases for the canonical Java metadata block, the optional Swagger-UI line,
+and TTY-aware ANSI colour (forced on/off + plain non-TTY default).

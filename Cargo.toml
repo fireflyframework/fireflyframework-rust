@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/reactive",
     "crates/kernel",
     "crates/utils",
     "crates/validators",
@@ -80,6 +81,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # ---- internal crates ----
+firefly-reactive = { path = "crates/reactive", version = "26.6.1" }
 firefly-kernel = { path = "crates/kernel", version = "26.6.1" }
 firefly-utils = { path = "crates/utils", version = "26.6.1" }
 firefly-validators = { path = "crates/validators", version = "26.6.1" }
@@ -148,8 +150,10 @@ firefly-starter-web = { path = "crates/starter-web", version = "26.6.1" }
 
 # ---- async runtime + web ----
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "net", "fs"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { version = "0.1", features = ["sync", "time"] }
 futures = "0.3"
+async-stream = "0.3"
+pin-project-lite = "0.2"
 async-trait = "0.1"
 axum = { version = "0.7", features = ["ws", "multipart"] }
 tower = { version = "0.5", features = ["util"] }

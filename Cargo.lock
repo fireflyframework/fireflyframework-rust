@@ -1932,6 +1932,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "firefly-reactive"
+version = "26.6.1"
+dependencies = [
+ "async-stream",
+ "firefly-kernel",
+ "futures",
+ "pin-project-lite",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "firefly-resilience"
 version = "26.6.1"
 dependencies = [

@@ -5,5 +5,10 @@ _/ ____\__|______   _____/ ____\  | ___.__.
  |__|  |__||__|    \___  >__|  |____/ ____|
                        \/           \/
 
-  Firefly Framework for Rust  ::  v{version}
-  Starter: {starter}    App: {app}    Runtime: Rust {rust_version}
+:: Firefly Framework for Rust ::  (v{version})
+
+(c) 2026 Firefly Software Foundation
+Licensed under Apache 2.0
+
+Starter: {starter}    Application: {app}
+Runtime: Rust {rust_version}    Active Profiles: {profiles}
