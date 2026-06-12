@@ -1,18 +1,28 @@
 //! firefly-notifications-sendgrid — the SendGrid e-mail adapter.
 //!
-//! This crate carries two surfaces:
+//! This crate carries two interchangeable surfaces, both backed by SendGrid's
+//! v3 [`/mail/send`](https://www.twilio.com/docs/sendgrid/api-reference/mail-send/mail-send)
+//! REST endpoint:
 //!
 //! * The **rich provider** ([`SendGridEmailProvider`]) — the Rust port of
 //!   pyfly `pyfly.notifications.providers.sendgrid.SendGridEmailProvider`. It
-//!   talks to SendGrid's v3 `/mail/send` endpoint over
+//!   POSTs a [`EmailMessage`] to SendGrid's v3 `/mail/send` endpoint over
 //!   [`reqwest`](https://docs.rs/reqwest), building `personalizations`,
 //!   `dynamic_template_data`, and base64 attachments, and parsing the
-//!   `X-Message-Id` response header. It implements [`EmailProvider`] and a
-//!   thin [`notifications::Channel`] mapping.
-//! * The **Go-parity stub** ([`Channel`] / [`Config`] /
-//!   [`ERR_NOT_IMPLEMENTED`] / [`not_implemented`] / [`SendGridChannel`]) —
-//!   kept verbatim for backward compatibility with the Go wire contract. Its
-//!   [`Channel::send`] still returns the sentinel.
+//!   `X-Message-Id` response header. It implements [`EmailProvider`] and the
+//!   [`notifications::Channel`] port.
+//! * The **Go-parity envelope adapter** ([`Channel`] / [`Config`] /
+//!   [`SendGridChannel`]) — keeps the Go module's [`Config`] wiring surface,
+//!   but [`Channel::send`] now performs a **real** `/mail/send` call by mapping
+//!   the channel-agnostic [`Notification`] envelope to an [`EmailMessage`] and
+//!   delegating to [`SendGridEmailProvider`].
+//!
+//! Both surfaces talk to the live SendGrid API; the crate no longer ships any
+//! not-implemented sentinel. The behavior tests
+//! (`tests/mock_send.rs`) point the adapter at an in-process axum mock that
+//! asserts the exact outbound request (method, path, auth header, JSON body).
+//! A real round trip requires a live `SG.…` API key, so the test suite uses the
+//! mock; see the crate README for the live-credential note.
 //!
 //! # Rich provider example
 //!
@@ -26,11 +36,11 @@
 //! let _ = EmailMessage::default();
 //! ```
 //!
-//! # Stub example (Go parity)
+//! # Envelope adapter example (Go-parity [`Config`] wiring)
 //!
-//! ```
+//! ```no_run
 //! use firefly_notifications::{Channel as _, Kind, Notification};
-//! use firefly_notifications_sendgrid::{not_implemented, Channel, Config};
+//! use firefly_notifications_sendgrid::{Channel, Config};
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let channel = Channel::new(Config {
@@ -39,10 +49,19 @@
 //!     ..Config::default()
 //! });
 //! assert_eq!(channel.kind(), Kind::EMAIL);
-//! assert_eq!(channel.name(), "notificationssendgrid-stub");
+//! assert_eq!(channel.name(), "notificationssendgrid");
 //!
-//! let err = channel.send(Notification::default()).await.unwrap_err();
-//! assert_eq!(err, not_implemented());
+//! // Performs a real SendGrid v3 /mail/send call (requires a live API key).
+//! channel
+//!     .send(Notification {
+//!         channel: Kind::EMAIL,
+//!         to: "alice@example.com".into(),
+//!         subject: "Welcome".into(),
+//!         body: "Welcome to Firefly!".into(),
+//!         ..Notification::default()
+//!     })
+//!     .await
+//!     .unwrap();
 //! # });
 //! ```
 
@@ -62,30 +81,11 @@ pub const PROVIDER_NAME: &str = "sendgrid";
 /// The default SendGrid API base (`https://api.sendgrid.com/v3`).
 pub const DEFAULT_API_BASE: &str = "https://api.sendgrid.com/v3";
 
-/// The sentinel message returned by [`Channel::send`] until the SaaS HTTP
-/// integration is wired.
-///
-/// Bytes-equal to the Go module's `ErrNotImplemented`:
-///
-/// ```go
-/// var ErrNotImplemented = errors.New("firefly/notificationssendgrid: not yet implemented")
-/// ```
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/notificationssendgrid: not yet implemented";
-
-/// Builds the not-implemented sentinel as a
-/// [`NotificationError::Delivery`] carrying [`ERR_NOT_IMPLEMENTED`] verbatim —
-/// the Rust analog of comparing against the Go `ErrNotImplemented` value with
-/// `errors.Is`.
-pub fn not_implemented() -> NotificationError {
-    NotificationError::Delivery(ERR_NOT_IMPLEMENTED.to_string())
-}
-
-/// Typed configuration carrying the API-key wiring needed by the production
-/// adapter.
+/// Typed configuration carrying the API-key wiring needed by the adapter.
 ///
 /// Field-for-field port of the Go `Config` struct. The SendGrid adapter uses
 /// `api_key` and `from_address`; the remaining fields (`from_number`,
-/// `account_sid`, `project_id`, `server_key`) mirror the shared vendor-stub
+/// `account_sid`, `project_id`, `server_key`) mirror the shared vendor-config
 /// shape so the configuration surface is uniform across the notification
 /// adapter family.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -104,13 +104,17 @@ pub struct Config {
     pub server_key: String,
 }
 
-/// The placeholder [`notifications::Channel`] adapter for SendGrid.
+/// The [`notifications::Channel`] adapter for SendGrid that wires the Go-parity
+/// [`Config`] surface to the real [`SendGridEmailProvider`].
 ///
-/// [`Channel::send`] returns the [`ERR_NOT_IMPLEMENTED`] sentinel (wrapped in
-/// [`NotificationError::Delivery`]) until the production integration ships.
+/// [`Channel::send`] maps the channel-agnostic [`Notification`] envelope to a
+/// rich [`EmailMessage`] (using `from_address` as the sender) and POSTs it to
+/// SendGrid's v3 `/mail/send` endpoint. A failed delivery surfaces as
+/// [`NotificationError::Delivery`] carrying the provider error text.
 #[derive(Debug, Clone)]
 pub struct Channel {
     cfg: Config,
+    provider: SendGridEmailProvider,
 }
 
 /// Alias for [`Channel`], useful where importing the bare name would shadow
@@ -118,9 +122,18 @@ pub struct Channel {
 pub type SendGridChannel = Channel;
 
 impl Channel {
-    /// Returns a placeholder [`Channel`] holding the given wiring.
+    /// Returns a [`Channel`] bound to a [`SendGridEmailProvider`] built from the
+    /// config's `api_key`, targeting the production SendGrid API base.
     pub fn new(cfg: Config) -> Self {
-        Self { cfg }
+        let provider = SendGridEmailProvider::new(cfg.api_key.clone());
+        Self { cfg, provider }
+    }
+
+    /// Returns a [`Channel`] pointed at a custom `api_base` (used by tests to
+    /// target an in-process mock).
+    pub fn with_api_base(cfg: Config, api_base: impl Into<String>) -> Self {
+        let provider = SendGridEmailProvider::with_api_base(cfg.api_key.clone(), api_base);
+        Self { cfg, provider }
     }
 
     /// Returns the configuration the channel was constructed with.
@@ -136,16 +149,34 @@ impl notifications::Channel for Channel {
         Kind::EMAIL
     }
 
-    /// Implements [`notifications::Channel::send`]; always returns the
-    /// sentinel.
-    async fn send(&self, _n: Notification) -> DeliveryResult {
-        Err(not_implemented())
+    /// Implements [`notifications::Channel::send`] by mapping the envelope to an
+    /// [`EmailMessage`] (with `from_address` as the sender) and performing a
+    /// real SendGrid v3 `/mail/send` call via [`SendGridEmailProvider`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotificationError::Delivery`] carrying the provider error text
+    /// when SendGrid rejects the message or the transport fails.
+    async fn send(&self, n: Notification) -> DeliveryResult {
+        let mut message = notification_to_email(&n);
+        if message.sender.is_empty() {
+            message.sender = self.cfg.from_address.clone();
+        }
+        let result = EmailProvider::send(&self.provider, message).await;
+        match result.status {
+            EmailStatus::Failed => Err(NotificationError::Delivery(
+                result
+                    .error
+                    .unwrap_or_else(|| "sendgrid delivery failed".into()),
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Implements [`notifications::Channel::name`]; returns
-    /// `"notificationssendgrid-stub"`.
+    /// `"notificationssendgrid"`.
     fn name(&self) -> String {
-        "notificationssendgrid-stub".to_string()
+        "notificationssendgrid".to_string()
     }
 }
 
@@ -373,7 +404,7 @@ impl notifications::Channel for SendGridEmailProvider {
 mod tests {
     use std::sync::Arc;
 
-    use firefly_notifications::{Channel as _, Dispatcher};
+    use firefly_notifications::Channel as _;
 
     use super::*;
 
@@ -388,50 +419,16 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Port of Go TestStubReturnsSentinel: Send yields the sentinel and the
-    // identity accessors are populated.
-    // ---------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn stub_returns_sentinel() {
-        let c = Channel::new(Config::default());
-
-        assert_eq!(
-            c.send(Notification::default()).await.unwrap_err(),
-            not_implemented(),
-            "Send: want ErrNotImplemented"
-        );
-        assert!(!c.name().is_empty(), "Name should be non-empty");
-        assert!(!c.kind().as_str().is_empty(), "Kind should be set");
-    }
-
-    // ---------------------------------------------------------------------
-    // Rust-specific: sentinel wire shape, channel identity, config plumbing,
-    // dispatcher integration, trait-object usability, Send + Sync bounds.
+    // Rust-specific: channel identity, config plumbing, trait-object
+    // usability, Send + Sync bounds. The real HTTP round trip is exercised
+    // in tests/mock_send.rs against an in-process axum mock.
     // ---------------------------------------------------------------------
 
     #[test]
-    fn sentinel_message_matches_go() {
-        assert_eq!(
-            ERR_NOT_IMPLEMENTED,
-            "firefly/notificationssendgrid: not yet implemented"
-        );
-        assert_eq!(not_implemented().to_string(), ERR_NOT_IMPLEMENTED);
-    }
-
-    #[test]
-    fn sentinel_is_delivery_variant() {
-        match not_implemented() {
-            NotificationError::Delivery(msg) => assert_eq!(msg, ERR_NOT_IMPLEMENTED),
-            other => panic!("want Delivery variant, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn name_matches_go() {
+    fn name_matches_real_adapter() {
         assert_eq!(
             Channel::new(Config::default()).name(),
-            "notificationssendgrid-stub"
+            "notificationssendgrid"
         );
     }
 
@@ -467,33 +464,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatcher_routes_email_to_stub_and_surfaces_sentinel() {
-        let d = Dispatcher::new();
-        d.register(Arc::new(Channel::new(Config::default())));
-
-        let err = d
-            .dispatch(Notification {
+    async fn channel_send_transport_error_maps_to_delivery_error() {
+        // Point the channel at a closed port — a connection-refused transport
+        // error must surface as a typed Delivery error, never a panic.
+        let channel = Channel::with_api_base(
+            Config {
+                api_key: "SG.key".into(),
+                from_address: "from@x.io".into(),
+                ..Config::default()
+            },
+            "http://127.0.0.1:1",
+        );
+        let err = channel
+            .send(Notification {
                 channel: Kind::EMAIL,
                 to: "alice@example.com".into(),
                 subject: "Welcome".into(),
-                body: "Welcome to Firefly!".into(),
+                body: "hi".into(),
                 ..Notification::default()
             })
             .await
-            .expect_err("stub delivery must fail");
-        assert_eq!(err, not_implemented());
-        assert_eq!(err.to_string(), ERR_NOT_IMPLEMENTED);
-    }
-
-    #[tokio::test]
-    async fn usable_as_trait_object() {
-        let channel: Arc<dyn notifications::Channel> = Arc::new(Channel::new(Config::default()));
-        assert_eq!(channel.name(), "notificationssendgrid-stub");
-        assert_eq!(channel.kind(), Kind::EMAIL);
-        assert_eq!(
-            channel.send(Notification::default()).await.unwrap_err(),
-            not_implemented()
-        );
+            .expect_err("transport error must surface");
+        assert!(matches!(err, NotificationError::Delivery(_)), "{err:?}");
     }
 
     #[test]

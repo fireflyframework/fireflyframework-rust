@@ -88,6 +88,7 @@ mod mapper;
 mod page;
 mod pageable;
 mod query_parser;
+mod reactive;
 mod repository;
 mod routing;
 mod soft_delete;
@@ -101,6 +102,10 @@ pub use pageable::{Order, Pageable, PageableError, RequestSort, UNPAGED_SIZE};
 pub use query_parser::{
     FieldPredicate, OrderClause, ParsedQuery, QueryBindError, QueryMethodParser, QueryOperator,
     QueryParseError, QueryPrefix,
+};
+pub use reactive::{
+    PostgresReactiveRepository, ReactiveCrudRepository, ReactiveMemoryRepository,
+    ReactiveSpecificationRepository, RowMapper, TableConfig,
 };
 pub use repository::{DataError, MemoryRepository, Repository};
 pub use routing::{

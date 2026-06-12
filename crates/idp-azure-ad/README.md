@@ -38,9 +38,17 @@ let token = idp.login("alice@contoso.com", "pw").await?;
 * **Groups-as-roles** — `assign_role` / `revoke_role` via
   `/groups/{id}/members/$ref`, `list_roles` via `/groups`, `get_roles` via
   `/users/{id}/memberOf`.
+* **TOTP MFA (Graph authentication-methods API)** — `mfa_challenge` registers a
+  software-OATH method via `POST /users/{id}/authentication/softwareOathMethods`
+  and returns the `secretKey` (in the challenge's `method` as `"TOTP:{secret}"`)
+  plus the new method id (in `challenge_id`). `list_authentication_methods`
+  wraps `GET /users/{id}/authentication/methods`.
 
-`mfa_challenge` / `mfa_verify` return the `ERR_NOT_IMPLEMENTED` sentinel because
-Azure AD manages MFA natively via Conditional Access policies.
+`mfa_verify` is a **documented provider capability boundary**: Microsoft Graph
+has no API to verify a TOTP code out-of-band (Azure AD evaluates MFA
+interactively at sign-in via Conditional Access), so it returns the precise typed
+`Error::UnsupportedByProvider { provider: "azure-ad", operation: "mfa_verify",
+reason: ... }` rather than a stub.
 
 ## Configuration
 
@@ -72,7 +80,8 @@ exist so the adapter can be exercised against an in-process mock.
 | `change_password` / `reset_password` (`passwordProfile`) | same |
 | `assign_role` / `revoke_role` / `list_roles` / `get_roles` | groups-as-roles |
 | `get_user_info` (`/me`) / `register_user` | same |
-| `mfa_challenge` / `mfa_verify` | sentinel (`ERR_NOT_IMPLEMENTED`) |
+| `mfa_challenge` (raised `NotImplementedError`) | real `POST .../authentication/softwareOathMethods` + `list_authentication_methods` |
+| `mfa_verify` (raised `NotImplementedError`) | typed `Error::UnsupportedByProvider` (Graph has no out-of-band verify) |
 
 ## Testing
 

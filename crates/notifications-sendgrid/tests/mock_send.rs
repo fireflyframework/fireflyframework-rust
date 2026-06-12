@@ -13,8 +13,9 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
+use firefly_notifications::{Channel as _, Kind, Notification};
 use firefly_notifications_sendgrid::{
-    Attachment, EmailMessage, EmailProvider, SendGridEmailProvider,
+    Attachment, Channel, Config, EmailMessage, EmailProvider, SendGridEmailProvider,
 };
 use serde_json::Value;
 
@@ -242,4 +243,75 @@ async fn send_transport_error_maps_to_failed() {
     assert_eq!(result.status.as_str(), "FAILED");
     assert!(result.error.is_some());
     assert!(result.provider_id.is_none());
+}
+
+// --- Go-parity Channel adapter: real /mail/send through the envelope -------
+
+#[tokio::test]
+async fn channel_send_maps_envelope_and_posts_real_request() {
+    let (base, captured) = spawn_mock(StatusCode::ACCEPTED, Some("sg_chan_1"), "").await;
+    let channel = Channel::with_api_base(
+        Config {
+            api_key: "SG.chan_key".into(),
+            from_address: "noreply@firefly.io".into(),
+            ..Config::default()
+        },
+        base,
+    );
+
+    channel
+        .send(Notification {
+            channel: Kind::EMAIL,
+            to: "alice@example.com".into(),
+            subject: "Welcome".into(),
+            body: "Welcome to Firefly!".into(),
+            ..Notification::default()
+        })
+        .await
+        .expect("channel send should reach the mock and succeed");
+
+    let calls = captured.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    let call = &calls[0];
+    assert_eq!(call.path, "/mail/send");
+    assert_eq!(call.authorization.as_deref(), Some("Bearer SG.chan_key"));
+    let payload = &call.json;
+    // from_address from the Config is used as the sender.
+    assert_eq!(payload["from"]["email"], "noreply@firefly.io");
+    assert_eq!(
+        payload["personalizations"][0]["to"],
+        serde_json::json!([{ "email": "alice@example.com" }])
+    );
+    assert_eq!(payload["personalizations"][0]["subject"], "Welcome");
+    // body maps to a text/plain content part.
+    let content = payload["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "text/plain");
+    assert_eq!(content[0]["value"], "Welcome to Firefly!");
+}
+
+#[tokio::test]
+async fn channel_send_non_2xx_maps_to_delivery_error() {
+    let (base, _captured) = spawn_mock(StatusCode::BAD_REQUEST, None, "invalid sender").await;
+    let channel = Channel::with_api_base(
+        Config {
+            api_key: "SG.key".into(),
+            from_address: "noreply@firefly.io".into(),
+            ..Config::default()
+        },
+        base,
+    );
+
+    let err = channel
+        .send(Notification {
+            channel: Kind::EMAIL,
+            to: "alice@example.com".into(),
+            subject: "x".into(),
+            body: "y".into(),
+            ..Notification::default()
+        })
+        .await
+        .expect_err("a 400 from SendGrid must surface as a Delivery error");
+    let msg = err.to_string();
+    assert!(msg.contains("400"), "{msg}");
+    assert!(msg.contains("invalid sender"), "{msg}");
 }

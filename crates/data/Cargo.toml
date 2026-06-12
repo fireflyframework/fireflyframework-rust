@@ -15,3 +15,8 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
+firefly-kernel = { workspace = true }
+firefly-reactive = { workspace = true }
+tokio-postgres = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }

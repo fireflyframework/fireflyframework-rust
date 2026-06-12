@@ -299,6 +299,55 @@ let broker = new_kafka_broker(KafkaConfig {
 // Err(EdaError::KafkaUnavailable).
 ```
 
+## Reactive
+
+An **additive** Reactor / WebFlux-style surface layers over
+`InMemoryBroker`, built on the [`firefly-reactive`](../reactive) crate's
+`Flux<T>` / `Mono<T>`. It is strictly additive: every existing
+`Publisher` / `Subscriber` / `InMemoryBroker` signature and wire format
+is untouched; the reactive entry points sit alongside.
+
+- `InMemoryBroker::subscribe_reactive(topic) -> EdaResult<Flux<Event>>` —
+  the reactive twin of `subscribe_channel`: a `Flux` that emits every
+  event delivered to `topic`, so it composes with the whole Reactor
+  operator set (`take`, `filter`, `map`, `collect_list`, …). This is the
+  EDA analog of Reactor Kafka's `KafkaReceiver.receive()` yielding a
+  `Flux<ReceiverRecord>`. Deliveries are buffered through a **bounded**
+  channel (default `DEFAULT_REACTIVE_BUFFER` = 256); when the downstream
+  consumer falls behind and the buffer fills, the newest events are
+  *dropped* (`onBackpressureDrop`) rather than blocking or failing the
+  publisher — extending the broker's "a slow/gone consumer never fails
+  publishers" invariant to the reactive surface. Size the window with
+  `subscribe_reactive_with_buffer(topic, n)`. The `Flux` **terminates**
+  when the broker is `close()`d (the retained subscription, and thus the
+  channel sender, is dropped).
+- `Arc<InMemoryBroker>::publish_mono(event) -> Mono<()>` — the **cold**
+  reactive publish helper: building the `Mono` does nothing; the publish
+  fan-out runs only when the `Mono` is subscribed/awaited, the Reactor
+  analog of a reactive `KafkaTemplate.send(..)` returning `Mono<Void>`.
+  A handler error or a closed broker surfaces as the `Mono`'s error
+  signal.
+
+```rust
+use std::sync::Arc;
+use firefly_eda::{Event, InMemoryBroker};
+
+# tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+let broker = Arc::new(InMemoryBroker::new());
+let flux = broker.subscribe_reactive("orders.*").unwrap();
+
+broker
+    .publish_mono(Event::new("orders.created", "OrderCreated", "svc", None))
+    .block()
+    .await
+    .unwrap();
+broker.close().unwrap(); // terminates the Flux
+
+let events = flux.take(1).collect_list().block().await.unwrap().unwrap();
+assert_eq!(events[0].topic, "orders.created");
+# });
+```
+
 ## Testing
 
 ```bash
@@ -310,4 +359,7 @@ propagation through `Event::new`, handler-error short-circuit, the
 Kafka / RabbitMQ sentinel returns, closed-broker semantics, channel
 subscriptions, object safety of the ports, and byte-for-byte JSON
 parity with the Go envelope (including base64 payloads and omission
-rules).
+rules). The reactive surface is covered too: `subscribe_reactive`
+yielding published events as a `Flux` (`take(n).collect_list`),
+backpressure-drop under a slow consumer, `close()` terminating the
+`Flux`, the cold `publish_mono`, and composition with Reactor operators.

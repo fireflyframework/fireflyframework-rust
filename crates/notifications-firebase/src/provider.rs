@@ -286,61 +286,130 @@ impl FirebasePushProvider {
     }
 }
 
-#[async_trait::async_trait]
-impl PushProvider for FirebasePushProvider {
-    fn name(&self) -> &str {
-        Self::NAME
-    }
-
-    async fn send(&self, message: PushMessage) -> Result<NotificationResult, FirebaseError> {
-        let access_token = self.token_provider.token().map_err(FirebaseError::Token)?;
-        let url = self.send_url();
-
-        // Stringify the data map, matching pyfly's {k: str(v) ...}.
-        let data: Map<String, Value> = message
+impl FirebasePushProvider {
+    /// Builds the FCM v1 `data` map from a [`PushMessage`], stringifying each
+    /// value the way pyfly does (`{k: str(v) ...}`).
+    fn build_data(message: &PushMessage) -> Map<String, Value> {
+        message
             .data
             .iter()
             .map(|(k, v)| (k.clone(), Value::String(stringify_value(v))))
-            .collect();
+            .collect()
+    }
+
+    /// POSTs one fully-formed `{"message": …}` body to `messages:send` with the
+    /// given bearer token, returning `Ok(message_name)` on a 2xx or
+    /// `Err(http_code)` on a non-2xx. Transport failures bubble up as
+    /// [`FirebaseError::Transport`].
+    async fn post_message(
+        &self,
+        url: &str,
+        access_token: &str,
+        message_body: Value,
+    ) -> Result<Result<String, u16>, FirebaseError> {
+        let payload = serde_json::json!({ "message": message_body });
+        let resp = self
+            .http
+            .post(url)
+            .bearer_auth(access_token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| FirebaseError::Transport(e.to_string()))?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let body: Value = resp
+                .json()
+                .await
+                .map_err(|e| FirebaseError::Transport(e.to_string()))?;
+            let name = body
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Ok(Ok(name))
+        } else {
+            Ok(Err(status.as_u16()))
+        }
+    }
+
+    /// Sends a [`PushMessage`] to every listed device token (the
+    /// [`PushProvider::send`] fan-out), returning the aggregate result.
+    ///
+    /// FCM v1 has no native multi-token endpoint (the legacy batch endpoint is
+    /// deprecated; the Firebase Admin SDK `sendEachForMulticast` simply loops),
+    /// so this is the canonical fan-out: one `messages:send` POST per token with
+    /// partial-success accounting. Behaves identically to [`PushProvider::send`].
+    pub async fn send_multicast(
+        &self,
+        message: PushMessage,
+    ) -> Result<NotificationResult, FirebaseError> {
+        let access_token = self.token_provider.token().map_err(FirebaseError::Token)?;
+        let url = self.send_url();
+        let data = Self::build_data(&message);
 
         let mut sent_ids: Vec<String> = Vec::new();
         let mut errors: Vec<String> = Vec::new();
 
         for token in &message.device_tokens {
-            let payload = serde_json::json!({
-                "message": {
-                    "token": token,
-                    "notification": { "title": message.title, "body": message.body },
-                    "data": data,
-                }
+            let body = serde_json::json!({
+                "token": token,
+                "notification": { "title": message.title, "body": message.body },
+                "data": data,
             });
-
-            let resp = self
-                .http
-                .post(&url)
-                .bearer_auth(&access_token)
-                .json(&payload)
-                .send()
-                .await
-                .map_err(|e| FirebaseError::Transport(e.to_string()))?;
-
-            let status = resp.status();
-            if status.is_success() {
-                let body: Value = resp
-                    .json()
-                    .await
-                    .map_err(|e| FirebaseError::Transport(e.to_string()))?;
-                let name = body
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                sent_ids.push(name);
-            } else {
-                errors.push(format!("{}: http {}", token, status.as_u16()));
+            match self.post_message(&url, &access_token, body).await? {
+                Ok(name) => sent_ids.push(name),
+                Err(code) => errors.push(format!("{token}: http {code}")),
             }
         }
 
+        Ok(Self::aggregate(message.id, sent_ids, errors))
+    }
+
+    /// Sends a [`PushMessage`] to a single FCM **topic** (fan-out to every
+    /// subscriber) via a single `messages:send` POST whose `message.topic`
+    /// field is `topic`.
+    ///
+    /// This is FCM v1
+    /// [topic messaging](https://firebase.google.com/docs/cloud-messaging/send-message#send_messages_to_topics):
+    /// the same `…/messages:send` endpoint, but with `"topic"` in place of
+    /// `"token"`. The message's `device_tokens` are ignored. The leading `/topics/`
+    /// prefix is stripped if present, since FCM v1 wants the bare topic name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FirebaseError::Token`] when the access-token provider fails, or
+    /// [`FirebaseError::Transport`] when the HTTP request itself fails. A non-2xx
+    /// response folds into a [`DeliveryStatus::Failed`] result (never an `Err`).
+    pub async fn send_to_topic(
+        &self,
+        topic: &str,
+        message: PushMessage,
+    ) -> Result<NotificationResult, FirebaseError> {
+        let access_token = self.token_provider.token().map_err(FirebaseError::Token)?;
+        let url = self.send_url();
+        let data = Self::build_data(&message);
+        let topic_name = topic.strip_prefix("/topics/").unwrap_or(topic);
+
+        let body = serde_json::json!({
+            "topic": topic_name,
+            "notification": { "title": message.title, "body": message.body },
+            "data": data,
+        });
+
+        let (sent_ids, errors) = match self.post_message(&url, &access_token, body).await? {
+            Ok(name) => (vec![name], Vec::new()),
+            Err(code) => (Vec::new(), vec![format!("topic {topic_name}: http {code}")]),
+        };
+
+        Ok(Self::aggregate(message.id, sent_ids, errors))
+    }
+
+    /// Folds delivered message names and per-target errors into the aggregate
+    /// [`NotificationResult`] using the partial-success rules documented on the
+    /// module.
+    fn aggregate(id: String, sent_ids: Vec<String>, errors: Vec<String>) -> NotificationResult {
         let provider_id = if sent_ids.is_empty() {
             None
         } else {
@@ -356,14 +425,24 @@ impl PushProvider for FirebasePushProvider {
         } else {
             DeliveryStatus::Failed
         };
-
-        Ok(NotificationResult {
-            id: message.id,
+        NotificationResult {
+            id,
             provider: Self::NAME.to_string(),
             status,
             provider_id,
             error,
-        })
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl PushProvider for FirebasePushProvider {
+    fn name(&self) -> &str {
+        Self::NAME
+    }
+
+    async fn send(&self, message: PushMessage) -> Result<NotificationResult, FirebaseError> {
+        self.send_multicast(message).await
     }
 }
 

@@ -13,7 +13,10 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
-use firefly_notifications_resend::{Attachment, EmailMessage, EmailProvider, ResendEmailProvider};
+use firefly_notifications::{Channel as _, Kind, Notification};
+use firefly_notifications_resend::{
+    Attachment, Channel, Config, EmailMessage, EmailProvider, ResendEmailProvider,
+};
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -190,4 +193,70 @@ async fn send_transport_error_maps_to_failed() {
     assert_eq!(result.status.as_str(), "FAILED");
     assert!(result.error.is_some());
     assert!(result.provider_id.is_none());
+}
+
+// --- Go-parity Channel adapter: real /emails through the envelope ----------
+
+#[tokio::test]
+async fn channel_send_maps_envelope_and_posts_real_request() {
+    let (base, captured) = spawn_mock(StatusCode::OK, r#"{"id":"re_chan_1"}"#, "").await;
+    let channel = Channel::with_api_base(
+        Config {
+            api_key: "re_chan_key".into(),
+            from_address: "noreply@firefly.io".into(),
+            ..Config::default()
+        },
+        base,
+    );
+
+    channel
+        .send(Notification {
+            channel: Kind::EMAIL,
+            to: "alice@example.com".into(),
+            subject: "Welcome".into(),
+            body: "Welcome to Firefly!".into(),
+            ..Notification::default()
+        })
+        .await
+        .expect("channel send should reach the mock and succeed");
+
+    let calls = captured.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    let call = &calls[0];
+    assert_eq!(call.path, "/emails");
+    assert_eq!(call.authorization.as_deref(), Some("Bearer re_chan_key"));
+    let payload = &call.json;
+    // from_address from the Config is used as the sender (default_from).
+    assert_eq!(payload["from"], "noreply@firefly.io");
+    assert_eq!(payload["to"], serde_json::json!(["alice@example.com"]));
+    assert_eq!(payload["subject"], "Welcome");
+    assert_eq!(payload["text"], "Welcome to Firefly!");
+}
+
+#[tokio::test]
+async fn channel_send_non_2xx_maps_to_delivery_error() {
+    let (base, _captured) =
+        spawn_mock(StatusCode::UNPROCESSABLE_ENTITY, "", "invalid recipient").await;
+    let channel = Channel::with_api_base(
+        Config {
+            api_key: "re_key".into(),
+            from_address: "noreply@firefly.io".into(),
+            ..Config::default()
+        },
+        base,
+    );
+
+    let err = channel
+        .send(Notification {
+            channel: Kind::EMAIL,
+            to: "bad@example.com".into(),
+            subject: "x".into(),
+            body: "y".into(),
+            ..Notification::default()
+        })
+        .await
+        .expect_err("a 422 from Resend must surface as a Delivery error");
+    let msg = err.to_string();
+    assert!(msg.contains("422"), "{msg}");
+    assert!(msg.contains("invalid recipient"), "{msg}");
 }

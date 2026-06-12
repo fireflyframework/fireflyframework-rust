@@ -123,7 +123,27 @@ pub struct NotificationResult {
     pub error: Option<String>,
 }
 
-/// Errors raised by [`TwilioSmsProvider::send`] before any HTTP call.
+/// The lifecycle status of a previously-sent Twilio message, as reported by the
+/// [Message resource `status` field](https://www.twilio.com/docs/sms/api/message-resource#message-status-values).
+///
+/// Returned by [`TwilioSmsProvider::fetch_status`]. The [`MessageStatus::status`]
+/// field carries the exact lower-case value Twilio returns (`"queued"`,
+/// `"sent"`, `"delivered"`, `"failed"`, `"undelivered"`, …) verbatim, so
+/// callers can match on any present or future status value without this crate
+/// needing an exhaustive enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageStatus {
+    /// The message SID this status describes (Twilio's `sid`).
+    pub sid: String,
+    /// The raw Twilio `status` string, verbatim from the response.
+    pub status: String,
+    /// Twilio's numeric `error_code`, present when the message failed.
+    pub error_code: Option<i64>,
+    /// Twilio's human-readable `error_message`, present when the message failed.
+    pub error_message: Option<String>,
+}
+
+/// Errors raised by [`TwilioSmsProvider`] before or during an HTTP call.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TwilioError {
     /// Neither the message `sender` nor the provider `from_number` was set.
@@ -136,6 +156,18 @@ pub enum TwilioError {
     /// The HTTP request could not be performed (transport / connection error).
     #[error("twilio transport error: {0}")]
     Transport(String),
+    /// Twilio returned a non-2xx status for a status-fetch request.
+    ///
+    /// Carries the HTTP status code and the (possibly empty) response body, so
+    /// callers can distinguish a missing SID (`404`) from an auth failure
+    /// (`401`).
+    #[error("twilio status fetch failed: http {status}: {body}")]
+    StatusFetch {
+        /// The HTTP status code Twilio returned.
+        status: u16,
+        /// The raw response body (typically a Twilio error JSON document).
+        body: String,
+    },
 }
 
 /// The async SMS provider port.
@@ -224,6 +256,77 @@ impl TwilioSmsProvider {
             self.base_url.trim_end_matches('/'),
             self.account_sid,
         )
+    }
+
+    /// The endpoint URL for a single message resource's status
+    /// (`…/Messages/{sid}.json`).
+    fn message_status_url(&self, sid: &str) -> String {
+        format!(
+            "{}/2010-04-01/Accounts/{}/Messages/{}.json",
+            self.base_url.trim_end_matches('/'),
+            self.account_sid,
+            sid,
+        )
+    }
+
+    /// Fetches the current delivery status of a previously-sent message by SID.
+    ///
+    /// Performs a `GET` against Twilio's
+    /// [Message resource](https://www.twilio.com/docs/sms/api/message-resource)
+    /// endpoint `…/2010-04-01/Accounts/{sid}/Messages/{message_sid}.json` with
+    /// HTTP basic auth, and parses the `status`, `error_code`, and
+    /// `error_message` fields into a [`MessageStatus`].
+    ///
+    /// Twilio's message status is the canonical source of delivery state after
+    /// the initial accept-for-delivery response; this is how callers poll for
+    /// `delivered` / `failed` / `undelivered` transitions when a status-callback
+    /// webhook is not wired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TwilioError::Transport`] if the request cannot be performed,
+    /// or [`TwilioError::StatusFetch`] carrying the HTTP code and body for any
+    /// non-2xx response (e.g. `404` for an unknown SID, `401` for bad auth).
+    pub async fn fetch_status(&self, message_sid: &str) -> Result<MessageStatus, TwilioError> {
+        let resp = self
+            .http
+            .get(self.message_status_url(message_sid))
+            .basic_auth(&self.account_sid, Some(&self.auth_token))
+            .send()
+            .await
+            .map_err(|e| TwilioError::Transport(e.to_string()))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(TwilioError::StatusFetch {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| TwilioError::Transport(e.to_string()))?;
+
+        Ok(MessageStatus {
+            sid: body
+                .get("sid")
+                .and_then(|v| v.as_str())
+                .unwrap_or(message_sid)
+                .to_string(),
+            status: body
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            error_code: body.get("error_code").and_then(serde_json::Value::as_i64),
+            error_message: body
+                .get("error_message")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        })
     }
 }
 

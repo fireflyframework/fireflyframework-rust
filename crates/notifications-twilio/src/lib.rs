@@ -1,65 +1,64 @@
 //! firefly-notifications-twilio — the Twilio SMS adapter.
 //!
-//! This crate ships two layers:
+//! This crate ships two interchangeable layers, both backed by Twilio's
+//! [Programmable Messaging REST API](https://www.twilio.com/docs/sms/api/message-resource):
 //!
-//! * The **Go-parity stub** — [`Channel`], the [`notifications::Channel`]
-//!   adapter that routes [`Kind::SMS`] and returns the
-//!   [`ERR_NOT_IMPLEMENTED`] sentinel from [`notifications::Channel::send`].
-//!   Kept for backward compatibility with the Go wire contract; consuming
-//!   code that wired the stub still compiles and behaves identically.
+//! * The **Go-parity envelope adapter** — [`Channel`], the
+//!   [`notifications::Channel`] adapter that routes [`Kind::SMS`]. It keeps the
+//!   Go module's [`Config`] wiring surface, and [`notifications::Channel::send`]
+//!   now performs a **real** `Messages.json` POST by mapping the channel-agnostic
+//!   [`Notification`] envelope to an [`SmsMessage`] and delegating to
+//!   [`TwilioSmsProvider`].
 //! * The **pyfly-parity real provider** — [`TwilioSmsProvider`], a working
-//!   HTTP integration that implements [`SmsProvider`]. It posts to Twilio's
+//!   HTTP integration that implements [`SmsProvider`]. It POSTs to Twilio's
 //!   `Messages.json` endpoint with HTTP basic auth and a form-encoded body,
 //!   parses the `sid` into a [`NotificationResult`], and folds non-2xx
-//!   responses into a [`DeliveryStatus::Failed`] result.
+//!   responses into a [`DeliveryStatus::Failed`] result. It also exposes
+//!   [`TwilioSmsProvider::fetch_status`], a `GET` against the Message resource
+//!   that returns the current [`MessageStatus`] (`delivered`/`failed`/…).
 //!
-//! Direct port of the Go module `fireflyframework-go/notificationstwilio`
-//! (the stub) and of `pyfly.notifications.providers.twilio` (the real
-//! provider), themselves ports of the Java `firefly-notifications-twilio`
-//! module and the .NET `FireflyFramework.Notifications.*` project.
+//! Direct port of the Go module `fireflyframework-go/notificationstwilio` and
+//! of `pyfly.notifications.providers.twilio`, themselves ports of the Java
+//! `firefly-notifications-twilio` module and the .NET
+//! `FireflyFramework.Notifications.*` project. The crate no longer ships any
+//! not-implemented sentinel; every operation calls the real Twilio API.
 //!
-//! The sentinel message is bytes-equal to the Go port's `ErrNotImplemented`
-//! (`firefly/notificationstwilio: not yet implemented`), carried through
-//! [`NotificationError::Delivery`] so consumers can match on the rendered
-//! message exactly as Go callers match with `errors.Is`.
+//! * [`Config`] — typed wiring for the adapter (account SID, sender number, …).
+//! * [`Channel`] — the [`notifications::Channel`] port; routes [`Kind::SMS`] and
+//!   performs a real send.
 //!
-//! * [`Config`] — typed wiring for the production adapter (API key, sender
-//!   address/number, account SID, …).
-//! * [`Channel`] — the placeholder port implementation; routes [`Kind::SMS`],
-//!   answers [`notifications::Channel::name`], and returns the sentinel from
-//!   [`notifications::Channel::send`].
-//! * [`ERR_NOT_IMPLEMENTED`] / [`err_not_implemented`] — the wire-stable
-//!   sentinel, bytes-equal to the Go module's `ErrNotImplemented`.
-//!
-//! # Why ship a stub?
-//!
-//! * The framework's tier diagram stays correct (no missing crate).
-//! * The port boundary stays locked — when the real implementation lands,
-//!   no consuming code needs to change.
-//! * The wire contract is exercised end-to-end before the integration ships,
-//!   via the smoke tests that assert the sentinel return.
+//! A real round trip requires live Twilio credentials, so the test suite points
+//! the adapter at an in-process axum mock that asserts the exact request bytes;
+//! see the crate README for the live-credential note.
 //!
 //! # Quick start
 //!
-//! ```
+//! ```no_run
 //! use firefly_notifications::{Channel as _, Kind, Notification};
-//! use firefly_notifications_twilio::{Channel, Config, ERR_NOT_IMPLEMENTED};
+//! use firefly_notifications_twilio::{Channel, Config};
 //!
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() {
 //! let channel = Channel::new(Config {
 //!     account_sid: "AC0000".into(),
-//!     api_key: "sk-test".into(),
+//!     api_key: "your-auth-token".into(),
 //!     from_number: "+15550100".into(),
 //!     ..Config::default()
 //! });
 //!
 //! assert_eq!(channel.kind(), Kind::SMS);
-//! assert_eq!(channel.name(), "notificationstwilio-stub");
+//! assert_eq!(channel.name(), "notificationstwilio");
 //!
-//! // Send returns the sentinel until the SaaS HTTP integration is wired.
-//! let err = channel.send(Notification::default()).await.unwrap_err();
-//! assert_eq!(err.to_string(), ERR_NOT_IMPLEMENTED);
+//! // Performs a real Twilio Messages.json POST (requires live credentials).
+//! channel
+//!     .send(Notification {
+//!         channel: Kind::SMS,
+//!         to: "+15559876543".into(),
+//!         body: "hello from Firefly".into(),
+//!         ..Notification::default()
+//!     })
+//!     .await
+//!     .unwrap();
 //! # }
 //! ```
 
@@ -70,40 +69,26 @@ use firefly_notifications::{DeliveryResult, Kind, Notification, NotificationErro
 mod provider;
 
 pub use provider::{
-    DeliveryStatus, NotificationResult, SmsMessage, SmsProvider, TwilioError, TwilioSmsProvider,
-    DEFAULT_BASE_URL,
+    DeliveryStatus, MessageStatus, NotificationResult, SmsMessage, SmsProvider, TwilioError,
+    TwilioSmsProvider, DEFAULT_BASE_URL,
 };
 
-/// The sentinel message returned by [`notifications::Channel::send`] until
-/// the SaaS HTTP integration is wired. Bytes-equal to the Go port's
-/// `ErrNotImplemented`:
+/// Config carries the API-key wiring needed by the adapter.
 ///
-/// ```go
-/// var ErrNotImplemented = errors.New("firefly/notificationstwilio: not yet implemented")
-/// ```
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/notificationstwilio: not yet implemented";
-
-/// Builds the not-yet-implemented sentinel as a
-/// [`NotificationError::Delivery`], rendering [`ERR_NOT_IMPLEMENTED`]
-/// verbatim — the analog of returning Go's `ErrNotImplemented`.
-pub fn err_not_implemented() -> NotificationError {
-    NotificationError::Delivery(ERR_NOT_IMPLEMENTED.to_string())
-}
-
-/// Config carries the API-key wiring needed by the production adapter.
-///
-/// The fields cover every wiring variable the production adapter needs; the
+/// The fields cover every wiring variable the adapter needs; the
 /// non-Twilio-flavoured fields exist because the Java module shares one
-/// configuration surface across the notification provider adapters.
+/// configuration surface across the notification provider adapters. For Twilio,
+/// `account_sid` and `api_key` (the auth token) authenticate the request and
+/// `from_number` is the default sender.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Config {
-    /// Provider API key.
+    /// Twilio auth token (HTTP basic-auth password; the Go field is `api_key`).
     pub api_key: String,
     /// Sender e-mail address (shared surface; unused by the SMS adapter).
     pub from_address: String,
     /// Sender phone number in E.164 form (e.g. `+15550100`).
     pub from_number: String,
-    /// Twilio account SID.
+    /// Twilio account SID (HTTP basic-auth username and URL segment).
     pub account_sid: String,
     /// Project identifier (shared surface; Firebase flavour).
     pub project_id: String,
@@ -111,28 +96,55 @@ pub struct Config {
     pub server_key: String,
 }
 
-/// Channel is the placeholder [`notifications::Channel`] adapter for Twilio
-/// (SMS).
+/// Channel is the [`notifications::Channel`] adapter for Twilio (SMS) that wires
+/// the Go-parity [`Config`] surface to the real [`TwilioSmsProvider`].
 ///
-/// Construction succeeds, [`notifications::Channel::kind`] routes
-/// [`Kind::SMS`], and [`notifications::Channel::name`] answers, but
-/// [`notifications::Channel::send`] returns [`err_not_implemented`] until the
-/// production integration lands.
+/// [`notifications::Channel::kind`] routes [`Kind::SMS`];
+/// [`notifications::Channel::send`] maps the [`Notification`] envelope to an
+/// [`SmsMessage`] and POSTs it to Twilio's `Messages.json` endpoint with HTTP
+/// basic auth.
 #[derive(Debug, Clone)]
 pub struct Channel {
     cfg: Config,
+    provider: TwilioSmsProvider,
 }
 
 impl Channel {
-    /// Returns a placeholder Channel.
+    /// Returns a Channel bound to a [`TwilioSmsProvider`] built from the config's
+    /// `account_sid`, `api_key` (auth token), and `from_number`, targeting the
+    /// production Twilio API host.
     pub fn new(cfg: Config) -> Self {
-        Self { cfg }
+        let provider = Self::build_provider(&cfg, None);
+        Self { cfg, provider }
     }
 
-    /// The configuration this channel was constructed with, retained for the
-    /// production adapter.
+    /// Returns a Channel pointed at a custom `base_url` (used by tests to target
+    /// an in-process mock).
+    pub fn with_base_url(cfg: Config, base_url: impl Into<String>) -> Self {
+        let provider = Self::build_provider(&cfg, Some(base_url.into()));
+        Self { cfg, provider }
+    }
+
+    fn build_provider(cfg: &Config, base_url: Option<String>) -> TwilioSmsProvider {
+        let mut provider = TwilioSmsProvider::new(cfg.account_sid.clone(), cfg.api_key.clone());
+        if !cfg.from_number.is_empty() {
+            provider = provider.with_from_number(cfg.from_number.clone());
+        }
+        if let Some(url) = base_url {
+            provider = provider.with_base_url(url);
+        }
+        provider
+    }
+
+    /// The configuration this channel was constructed with.
     pub fn config(&self) -> &Config {
         &self.cfg
+    }
+
+    /// Returns the underlying [`TwilioSmsProvider`], e.g. to call
+    /// [`TwilioSmsProvider::fetch_status`].
+    pub fn provider(&self) -> &TwilioSmsProvider {
+        &self.provider
     }
 }
 
@@ -143,15 +155,43 @@ impl notifications::Channel for Channel {
         Kind::SMS
     }
 
-    /// Implements [`notifications::Channel::send`]; always
-    /// [`err_not_implemented`].
-    async fn send(&self, _n: Notification) -> DeliveryResult {
-        Err(err_not_implemented())
+    /// Implements [`notifications::Channel::send`] by mapping the envelope to an
+    /// [`SmsMessage`] and performing a real Twilio `Messages.json` POST via
+    /// [`TwilioSmsProvider`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotificationError::Delivery`] when no sender can be resolved,
+    /// when the transport fails, or when Twilio rejects the message (a non-2xx
+    /// response maps to the provider's `FAILED` result, whose error text is
+    /// surfaced verbatim).
+    async fn send(&self, n: Notification) -> DeliveryResult {
+        let message = SmsMessage {
+            id: if n.id.is_empty() {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                n.id.clone()
+            },
+            to: n.to.clone(),
+            body: n.body.clone(),
+            sender: None,
+        };
+        match self.provider.send(message).await {
+            Ok(result) => match result.status {
+                DeliveryStatus::Failed => Err(NotificationError::Delivery(
+                    result
+                        .error
+                        .unwrap_or_else(|| "twilio delivery failed".into()),
+                )),
+                _ => Ok(()),
+            },
+            Err(e) => Err(NotificationError::Delivery(e.to_string())),
+        }
     }
 
     /// Implements [`notifications::Channel::name`].
     fn name(&self) -> String {
-        "notificationstwilio-stub".to_string()
+        "notificationstwilio".to_string()
     }
 }
 
@@ -173,12 +213,6 @@ mod tests {
 
     use super::*;
 
-    /// Returns `true` when `err` is the not-yet-implemented sentinel — the
-    /// analog of Go's `errors.Is(err, ErrNotImplemented)`.
-    fn is_not_implemented(err: &NotificationError) -> bool {
-        matches!(err, NotificationError::Delivery(msg) if msg == ERR_NOT_IMPLEMENTED)
-    }
-
     // -------------------------------------------------------------------
     // Ported from adapter_test.go
     // -------------------------------------------------------------------
@@ -195,49 +229,22 @@ mod tests {
         let _shared: Arc<dyn ChannelPort> = Arc::new(Channel::new(Config::default()));
     }
 
-    /// Go: `TestStubReturnsSentinel` — `Send` returns the sentinel, the name
-    /// is non-empty, and the kind is set.
-    #[tokio::test]
-    async fn stub_returns_sentinel() {
-        let c = Channel::new(Config::default());
-
-        let err = c
-            .send(Notification::default())
-            .await
-            .expect_err("Send: expected the sentinel error, got Ok");
-        assert!(is_not_implemented(&err), "Send: {err}");
-
-        assert!(!c.name().is_empty(), "Name should be non-empty");
-        assert!(!c.kind().as_str().is_empty(), "Kind should be set");
-    }
-
     // -------------------------------------------------------------------
-    // Rust-specific additions
+    // Rust-specific additions. The real HTTP round trip (send + status
+    // fetch) is exercised in tests/twilio_behavior.rs against an in-process
+    // axum mock.
     // -------------------------------------------------------------------
 
     #[test]
-    fn sentinel_message_matches_go_bytes() {
-        assert_eq!(
-            ERR_NOT_IMPLEMENTED,
-            "firefly/notificationstwilio: not yet implemented"
-        );
-        let err = err_not_implemented();
-        assert_eq!(
-            err.to_string(),
-            "firefly/notificationstwilio: not yet implemented"
-        );
-    }
-
-    #[test]
-    fn kind_routes_sms_and_name_matches_go() {
+    fn kind_routes_sms_and_name_matches_real_adapter() {
         let c = Channel::new(Config::default());
         assert_eq!(c.kind(), Kind::SMS);
         assert_eq!(c.kind().as_str(), "sms");
-        assert_eq!(c.name(), "notificationstwilio-stub");
+        assert_eq!(c.name(), "notificationstwilio");
     }
 
     #[test]
-    fn config_is_retained_for_the_production_adapter() {
+    fn config_is_retained_for_the_adapter() {
         let cfg = Config {
             api_key: "sk-test".into(),
             from_address: "noreply@example.com".into(),
@@ -248,6 +255,7 @@ mod tests {
         };
         let c = Channel::new(cfg.clone());
         assert_eq!(c.config(), &cfg);
+        assert_eq!(c.provider().name(), "twilio");
 
         // The zero config mirrors Go's `Config{}`.
         assert_eq!(
@@ -263,13 +271,21 @@ mod tests {
         );
     }
 
-    /// Registering the stub with the dispatcher routes SMS messages into it,
-    /// which surface the sentinel — the consuming-code wire shape is locked
-    /// before the integration ships.
+    /// Registering the channel with the dispatcher routes SMS messages into it.
+    /// Against a closed port the send surfaces a typed Delivery error; other
+    /// kinds stay unrouted.
     #[tokio::test]
-    async fn dispatcher_routes_sms_into_stub_and_surfaces_sentinel() {
+    async fn dispatcher_routes_sms_into_channel_and_surfaces_delivery_error() {
         let d = Dispatcher::new();
-        d.register(Arc::new(Channel::new(Config::default())));
+        d.register(Arc::new(Channel::with_base_url(
+            Config {
+                account_sid: "AC0000".into(),
+                api_key: "tok".into(),
+                from_number: "+15550100".into(),
+                ..Config::default()
+            },
+            "http://127.0.0.1:1",
+        )));
 
         let err = d
             .dispatch(Notification {
@@ -279,14 +295,10 @@ mod tests {
                 ..Notification::default()
             })
             .await
-            .expect_err("dispatch should surface the sentinel");
-        assert!(is_not_implemented(&err), "dispatch: {err}");
-        assert_eq!(
-            err.to_string(),
-            "firefly/notificationstwilio: not yet implemented"
-        );
+            .expect_err("connection-refused send must fail");
+        assert!(matches!(err, NotificationError::Delivery(_)), "{err:?}");
 
-        // Other kinds stay unrouted: the stub registers only Kind::SMS.
+        // Other kinds stay unrouted: the channel registers only Kind::SMS.
         let err = d
             .dispatch(Notification {
                 channel: Kind::EMAIL,
@@ -295,6 +307,31 @@ mod tests {
             .await
             .expect_err("email has no channel");
         assert_eq!(err, NotificationError::NoChannel);
+    }
+
+    /// A missing sender (no from_number, no per-message sender) surfaces as a
+    /// typed Delivery error before any HTTP call.
+    #[tokio::test]
+    async fn send_without_sender_surfaces_delivery_error() {
+        let c = Channel::new(Config {
+            account_sid: "AC0000".into(),
+            api_key: "tok".into(),
+            // no from_number
+            ..Config::default()
+        });
+        let err = c
+            .send(Notification {
+                channel: Kind::SMS,
+                to: "+34911".into(),
+                body: "hi".into(),
+                ..Notification::default()
+            })
+            .await
+            .expect_err("missing sender must error");
+        match err {
+            NotificationError::Delivery(msg) => assert!(msg.contains("needs a sender"), "{msg}"),
+            other => panic!("want Delivery, got {other:?}"),
+        }
     }
 
     #[test]

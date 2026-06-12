@@ -651,22 +651,103 @@ async fn logout_always_true() {
     assert!(adapter(&base).logout("anything").await.unwrap());
 }
 
+// --------------------------------------------------------------------------- //
+// MFA — mfa_challenge registers a software-OATH (TOTP) method (real Graph)
+// --------------------------------------------------------------------------- //
 #[tokio::test]
-async fn mfa_methods_return_sentinel() {
+async fn mfa_challenge_registers_software_oath_method() {
+    let (base, state) = spawn().await;
+    state.route_json(
+        "oauth2/v2.0/token",
+        200,
+        serde_json::json!({"access_token": "APP-TOK", "expires_in": 3600}),
+    );
+    state.route_json(
+        "/authentication/softwareOathMethods",
+        201,
+        serde_json::json!({"id": "method-id-1", "secretKey": "JBSWY3DPEHPK3PXP"}),
+    );
+
+    let challenge = adapter(&base).mfa_challenge("u1").await.unwrap();
+
+    // (a) outbound: POST to the softwareOathMethods endpoint with the app token.
+    let req = state.find("POST", "/users/u1/authentication/softwareOathMethods");
+    assert_eq!(req.authorization, "Bearer APP-TOK");
+
+    // (b) parsed: method id in challenge_id, "TOTP:{secretKey}" in method.
+    assert_eq!(challenge.challenge_id, "method-id-1");
+    assert_eq!(challenge.method, "TOTP:JBSWY3DPEHPK3PXP");
+    assert_eq!(challenge.user_id, "u1");
+}
+
+#[tokio::test]
+async fn mfa_challenge_missing_user_maps_to_user_not_found() {
+    let (base, state) = spawn().await;
+    state.route_json(
+        "oauth2/v2.0/token",
+        200,
+        serde_json::json!({"access_token": "APP-TOK", "expires_in": 3600}),
+    );
+    state.route_empty("/authentication/softwareOathMethods", 404);
+
+    let err = adapter(&base).mfa_challenge("ghost").await.unwrap_err();
+    assert_eq!(err, firefly_idp::Error::UserNotFound);
+}
+
+// --------------------------------------------------------------------------- //
+// MFA — mfa_verify is a documented provider capability boundary
+// --------------------------------------------------------------------------- //
+#[tokio::test]
+async fn mfa_verify_is_unsupported_by_provider() {
     let (base, _state) = spawn().await;
-    let a = adapter(&base);
-    assert_eq!(
-        a.mfa_challenge("u1").await.unwrap_err(),
-        firefly_idp_azure_ad::not_implemented()
+    let err = adapter(&base).mfa_verify("c1", "000000").await.unwrap_err();
+    match err {
+        firefly_idp::Error::UnsupportedByProvider {
+            provider,
+            operation,
+            reason,
+        } => {
+            assert_eq!(provider, "azure-ad");
+            assert_eq!(operation, "mfa_verify");
+            assert!(reason.contains("no API to verify a TOTP code"));
+        }
+        other => panic!("expected UnsupportedByProvider, got {other:?}"),
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// list_authentication_methods — GET .../authentication/methods (real Graph)
+// --------------------------------------------------------------------------- //
+#[tokio::test]
+async fn list_authentication_methods_returns_odata_types() {
+    let (base, state) = spawn().await;
+    state.route_json(
+        "oauth2/v2.0/token",
+        200,
+        serde_json::json!({"access_token": "APP-TOK", "expires_in": 3600}),
     );
-    assert_eq!(
-        a.mfa_verify("c1", "000000").await.unwrap_err(),
-        firefly_idp_azure_ad::not_implemented()
+    state.route_json(
+        "/authentication/methods",
+        200,
+        serde_json::json!({"value": [
+            {"@odata.type": "#microsoft.graph.passwordAuthenticationMethod"},
+            {"@odata.type": "#microsoft.graph.softwareOathAuthenticationMethod"}
+        ]}),
     );
+
+    let methods = adapter(&base)
+        .list_authentication_methods("u1")
+        .await
+        .unwrap();
     assert_eq!(
-        firefly_idp_azure_ad::ERR_NOT_IMPLEMENTED,
-        "firefly/idpazuread: not yet implemented"
+        methods,
+        vec![
+            "#microsoft.graph.passwordAuthenticationMethod".to_string(),
+            "#microsoft.graph.softwareOathAuthenticationMethod".to_string(),
+        ]
     );
+    let req = state.find("GET", "/users/u1/authentication/methods");
+    assert_eq!(req.authorization, "Bearer APP-TOK");
 }
 
 #[test]

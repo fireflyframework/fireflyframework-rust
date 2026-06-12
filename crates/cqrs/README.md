@@ -243,6 +243,57 @@ with no rule registration.
 every registered handler — pyfly's `HandlerRegistry.get_registered_*_types()`,
 consumed later by the admin actuator.
 
+## Reactive
+
+Alongside the async `Bus::send` / `Bus::query`, the bus exposes a
+**Reactor / WebFlux-style** reactive surface built on
+[`firefly-reactive`](../reactive/README.md). It is **strictly additive**:
+the existing async API, the registry, the middleware chain, and every
+wire format are unchanged — the reactive methods just wrap the eventual
+result in a lazy [`Mono<R>`](../reactive/README.md), exactly as a Spring
+WebFlux reactive command bus hands back a `Mono<R>` instead of a blocking
+`R`.
+
+| Symbol                                | Purpose                                                      | Reactor / WebFlux analog        |
+|---------------------------------------|--------------------------------------------------------------|---------------------------------|
+| `Bus::send_mono(cmd) -> Mono<R>`      | Reactive twin of `Bus::send` (same lookup + middleware)      | `Mono<R> bus.send(cmd)`         |
+| `Bus::query_mono(q) -> Mono<R>`       | Reactive twin of `Bus::query`                                | `Mono<R> bus.query(q)`          |
+| `Bus::send_mono_with_context(cmd, ctx)` | `send_mono` with an `ExecutionContext` attached            | context-carrying reactive send  |
+| `Bus::query_mono_with_context(q, ctx)`  | `query_mono` with an `ExecutionContext` attached           | context-carrying reactive query |
+| `cqrs_error_to_firefly(err)`          | Maps a `CqrsError` into the reactive stack's `FireflyError`  | `CqrsError` → `Throwable`       |
+
+The reactive methods take `&Arc<Bus>` (so the lazy `Mono` can own the
+bus); register handlers on the `Arc<Bus>` exactly as on a `Bus`. Nothing
+runs until the `Mono` is subscribed, blocked, or awaited, at which point
+it executes the *same* handler lookup and the *same* validation /
+authorization / caching middleware chain as `Bus::send`:
+
+```rust,ignore
+use std::sync::Arc;
+use firefly_cqrs::{Bus, CqrsError, Message};
+
+let bus = Arc::new(Bus::new());
+bus.register(|c: CreateUser| async move {
+    Ok::<_, CqrsError>(UserCreated { id: "u1".into(), name: c.name })
+});
+
+// Compose with Reactor operators, then block/subscribe/await.
+let id = bus
+    .send_mono::<_, UserCreated>(CreateUser { name: "alice".into() })
+    .map(|u| u.id)
+    .block()
+    .await?;            // Ok(Some("u1"))
+```
+
+Because `firefly-reactive` fixes its error channel to
+`firefly_kernel::FireflyError` (WebFlux models everything as a
+`Throwable`), a failed dispatch is mapped from `CqrsError` into a
+status-faithful `FireflyError` via `cqrs_error_to_firefly` — a validation
+failure → 422, an authorization denial → 403, a missing handler / type
+mismatch / domain error → 500 — with the original `CqrsError` preserved
+as the error's `source()` cause, so it flows straight into the RFC 7807
+problem stack while staying inspectable.
+
 ## Testing
 
 ```bash
@@ -259,4 +310,8 @@ bounds. The `pyfly_parity_test` suite ports pyfly's
 `test_authorization.py`, `test_context.py`,
 `test_eda_cache_invalidation.py`, and `test_fluent_builders.py` (plus
 `HandlerRegistry` listing and context threading) end-to-end against an
-in-memory EDA broker.
+in-memory EDA broker. The `reactive_test` suite covers the
+`send_mono` / `query_mono` happy path, operator composition, the caching
+middleware running through a `Mono`, the `CqrsError` → `FireflyError`
+status mapping (validation → 422, authorization → 403, handler → 500),
+the no-handler path, and the `*_with_context` overloads.

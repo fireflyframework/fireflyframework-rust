@@ -195,6 +195,48 @@ pub fn sign(
     }
 }
 
+/// Computes the SigV4 *query-string* signature for a presigned URL.
+///
+/// Unlike header-based signing ([`sign`]), the
+/// [presigned-URL flow](https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html)
+/// puts the authentication parameters in the query string and uses the literal
+/// payload hash `UNSIGNED-PAYLOAD`. The caller supplies the already-built
+/// canonical query (which must contain `X-Amz-Algorithm`, `X-Amz-Credential`,
+/// `X-Amz-Date`, `X-Amz-Expires`, and `X-Amz-SignedHeaders`, sorted and
+/// encoded) and the only signed header, `host`. The returned hex signature is
+/// appended to the URL as `X-Amz-Signature`.
+pub fn presign_signature(
+    method: &str,
+    canonical_uri: &str,
+    canonical_query: &str,
+    host: &str,
+    creds: &Credentials<'_>,
+    amz_date: &str,
+    date_stamp: &str,
+) -> String {
+    let canonical_headers = format!("host:{host}\n");
+    let signed_headers = "host";
+    let canonical = format!(
+        "{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{UNSIGNED_PAYLOAD}"
+    );
+    let hashed_canonical = sha256_hex(canonical.as_bytes());
+
+    let scope = format!(
+        "{}/{}/{}/aws4_request",
+        date_stamp, creds.region, creds.service
+    );
+    let string_to_sign = format!("AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{hashed_canonical}");
+
+    let k_date = hmac(
+        format!("AWS4{}", creds.secret_key).as_bytes(),
+        date_stamp.as_bytes(),
+    );
+    let k_region = hmac(&k_date, creds.region.as_bytes());
+    let k_service = hmac(&k_region, creds.service.as_bytes());
+    let k_signing = hmac(&k_service, b"aws4_request");
+    hex::encode(hmac(&k_signing, string_to_sign.as_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

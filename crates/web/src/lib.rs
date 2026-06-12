@@ -76,6 +76,16 @@
 //! ([`MessageConverterRegistry`], [`Negotiate`],
 //! [`ContentNegotiationLayer`]) and the config-driven [`server`]
 //! bootstrap ([`server::ServerProperties`] / [`server::serve`]).
+//!
+//! ## Reactive (WebFlux/Reactor) surface
+//!
+//! The [`reactive`] module adds an **additive** reactive HTTP surface on
+//! top of [`firefly_reactive`] — the Rust analog of returning `Mono<T>` /
+//! `Flux<T>` from a Spring WebFlux `@RestController`: [`MonoJson`]
+//! (resolves a `Mono` → `200` JSON / `404` problem / error problem),
+//! [`NdJson`] (`Flux<T>` → backpressured `application/x-ndjson`), and
+//! [`Sse`] / [`SseEvents`] (`Flux<T>` → `text/event-stream`, reusing
+//! `firefly-sse`'s wire format). See the module docs for details.
 
 mod content_negotiation;
 mod correlation;
@@ -87,6 +97,7 @@ mod idempotency;
 mod metrics;
 mod pii;
 mod problem;
+pub mod reactive;
 mod request_log;
 pub mod server;
 
@@ -118,6 +129,7 @@ pub use pii::{mask_map, mask_pii};
 pub use problem::{
     error_response, problem_response, ProblemLayer, ProblemService, WebError, WebResult,
 };
+pub use reactive::{MonoJson, NdJson, Sse, SseEvents, NDJSON_CONTENT_TYPE, SSE_CONTENT_TYPE};
 pub use request_log::{RequestLogLayer, RequestLogService, REQUEST_LOG_TARGET};
 
 /// The released framework version, mirroring [`firefly_kernel::VERSION`].

@@ -11,6 +11,7 @@ description = "Firefly Framework for Rust — Event envelope, Publisher/Subscrib
 [dependencies]
 firefly-kernel = { workspace = true }
 firefly-observability = { workspace = true }
+firefly-reactive = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

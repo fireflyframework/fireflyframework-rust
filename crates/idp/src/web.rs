@@ -375,7 +375,7 @@ fn error_response(err: &Error) -> Response {
     let status = match err {
         Error::InvalidCredentials | Error::MfaRequired(_) => StatusCode::UNAUTHORIZED,
         Error::UserNotFound => StatusCode::NOT_FOUND,
-        Error::NotSupported(_) => StatusCode::NOT_IMPLEMENTED,
+        Error::NotSupported(_) | Error::UnsupportedByProvider { .. } => StatusCode::NOT_IMPLEMENTED,
         Error::Provider(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, Json(json!({ "error": err.to_string() }))).into_response()

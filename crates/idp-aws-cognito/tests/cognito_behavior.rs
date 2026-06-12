@@ -603,23 +603,130 @@ async fn list_users_parses_users() {
 }
 
 // --------------------------------------------------------------------------- //
-// MFA sentinel; name
+// MFA — AssociateSoftwareToken (challenge) carrying the user's access token
 // --------------------------------------------------------------------------- //
 #[tokio::test]
-async fn mfa_methods_return_sentinel() {
-    let (base, _state) = spawn().await;
-    let a = adapter(&base);
-    assert_eq!(
-        a.mfa_challenge("u1").await.unwrap_err(),
-        firefly_idp_aws_cognito::not_implemented()
+async fn mfa_challenge_associates_software_token() {
+    let (base, state) = spawn().await;
+    state.register(
+        "AssociateSoftwareToken",
+        200,
+        serde_json::json!({"SecretCode": "BASE32SECRET", "Session": "SESSION-ABC"}),
     );
+
+    let challenge = adapter(&base)
+        .mfa_challenge("ACCESS-TOKEN-XYZ")
+        .await
+        .unwrap();
+
+    // (a) outbound: AssociateSoftwareToken carries the access token, unsigned.
+    let call = state.find("AssociateSoftwareToken");
     assert_eq!(
-        a.mfa_verify("c1", "000000").await.unwrap_err(),
-        firefly_idp_aws_cognito::not_implemented()
+        call.target,
+        "AWSCognitoIdentityProviderService.AssociateSoftwareToken"
     );
+    assert_eq!(call.body["AccessToken"], "ACCESS-TOKEN-XYZ");
+    assert!(
+        call.authorization.is_empty(),
+        "AssociateSoftwareToken is an unsigned client-flow call"
+    );
+
+    // (b) parsed: Session in challenge_id, "TOTP:{SecretCode}" in method.
+    assert_eq!(challenge.challenge_id, "SESSION-ABC");
+    assert_eq!(challenge.method, "TOTP:BASE32SECRET");
+    assert!(challenge.user_id.is_empty());
+}
+
+// --------------------------------------------------------------------------- //
+// MFA — VerifySoftwareToken (verify) with the Session + TOTP code
+// --------------------------------------------------------------------------- //
+#[tokio::test]
+async fn mfa_verify_success_returns_session_token() {
+    let (base, state) = spawn().await;
+    state.register(
+        "VerifySoftwareToken",
+        200,
+        serde_json::json!({"Status": "SUCCESS", "Session": "SESSION-VERIFIED"}),
+    );
+
+    let token = adapter(&base)
+        .mfa_verify("SESSION-ABC", "123456")
+        .await
+        .unwrap();
+
+    let call = state.find("VerifySoftwareToken");
     assert_eq!(
-        firefly_idp_aws_cognito::ERR_NOT_IMPLEMENTED,
-        "firefly/idpawscognito: not yet implemented"
+        call.target,
+        "AWSCognitoIdentityProviderService.VerifySoftwareToken"
+    );
+    assert_eq!(call.body["Session"], "SESSION-ABC");
+    assert_eq!(call.body["UserCode"], "123456");
+    assert!(call.authorization.is_empty());
+
+    // The fresh Session rides back on id_token for any follow-on challenge.
+    assert_eq!(token.id_token, "SESSION-VERIFIED");
+    assert_eq!(token.token_type, "Bearer");
+}
+
+#[tokio::test]
+async fn mfa_verify_wrong_code_maps_to_invalid_credentials() {
+    let (base, state) = spawn().await;
+    state.register(
+        "VerifySoftwareToken",
+        200,
+        serde_json::json!({"Status": "ERROR"}),
+    );
+    let err = adapter(&base)
+        .mfa_verify("SESSION-ABC", "000000")
+        .await
+        .unwrap_err();
+    assert_eq!(err, firefly_idp::Error::InvalidCredentials);
+}
+
+#[tokio::test]
+async fn mfa_verify_http_error_maps_to_invalid_credentials() {
+    let (base, state) = spawn().await;
+    state.register(
+        "VerifySoftwareToken",
+        400,
+        serde_json::json!({"__type": "EnableSoftwareTokenMFAException"}),
+    );
+    let err = adapter(&base)
+        .mfa_verify("SESSION-ABC", "000000")
+        .await
+        .unwrap_err();
+    assert_eq!(err, firefly_idp::Error::InvalidCredentials);
+}
+
+// --------------------------------------------------------------------------- //
+// MFA — AdminSetUserMFAPreference (admin, SigV4-signed) enables TOTP
+// --------------------------------------------------------------------------- //
+#[tokio::test]
+async fn set_mfa_preference_enables_software_token() {
+    let (base, state) = spawn().await;
+    state.register("AdminSetUserMFAPreference", 200, serde_json::json!({}));
+
+    let ok = adapter(&base)
+        .set_mfa_preference("alice", true)
+        .await
+        .unwrap();
+    assert!(ok);
+
+    let call = state.find("AdminSetUserMFAPreference");
+    assert_eq!(
+        call.target,
+        "AWSCognitoIdentityProviderService.AdminSetUserMFAPreference"
+    );
+    assert_eq!(call.body["UserPoolId"], USER_POOL_ID);
+    assert_eq!(call.body["Username"], "alice");
+    assert_eq!(call.body["SoftwareTokenMfaSettings"]["Enabled"], true);
+    assert_eq!(call.body["SoftwareTokenMfaSettings"]["PreferredMfa"], true);
+    // Admin call must be SigV4-signed.
+    assert!(
+        call.authorization
+            .starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"),
+        "AdminSetUserMFAPreference must be SigV4-signed; got {:?}",
+        call.authorization
     );
 }
 

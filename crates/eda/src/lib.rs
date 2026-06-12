@@ -77,6 +77,20 @@
 //! - [`EventPublisherHealthIndicator`] adapts any [`BrokerHealth`]
 //!   broker to a [`firefly_observability::Indicator`], surfacing broker
 //!   liveness on `/actuator/health` (pyfly's `eda.health`).
+//!
+//! ## Reactive surface
+//!
+//! An *additive* Reactor / WebFlux-style façade layers over
+//! [`InMemoryBroker`] without touching any existing signature or wire
+//! format:
+//!
+//! - [`InMemoryBroker::subscribe_reactive`] turns a topic subscription
+//!   into a [`firefly_reactive::Flux<Event>`] (the EDA analog of Reactor
+//!   Kafka's `KafkaReceiver.receive()`), backed by a bounded channel with
+//!   on-backpressure-drop semantics.
+//! - [`InMemoryBroker::publish_mono`] is the cold, reactive publish
+//!   helper returning a [`firefly_reactive::Mono`] (a reactive
+//!   `KafkaTemplate.send(..)` → `Mono<Void>`).
 
 #![warn(missing_docs)]
 
@@ -90,6 +104,7 @@ mod kafka;
 mod listener;
 mod ports;
 mod rabbitmq;
+mod reactive;
 
 pub use dlq::{EdaDeadLetterEntry, EdaDeadLetterStore, InMemoryEdaDeadLetterStore};
 pub use error::{EdaError, EdaResult};
@@ -103,6 +118,7 @@ pub use kafka::{new_kafka_broker, KafkaConfig};
 pub use listener::{wrap_listener, ListenerPolicy, HEADER_EXCEPTION, HEADER_ORIGINAL_TOPIC};
 pub use ports::{handler, Broker, Handler, HandlerFuture, Publisher, Subscriber};
 pub use rabbitmq::{new_rabbitmq_broker, RabbitMqConfig};
+pub use reactive::DEFAULT_REACTIVE_BUFFER;
 
 /// The released framework version, shared across all Firefly crates.
 pub const VERSION: &str = "26.6.1";

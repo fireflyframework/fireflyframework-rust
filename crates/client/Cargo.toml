@@ -15,7 +15,8 @@ description = "Firefly Framework for Rust — REST builder with retry, problem d
 # opt into the heavier transports as needed.
 default = []
 # Enables [`WsBuilder`] / [`WsClient`] over `tokio-tungstenite`.
-websocket = ["dep:tokio-tungstenite", "dep:futures"]
+# (`futures` is now an unconditional dependency of the reactive WebClient.)
+websocket = ["dep:tokio-tungstenite"]
 # Enables [`GrpcBuilder`] over `tonic`'s `Channel` (insecure / plaintext).
 grpc = ["dep:tonic"]
 # Adds TLS support to [`GrpcBuilder::secured`] via tonic's `tls` feature.
@@ -24,14 +25,22 @@ grpc-tls = ["grpc", "tonic?/tls", "tonic?/tls-roots"]
 [dependencies]
 firefly-kernel = { workspace = true }
 firefly-observability = { workspace = true }
-reqwest = { workspace = true }
+firefly-reactive = { workspace = true }
+# `stream` enables reqwest::Response::bytes_stream for the reactive
+# WebClient's body_to_flux NDJSON / SSE decoder. Adding a feature to the
+# catalog dependency (not a new dep) keeps the eager RestClient byte-stable.
+reqwest = { workspace = true, features = ["stream"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 http = { workspace = true }
+# Needed unconditionally by the reactive WebClient (was previously only
+# pulled in behind the `websocket` feature).
+futures = { workspace = true }
+async-stream = { workspace = true }
+bytes = { workspace = true }
 tokio-tungstenite = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -39,6 +48,11 @@ axum = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
+# The reactive WebClient tests spawn an in-process axum server emitting
+# NDJSON / SSE; firefly-web is a dev-dep for parity with its reactive
+# responders (the streams themselves are emitted directly here).
+firefly-web = { workspace = true }
+firefly-reactive = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

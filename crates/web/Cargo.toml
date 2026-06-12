@@ -10,6 +10,10 @@ description = "Firefly Framework for Rust — Problem renderer, correlation, ide
 
 [dependencies]
 firefly-kernel = { workspace = true }
+# Reactive (WebFlux/Reactor-style) HTTP surface: Mono/Flux responders.
+firefly-reactive = { workspace = true }
+# Reused for the Flux→SSE responder's canonical wire format.
+firefly-sse = { workspace = true }
 axum = { workspace = true }
 # `limit` enables tower::limit::GlobalConcurrencyLimitLayer for the
 # pyfly-parity server module (max_concurrent_connections).
@@ -22,6 +26,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+# Byte buffers for the reactive NDJSON/SSE streaming responders.
+bytes = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 sha2 = { workspace = true }

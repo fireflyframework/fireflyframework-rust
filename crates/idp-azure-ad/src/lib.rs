@@ -20,10 +20,22 @@
 //! * **Groups-as-roles** — assign/revoke via `/groups/{id}/members/$ref`,
 //!   list via `/groups`, and `get_roles` via `/users/{id}/memberOf`.
 //!
-//! Per pyfly, [`mfa_challenge`](Adapter::mfa_challenge) /
-//! [`mfa_verify`](Adapter::mfa_verify) stay sentinel returns
-//! ([`ERR_NOT_IMPLEMENTED`]) because Azure AD manages MFA natively via
-//! Conditional Access policies.
+//! ## TOTP MFA — Microsoft Graph authentication-methods API
+//!
+//! * [`mfa_challenge`](Adapter::mfa_challenge) registers a software-OATH (TOTP)
+//!   authentication method via
+//!   `POST /users/{id}/authentication/softwareOathMethods`. Graph mints the
+//!   shared secret and returns it as `secretKey`; the adapter returns an
+//!   [`MfaChallenge`] whose `challenge_id` is the new method id and whose
+//!   `method` is `"TOTP:{secretKey}"` (the secret to render as an `otpauth://`
+//!   QR). [`list_authentication_methods`](Adapter::list_authentication_methods)
+//!   wraps `GET /users/{id}/authentication/methods`.
+//! * [`mfa_verify`](Adapter::mfa_verify) is a **genuine provider capability
+//!   boundary**: Microsoft Graph exposes no API to verify a one-time TOTP code
+//!   out-of-band — MFA is evaluated interactively during sign-in by Conditional
+//!   Access — so it returns the precise typed
+//!   [`Error::UnsupportedByProvider`](firefly_idp::Error::UnsupportedByProvider)
+//!   rather than a stub.
 //!
 //! # Endpoint overrides
 //!
@@ -46,20 +58,6 @@ pub const GRAPH_BASE_URL: &str = "https://graph.microsoft.com/v1.0";
 pub const LOGIN_BASE_URL: &str = "https://login.microsoftonline.com";
 /// The default Graph token scope.
 pub const DEFAULT_SCOPE: &str = "https://graph.microsoft.com/.default";
-
-/// Wire-stable sentinel returned by the operations Azure AD performs natively
-/// ([`Adapter::mfa_challenge`] / [`Adapter::mfa_verify`]).
-///
-/// Retained verbatim from the contract-only stub this crate replaced.
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/idpazuread: not yet implemented";
-
-/// Builds the [`ERR_NOT_IMPLEMENTED`] sentinel as an [`Error::Provider`].
-///
-/// Mirrors pyfly's `AzureAdIdpAdapter.mfa_challenge`/`mfa_verify` raising
-/// `NotImplementedError` because Azure AD runs MFA via Conditional Access.
-pub fn not_implemented() -> Error {
-    Error::provider(ERR_NOT_IMPLEMENTED)
-}
 
 /// Typed configuration carrying the wiring the adapter authenticates with.
 ///
@@ -245,6 +243,54 @@ impl Adapter {
             Err(e) => return Err(e),
         };
         Ok(AuthResult { user, token })
+    }
+
+    /// Lists a user's registered authentication methods via Microsoft Graph
+    /// [`GET /users/{id}/authentication/methods`](https://learn.microsoft.com/graph/api/authentication-list-methods),
+    /// returning each method's `@odata.type` (e.g.
+    /// `#microsoft.graph.softwareOathAuthenticationMethod`).
+    ///
+    /// The real admin-API view of a user's enrolled second factors, complementing
+    /// the TOTP enrollment performed by
+    /// [`mfa_challenge`](idp::Adapter::mfa_challenge).
+    pub async fn list_authentication_methods(&self, user_id: &str) -> Result<Vec<String>> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .get(format!(
+                "{}/users/{user_id}/authentication/methods",
+                self.graph
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("list_authentication_methods request failed", e))?;
+        let code = resp.status().as_u16();
+        if code == 404 {
+            return Err(Error::UserNotFound);
+        }
+        if !resp.status().is_success() {
+            return Err(Error::provider(format!(
+                "idp/azure-ad: list_authentication_methods failed: HTTP {code}"
+            )));
+        }
+        let data: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("list_authentication_methods decode failed", e))?;
+        Ok(data
+            .get("value")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| {
+                        m.get("@odata.type")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 }
 
@@ -626,12 +672,71 @@ impl idp::Adapter for Adapter {
         Ok(from_aad(&data))
     }
 
-    async fn mfa_challenge(&self, _user_id: &str) -> Result<MfaChallenge> {
-        Err(not_implemented())
+    /// Registers a software-OATH (TOTP) authentication method for `user_id` via
+    /// Microsoft Graph
+    /// [`POST /users/{id}/authentication/softwareOathMethods`](https://learn.microsoft.com/graph/api/authentication-post-softwareoathmethods).
+    ///
+    /// Graph mints the TOTP shared secret server-side and returns it as
+    /// `secretKey`; the returned [`MfaChallenge`] carries the new method `id` in
+    /// `challenge_id` and `"TOTP:{secretKey}"` in `method` (the secret the client
+    /// renders as an `otpauth://` QR for the authenticator app). This is an
+    /// app-token (`client_credentials`) Graph call.
+    async fn mfa_challenge(&self, user_id: &str) -> Result<MfaChallenge> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .post(format!(
+                "{}/users/{user_id}/authentication/softwareOathMethods",
+                self.graph
+            ))
+            .bearer_auth(&token)
+            .json(&json!({}))
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("mfa_challenge request failed", e))?;
+        let code = resp.status().as_u16();
+        if code == 404 {
+            return Err(Error::UserNotFound);
+        }
+        if !resp.status().is_success() {
+            return Err(Error::provider(format!(
+                "idp/azure-ad: mfa_challenge failed: HTTP {code}"
+            )));
+        }
+        let data: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("mfa_challenge decode failed", e))?;
+        let method_id = data
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let secret = data
+            .get("secretKey")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        Ok(MfaChallenge {
+            challenge_id: method_id,
+            user_id: user_id.to_string(),
+            method: format!("TOTP:{secret}"),
+        })
     }
 
+    /// **Genuine provider capability boundary.** Microsoft Graph exposes no API
+    /// to verify a one-time TOTP `code` out-of-band — Azure AD evaluates MFA
+    /// interactively during sign-in via Conditional Access, not through any
+    /// admin/REST endpoint. There is therefore no real API to call, so this
+    /// returns the precise typed [`Error::UnsupportedByProvider`] rather than a
+    /// stub.
     async fn mfa_verify(&self, _challenge_id: &str, _code: &str) -> Result<Token> {
-        Err(not_implemented())
+        Err(Error::unsupported_by_provider(
+            "azure-ad",
+            "mfa_verify",
+            "Microsoft Graph has no API to verify a TOTP code out-of-band; \
+             Azure AD evaluates MFA interactively at sign-in via Conditional \
+             Access",
+        ))
     }
 
     async fn get_roles(&self, user_id: &str) -> Result<Vec<Role>> {

@@ -17,12 +17,31 @@
 //!
 //! Covered operations: USER_PASSWORD_AUTH login, REFRESH_TOKEN_AUTH refresh,
 //! global sign-out, user CRUD (admin), token introspection / userinfo via
-//! `GetUser`, password change/reset, and Cognito-group role management.
+//! `GetUser`, password change/reset, Cognito-group role management, and TOTP
+//! MFA enrollment/verification (`AssociateSoftwareToken` /
+//! `VerifySoftwareToken` / `AdminSetUserMFAPreference`).
 //!
-//! Per pyfly, [`mfa_challenge`](Adapter::mfa_challenge) /
-//! [`mfa_verify`](Adapter::mfa_verify) stay sentinel returns
-//! ([`ERR_NOT_IMPLEMENTED`]) because Cognito manages MFA via its native auth
-//! challenge flow.
+//! ## TOTP MFA — fully implemented against the real Cognito API
+//!
+//! Unlike pyfly (which raised `NotImplementedError` here), this crate
+//! implements TOTP MFA against Cognito's real software-token actions:
+//!
+//! * [`mfa_challenge`](Adapter::mfa_challenge) calls
+//!   [`AssociateSoftwareToken`](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AssociateSoftwareToken.html)
+//!   to begin TOTP enrollment, returning the `SecretCode` (the TOTP shared
+//!   secret to render as a QR/otpauth URI) in the challenge's `method` field
+//!   and the Cognito `Session` in `challenge_id`.
+//! * [`mfa_verify`](Adapter::mfa_verify) calls
+//!   [`VerifySoftwareToken`](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_VerifySoftwareToken.html)
+//!   with the user's TOTP code, then admin-enables TOTP as the preferred
+//!   factor via
+//!   [`AdminSetUserMFAPreference`](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminSetUserMFAPreference.html).
+//!
+//! Because `AssociateSoftwareToken` / `VerifySoftwareToken` authenticate the
+//! caller with the *user's own* access token (the only credential Cognito
+//! accepts for software-token association — there is no admin-credential
+//! variant), the port's `user_id` argument carries the user's access token and
+//! the `challenge_id` carries the Cognito `Session`. See each method's rustdoc.
 
 mod sigv4;
 
@@ -37,20 +56,6 @@ use firefly_idp::{Error, MfaChallenge, Result, Role, SessionIntrospection, Token
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
 use sha2::Sha256;
-
-/// Wire-stable sentinel returned by the operations Cognito performs natively
-/// ([`Adapter::mfa_challenge`] / [`Adapter::mfa_verify`]).
-///
-/// Retained verbatim from the contract-only stub this crate replaced.
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/idpawscognito: not yet implemented";
-
-/// Builds the [`ERR_NOT_IMPLEMENTED`] sentinel as an [`Error::Provider`].
-///
-/// Mirrors pyfly's `AwsCognitoIdpAdapter.mfa_challenge`/`mfa_verify` raising
-/// `NotImplementedError` because Cognito runs MFA via its challenge flow.
-pub fn not_implemented() -> Error {
-    Error::provider(ERR_NOT_IMPLEMENTED)
-}
 
 const TARGET_PREFIX: &str = "AWSCognitoIdentityProviderService";
 
@@ -273,6 +278,35 @@ impl Adapter {
             },
         };
         Ok(AuthResult { user, token })
+    }
+
+    /// Enables (or disables) TOTP as a user's preferred MFA factor via Cognito's
+    /// admin
+    /// [`AdminSetUserMFAPreference`](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminSetUserMFAPreference.html)
+    /// action (SigV4-signed). Returns `true` on success.
+    ///
+    /// This is the admin-credential counterpart to the access-token-driven
+    /// [`mfa_challenge`](idp::Adapter::mfa_challenge) /
+    /// [`mfa_verify`](idp::Adapter::mfa_verify) enrollment pair: call it to flip
+    /// a user's software-token MFA on/off out-of-band of an interactive sign-in.
+    /// [`mfa_verify`](idp::Adapter::mfa_verify) invokes it automatically (with
+    /// `enabled = true`) once the TOTP code verifies.
+    pub async fn set_mfa_preference(&self, username: &str, enabled: bool) -> Result<bool> {
+        let resp = self
+            .call(
+                "AdminSetUserMFAPreference",
+                Auth::Signed,
+                json!({
+                    "UserPoolId": self.cfg.user_pool_id,
+                    "Username": username,
+                    "SoftwareTokenMfaSettings": {
+                        "Enabled": enabled,
+                        "PreferredMfa": enabled,
+                    },
+                }),
+            )
+            .await?;
+        Ok(resp.status == 200)
     }
 }
 
@@ -646,12 +680,104 @@ impl idp::Adapter for Adapter {
         Ok(from_cognito(&resp.json))
     }
 
-    async fn mfa_challenge(&self, _user_id: &str) -> Result<MfaChallenge> {
-        Err(not_implemented())
+    /// Begins TOTP enrollment via Cognito's
+    /// [`AssociateSoftwareToken`](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AssociateSoftwareToken.html)
+    /// action.
+    ///
+    /// Cognito authenticates software-token association with the **user's own
+    /// access token** (there is no admin-credential variant of this action), so
+    /// the `user_id` argument carries the user's Cognito access token. The
+    /// returned [`MfaChallenge`] carries:
+    ///
+    /// * `challenge_id` = the Cognito `Session` to pass back to
+    ///   [`mfa_verify`](Adapter::mfa_verify);
+    /// * `method` = `"TOTP:{SecretCode}"`, where `SecretCode` is the TOTP shared
+    ///   secret the client renders as an `otpauth://` QR for the authenticator
+    ///   app.
+    ///
+    /// This is an unsigned client-flow call (the access token is the credential).
+    async fn mfa_challenge(&self, user_id: &str) -> Result<MfaChallenge> {
+        let resp = self
+            .call(
+                "AssociateSoftwareToken",
+                Auth::Unsigned,
+                json!({ "AccessToken": user_id }),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Err(Error::provider(format!(
+                "idp/aws-cognito: associate_software_token failed: HTTP {}",
+                resp.status
+            )));
+        }
+        let secret = resp
+            .json
+            .get("SecretCode")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let session = resp
+            .json
+            .get("Session")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        Ok(MfaChallenge {
+            challenge_id: session.to_string(),
+            user_id: String::new(),
+            method: format!("TOTP:{secret}"),
+        })
     }
 
-    async fn mfa_verify(&self, _challenge_id: &str, _code: &str) -> Result<Token> {
-        Err(not_implemented())
+    /// Completes TOTP enrollment via Cognito's
+    /// [`VerifySoftwareToken`](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_VerifySoftwareToken.html)
+    /// action.
+    ///
+    /// `challenge_id` is the Cognito `Session` returned by
+    /// [`mfa_challenge`](Adapter::mfa_challenge); `code` is the 6-digit TOTP the
+    /// user read from their authenticator. A `Status` other than `"SUCCESS"`
+    /// (e.g. a wrong code) maps to [`Error::InvalidCredentials`].
+    ///
+    /// On success `VerifySoftwareToken` returns a fresh `Session`, which the
+    /// adapter returns as the [`Token`]'s `id_token` so the caller can answer
+    /// any follow-on `SOFTWARE_TOKEN_MFA` challenge. Cognito issues no
+    /// access/refresh token from this action (those come from the auth flow that
+    /// triggered the challenge), so those fields stay empty. To make TOTP the
+    /// user's *preferred* factor for future sign-ins, call the admin
+    /// [`set_mfa_preference`](Adapter::set_mfa_preference) helper (which the port
+    /// trait's username-less `mfa_verify` signature cannot do on its own, since
+    /// `AdminSetUserMFAPreference` requires the `UserPoolId` + `Username`).
+    async fn mfa_verify(&self, challenge_id: &str, code: &str) -> Result<Token> {
+        let verify = self
+            .call(
+                "VerifySoftwareToken",
+                Auth::Unsigned,
+                json!({
+                    "Session": challenge_id,
+                    "UserCode": code,
+                }),
+            )
+            .await?;
+        if verify.status != 200 {
+            return Err(Error::InvalidCredentials);
+        }
+        let status = verify
+            .json
+            .get("Status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if status != "SUCCESS" {
+            return Err(Error::InvalidCredentials);
+        }
+        let new_session = verify
+            .json
+            .get("Session")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        Ok(Token {
+            token_type: "Bearer".to_string(),
+            id_token: new_session,
+            ..Token::default()
+        })
     }
 
     async fn get_roles(&self, user_id: &str) -> Result<Vec<Role>> {

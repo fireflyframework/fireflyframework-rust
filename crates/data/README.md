@@ -352,6 +352,124 @@ executes against any in-memory `serde`-serialisable collection via
 (`>=` and `<=`), `_containing` to `LIKE %value%`, `_is_not_null` to
 `NOT (… IS NULL)`.
 
+## Reactive
+
+On top of the blocking `async fn` `Repository` contract, this crate adds
+a **reactive** CRUD surface — the Spring Data **R2DBC** analog — built on
+the [`firefly-reactive`](../reactive) crate (Rust's Project Reactor /
+WebFlux `Mono` / `Flux`). It is purely **additive**: nothing about the
+existing `Repository` / `MemoryRepository` API changes; the reactive
+types sit alongside.
+
+| Spring Data R2DBC                 | firefly-data reactive                       |
+|-----------------------------------|---------------------------------------------|
+| `ReactiveCrudRepository<T, ID>`   | `ReactiveCrudRepository<T, ID>`             |
+| `Flux<T> findAll()`               | `find_all() -> Flux<T>`                     |
+| `Flux<T> findAllById(ids)`        | `find_all_by_id(ids) -> Flux<T>`            |
+| `Mono<T> findById(id)`            | `find_by_id(id) -> Mono<T>`                 |
+| `Mono<Boolean> existsById(id)`    | `exists_by_id(id) -> Mono<bool>`            |
+| `Mono<T> save(e)`                 | `save(e) -> Mono<T>`                        |
+| `Flux<T> saveAll(es)`             | `save_all(es) -> Flux<T>`                   |
+| `Mono<Void> deleteById(id)`       | `delete_by_id(id) -> Mono<()>`              |
+| `Mono<Void> deleteAll()`          | `delete_all() -> Mono<()>`                  |
+| `Mono<Long> count()`              | `count() -> Mono<u64>`                       |
+| `findAll(Specification, Pageable)`| `ReactiveSpecificationRepository`           |
+
+A "no row" `find_by_id` maps to an **empty** `Mono` (Reactor's
+`Mono.empty()`), exactly as Spring Data signals a missing `findById`.
+
+### In-memory (`ReactiveMemoryRepository`)
+
+The reactive twin of `MemoryRepository`, for tests. Drive the publishers
+with `block()` / `collect_list()` (Reactor's `block()`):
+
+```rust
+use firefly_data::{ReactiveCrudRepository, ReactiveMemoryRepository};
+
+#[derive(Clone, PartialEq, Debug)]
+struct User { id: String, name: String }
+
+#[tokio::main]
+async fn main() {
+    let repo = ReactiveMemoryRepository::new(|u: &User| u.id.clone());
+
+    // save -> Mono<T>
+    repo.save(User { id: "u1".into(), name: "alice".into() })
+        .block().await.unwrap();
+
+    // find_all -> Flux<T>, collected to a Vec
+    let all = repo.find_all().collect_list().block().await.unwrap().unwrap();
+    assert_eq!(all.len(), 1);
+
+    // find_by_id miss -> empty Mono
+    assert_eq!(repo.find_by_id("ghost".into()).block().await.unwrap(), None);
+    assert_eq!(repo.count().block().await.unwrap(), Some(1));
+}
+```
+
+### Real Postgres (`PostgresReactiveRepository`), streaming rows as a `Flux`
+
+The production repository over `tokio-postgres`. Reads drive the driver's
+`query_raw` **row stream**, so each row is decoded by a `RowMapper` and
+emitted the moment it arrives over the wire — a million-row table never
+lands fully in memory (no collect-then-emit). Writes use a per-entity
+`inserter` closure that renders a `T` to an upsert `(sql, params)` whose
+`RETURNING` projects exactly the configured columns:
+
+```rust
+use std::sync::Arc;
+use firefly_data::{PostgresReactiveRepository, ReactiveCrudRepository, TableConfig};
+use firefly_kernel::FireflyError;
+use tokio_postgres::{Row, types::ToSql, NoTls};
+
+#[derive(Clone, PartialEq, Debug)]
+struct User { id: String, name: String }
+
+# async fn ex() -> Result<(), Box<dyn std::error::Error>> {
+let (client, conn) =
+    tokio_postgres::connect("postgres://localhost/app", NoTls).await?;
+tokio::spawn(async move { let _ = conn.await; });
+let client = Arc::new(client);
+
+let repo: PostgresReactiveRepository<User, String> = PostgresReactiveRepository::new(
+    Arc::clone(&client),
+    TableConfig::new("users", "id", ["id", "name"]),
+    // RowMapper: decode (id, name) from each streamed row.
+    |row: &Row| Ok(User {
+        id: row.try_get("id").map_err(|e| FireflyError::internal(e.to_string()))?,
+        name: row.try_get("name").map_err(|e| FireflyError::internal(e.to_string()))?,
+    }),
+    // inserter: upsert RETURNING the projected columns.
+    |u: &User| (
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) \
+         ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\" \
+         RETURNING \"id\", \"name\"".to_string(),
+        vec![
+            Box::new(u.id.clone()) as Box<dyn ToSql + Sync + Send>,
+            Box::new(u.name.clone()) as Box<dyn ToSql + Sync + Send>,
+        ],
+    ),
+);
+
+// Rows stream lazily out of find_all() as a Flux.
+let all = repo.find_all().collect_list().block().await?.unwrap();
+# Ok(())
+# }
+```
+
+Use `stream_query(sql, params)` for custom derived queries: any `SELECT`
+projecting the configured columns is streamed row-by-row through the same
+`RowMapper`.
+
+### Reactive specification / paging
+
+`ReactiveSpecificationRepository` (implemented by `ReactiveMemoryRepository`)
+runs a composable `Specification` predicate with an optional `Pageable`
+window and **streams** the matches as a `Flux` — the reactive analog of
+`findAll(Specification, Pageable)`, but with no intermediate `Page<T>`
+envelope, so it plugs straight into an NDJSON / SSE endpoint with
+backpressure.
+
 ## Testing
 
 ```bash
@@ -363,3 +481,13 @@ rendering correctly, predicate ↔ argument index mapping with `IsNil`
 skipping arg slots, and the in-memory repository's CRUD + paging —
 plus Rust-specific object-safety, `Send + Sync`, and serde round-trip
 checks.
+
+The reactive surface adds full-CRUD coverage of
+`ReactiveMemoryRepository` (driven via `block` / `collect_list`) and the
+streaming specification/paging query. The `PostgresReactiveRepository`
+round-trip is `#[ignore = "requires postgres"]` and reads
+`DATABASE_URL` / `POSTGRES_URL`:
+
+```bash
+DATABASE_URL=postgres://localhost/app cargo test -p firefly-data -- --ignored
+```

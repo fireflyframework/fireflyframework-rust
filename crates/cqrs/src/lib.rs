@@ -115,6 +115,21 @@
 //! [`ValidationResult::into_cqrs_error`] — so the unchanged
 //! [`ValidationMiddleware`] keeps working untouched.
 
+//! ## Reactive surface
+//!
+//! Alongside the async [`Bus::send`] / [`Bus::query`], the bus exposes a
+//! **Reactor / WebFlux-style** reactive surface built on
+//! [`firefly_reactive`]: [`Bus::send_mono`] and [`Bus::query_mono`] (plus
+//! their `*_with_context` overloads) return a
+//! [`firefly_reactive::Mono<R>`] instead of awaiting a plain `R`. They run
+//! the *same* handler lookup and the *same* validation / authorization /
+//! caching middleware chain — only the return surface differs, exactly as
+//! a WebFlux reactive command bus hands back a `Mono<R>`. Errors are
+//! mapped from [`CqrsError`] to [`firefly_kernel::FireflyError`] via
+//! [`cqrs_error_to_firefly`], so a dispatch flows straight into the RFC
+//! 7807 problem stack. The surface is strictly additive: the existing
+//! async API and wire formats are unchanged.
+
 #![warn(missing_docs)]
 
 mod authorization;
@@ -124,6 +139,7 @@ mod context;
 mod eda_bridge;
 mod error;
 mod fluent;
+mod reactive;
 mod validation;
 
 pub use authorization::{
@@ -140,6 +156,7 @@ pub use eda_bridge::{
 };
 pub use error::CqrsError;
 pub use fluent::{CommandBuilder, MessageMetadata, QueryBuilder};
+pub use reactive::cqrs_error_to_firefly;
 pub use validation::{
     StructuredValidate, ValidationError, ValidationResult, ValidationSeverity,
     VALIDATION_ERROR_CODE,

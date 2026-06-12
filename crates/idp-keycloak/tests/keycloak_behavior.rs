@@ -555,24 +555,121 @@ async fn refresh_keeps_supplied_token_when_not_rotated() {
 }
 
 // --------------------------------------------------------------------------- //
-// MFA stays sentinel (Keycloak runs MFA server-side)
+// MFA — mfa_challenge registers the CONFIGURE_TOTP required action (real admin)
 // --------------------------------------------------------------------------- //
 #[tokio::test]
-async fn mfa_methods_return_sentinel() {
+async fn mfa_challenge_registers_configure_totp_required_action() {
+    let (base, state) = spawn().await;
+    state.route_json(
+        "openid-connect/token",
+        200,
+        serde_json::json!({"access_token": "ADMIN-TOK", "expires_in": 300}),
+    );
+    state.route_empty("/admin/realms/demo/users/u1", 204);
+
+    let challenge = adapter(&base).mfa_challenge("u1").await.unwrap();
+
+    // (a) outbound: PUT the required action on the user with the admin token.
+    let req = state.find("PUT", "/admin/realms/demo/users/u1");
+    assert_eq!(req.authorization, "Bearer ADMIN-TOK");
+    assert_eq!(
+        req.json()["requiredActions"],
+        serde_json::json!(["CONFIGURE_TOTP"])
+    );
+
+    // (b) parsed: challenge carries the user id + TOTP method.
+    assert_eq!(challenge.challenge_id, "u1");
+    assert_eq!(challenge.user_id, "u1");
+    assert_eq!(challenge.method, "TOTP");
+}
+
+#[tokio::test]
+async fn mfa_challenge_missing_user_maps_to_user_not_found() {
+    let (base, state) = spawn().await;
+    state.route_json(
+        "openid-connect/token",
+        200,
+        serde_json::json!({"access_token": "ADMIN-TOK", "expires_in": 300}),
+    );
+    state.route_empty("/admin/realms/demo/users/ghost", 404);
+
+    let err = adapter(&base).mfa_challenge("ghost").await.unwrap_err();
+    assert_eq!(err, firefly_idp::Error::UserNotFound);
+}
+
+// --------------------------------------------------------------------------- //
+// MFA — mfa_verify is a documented provider capability boundary
+// --------------------------------------------------------------------------- //
+#[tokio::test]
+async fn mfa_verify_is_unsupported_by_provider() {
     let (base, _state) = spawn().await;
-    let a = adapter(&base);
-    assert_eq!(
-        a.mfa_challenge("u1").await.unwrap_err(),
-        firefly_idp_keycloak::not_implemented()
+    let err = adapter(&base).mfa_verify("c1", "000000").await.unwrap_err();
+    match err {
+        firefly_idp::Error::UnsupportedByProvider {
+            provider,
+            operation,
+            reason,
+        } => {
+            assert_eq!(provider, "keycloak");
+            assert_eq!(operation, "mfa_verify");
+            assert!(reason.contains("no admin REST endpoint"));
+        }
+        other => panic!("expected UnsupportedByProvider, got {other:?}"),
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// OTP credential CRUD — the admin endpoints Keycloak does expose
+// --------------------------------------------------------------------------- //
+#[tokio::test]
+async fn list_otp_credentials_filters_to_otp_type() {
+    let (base, state) = spawn().await;
+    state.route_json(
+        "openid-connect/token",
+        200,
+        serde_json::json!({"access_token": "ADMIN-TOK", "expires_in": 300}),
     );
-    assert_eq!(
-        a.mfa_verify("c1", "000000").await.unwrap_err(),
-        firefly_idp_keycloak::not_implemented()
+    state.route_json(
+        "/admin/realms/demo/users/u1/credentials",
+        200,
+        serde_json::json!([
+            {"id": "cred-pw", "type": "password"},
+            {"id": "cred-otp-1", "type": "otp"},
+            {"id": "cred-otp-2", "type": "otp"}
+        ]),
     );
+
+    let ids = adapter(&base).list_otp_credentials("u1").await.unwrap();
     assert_eq!(
-        firefly_idp_keycloak::ERR_NOT_IMPLEMENTED,
-        "firefly/idpkeycloak: not yet implemented"
+        ids,
+        vec!["cred-otp-1".to_string(), "cred-otp-2".to_string()]
     );
+
+    let req = state.find("GET", "/admin/realms/demo/users/u1/credentials");
+    assert_eq!(req.authorization, "Bearer ADMIN-TOK");
+}
+
+#[tokio::test]
+async fn remove_otp_credential_deletes_by_id() {
+    let (base, state) = spawn().await;
+    state.route_json(
+        "openid-connect/token",
+        200,
+        serde_json::json!({"access_token": "ADMIN-TOK", "expires_in": 300}),
+    );
+    state.route_empty("/admin/realms/demo/users/u1/credentials/cred-otp-1", 204);
+
+    let ok = adapter(&base)
+        .remove_otp_credential("u1", "cred-otp-1")
+        .await
+        .unwrap();
+    assert!(ok);
+
+    let req = state.find(
+        "DELETE",
+        "/admin/realms/demo/users/u1/credentials/cred-otp-1",
+    );
+    assert_eq!(req.authorization, "Bearer ADMIN-TOK");
 }
 
 #[test]

@@ -1,6 +1,8 @@
 //! firefly-notifications-resend — the Resend e-mail adapter.
 //!
-//! This crate carries two surfaces:
+//! This crate carries two interchangeable surfaces, both backed by Resend's
+//! [`POST /emails`](https://resend.com/docs/api-reference/emails/send-email)
+//! REST endpoint:
 //!
 //! * The **rich provider** ([`ResendEmailProvider`]) — the Rust port of
 //!   pyfly `pyfly.notifications.providers.resend.ResendEmailProvider`. It
@@ -8,11 +10,18 @@
 //!   [`reqwest`](https://docs.rs/reqwest), supporting cc/bcc, separate
 //!   text/HTML bodies, base64 attachments, and an optional `default_from`
 //!   fallback, and parsing the `id` field of the JSON response. It implements
-//!   [`EmailProvider`] and a thin [`notifications::Channel`] mapping.
-//! * The **Go-parity stub** ([`Channel`] / [`Config`] /
-//!   [`ERR_NOT_IMPLEMENTED`] / [`not_implemented`]) — kept verbatim for
-//!   backward compatibility with the Go wire contract. Its [`Channel::send`]
-//!   still returns the sentinel.
+//!   [`EmailProvider`] and the [`notifications::Channel`] port.
+//! * The **Go-parity envelope adapter** ([`Channel`] / [`Config`]) — keeps the
+//!   Go module's [`Config`] wiring surface, but [`Channel::send`] now performs
+//!   a **real** `/emails` call by mapping the channel-agnostic [`Notification`]
+//!   envelope to an [`EmailMessage`] (using `from_address` as the sender) and
+//!   delegating to [`ResendEmailProvider`].
+//!
+//! Both surfaces talk to the live Resend API; the crate no longer ships any
+//! not-implemented sentinel. The behavior tests (`tests/mock_send.rs`) point
+//! the adapter at an in-process axum mock that asserts the exact outbound
+//! request. A real round trip requires a live `re_…` API key, so the test suite
+//! uses the mock; see the crate README for the live-credential note.
 //!
 //! # Rich provider example
 //!
@@ -26,11 +35,11 @@
 //! let _ = EmailMessage::default();
 //! ```
 //!
-//! # Stub example (Go parity)
+//! # Envelope adapter example (Go-parity [`Config`] wiring)
 //!
-//! ```
-//! use firefly_notifications::{Channel as _, Notification};
-//! use firefly_notifications_resend::{Channel, Config, ERR_NOT_IMPLEMENTED};
+//! ```no_run
+//! use firefly_notifications::{Channel as _, Kind, Notification};
+//! use firefly_notifications_resend::{Channel, Config};
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let channel = Channel::new(Config {
@@ -38,10 +47,19 @@
 //!     from_address: "no-reply@example.com".into(),
 //!     ..Config::default()
 //! });
-//! assert_eq!(channel.name(), "notificationsresend-stub");
+//! assert_eq!(channel.name(), "notificationsresend");
 //!
-//! let err = channel.send(Notification::default()).await.unwrap_err();
-//! assert_eq!(err.to_string(), ERR_NOT_IMPLEMENTED);
+//! // Performs a real Resend /emails call (requires a live API key).
+//! channel
+//!     .send(Notification {
+//!         channel: Kind::EMAIL,
+//!         to: "alice@example.com".into(),
+//!         subject: "Welcome".into(),
+//!         body: "Welcome to Firefly!".into(),
+//!         ..Notification::default()
+//!     })
+//!     .await
+//!     .unwrap();
 //! # });
 //! ```
 
@@ -61,30 +79,11 @@ pub const PROVIDER_NAME: &str = "resend";
 /// The default Resend API base (`https://api.resend.com`).
 pub const DEFAULT_API_BASE: &str = "https://api.resend.com";
 
-/// The sentinel message returned by `send` until the SaaS HTTP integration
-/// is wired.
-///
-/// Bytes-equal to the Go module's `ErrNotImplemented`:
-///
-/// ```go
-/// var ErrNotImplemented = errors.New("firefly/notificationsresend: not yet implemented")
-/// ```
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/notificationsresend: not yet implemented";
-
-/// Builds the not-implemented sentinel as a
-/// [`NotificationError::Delivery`] carrying [`ERR_NOT_IMPLEMENTED`] verbatim —
-/// the Rust analog of comparing against the Go `ErrNotImplemented` value with
-/// `errors.Is`.
-pub fn not_implemented() -> NotificationError {
-    NotificationError::Delivery(ERR_NOT_IMPLEMENTED.to_string())
-}
-
-/// Typed configuration carrying the API-key wiring needed by the production
-/// adapter.
+/// Typed configuration carrying the API-key wiring needed by the adapter.
 ///
 /// Field-for-field port of the Go `Config` struct. The Resend adapter uses
 /// `api_key` and `from_address`; the remaining fields (`from_number`,
-/// `account_sid`, `project_id`, `server_key`) mirror the shared vendor-stub
+/// `account_sid`, `project_id`, `server_key`) mirror the shared vendor-config
 /// shape so the configuration surface is uniform across the notification
 /// adapter family.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -103,19 +102,36 @@ pub struct Config {
     pub server_key: String,
 }
 
-/// The placeholder [`notifications::Channel`] adapter for Resend (e-mail).
+/// The [`notifications::Channel`] adapter for Resend that wires the Go-parity
+/// [`Config`] surface to the real [`ResendEmailProvider`].
 ///
-/// `send` returns the [`ERR_NOT_IMPLEMENTED`] sentinel (wrapped in
-/// [`NotificationError::Delivery`]) until the production integration ships.
+/// [`Channel::send`] maps the channel-agnostic [`Notification`] envelope to a
+/// rich [`EmailMessage`] (using `from_address` as the sender) and POSTs it to
+/// Resend's `/emails` endpoint. A failed delivery surfaces as
+/// [`NotificationError::Delivery`] carrying the provider error text.
 #[derive(Debug, Clone)]
 pub struct Channel {
     cfg: Config,
+    provider: ResendEmailProvider,
 }
 
 impl Channel {
-    /// Returns a placeholder [`Channel`] holding the given wiring.
+    /// Returns a [`Channel`] bound to a [`ResendEmailProvider`] built from the
+    /// config's `api_key` and `from_address`, targeting the production Resend
+    /// API base.
     pub fn new(cfg: Config) -> Self {
-        Self { cfg }
+        let provider = ResendEmailProvider::new(cfg.api_key.clone())
+            .with_default_from(cfg.from_address.clone());
+        Self { cfg, provider }
+    }
+
+    /// Returns a [`Channel`] pointed at a custom `api_base` (used by tests to
+    /// target an in-process mock).
+    pub fn with_api_base(cfg: Config, api_base: impl Into<String>) -> Self {
+        let provider = ResendEmailProvider::new(cfg.api_key.clone())
+            .with_default_from(cfg.from_address.clone())
+            .with_api_base(api_base);
+        Self { cfg, provider }
     }
 
     /// Returns the configuration the channel was constructed with.
@@ -131,16 +147,31 @@ impl notifications::Channel for Channel {
         Kind::EMAIL
     }
 
-    /// Implements [`notifications::Channel::send`]; always returns the
-    /// sentinel.
-    async fn send(&self, _n: Notification) -> DeliveryResult {
-        Err(not_implemented())
+    /// Implements [`notifications::Channel::send`] by mapping the envelope to an
+    /// [`EmailMessage`] and performing a real Resend `/emails` call via
+    /// [`ResendEmailProvider`] (the provider falls back to the config's
+    /// `from_address` when the message has no sender).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotificationError::Delivery`] carrying the provider error text
+    /// when Resend rejects the message or the transport fails.
+    async fn send(&self, n: Notification) -> DeliveryResult {
+        let result = EmailProvider::send(&self.provider, notification_to_email(&n)).await;
+        match result.status {
+            EmailStatus::Failed => Err(NotificationError::Delivery(
+                result
+                    .error
+                    .unwrap_or_else(|| "resend delivery failed".into()),
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Implements [`notifications::Channel::name`]; returns
-    /// `"notificationsresend-stub"`.
+    /// `"notificationsresend"`.
     fn name(&self) -> String {
-        "notificationsresend-stub".to_string()
+        "notificationsresend".to_string()
     }
 }
 
@@ -381,52 +412,17 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Port of Go TestStubReturnsSentinel: Send yields the sentinel and the
-    // Name/Kind accessors are populated.
-    // ---------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn stub_returns_sentinel() {
-        use notifications::Channel as _;
-
-        let c = Channel::new(Config::default());
-        assert_eq!(
-            c.send(Notification::default()).await.unwrap_err(),
-            not_implemented(),
-            "Send: want ErrNotImplemented"
-        );
-        assert!(!c.name().is_empty(), "Name should be non-empty");
-        assert!(!c.kind().as_str().is_empty(), "Kind should be set");
-    }
-
-    // ---------------------------------------------------------------------
-    // Rust-specific: sentinel wire shape, channel name/kind, config
-    // plumbing, dispatcher integration, and Send + Sync bounds.
+    // Rust-specific: channel name/kind, config plumbing, dispatcher
+    // integration, and Send + Sync bounds. The real HTTP round trip is
+    // exercised in tests/mock_send.rs against an in-process axum mock.
     // ---------------------------------------------------------------------
 
     #[test]
-    fn sentinel_message_matches_go() {
-        assert_eq!(
-            ERR_NOT_IMPLEMENTED,
-            "firefly/notificationsresend: not yet implemented"
-        );
-        assert_eq!(not_implemented().to_string(), ERR_NOT_IMPLEMENTED);
-    }
-
-    #[test]
-    fn sentinel_is_delivery_variant() {
-        match not_implemented() {
-            NotificationError::Delivery(msg) => assert_eq!(msg, ERR_NOT_IMPLEMENTED),
-            other => panic!("want Delivery variant, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn name_matches_go() {
+    fn name_matches_real_adapter() {
         use notifications::Channel as _;
         assert_eq!(
             Channel::new(Config::default()).name(),
-            "notificationsresend-stub"
+            "notificationsresend"
         );
     }
 
@@ -461,12 +457,21 @@ mod tests {
         assert!(cfg.server_key.is_empty());
     }
 
-    // The dispatcher routes email traffic to the stub and surfaces the
-    // sentinel verbatim, while other kinds remain unaffected.
+    // The dispatcher routes email traffic to the real Resend channel; a
+    // transport error against a closed port surfaces as a typed Delivery
+    // error, while other kinds remain unaffected.
     #[tokio::test]
-    async fn dispatcher_surfaces_sentinel() {
+    async fn dispatcher_routes_email_and_surfaces_delivery_error() {
         let d = Dispatcher::new();
-        d.register(Arc::new(Channel::new(Config::default())));
+        let channel = Channel::with_api_base(
+            Config {
+                api_key: "re_123".into(),
+                from_address: "no-reply@example.com".into(),
+                ..Config::default()
+            },
+            "http://127.0.0.1:1",
+        );
+        d.register(Arc::new(channel));
         let sms = Arc::new(MemoryChannel::new(Kind::SMS));
         d.register(sms.clone());
 
@@ -478,9 +483,8 @@ mod tests {
                 ..Notification::default()
             })
             .await
-            .expect_err("stub email channel must fail");
-        assert_eq!(err, not_implemented());
-        assert_eq!(err.to_string(), ERR_NOT_IMPLEMENTED);
+            .expect_err("connection-refused email send must fail");
+        assert!(matches!(err, NotificationError::Delivery(_)), "{err:?}");
 
         d.dispatch(Notification {
             channel: Kind::SMS,
@@ -491,17 +495,6 @@ mod tests {
         .await
         .expect("sms dispatch");
         assert_eq!(sms.messages().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn usable_as_trait_object() {
-        let channel: Arc<dyn notifications::Channel> = Arc::new(Channel::new(Config::default()));
-        assert_eq!(channel.name(), "notificationsresend-stub");
-        assert_eq!(channel.kind(), Kind::EMAIL);
-        assert_eq!(
-            channel.send(Notification::default()).await.unwrap_err(),
-            not_implemented()
-        );
     }
 
     #[test]

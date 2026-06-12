@@ -11,6 +11,8 @@ description = "Firefly Framework for Rust — Command + query bus with validatio
 [dependencies]
 chrono = { workspace = true }
 firefly-eda = { workspace = true }
+firefly-kernel = { workspace = true }
+firefly-reactive = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }

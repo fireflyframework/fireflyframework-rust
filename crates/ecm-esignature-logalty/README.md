@@ -1,6 +1,6 @@
 # `firefly-ecm-esignature-logalty`
 
-> **Tier:** Adapter · **Status:** Full (REST) + legacy stub · **Backing tech:** Logalty — EU qualified / eIDAS e-signature, REST + `X-Api-Key`
+> **Tier:** Adapter · **Status:** Production (Logalty REST) · **Backing tech:** Logalty — EU qualified / eIDAS e-signature, REST + `X-Api-Key`
 
 ## Overview
 
@@ -8,24 +8,26 @@
 [`firefly_ecm::ESignatureProvider`] adapter (EU qualified / eIDAS e-signature).
 `RestProvider` is a **real REST integration** over
 [`reqwest`](https://docs.rs/reqwest), porting pyfly's
-`LogaltyESignatureAdapter`: it builds the envelope-create payload, parses the
-returned `envelopeId`, maps Logalty's `status` strings onto
-`firefly_ecm::SignatureStatus`, and deletes envelopes on cancel. Requests
-authenticate with the `X-Api-Key` header.
+`LogaltyESignatureAdapter`. Every operation calls the live Logalty REST API —
+there is no stub and no `not_implemented` path:
 
-The original contract-only `Provider` stub is **retained for backward
-compatibility** with the Go-parity release: every method returns the
-`ERR_NOT_IMPLEMENTED` sentinel, byte-for-byte equal to the Go port's
-`ErrNotImplemented`:
+| Operation | Logalty REST call |
+|---|---|
+| `create` | `POST /envelopes` |
+| `status` / `get` | `GET /envelopes/{envelopeId}` |
+| `cancel` | `DELETE /envelopes/{envelopeId}` |
+| `recipients` | `GET /envelopes/{envelopeId}` (projects `signers[]`) |
+| `download` | `GET /envelopes/{envelopeId}/document` |
 
-```rust
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/ecmesignaturelogalty: not yet implemented";
-```
+`create` builds the envelope-create payload and parses the returned
+`envelopeId`; `get` projects the envelope resource onto a
+`firefly_ecm::ESignatureEnvelope` (mapped status, provider-side id,
+`sentAt`/`signedAt` timestamps, and the per-signer breakdown); `recipients`
+lists the signer states from the same envelope resource (Logalty embeds signer
+detail in the envelope rather than a dedicated recipients endpoint); `download`
+returns the signed PDF bytes; `cancel` deletes the envelope.
 
-New code should prefer `RestProvider`; `Provider` remains for callers that
-wired the stub before the REST adapter landed.
-
-## Quick start (REST)
+## Quick start
 
 ```rust
 use firefly_ecm::{ESignatureProvider, SignatureRequest};
@@ -48,9 +50,16 @@ async fn main() -> Result<(), firefly_ecm::EcmError> {
         })
         .await?;
     let _status = provider.status(&id).await?;
+    let _envelope = provider.get(&id).await?;        // full metadata + signers
+    let _recipients = provider.recipients(&id).await?;
+    let _signed_pdf = provider.download(&id).await?;  // signed PDF bytes
     Ok(())
 }
 ```
+
+`RestProvider::new(api_base, api_key)` sends the API key as the `X-Api-Key`
+header on every request. `.with_client(reqwest::Client)` reuses a
+caller-provided client for connection pooling, custom timeouts, or TLS.
 
 ### Status mapping (pyfly parity)
 
@@ -62,56 +71,28 @@ async fn main() -> Result<(), firefly_ecm::EcmError> {
 | `EXPIRED` | `Expired` |
 | _(unknown)_ | `Pending` |
 
-## Quick start (legacy stub)
-
-```rust
-use firefly_ecm::{ESignatureProvider, SignatureRequest};
-use firefly_ecm_esignature_logalty::{is_not_implemented, Config, Provider};
-
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let provider = Provider::new(Config::default());
-    assert_eq!(provider.name(), "ecmesignaturelogalty-stub");
-
-    let err = provider.create(SignatureRequest::default()).await.unwrap_err();
-    assert!(is_not_implemented(&err));
-    assert_eq!(
-        err.to_string(),
-        "firefly/ecmesignaturelogalty: not yet implemented",
-    );
-}
-```
-
-## Configuration
-
-```rust
-pub struct Config {
-    // Fields cover every wiring variable the production adapter needs:
-    // OAuth2 client_credentials wiring for Logalty.
-    pub base_url: String,        // Logalty REST API base URL
-    pub client_id: String,       // OAuth2 client identifier
-    pub client_secret: String,   // OAuth2 client secret
-    pub integration_key: String, // Integration key for the Logalty tenant
-    pub user_guid: String,       // GUID of the impersonated user
-}
-```
-
-The stub stores the configuration untouched (readable via
-`Provider::config()`), so consuming code can wire its settings today and swap
-in the real adapter without changes.
+`status` mapping is case-insensitive and exported as `map_status(&str)`.
 
 ## Public surface
 
 | Item | Description |
 |---|---|
 | `RestProvider` | Real Logalty `ESignatureProvider` over `reqwest`; `RestProvider::new(api_base, api_key)`, `.with_client(reqwest::Client)` |
+| `RestProvider::recipients(&id)` | `GET /envelopes/{id}` projected to `Vec<SignerState>` |
+| `RestProvider::download(&id)` | `GET /envelopes/{id}/document` → signed PDF bytes |
 | `map_status(&str)` | Logalty `status` → `SignatureStatus` (pyfly `_map_status` table) |
-| `Config` | OAuth2 client_credentials wiring (legacy stub) |
-| `Provider` | Legacy port-asserting stub; `Provider::new(cfg)` |
-| `ERR_NOT_IMPLEMENTED` | Sentinel message, bytes-equal to Go's `ErrNotImplemented` |
-| `not_implemented()` | Builds the sentinel as `EcmError::Provider` |
-| `is_not_implemented(&EcmError)` | Analog of Go's `errors.Is(err, ErrNotImplemented)` |
 | `VERSION` | Framework version stamp |
+
+## Capability notes
+
+The framework `SignatureStatus` enum has four states; Logalty's `DRAFT`
+collapses onto `Pending`. `recipients` and `download` are inherent methods on
+`RestProvider` (the `ESignatureProvider` port models `create`/`status`/`cancel`/
+`get`); callers holding a concrete `RestProvider` get the richer API, while
+callers behind `dyn ESignatureProvider` use the port surface. Logalty exposes
+signer detail through the envelope resource (not a separate recipients
+endpoint), so `recipients` and `get` share one `GET /envelopes/{id}` fetch.
+Every operation calls the real Logalty API — no operation is stubbed.
 
 ## Testing
 
@@ -120,8 +101,14 @@ cargo test -p firefly-ecm-esignature-logalty
 ```
 
 The REST behavior tests (`tests/rest_test.rs`, ported from pyfly's
-`test_logalty_behavior.py`) spin up an in-process axum mock on port 0 and
-assert both the outbound request the adapter builds (method, path, `X-Api-Key`
-header, JSON payload) and how each canned response is parsed into the domain
-types — no network, Docker, or real Logalty. The legacy stub smoke tests still
-assert port satisfaction and the `ERR_NOT_IMPLEMENTED` sentinel for back-compat.
+`test_logalty_behavior.py`) spin up an in-process axum mock on port 0 and assert
+both the outbound request the adapter builds (method, path, `X-Api-Key` header,
+JSON payload) and how each canned response is parsed into the domain types —
+covering `create`, `status`, `get`, `cancel`, `recipients`, and `download`, plus
+the `404` → `NotFound`/`None` paths. No network, Docker, or real Logalty is
+involved.
+
+> **SaaS note:** Logalty is a hosted service with no local emulator, so the
+> integration is exercised against a high-fidelity in-process mock that
+> reproduces Logalty's request/response contract; the production code path is
+> the real REST client.

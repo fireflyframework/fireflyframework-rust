@@ -11,12 +11,14 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 use serde::Deserialize;
 
+use firefly_notifications::{Channel as _, Kind, Notification};
 use firefly_notifications_twilio::{
-    DeliveryStatus, NotificationResult, SmsMessage, SmsProvider, TwilioError, TwilioSmsProvider,
+    Channel, Config, DeliveryStatus, NotificationResult, SmsMessage, SmsProvider, TwilioError,
+    TwilioSmsProvider,
 };
 
 /// One recorded inbound request to the mock `Messages.json` endpoint.
@@ -210,6 +212,210 @@ async fn provider_satisfies_object_safe_port() {
     let provider: Arc<dyn SmsProvider> =
         Arc::new(TwilioSmsProvider::new("AC", "tok").with_from_number("+1"));
     assert_eq!(provider.name(), "twilio");
+}
+
+// --- Go-parity Channel adapter: real Messages.json through the envelope -----
+
+#[tokio::test]
+async fn channel_send_maps_envelope_and_posts_real_request() {
+    let (base, calls) = spawn_mock(StatusCode::CREATED, r#"{"sid":"SM_chan_1"}"#, "").await;
+
+    let channel = Channel::with_base_url(
+        Config {
+            account_sid: "AC_chan".into(),
+            api_key: "tok_secret".into(),
+            from_number: "+15550100".into(),
+            ..Config::default()
+        },
+        &base,
+    );
+
+    channel
+        .send(Notification {
+            channel: Kind::SMS,
+            to: "+15559876543".into(),
+            body: "hello from Firefly".into(),
+            ..Notification::default()
+        })
+        .await
+        .expect("channel send should reach the mock and succeed");
+
+    let recorded = calls.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    let call = &recorded[0];
+    assert_eq!(call.account_sid, "AC_chan");
+    assert_eq!(
+        call.form,
+        TwilioForm {
+            from: "+15550100".into(),
+            to: "+15559876543".into(),
+            body: "hello from Firefly".into(),
+        }
+    );
+    let expected_auth = format!("Basic {}", base64_encode(b"AC_chan:tok_secret"));
+    assert_eq!(call.authorization.as_deref(), Some(expected_auth.as_str()));
+}
+
+#[tokio::test]
+async fn channel_send_non_2xx_maps_to_delivery_error() {
+    let (base, _calls) = spawn_mock(
+        StatusCode::BAD_REQUEST,
+        "",
+        r#"{"code": 21211, "message": "Invalid 'To' Phone Number"}"#,
+    )
+    .await;
+
+    let channel = Channel::with_base_url(
+        Config {
+            account_sid: "AC_chan".into(),
+            api_key: "tok".into(),
+            from_number: "+15550100".into(),
+            ..Config::default()
+        },
+        &base,
+    );
+
+    let err = channel
+        .send(Notification {
+            channel: Kind::SMS,
+            to: "invalid".into(),
+            body: "nope".into(),
+            ..Notification::default()
+        })
+        .await
+        .expect_err("a 400 from Twilio must surface as a Delivery error");
+    let msg = err.to_string();
+    assert!(msg.contains("http 400"), "{msg}");
+    assert!(msg.contains("Invalid 'To'"), "{msg}");
+}
+
+// --- Status fetch: GET …/Messages/{sid}.json -------------------------------
+
+/// One recorded inbound status-fetch GET.
+#[derive(Clone, Debug)]
+struct StatusCall {
+    account_sid: String,
+    message_sid: String,
+    authorization: Option<String>,
+}
+
+#[derive(Clone)]
+struct StatusMockState {
+    calls: Arc<Mutex<Vec<StatusCall>>>,
+    status: StatusCode,
+    body: String,
+}
+
+/// Spawns a mock that answers the Message-resource status GET; returns
+/// `(base_url, recorded calls)`.
+async fn spawn_status_mock(
+    status: StatusCode,
+    body: &str,
+) -> (String, Arc<Mutex<Vec<StatusCall>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let state = StatusMockState {
+        calls: calls.clone(),
+        status,
+        body: body.to_string(),
+    };
+
+    async fn handler(
+        State(state): State<StatusMockState>,
+        Path((sid, message_file)): Path<(String, String)>,
+        headers: HeaderMap,
+    ) -> (StatusCode, String) {
+        // message_file is "{message_sid}.json"; strip the extension.
+        let message_sid = message_file.trim_end_matches(".json").to_string();
+        state.calls.lock().unwrap().push(StatusCall {
+            account_sid: sid,
+            message_sid,
+            authorization: headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+        });
+        (state.status, state.body.clone())
+    }
+
+    let app = Router::new()
+        .route(
+            "/2010-04-01/Accounts/:sid/Messages/:message_file",
+            get(handler),
+        )
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    (format!("http://{addr}"), calls)
+}
+
+#[tokio::test]
+async fn fetch_status_builds_request_and_parses_delivered() {
+    let (base, calls) = spawn_status_mock(
+        StatusCode::OK,
+        r#"{"sid":"SM_abc","status":"delivered","error_code":null,"error_message":null}"#,
+    )
+    .await;
+
+    let provider = TwilioSmsProvider::new("AC_sid_123", "tok_secret").with_base_url(&base);
+    let status = provider.fetch_status("SM_abc").await.expect("fetch_status");
+
+    let recorded = calls.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    let call = &recorded[0];
+    assert_eq!(call.account_sid, "AC_sid_123");
+    assert_eq!(call.message_sid, "SM_abc");
+    let expected_auth = format!("Basic {}", base64_encode(b"AC_sid_123:tok_secret"));
+    assert_eq!(call.authorization.as_deref(), Some(expected_auth.as_str()));
+
+    assert_eq!(status.sid, "SM_abc");
+    assert_eq!(status.status, "delivered");
+    assert_eq!(status.error_code, None);
+    assert_eq!(status.error_message, None);
+}
+
+#[tokio::test]
+async fn fetch_status_parses_failure_error_fields() {
+    let (base, _calls) = spawn_status_mock(
+        StatusCode::OK,
+        r#"{"sid":"SM_bad","status":"failed","error_code":30008,"error_message":"Unknown error"}"#,
+    )
+    .await;
+
+    let provider = TwilioSmsProvider::new("AC_sid_123", "tok").with_base_url(&base);
+    let status = provider.fetch_status("SM_bad").await.expect("fetch_status");
+
+    assert_eq!(status.status, "failed");
+    assert_eq!(status.error_code, Some(30008));
+    assert_eq!(status.error_message.as_deref(), Some("Unknown error"));
+}
+
+#[tokio::test]
+async fn fetch_status_non_2xx_maps_to_status_fetch_error() {
+    let (base, _calls) = spawn_status_mock(
+        StatusCode::NOT_FOUND,
+        r#"{"code":20404,"message":"Not Found"}"#,
+    )
+    .await;
+
+    let provider = TwilioSmsProvider::new("AC_sid_123", "tok").with_base_url(&base);
+    let err = provider
+        .fetch_status("SM_missing")
+        .await
+        .expect_err("a 404 must surface as a StatusFetch error");
+
+    match err {
+        TwilioError::StatusFetch { status, body } => {
+            assert_eq!(status, 404);
+            assert!(body.contains("Not Found"), "{body}");
+        }
+        other => panic!("want StatusFetch, got {other:?}"),
+    }
 }
 
 /// Minimal standard base64 (no external dep needed for the test).

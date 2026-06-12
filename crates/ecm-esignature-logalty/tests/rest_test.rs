@@ -227,3 +227,166 @@ fn status_mapping_table_matches_pyfly() {
 fn rest_provider_usable_as_trait_object() {
     let _p: Box<dyn ESignatureProvider> = Box::new(RestProvider::new("http://x", "k"));
 }
+
+// ---------------------------------------------------------------------------
+// get() — GET /envelopes/{id} with full metadata + signers
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_parses_envelope_metadata_and_signers() {
+    let shared: Shared = Arc::default();
+    let app = Router::new()
+        .route(
+            "/envelopes/:id",
+            get(
+                |State(s): State<Shared>, Path(id): Path<String>, headers: HeaderMap| async move {
+                    capture(&s, "GET", format!("/envelopes/{id}"), &headers, Value::Null);
+                    Json(json!({
+                        "status": "SIGNED",
+                        "sentAt": "2026-06-01T10:00:00Z",
+                        "signedAt": "2026-06-02T12:30:00Z",
+                        "signers": [
+                            { "email": "alice@example.com", "status": "SIGNED",
+                              "signedAt": "2026-06-02T12:30:00Z" },
+                            { "email": "bob@example.com", "status": "SENT" },
+                        ],
+                    }))
+                },
+            ),
+        )
+        .with_state(shared.clone());
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, API_KEY);
+
+    let env = provider.get("env-meta").await.unwrap().unwrap();
+    assert_eq!(env.id, "env-meta");
+    assert_eq!(env.provider, "logalty");
+    assert_eq!(env.status, SignatureStatus::Signed);
+    assert_eq!(env.provider_envelope_id.as_deref(), Some("env-meta"));
+    assert_eq!(
+        env.sent_at.unwrap().to_rfc3339(),
+        "2026-06-01T10:00:00+00:00"
+    );
+    assert_eq!(
+        env.signed_at.unwrap().to_rfc3339(),
+        "2026-06-02T12:30:00+00:00"
+    );
+    assert_eq!(env.signers.len(), 2);
+    assert_eq!(env.signers[0].email, "alice@example.com");
+    assert_eq!(env.signers[0].status, SignatureStatus::Signed);
+    assert!(env.signers[0].signed_at.is_some());
+    assert_eq!(env.signers[1].status, SignatureStatus::Pending);
+
+    let c = shared.lock().unwrap().clone();
+    assert_eq!(c.method, "GET");
+    assert_eq!(c.path, "/envelopes/env-meta");
+    assert_eq!(c.api_key, API_KEY);
+}
+
+#[tokio::test]
+async fn get_returns_none_on_404() {
+    let app = Router::new().route("/envelopes/:id", get(|| async { StatusCode::NOT_FOUND }));
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, API_KEY);
+    assert!(provider.get("missing").await.unwrap().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// recipients() — projects GET /envelopes/{id} signers[]
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn recipients_lists_signers() {
+    let shared: Shared = Arc::default();
+    let app = Router::new()
+        .route(
+            "/envelopes/:id",
+            get(
+                |State(s): State<Shared>, Path(id): Path<String>, headers: HeaderMap| async move {
+                    capture(&s, "GET", format!("/envelopes/{id}"), &headers, Value::Null);
+                    Json(json!({
+                        "status": "PENDING",
+                        "signers": [
+                            { "email": "alice@example.com", "status": "SIGNED" },
+                            { "email": "bob@example.com", "status": "DECLINED" },
+                        ],
+                    }))
+                },
+            ),
+        )
+        .with_state(shared.clone());
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, API_KEY);
+
+    let recips = provider.recipients("env-rec").await.unwrap();
+    assert_eq!(recips.len(), 2);
+    assert_eq!(recips[0].email, "alice@example.com");
+    assert_eq!(recips[0].status, SignatureStatus::Signed);
+    assert_eq!(recips[1].status, SignatureStatus::Declined);
+
+    let c = shared.lock().unwrap().clone();
+    assert_eq!(c.method, "GET");
+    assert_eq!(c.path, "/envelopes/env-rec");
+    assert_eq!(c.api_key, API_KEY);
+}
+
+#[tokio::test]
+async fn recipients_returns_not_found_on_404() {
+    let app = Router::new().route("/envelopes/:id", get(|| async { StatusCode::NOT_FOUND }));
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, API_KEY);
+    let err = provider.recipients("missing").await.unwrap_err();
+    assert!(err.is_not_found());
+}
+
+// ---------------------------------------------------------------------------
+// download() — GET /envelopes/{id}/document
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn download_returns_signed_pdf_bytes() {
+    let shared: Shared = Arc::default();
+    let app = Router::new()
+        .route(
+            "/envelopes/:id/document",
+            get(
+                |State(s): State<Shared>, Path(id): Path<String>, headers: HeaderMap| async move {
+                    capture(
+                        &s,
+                        "GET",
+                        format!("/envelopes/{id}/document"),
+                        &headers,
+                        Value::Null,
+                    );
+                    (
+                        StatusCode::OK,
+                        [("content-type", "application/pdf")],
+                        b"%PDF-1.7 logalty".to_vec(),
+                    )
+                },
+            ),
+        )
+        .with_state(shared.clone());
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, API_KEY);
+
+    let bytes = provider.download("env-doc").await.unwrap();
+    assert_eq!(bytes, b"%PDF-1.7 logalty");
+
+    let c = shared.lock().unwrap().clone();
+    assert_eq!(c.method, "GET");
+    assert_eq!(c.path, "/envelopes/env-doc/document");
+    assert_eq!(c.api_key, API_KEY);
+}
+
+#[tokio::test]
+async fn download_returns_not_found_on_404() {
+    let app = Router::new().route(
+        "/envelopes/:id/document",
+        get(|| async { StatusCode::NOT_FOUND }),
+    );
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, API_KEY);
+    let err = provider.download("missing").await.unwrap_err();
+    assert!(err.is_not_found());
+}

@@ -1,27 +1,36 @@
 # `firefly-ecm-storage-aws`
 
-> **Tier:** Adapter · **Status:** Production (`S3Store`) + back-compat stub (`Store`) · **Backing tech:** AWS S3 (object storage)
+> **Tier:** Adapter · **Status:** Production · **Backing tech:** AWS S3 (object storage)
 
 ## Overview
 
-`firefly-ecm-storage-aws` is the AWS S3 `ContentStore` adapter. It ships two
-flavours that share one `Config`:
+`firefly-ecm-storage-aws` is the AWS S3 `ContentStore` adapter. `S3Store` speaks
+the S3 REST API directly over `reqwest`, signing every request with a
+**self-contained AWS Signature Version 4 implementation** (`hmac`/`sha2`/`hex` —
+**no AWS SDK** is linked). Every operation is a real S3 REST call; there are no
+stubbed methods.
 
-* **`S3Store`** — the real adapter (pyfly parity). It speaks the S3 REST API
-  directly over `reqwest`, signing every request with a **self-contained AWS
-  Signature Version 4 implementation** (`hmac`/`sha2`/`hex` — **no AWS SDK** is
-  linked). It bridges `firefly_ecm::ContentReader` both ways: `put` drains the
-  reader and `PUT`s the bytes, `get` returns the object body as a reader. It
-  honours `Config.endpoint`, so it works against LocalStack, MinIO, or the
-  in-process mock server used in tests.
-* **`Store`** — the original Go-parity stub, retained for backward
-  compatibility. Every method returns the not-yet-implemented sentinel, carried
-  through `firefly_ecm::EcmError::Provider` so its rendered message is
-  bytes-equal to the Go port's `ErrNotImplemented`:
+It bridges `firefly_ecm::ContentReader` both ways and honours `Config.endpoint`,
+so it works against LocalStack, MinIO, or the in-process mock server used in
+tests.
 
-```rust
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/ecmstorageaws: not yet implemented";
-```
+## Operations
+
+Each method maps to one real S3 REST API call:
+
+| Method | S3 REST API | Request |
+| --- | --- | --- |
+| `ContentStore::put` | [`PutObject`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html) | `PUT /{bucket}/{key}` (drains the reader; returns bytes written) |
+| `ContentStore::get` | [`GetObject`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html) | `GET /{bucket}/{key}` (body as a reader; `404` → `NotFound`) |
+| `ContentStore::delete` | [`DeleteObject`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html) | `DELETE /{bucket}/{key}` (missing key is not an error) |
+| `S3Store::list` | [`ListObjectsV2`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectsV2.html) | `GET /{bucket}?list-type=2&prefix=…` (parses `<Key>` from the XML) |
+| `S3Store::copy` | [`CopyObject`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html) | `PUT /{bucket}/{dst}` with a signed `x-amz-copy-source` header |
+| `S3Store::head` | [`HeadObject`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html) | `HEAD /{bucket}/{key}` (returns `ObjectMetadata`: size, MIME, ETag) |
+| `S3Store::presign_get` | [SigV4 query-string auth](https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html) | locally-computed presigned `GET` URL (no network call) |
+
+`list`, `copy`, `head`, and `presign_get` are real provider capabilities exposed
+as inherent methods on `S3Store` on top of the four-method `ContentStore`
+contract.
 
 ## pyfly parity
 
@@ -40,37 +49,40 @@ This crate is the Rust analog of pyfly's `pyfly.ecm.adapters.aws_s3`
 
 ### The SigV4 signer (`sigv4` module)
 
-The public `sigv4` module is a from-scratch, ~200-LOC implementation of the four
-AWS SigV4 steps (canonical request → string-to-sign → signing key → signature),
-validated against the **official AWS SigV4 test-suite Known Answer Test
-vectors** (`get-vanilla`, `get-vanilla-query`, `post-header-key-sort`, plus the
-derived signing key) so its output is byte-for-byte AWS's reference signer.
-
-## Why keep the stub?
-
-* The port boundary stays locked — existing consumers of `Store` and
-  `ERR_NOT_IMPLEMENTED` keep compiling unchanged.
-* The Go-parity wire contract stays covered by the original smoke tests.
+The public `sigv4` module is a from-scratch implementation of the four AWS SigV4
+steps (canonical request → string-to-sign → signing key → signature), validated
+against the **official AWS SigV4 test-suite Known Answer Test vectors**
+(`get-vanilla`, `get-vanilla-query`, `post-header-key-sort`, plus the derived
+signing key) so its output is byte-for-byte AWS's reference signer. It also
+exposes `presign_signature`, the query-string-authentication variant used by
+`S3Store::presign_get`.
 
 ## Quick start
 
 ```rust
-use firefly_ecm::ContentStore;
-use firefly_ecm_storage_aws::{Config, Store, ERR_NOT_IMPLEMENTED};
+use firefly_ecm::{bytes_reader, ContentStore};
+use firefly_ecm_storage_aws::{Config, S3Store};
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let store = Store::new(Config {
+async fn main() -> Result<(), firefly_ecm::EcmError> {
+    let store = S3Store::new(Config {
         bucket: "firefly-docs".into(),
         region: "eu-west-1".into(),
+        access_key: "AKIA…".into(),
+        secret_key: "s3cr3t".into(),
+        // Optional: point at LocalStack / MinIO for local development.
+        // endpoint: "http://localhost:4566".into(),
         ..Default::default()
-    });
+    })?;
 
-    assert_eq!(store.name(), "ecmstorageaws-stub");
+    let n = store.put("doc-1/v1", bytes_reader(b"%PDF-1.7".to_vec())).await?;
+    assert_eq!(n, 8);
 
-    // Every method returns the sentinel until the cloud SDK is wired.
-    let err = store.delete("k").await.unwrap_err();
-    assert_eq!(err.to_string(), ERR_NOT_IMPLEMENTED);
+    let keys = store.list("doc-1/", 100).await?;
+    let meta = store.head("doc-1/v1").await?;
+    let url = store.presign_get("doc-1/v1", 900)?;
+    let _ = (keys, meta, url);
+    Ok(())
 }
 ```
 
@@ -89,12 +101,10 @@ pub struct Config {
 
 | Item | Description |
 | --- | --- |
-| `S3Store` | The real `firefly_ecm::ContentStore` adapter over reqwest + SigV4. `S3Store::new(Config)` validates the wiring; `with_client` shares a `reqwest::Client`; `config()` exposes the wiring. |
-| `Config` | Typed wiring for both adapters (bucket, region, credentials, endpoint, …). |
-| `sigv4` | Self-contained AWS Signature Version 4 signer (`sign`, `canonical_request`, `sha256_hex`, `EMPTY_PAYLOAD_SHA256`, `UNSIGNED_PAYLOAD`). |
-| `Store` | Back-compat placeholder `firefly_ecm::ContentStore` returning the sentinel; `Store::new(Config)` / `Store::config()`. |
-| `ERR_NOT_IMPLEMENTED` | The Go-parity sentinel message. |
-| `err_not_implemented()` | Builds the sentinel as `EcmError::Provider`. |
+| `S3Store` | The real `firefly_ecm::ContentStore` adapter over reqwest + SigV4. `new(Config)` validates the wiring; `with_client` shares a `reqwest::Client`; `config()` exposes the wiring; `list` / `copy` / `head` / `presign_get` add the bucket-level operations. |
+| `ObjectMetadata` | The `HeadObject` result (`content_length`, `content_type`, `etag`). |
+| `Config` | Typed wiring for both cloud adapters (bucket, region, credentials, endpoint, …). |
+| `sigv4` | Self-contained AWS Signature Version 4 signer (`sign`, `presign_signature`, `canonical_request`, `sha256_hex`, `EMPTY_PAYLOAD_SHA256`, `UNSIGNED_PAYLOAD`). |
 | `VERSION` | Framework version stamp. |
 
 ## Testing
@@ -107,7 +117,7 @@ cargo test -p firefly-ecm-storage-aws
   test-suite KAT vectors.
 * `tests/s3_mock_test.rs` runs `S3Store` end-to-end against an in-process axum
   mock S3 server (port 0), asserting the canonical request and SigV4 auth
-  headers — no real AWS, no Docker.
-* The original smoke tests still guard the back-compat `Store` stub.
+  headers for put/get/delete **and** for list/copy/head/presign — no real AWS,
+  no Docker.
 
 No test talks to a real AWS endpoint; `cargo test` passes on a bare machine.

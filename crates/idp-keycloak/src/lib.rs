@@ -16,10 +16,21 @@
 //! * **Reset / change password** via the admin `reset-password` endpoint.
 //! * **Realm role-mappings** — assign/revoke/list/get roles.
 //!
-//! Per pyfly, [`mfa_challenge`](Adapter::mfa_challenge) /
-//! [`mfa_verify`](Adapter::mfa_verify) stay sentinel returns
-//! ([`ERR_NOT_IMPLEMENTED`]) because Keycloak performs MFA server-side during
-//! the browser auth flow.
+//! ## TOTP MFA — implemented against the admin REST API
+//!
+//! * [`mfa_challenge`](Adapter::mfa_challenge) registers the `CONFIGURE_TOTP`
+//!   required action on the user via `PUT /admin/realms/{realm}/users/{id}`, so
+//!   Keycloak prompts them to enroll a TOTP authenticator at next sign-in. It
+//!   returns an [`MfaChallenge`] whose `challenge_id` is the user id.
+//! * [`mfa_verify`](Adapter::mfa_verify) is a **genuine provider capability
+//!   boundary**: Keycloak exposes no admin REST endpoint to verify a one-time
+//!   TOTP code out-of-band — verification happens server-side on the OTP form
+//!   during the interactive browser login — so it returns the precise typed
+//!   [`Error::UnsupportedByProvider`](firefly_idp::Error::UnsupportedByProvider)
+//!   error rather than a stub. The companion admin OTP-credential operations
+//!   that Keycloak *does* expose are implemented as
+//!   [`list_otp_credentials`](Adapter::list_otp_credentials) /
+//!   [`remove_otp_credential`](Adapter::remove_otp_credential).
 //!
 //! # Wire compatibility
 //!
@@ -55,22 +66,6 @@ use firefly_idp as idp;
 use firefly_idp::{Error, MfaChallenge, Result, Role, SessionIntrospection, Token, User};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
-
-/// Wire-stable sentinel returned by the operations Keycloak performs
-/// server-side ([`Adapter::mfa_challenge`] / [`Adapter::mfa_verify`]).
-///
-/// Retained verbatim from the contract-only stub this crate replaced, so any
-/// code that matched against it keeps compiling. Bytes-equal to the Go module's
-/// `idpkeycloak.ErrNotImplemented`.
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/idpkeycloak: not yet implemented";
-
-/// Builds the [`ERR_NOT_IMPLEMENTED`] sentinel as an [`idp::Error::Provider`].
-///
-/// Mirrors pyfly's `KeycloakIdpAdapter.mfa_challenge`/`mfa_verify` raising
-/// `NotImplementedError` because Keycloak runs MFA server-side.
-pub fn not_implemented() -> idp::Error {
-    idp::Error::Provider(ERR_NOT_IMPLEMENTED.to_string())
-}
 
 /// Typed configuration carrying the wiring the adapter authenticates with.
 ///
@@ -277,6 +272,70 @@ impl Adapter {
             Err(e) => return Err(e),
         };
         Ok(AuthResult { user, token })
+    }
+
+    /// Lists a user's stored credentials via
+    /// `GET /admin/realms/{realm}/users/{id}/credentials`, returning only the
+    /// OTP (TOTP/HOTP) credential ids — the real admin-API view of a user's
+    /// enrolled second factors.
+    ///
+    /// Keycloak returns one credential object per stored factor; this filters to
+    /// those whose `type` is `"otp"` and yields their `id`s, which
+    /// [`remove_otp_credential`](Adapter::remove_otp_credential) can delete.
+    pub async fn list_otp_credentials(&self, user_id: &str) -> Result<Vec<String>> {
+        let token = self.admin_token().await?;
+        let resp = self
+            .http
+            .get(format!("{}/users/{user_id}/credentials", self.admin_path()))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("list_otp_credentials request failed", e))?;
+        let code = resp.status().as_u16();
+        if code == 404 {
+            return Err(Error::UserNotFound);
+        }
+        if !resp.status().is_success() {
+            return Err(Error::provider(format!(
+                "idp/keycloak: list_otp_credentials failed: HTTP {code}"
+            )));
+        }
+        let arr: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("list_otp_credentials decode failed", e))?;
+        Ok(arr
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|c| c.get("type").and_then(Value::as_str) == Some("otp"))
+                    .filter_map(|c| c.get("id").and_then(Value::as_str).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Removes one OTP credential via
+    /// `DELETE /admin/realms/{realm}/users/{id}/credentials/{credentialId}`
+    /// (the real admin endpoint for revoking an enrolled TOTP/HOTP factor).
+    /// Returns `true` on a `200`/`204`.
+    pub async fn remove_otp_credential(&self, user_id: &str, credential_id: &str) -> Result<bool> {
+        let token = self.admin_token().await?;
+        let resp = self
+            .http
+            .delete(format!(
+                "{}/users/{user_id}/credentials/{credential_id}",
+                self.admin_path()
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("remove_otp_credential request failed", e))?;
+        let code = resp.status().as_u16();
+        if code == 404 {
+            return Err(Error::UserNotFound);
+        }
+        Ok(code == 200 || code == 204)
     }
 }
 
@@ -723,12 +782,59 @@ impl idp::Adapter for Adapter {
         })
     }
 
-    async fn mfa_challenge(&self, _user_id: &str) -> Result<MfaChallenge> {
-        Err(not_implemented())
+    /// Registers the `CONFIGURE_TOTP` required action on the user via
+    /// `PUT /admin/realms/{realm}/users/{id}`, so Keycloak prompts them to
+    /// enroll a TOTP authenticator at their next interactive sign-in.
+    ///
+    /// This is the real admin-REST equivalent of "begin TOTP enrollment":
+    /// Keycloak has no admin endpoint that returns a TOTP secret out-of-band
+    /// (the secret/QR is rendered server-side on the OTP-setup page), so the
+    /// returned [`MfaChallenge`] carries the `user_id` as its `challenge_id` and
+    /// the `TOTP` method, signalling the pending enrollment.
+    async fn mfa_challenge(&self, user_id: &str) -> Result<MfaChallenge> {
+        let token = self.admin_token().await?;
+        let resp = self
+            .http
+            .put(format!("{}/users/{user_id}", self.admin_path()))
+            .bearer_auth(&token)
+            .json(&json!({ "requiredActions": ["CONFIGURE_TOTP"] }))
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("mfa_challenge request failed", e))?;
+        let code = resp.status().as_u16();
+        if code == 404 {
+            return Err(Error::UserNotFound);
+        }
+        if code != 200 && code != 204 {
+            return Err(Error::provider(format!(
+                "idp/keycloak: mfa_challenge failed: HTTP {code}"
+            )));
+        }
+        Ok(MfaChallenge {
+            challenge_id: user_id.to_string(),
+            user_id: user_id.to_string(),
+            method: "TOTP".to_string(),
+        })
     }
 
+    /// **Genuine provider capability boundary.** Keycloak exposes no admin REST
+    /// endpoint to verify a one-time TOTP `code` out-of-band — verification only
+    /// happens server-side on the OTP form during the interactive browser login
+    /// (the Authentication SPI / login flow). There is therefore no real API to
+    /// call here, so this returns the precise typed
+    /// [`Error::UnsupportedByProvider`] rather than a stub.
+    ///
+    /// Callers needing programmatic TOTP verification must drive the OIDC
+    /// browser/`Direct Grant` login flow (which carries the OTP as the `otp`
+    /// form parameter) — not an admin-API call.
     async fn mfa_verify(&self, _challenge_id: &str, _code: &str) -> Result<Token> {
-        Err(not_implemented())
+        Err(Error::unsupported_by_provider(
+            "keycloak",
+            "mfa_verify",
+            "Keycloak has no admin REST endpoint to verify a TOTP code; \
+             verification occurs server-side on the OTP form during the \
+             interactive browser login flow",
+        ))
     }
 
     async fn get_roles(&self, user_id: &str) -> Result<Vec<Role>> {

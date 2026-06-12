@@ -1,6 +1,6 @@
 # `firefly-client`
 
-> **Tier:** Adapter · **Status:** REST + GraphQL + SOAP Full; WebSocket / gRPC feature-gated · **Go module:** `client` · **Java original:** `firefly-service-client`
+> **Tier:** Adapter · **Status:** REST + GraphQL + SOAP + reactive `WebClient` Full; WebSocket / gRPC feature-gated · **Go module:** `client` · **Java original:** `firefly-service-client`
 
 ## Overview
 
@@ -194,6 +194,138 @@ Deliberate adaptations from pyfly:
   without it a secured target returns `GrpcError::TlsUnsupported` rather
   than silently downgrading.
 
+## Reactive
+
+Alongside the eager `RestClient`, the crate ships a **reactive** HTTP
+client — the Rust analog of Spring WebFlux's `WebClient`, built on
+[`firefly-reactive`](../reactive)'s `Mono<T>` / `Flux<T>`. It is strictly
+**additive**: the eager `RestClient` surface, its wire format, and all of
+its tests are untouched. Where `RestClient` returns bare futures,
+`WebClient`'s terminal operators hand back `Mono` / `Flux`, so an
+outbound call drops straight into a reactive pipeline (and composes with
+`firefly-web`'s `Flux`→NDJSON/SSE responders end-to-end).
+
+```rust,ignore
+pub fn new_web_client(base_url: impl AsRef<str>) -> WebClientBuilder; // Spring: WebClient.builder().baseUrl(..)
+
+pub struct WebClientBuilder { /* … */ }
+impl WebClientBuilder {
+    pub fn new(base_url: impl AsRef<str>) -> Self;
+    pub fn with_header(self, key, value) -> Self;   // Spring: defaultHeader
+    pub fn with_timeout(self, Duration) -> Self;
+    pub fn with_http_client(self, reqwest::Client) -> Self;
+    pub fn build(self) -> WebClient;
+}
+
+pub struct WebClient { /* … */ }
+impl WebClient {
+    pub fn method(&self, Method) -> RequestSpec;  // Spring: webClient.method(..)
+    pub fn get/post/put/delete/patch(&self) -> RequestSpec;
+}
+
+pub struct RequestSpec { /* … */ }
+impl RequestSpec {
+    pub fn uri(self, impl AsRef<str>) -> Self;     // absolute or base-relative
+    pub fn header(self, key, value) -> Self;
+    pub fn query(self, key, value) -> Self;        // repeatable
+    pub fn body<B: Serialize>(self, &B) -> Self;   // Spring: bodyValue
+    pub fn retrieve(self) -> ResponseSpec;
+}
+
+pub struct ResponseSpec { /* … */ }
+impl ResponseSpec {
+    pub fn body_to_mono<T: DeserializeOwned>(self) -> Mono<T>; // whole body -> one T
+    pub fn body_to_flux<T: DeserializeOwned>(self) -> Flux<T>; // streamed NDJSON/SSE -> 0..N T
+    pub fn exchange(self) -> Mono<WebClientResponse>;          // raw status + headers + body
+}
+
+pub struct WebClientResponse { /* … */ }   // Spring: ClientResponse
+impl WebClientResponse {
+    pub fn status(&self) -> u16;
+    pub fn is_success(&self) -> bool;
+    pub fn headers(&self) -> &HeaderMap;
+    pub fn body(&self) -> &Bytes;
+    pub fn body_json<T: DeserializeOwned>(&self) -> Result<T, ClientError>;
+    pub fn problem(&self) -> Option<FireflyError>; // RFC 7807 decode of a non-2xx
+}
+```
+
+The fluent chain is the WebFlux spelling:
+
+```rust,no_run
+use firefly_client::WebClientBuilder;
+use http::Method;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize)]
+struct CreateOrder { customer: String }
+#[derive(Deserialize)]
+struct Order { id: String }
+#[derive(Deserialize)]
+struct Tick { seq: u64 }
+
+#[tokio::main]
+async fn main() {
+    let client = WebClientBuilder::new("https://api.example.com")
+        .with_header("X-Tenant", "acme")
+        .build();
+
+    // body_to_mono — a single value -> Mono<Order>.
+    let _order = client
+        .method(Method::POST)
+        .uri("/orders")
+        .body(&CreateOrder { customer: "acme".into() })
+        .retrieve()
+        .body_to_mono::<Order>();
+
+    // body_to_flux — a streamed application/x-ndjson OR text/event-stream
+    // body, decoded lazily element-by-element with backpressure.
+    let _ticks = client
+        .get()
+        .uri("/ticks")
+        .header("Accept", "application/x-ndjson")
+        .retrieve()
+        .body_to_flux::<Tick>();
+
+    // exchange — raw status + headers without raising on a non-2xx.
+    let _resp = client.get().uri("/health").retrieve().exchange();
+}
+```
+
+### Streaming semantics (`body_to_flux`)
+
+`body_to_flux` consumes the `reqwest` byte stream chunk-by-chunk and
+decodes one element per frame, **lazily and with backpressure** — a slow
+downstream throttles the producer, and `.take(n)` stops pulling early. The
+decoder is chosen from the response `Content-Type`:
+
+* `application/x-ndjson` (and any non-SSE type) → one JSON document per
+  newline-terminated line; blank lines are skipped.
+* `text/event-stream` → SSE frames separated by a blank line; the `data:`
+  lines of each event block are concatenated; comment (`:`) / `event:` /
+  `id:` lines and keep-alive blocks are ignored.
+
+A malformed element terminates the stream with a decode `FireflyError`
+(Reactor's first-error-is-terminal semantics).
+
+### Same automatics, same problem decode
+
+Every `WebClient` request reuses the eager client's logic, so the two
+surfaces never drift: `Accept: application/json` by default,
+`Content-Type: application/json` on a bodied request, correlation-id +
+W3C `traceparent` / `tracestate` propagation, and RFC 7807
+`application/problem+json` decode into a typed `FireflyError`. On the
+reactive surface that `FireflyError` is simply the publisher's terminal
+`Err` signal — a non-2xx response short-circuits a `Mono` / `Flux`, while
+`exchange()` hands the raw response back **without** raising so the caller
+can inspect `status()` / `problem()` and decide.
+
+> **No baked-in retry:** unlike `RestBuilder::with_retries`, `WebClient`
+> has no retry budget — retries on a reactive pipeline are composed with
+> `Mono::retry` / `Mono::retry_backoff` on the returned publisher, exactly
+> as WebFlux composes `retryWhen(..)` rather than baking it into the
+> client.
+
 ## Composition with `firefly-resilience`
 
 The client is deliberately small; wrap calls in resilience decorators
@@ -228,3 +360,13 @@ send/recv and the `stream(send)` helper); and gRPC builder-only
 server). All tests run against a real axum server bound to a random
 localhost port (the `httptest` analog) and stay well under the 200 ms
 budget.
+
+The reactive `WebClient` is tested (`tests/webclient_test.rs`) against
+in-process axum servers emitting NDJSON and SSE: `body_to_flux` streams
+the elements (and composes `filter`/`map`/`take` lazily — `take(3)` over a
+slow six-element producer never waits for the whole stream); `body_to_mono`
+GET/POST round-trips (including a `204` empty-body decode and query
+params); RFC 7807 problem decode on both `Mono` and `Flux`; `exchange`
+exposing status + headers without raising on a non-2xx; correlation-id
+propagation from the kernel task-local; and absolute-URI / invalid-URL /
+transport-failure error paths. Every case stays under the 200 ms budget.

@@ -1,43 +1,26 @@
 //! firefly-ecm-storage-azure — Azure Blob Storage [`ContentStore`] adapter.
 //!
-//! This crate ships two flavours that share one [`Config`]:
+//! [`BlobStore`] is the production adapter (pyfly parity). It speaks the Azure
+//! Blob REST API directly over [`reqwest`], authorizing every request with a
+//! self-contained **Shared Key** signer (see the [`sharedkey`] module —
+//! `hmac`/`sha2`/`base64`, no Azure SDK). It bridges
+//! [`firefly_ecm::ContentReader`] on both directions:
 //!
-//! * [`BlobStore`] — the **real** adapter (pyfly parity). It speaks the Azure
-//!   Blob REST API directly over [`reqwest`], authorizing every request with a
-//!   self-contained **Shared Key** signer (see the [`sharedkey`] module —
-//!   `hmac`/`sha2`/`base64`, no Azure SDK). It bridges
-//!   [`firefly_ecm::ContentReader`] on both directions:
-//!   [`ContentStore::put`] drains the reader and `PUT`s a block blob;
-//!   [`ContentStore::get`] returns the blob body as a reader. It honours
-//!   [`Config::endpoint`] so tests (and Azurite) can point it at an in-process
-//!   mock server.
-//! * [`Store`] — the original Go-parity **stub**, retained for backward
-//!   compatibility. Every method returns the [`ERR_NOT_IMPLEMENTED`] sentinel,
-//!   bytes-equal to the Go port's `ErrNotImplemented`
-//!   (`firefly/ecmstorageazure: not yet implemented`).
+//! * [`ContentStore::put`] drains the reader and issues a
+//!   [`Put Blob`](https://learn.microsoft.com/en-us/rest/api/storageservices/put-blob)
+//!   block-blob upload (`PUT /{container}/{blob}`).
+//! * [`ContentStore::get`] issues a
+//!   [`Get Blob`](https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob)
+//!   `GET /{container}/{blob}` and returns the blob body as a reader.
+//! * [`ContentStore::delete`] issues a
+//!   [`Delete Blob`](https://learn.microsoft.com/en-us/rest/api/storageservices/delete-blob)
+//!   `DELETE /{container}/{blob}`.
 //!
-//! # Quick start (stub, back-compat)
+//! Every operation issues a real Blob REST call. The adapter honours
+//! [`Config::endpoint`] so tests (and Azurite) can point it at an in-process
+//! mock server or a local emulator.
 //!
-//! ```
-//! use firefly_ecm::{bytes_reader, ContentStore};
-//! use firefly_ecm_storage_azure::{is_not_implemented, Config, Store};
-//!
-//! # #[tokio::main(flavor = "current_thread")]
-//! # async fn main() {
-//! let store = Store::new(Config {
-//!     account: "fireflyacct".into(),
-//!     container: "documents".into(),
-//!     ..Default::default()
-//! });
-//! assert_eq!(store.name(), "ecmstorageazure-stub");
-//!
-//! let err = store.put("k", bytes_reader(b"x".to_vec())).await.unwrap_err();
-//! assert!(is_not_implemented(&err));
-//! assert_eq!(err.to_string(), "firefly/ecmstorageazure: not yet implemented");
-//! # }
-//! ```
-//!
-//! # Quick start (real adapter)
+//! # Quick start
 //!
 //! ```no_run
 //! use firefly_ecm::{bytes_reader, ContentStore};
@@ -65,23 +48,6 @@ use chrono::Utc;
 use firefly_ecm::{ContentReader, ContentStore, EcmError};
 use tokio::io::AsyncReadExt;
 
-/// The sentinel message returned by every method until the cloud SDK is
-/// wired. Bytes-equal to the Go port's `ErrNotImplemented`
-/// (`firefly/ecmstorageazure: not yet implemented`).
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/ecmstorageazure: not yet implemented";
-
-/// Builds the not-yet-implemented sentinel as an [`EcmError::Provider`],
-/// carrying [`ERR_NOT_IMPLEMENTED`] verbatim.
-pub fn err_not_implemented() -> EcmError {
-    EcmError::provider(ERR_NOT_IMPLEMENTED)
-}
-
-/// Returns `true` when `err` is this crate's not-yet-implemented sentinel —
-/// the analog of Go's `errors.Is(err, ecmstorageazure.ErrNotImplemented)`.
-pub fn is_not_implemented(err: &EcmError) -> bool {
-    matches!(err, EcmError::Provider(msg) if msg == ERR_NOT_IMPLEMENTED)
-}
-
 /// Config carries the wiring needed by the production adapter.
 ///
 /// Fields cover every wiring variable the production adapter needs; the
@@ -104,46 +70,6 @@ pub struct Config {
     pub container: String,
     /// Custom service endpoint override.
     pub endpoint: String,
-}
-
-/// Store is the placeholder [`ContentStore`] adapter.
-pub struct Store {
-    cfg: Config,
-}
-
-impl Store {
-    /// Returns a placeholder Store.
-    pub fn new(cfg: Config) -> Self {
-        Self { cfg }
-    }
-
-    /// Returns the wiring configuration captured at construction.
-    pub fn config(&self) -> &Config {
-        &self.cfg
-    }
-}
-
-#[async_trait]
-impl ContentStore for Store {
-    /// Stub: always returns the [`ERR_NOT_IMPLEMENTED`] sentinel.
-    async fn put(&self, _key: &str, _content: ContentReader) -> Result<i64, EcmError> {
-        Err(err_not_implemented())
-    }
-
-    /// Stub: always returns the [`ERR_NOT_IMPLEMENTED`] sentinel.
-    async fn get(&self, _key: &str) -> Result<ContentReader, EcmError> {
-        Err(err_not_implemented())
-    }
-
-    /// Stub: always returns the [`ERR_NOT_IMPLEMENTED`] sentinel.
-    async fn delete(&self, _key: &str) -> Result<(), EcmError> {
-        Err(err_not_implemented())
-    }
-
-    /// Human-readable store identifier.
-    fn name(&self) -> &str {
-        "ecmstorageazure-stub"
-    }
 }
 
 /// The Azure Blob REST API version this adapter targets (sent as
@@ -330,6 +256,299 @@ impl BlobStore {
             .await
             .map_err(|e| EcmError::provider(format!("firefly/ecmstorageazure: request: {e}")))
     }
+
+    /// Lists blob names under `prefix` in the container via
+    /// [`List Blobs`](https://learn.microsoft.com/en-us/rest/api/storageservices/list-blobs)
+    /// (`GET /{container}?restype=container&comp=list&prefix=…`), returning every
+    /// `<Name>` from the `EnumerationResults` XML.
+    ///
+    /// This is a real Blob REST call. The query parameters fold into the Shared
+    /// Key canonical resource as sorted `\nparam:value` lines, so the signature
+    /// covers them. An empty `prefix` lists the whole container. Any non-2xx
+    /// response is surfaced as an [`EcmError::Provider`].
+    pub async fn list(&self, prefix: &str) -> Result<Vec<String>, EcmError> {
+        // Container-scoped resource (no blob); the list query params.
+        let (base_url, host) = self.container_endpoint();
+        // Canonical query params must be lowercase-name-sorted for the resource.
+        let mut params: Vec<(&str, &str)> = vec![("comp", "list"), ("restype", "container")];
+        if !prefix.is_empty() {
+            params.push(("prefix", prefix));
+        }
+        params.sort_by(|a, b| a.0.cmp(b.0));
+
+        let canonical_resource = self.container_canonical_resource(&params);
+        let query_string = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, encode_query_value(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        let url = format!("{base_url}?{query_string}");
+
+        let resp = self
+            .send_signed(
+                reqwest::Method::GET,
+                &url,
+                &host,
+                &canonical_resource,
+                &[],
+                None,
+            )
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(EcmError::provider(format!(
+                "firefly/ecmstorageazure: list {prefix}: HTTP {}",
+                status.as_u16()
+            )));
+        }
+        let xml = resp
+            .text()
+            .await
+            .map_err(|e| EcmError::provider(format!("firefly/ecmstorageazure: body: {e}")))?;
+        Ok(parse_blob_names(&xml))
+    }
+
+    /// Server-side copies the blob `src_key` to `dst_key` within the same
+    /// container via
+    /// [`Copy Blob`](https://learn.microsoft.com/en-us/rest/api/storageservices/copy-blob)
+    /// (`PUT /{container}/{dst}` with `x-ms-copy-source: <src URL>`).
+    ///
+    /// Azure performs the copy internally; no bytes flow through the client. The
+    /// `x-ms-copy-source` header is part of the signed `x-ms-*` block. A `404`
+    /// (missing source) maps to [`EcmError::NotFound`]; any other non-2xx is an
+    /// [`EcmError::Provider`].
+    pub async fn copy(&self, src_key: &str, dst_key: &str) -> Result<(), EcmError> {
+        let (src_url, _) = self.endpoint(src_key);
+        let (dst_url, host) = self.endpoint(dst_key);
+        let resp = self
+            .send_signed(
+                reqwest::Method::PUT,
+                &dst_url,
+                &host,
+                &self.canonical_resource(dst_key),
+                &[("x-ms-copy-source", src_url)],
+                None,
+            )
+            .await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(EcmError::NotFound);
+        }
+        if !status.is_success() {
+            return Err(EcmError::provider(format!(
+                "firefly/ecmstorageazure: copy {src_key} -> {dst_key}: HTTP {}",
+                status.as_u16()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Fetches blob metadata for `key` via
+    /// [`Get Blob Properties`](https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob-properties)
+    /// (`HEAD /{container}/{blob}`), returning the [`BlobProperties`] parsed from
+    /// the response headers (`Content-Length`, `Content-Type`, `ETag`).
+    ///
+    /// A `404` maps to [`EcmError::NotFound`]; any other non-2xx is an
+    /// [`EcmError::Provider`].
+    pub async fn properties(&self, key: &str) -> Result<BlobProperties, EcmError> {
+        let (url, host) = self.endpoint(key);
+        let resp = self
+            .send_signed(
+                reqwest::Method::HEAD,
+                &url,
+                &host,
+                &self.canonical_resource(key),
+                &[],
+                None,
+            )
+            .await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(EcmError::NotFound);
+        }
+        if !status.is_success() {
+            return Err(EcmError::provider(format!(
+                "firefly/ecmstorageazure: properties {key}: HTTP {}",
+                status.as_u16()
+            )));
+        }
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        Ok(BlobProperties {
+            content_length: header("content-length")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            content_type: header("content-type").unwrap_or_default(),
+            etag: header("etag").unwrap_or_default(),
+        })
+    }
+
+    /// Returns `(url, host)` for the container itself (no blob), used by the
+    /// container-scoped [`List Blobs`] operation.
+    fn container_endpoint(&self) -> (String, String) {
+        if self.cfg.endpoint.is_empty() {
+            let host = format!("{}.blob.core.windows.net", self.cfg.account);
+            (format!("https://{host}/{}", self.cfg.container), host)
+        } else {
+            let base = self.cfg.endpoint.trim_end_matches('/');
+            let url = format!("{base}/{}", self.cfg.container);
+            let host = host_of(&url);
+            (url, host)
+        }
+    }
+
+    /// Builds the Shared Key canonical resource for a container-scoped request
+    /// with query params: `/<account>/<container>` followed by one
+    /// `\n<lowercase-name>:<value>` line per param, sorted by name.
+    fn container_canonical_resource(&self, params: &[(&str, &str)]) -> String {
+        let mut out = format!("/{}/{}", self.cfg.account, self.cfg.container);
+        let mut sorted: Vec<(String, String)> = params
+            .iter()
+            .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))
+            .collect();
+        sorted.sort();
+        for (k, v) in sorted {
+            out.push('\n');
+            out.push_str(&k);
+            out.push(':');
+            out.push_str(&v);
+        }
+        out
+    }
+
+    /// Signs and dispatches one request against a fully-built `url`, with an
+    /// explicit `canonical_resource` and optional extra signed `x-ms-*`
+    /// headers. The lower-level path shared by [`Self::list`], [`Self::copy`],
+    /// and [`Self::properties`]; the simple put/get/delete path uses
+    /// [`Self::send`].
+    async fn send_signed(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        host: &str,
+        canonical_resource: &str,
+        extra_x_ms: &[(&str, String)],
+        body: Option<Vec<u8>>,
+    ) -> Result<reqwest::Response, EcmError> {
+        let now = Utc::now();
+        let x_ms_date = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+
+        let is_put = method == reqwest::Method::PUT;
+        let content_len = body.as_ref().map(|b| b.len()).unwrap_or(0);
+        let content_length = if content_len > 0 {
+            content_len.to_string()
+        } else {
+            String::new()
+        };
+        // A Copy Blob PUT carries no body and therefore no content-type; a
+        // body-bearing PUT (block blob) is octet-stream.
+        let content_type = if is_put && content_len > 0 {
+            "application/octet-stream"
+        } else {
+            ""
+        };
+
+        let mut x_ms_headers = vec![
+            sharedkey::Header::new("x-ms-date", &x_ms_date),
+            sharedkey::Header::new("x-ms-version", X_MS_VERSION),
+        ];
+        for (name, value) in extra_x_ms {
+            x_ms_headers.push(sharedkey::Header::new(*name, value.clone()));
+        }
+
+        let sig_req = sharedkey::Request {
+            method: method.as_str(),
+            content_length: &content_length,
+            content_type,
+            x_ms_headers,
+            canonical_resource,
+        };
+        let (authorization, _sig, _sts) =
+            sharedkey::sign(&sig_req, &self.cfg.account, &self.cfg.key)
+                .map_err(|e| EcmError::provider(format!("firefly/ecmstorageazure: sign: {e}")))?;
+
+        let mut builder = self
+            .client
+            .request(method, url)
+            .header("host", host)
+            .header("x-ms-date", &x_ms_date)
+            .header("x-ms-version", X_MS_VERSION)
+            .header("authorization", &authorization);
+        for (name, value) in extra_x_ms {
+            builder = builder.header(*name, value);
+        }
+        if content_len > 0 {
+            builder = builder.header("content-type", "application/octet-stream");
+        }
+        if let Some(b) = body {
+            builder = builder.body(b);
+        }
+        builder
+            .send()
+            .await
+            .map_err(|e| EcmError::provider(format!("firefly/ecmstorageazure: request: {e}")))
+    }
+}
+
+/// Blob metadata returned by [`BlobStore::properties`] — the subset of the
+/// `Get Blob Properties` response the ECM service needs (size, MIME type,
+/// ETag).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlobProperties {
+    /// Blob size in bytes (`Content-Length`).
+    pub content_length: i64,
+    /// Blob MIME type (`Content-Type`).
+    pub content_type: String,
+    /// Entity tag (`ETag`), an opaque content fingerprint.
+    pub etag: String,
+}
+
+/// Percent-encodes one query-parameter *value* for the List Blobs URL. Azure
+/// accepts standard RFC-3986 encoding; `prefix` values like `docs/` keep their
+/// `/` (it is a valid path-like prefix that the service matches literally).
+fn encode_query_value(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for &b in v.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Extracts every `<Name>…</Name>` value from an Azure `EnumerationResults`
+/// (List Blobs) XML body. A minimal, dependency-free scan over each `<Blob>`
+/// entry's name element.
+fn parse_blob_names(xml: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Name>") {
+        let after = &rest[start + "<Name>".len()..];
+        if let Some(end) = after.find("</Name>") {
+            names.push(xml_unescape(&after[..end]));
+            rest = &after[end + "</Name>".len()..];
+        } else {
+            break;
+        }
+    }
+    names
+}
+
+/// Unescapes the five predefined XML entities that can appear in a blob name
+/// inside an `EnumerationResults` body.
+fn xml_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
 }
 
 /// Extracts the `host[:port]` authority from an `http(s)://host[:port]/...` URL
@@ -418,78 +637,33 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use firefly_ecm::bytes_reader;
+    const ACCOUNT: &str = "devstoreaccount1";
+    const KEY: &str =
+        "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+
+    fn store() -> BlobStore {
+        BlobStore::new(Config {
+            account: ACCOUNT.into(),
+            key: KEY.into(),
+            container: "my-container".into(),
+            ..Default::default()
+        })
+        .unwrap()
+    }
 
     // ---------------------------------------------------------------------
-    // Go: TestImplementsPort — compile-time port satisfaction, expressed in
-    // Rust as trait-object coercion behind Box and Arc.
+    // Port satisfaction — the real adapter is the `ContentStore`.
     // ---------------------------------------------------------------------
 
     #[test]
     fn implements_port() {
-        let _boxed: Box<dyn ContentStore> = Box::new(Store::new(Config::default()));
-        let _shared: Arc<dyn ContentStore> = Arc::new(Store::new(Config::default()));
-    }
-
-    // ---------------------------------------------------------------------
-    // Go: TestStubReturnsSentinel — every method returns ErrNotImplemented
-    // and Name is non-empty.
-    // ---------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn stub_returns_sentinel() {
-        let s = Store::new(Config::default());
-
-        let err = s
-            .put("k", bytes_reader(b"x".to_vec()))
-            .await
-            .expect_err("Put should fail");
-        assert!(is_not_implemented(&err), "Put: {err}");
-
-        let err = s.get("k").await.err().expect("Get should fail");
-        assert!(is_not_implemented(&err), "Get: {err}");
-
-        let err = s.delete("k").await.expect_err("Delete should fail");
-        assert!(is_not_implemented(&err), "Delete: {err}");
-
-        assert!(!s.name().is_empty(), "Name should be non-empty");
-    }
-
-    // ---------------------------------------------------------------------
-    // Rust-specific: sentinel rendering, classification, and surface checks.
-    // ---------------------------------------------------------------------
-
-    #[test]
-    fn sentinel_message_matches_go_bytes() {
-        assert_eq!(
-            ERR_NOT_IMPLEMENTED,
-            "firefly/ecmstorageazure: not yet implemented"
-        );
-        assert_eq!(
-            err_not_implemented().to_string(),
-            "firefly/ecmstorageazure: not yet implemented"
-        );
+        let _boxed: Box<dyn ContentStore> = Box::new(store());
+        let _shared: Arc<dyn ContentStore> = Arc::new(store());
     }
 
     #[test]
-    fn sentinel_is_provider_error_not_not_found() {
-        let err = err_not_implemented();
-        assert!(matches!(err, EcmError::Provider(_)));
-        assert!(!err.is_not_found());
-    }
-
-    #[test]
-    fn is_not_implemented_rejects_other_errors() {
-        assert!(is_not_implemented(&err_not_implemented()));
-        assert!(!is_not_implemented(&EcmError::NotFound));
-        assert!(!is_not_implemented(&EcmError::provider(
-            "firefly/ecmstorageaws: not yet implemented"
-        )));
-    }
-
-    #[test]
-    fn name_matches_go() {
-        assert_eq!(Store::new(Config::default()).name(), "ecmstorageazure-stub");
+    fn name_matches_pyfly() {
+        assert_eq!(store().name(), "azure-blob");
     }
 
     #[test]
@@ -504,28 +678,90 @@ mod tests {
             container: "documents".into(),
             endpoint: "https://fireflyacct.blob.core.windows.net".into(),
         };
-        let store = Store::new(cfg.clone());
+        let store = BlobStore::new(cfg.clone()).unwrap();
         assert_eq!(store.config(), &cfg);
     }
 
-    #[tokio::test]
-    async fn usable_through_the_port_trait_object() {
-        let store: Arc<dyn ContentStore> = Arc::new(Store::new(Config::default()));
-        assert_eq!(store.name(), "ecmstorageazure-stub");
-        let err = store
-            .put("k", bytes_reader(Vec::new()))
-            .await
-            .expect_err("stub must not store");
+    // ---------------------------------------------------------------------
+    // Construction validation.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn requires_complete_config() {
+        assert!(BlobStore::new(Config::default())
+            .unwrap_err()
+            .to_string()
+            .contains("account"));
+        assert!(BlobStore::new(Config {
+            account: "a".into(),
+            ..Default::default()
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("key"));
+        assert!(BlobStore::new(Config {
+            account: "a".into(),
+            key: "k".into(),
+            ..Default::default()
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("container"));
+    }
+
+    // ---------------------------------------------------------------------
+    // Endpoint / canonical resource / encoding.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn endpoint_uses_account_host_without_override() {
+        let (url, host) = store().endpoint("doc-1/v1");
+        assert_eq!(host, "devstoreaccount1.blob.core.windows.net");
         assert_eq!(
-            err.to_string(),
-            "firefly/ecmstorageazure: not yet implemented"
+            url,
+            "https://devstoreaccount1.blob.core.windows.net/my-container/doc-1/v1"
         );
+    }
+
+    #[test]
+    fn canonical_resource_always_names_account() {
+        assert_eq!(
+            store().canonical_resource("doc-1/v1"),
+            "/devstoreaccount1/my-container/doc-1/v1"
+        );
+        // Container-scoped list resource folds sorted query params in.
+        assert_eq!(
+            store().container_canonical_resource(&[
+                ("restype", "container"),
+                ("comp", "list"),
+                ("prefix", "docs/"),
+            ]),
+            "/devstoreaccount1/my-container\ncomp:list\nprefix:docs/\nrestype:container"
+        );
+    }
+
+    #[test]
+    fn blob_names_are_percent_encoded_preserving_slashes() {
+        assert_eq!(encode_blob("doc-1/v1"), "doc-1/v1");
+        assert_eq!(encode_blob("acme docs/v1"), "acme%20docs/v1");
+    }
+
+    #[test]
+    fn parses_blob_names_from_enumeration_results() {
+        let xml = concat!(
+            "<EnumerationResults><Blobs>",
+            "<Blob><Name>docs/a/v1</Name></Blob>",
+            "<Blob><Name>docs/b/v1</Name></Blob>",
+            "</Blobs></EnumerationResults>"
+        );
+        assert_eq!(parse_blob_names(xml), vec!["docs/a/v1", "docs/b/v1"]);
     }
 
     #[test]
     fn store_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<Store>();
+        assert_send_sync::<BlobStore>();
         assert_send_sync::<Config>();
+        assert_send_sync::<BlobProperties>();
     }
 }

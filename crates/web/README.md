@@ -153,6 +153,69 @@ additionally mints/echoes `X-Request-Id`, propagates `X-Tenant-Id` and
 | `ServerInfo { name, version, host, port, http_protocol, tls }` | Runtime snapshot for `/actuator/info` |
 | `Server::bind(props)` / `serve(router, props, shutdown)` | Builds the listener (socket2 backlog/`SO_REUSEADDR`, `ConcurrencyLimitLayer`), serves plain-HTTP or TLS, honours the lifecycle drain — drops straight into `Application::on_server` |
 
+## Reactive (WebFlux/Reactor) surface — `reactive.rs`
+
+An **additive** reactive HTTP surface built on the [`firefly-reactive`]
+crate (`Mono<T>` / `Flux<T>`). It is the Rust analog of returning
+`Mono<T>` / `Flux<T>` from a Spring WebFlux `@RestController` — and it
+reuses this crate's RFC 7807 problem renderer plus
+[`firefly-sse`]'s wire format, so every reactive response is
+byte-compatible with the rest of the framework. Nothing here changes an
+existing signature or wire format; it sits alongside.
+
+| Spring WebFlux | firefly-web |
+|----------------|-------------|
+| `Mono<T>` handler return | `MonoJson(Mono<T>)` |
+| `Mono<T>` empty → `404` | `Ok(None)` → `application/problem+json` 404 |
+| `Mono<T>` error → problem | `Err(FireflyError)` → that error's RFC 7807 response |
+| `Flux<T>` + `APPLICATION_NDJSON_VALUE` | `NdJson(Flux<T>)` |
+| `Flux<ServerSentEvent<T>>` | `Sse(Flux<T>)` / `SseEvents(Flux<Event>)` |
+
+| Symbol | Behaviour |
+|--------|-----------|
+| `MonoJson(Mono<T>)` | Resolves the `Mono`: `Ok(Some)` → `200` `application/json`; `Ok(None)` → `404` `application/problem+json`; `Err(FireflyError)` → that error's problem response |
+| `NdJson(Flux<T>)` | Streams `application/x-ndjson` — one compact JSON doc + `'\n'` per element, flushed incrementally with real backpressure (the `Flux`'s `Stream` is bridged straight into an axum streaming `Body`; the whole stream is **never** buffered). An `Err` item mid-stream terminates the body cleanly |
+| `Sse(Flux<T>)` | Streams `text/event-stream` — each element serialized to JSON as a bare `data: <json>\n\n` frame via `firefly_sse::Event::to_wire` (byte-identical to the `firefly-sse` writer). Same backpressure + clean error-mid-stream truncation |
+| `SseEvents(Flux<Event>)` | Streams `text/event-stream` over pre-built `firefly_sse::Event` values (use when you need `id` / `event` / `retry` fields) |
+| `NDJSON_CONTENT_TYPE` / `SSE_CONTENT_TYPE` | The `application/x-ndjson` and `text/event-stream` media types |
+
+`MonoJson` resolves the (async) `Mono` from the synchronous
+`IntoResponse::into_response` so the HTTP status faithfully reflects the
+terminal signal: on the framework's default multi-thread runtime it uses
+`tokio::task::block_in_place` (no other task is starved); off a runtime
+(or on a current-thread runtime) it falls back to a transient runtime.
+For an explicitly streamed body, prefer `NdJson` / `Sse`.
+
+```rust
+use axum::{response::IntoResponse, routing::get, Router};
+use firefly_reactive::{Flux, Mono};
+use firefly_web::{MonoJson, NdJson, Sse};
+
+async fn one_order() -> impl IntoResponse {
+    // Ok(Some) → 200 JSON, Ok(None) → 404 problem, Err → that problem.
+    MonoJson(Mono::just(serde_json::json!({ "id": "o1" })))
+}
+
+async fn stream_orders() -> impl IntoResponse {
+    // application/x-ndjson, one line per element, backpressured.
+    NdJson(Flux::just(vec![1, 2, 3]))
+}
+
+async fn live_orders() -> impl IntoResponse {
+    // text/event-stream, one `data:` frame per element.
+    Sse(Flux::just(vec![1, 2, 3]))
+}
+
+let app: Router = Router::new()
+    .route("/orders/o1", get(one_order))
+    .route("/orders", get(stream_orders))
+    .route("/orders/live", get(live_orders));
+# let _ = app;
+```
+
+[`firefly-reactive`]: ../reactive/README.md
+[`firefly-sse`]: ../sse/README.md
+
 ## Quick start
 
 ```rust
@@ -193,4 +256,7 @@ headers), streaming passthrough of first-pass keyed responses, conflict
 on key reuse, store TTL expiry, Go-compatible record JSON, and PII
 redaction across emails / IBANs / cards / phones — with Go-parity ASCII
 `\b`/`\d` semantics next to non-ASCII text — plus map-key
-sensitive-name scrubbing.
+sensitive-name scrubbing. The reactive surface adds `MonoJson`
+(200 / 404 / problem), exact NDJSON multi-line body bytes,
+error-mid-stream truncation, and SSE frame bytes — all via
+`tower::ServiceExt::oneshot`.

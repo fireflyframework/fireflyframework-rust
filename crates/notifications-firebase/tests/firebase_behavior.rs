@@ -16,8 +16,9 @@ use axum::Json;
 use axum::Router;
 use serde_json::{json, Value};
 
+use firefly_notifications::{Channel as _, Kind, Notification};
 use firefly_notifications_firebase::{
-    DeliveryStatus, FirebasePushProvider, PushMessage, PushProvider,
+    Channel, Config, DeliveryStatus, FirebasePushProvider, PushMessage, PushProvider,
 };
 
 /// A canned response the mock replays, in order, one per inbound request.
@@ -295,4 +296,189 @@ async fn token_provider_is_invoked_per_send_and_can_refresh() {
         recorded[0].authorization.as_deref(),
         Some("Bearer ya29.token-0")
     );
+}
+
+// --- send_to_topic: FCM topic messaging ------------------------------------
+
+#[tokio::test]
+async fn send_to_topic_uses_topic_field_not_token() {
+    let (base, calls) = spawn_mock(vec![CannedResponse::ok(
+        r#"{"name":"projects/my-proj/messages/topic-1"}"#,
+    )])
+    .await;
+
+    let provider = FirebasePushProvider::new("my-proj", "ya29.token").with_base_url(&base);
+
+    let msg = PushMessage::new(Vec::<String>::new(), "Breaking", "News").with_data({
+        let mut d = serde_json::Map::new();
+        d.insert("url".into(), json!("app://news"));
+        d
+    });
+    let result = provider
+        .send_to_topic("news", msg)
+        .await
+        .expect("topic send");
+
+    let recorded = calls.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    let call = &recorded[0];
+    assert_eq!(call.action, "messages:send");
+    let payload = &call.body["message"];
+    // topic messaging sets "topic", never "token".
+    assert_eq!(payload["topic"], json!("news"));
+    assert!(payload.get("token").is_none());
+    assert_eq!(
+        payload["notification"],
+        json!({"title": "Breaking", "body": "News"})
+    );
+    assert_eq!(payload["data"], json!({"url": "app://news"}));
+
+    assert_eq!(result.status, DeliveryStatus::Sent);
+    assert_eq!(
+        result.provider_id.as_deref(),
+        Some("projects/my-proj/messages/topic-1")
+    );
+    assert_eq!(result.error, None);
+}
+
+#[tokio::test]
+async fn send_to_topic_strips_topics_prefix() {
+    let (base, calls) = spawn_mock(vec![CannedResponse::ok(r#"{"name":"n/1"}"#)]).await;
+    let provider = FirebasePushProvider::new("my-proj", "ya29.token").with_base_url(&base);
+
+    provider
+        .send_to_topic(
+            "/topics/promotions",
+            PushMessage::new(Vec::<String>::new(), "t", "b"),
+        )
+        .await
+        .expect("topic send");
+
+    let recorded = calls.lock().unwrap();
+    // the "/topics/" prefix is stripped to the bare topic name FCM v1 expects.
+    assert_eq!(recorded[0].body["message"]["topic"], json!("promotions"));
+}
+
+#[tokio::test]
+async fn send_to_topic_non_2xx_maps_to_failed() {
+    let (base, _calls) = spawn_mock(vec![CannedResponse::err(
+        StatusCode::BAD_REQUEST,
+        "invalid topic",
+    )])
+    .await;
+    let provider = FirebasePushProvider::new("my-proj", "ya29.token").with_base_url(&base);
+
+    let result = provider
+        .send_to_topic(
+            "bad topic",
+            PushMessage::new(Vec::<String>::new(), "t", "b"),
+        )
+        .await
+        .expect("topic send returns Ok with FAILED");
+
+    assert_eq!(result.status, DeliveryStatus::Failed);
+    assert_eq!(result.provider_id, None);
+    assert_eq!(result.error.as_deref(), Some("topic bad topic: http 400"));
+}
+
+// --- send_multicast: explicit multi-token fan-out --------------------------
+
+#[tokio::test]
+async fn send_multicast_posts_once_per_token() {
+    let (base, calls) = spawn_mock(vec![
+        CannedResponse::ok(r#"{"name":"n/a"}"#),
+        CannedResponse::ok(r#"{"name":"n/b"}"#),
+    ])
+    .await;
+    let provider = FirebasePushProvider::new("my-proj", "ya29.token").with_base_url(&base);
+
+    let result = provider
+        .send_multicast(PushMessage::new(["tok-a", "tok-b"], "t", "b"))
+        .await
+        .expect("multicast");
+
+    let recorded = calls.lock().unwrap();
+    let tokens: Vec<String> = recorded
+        .iter()
+        .map(|c| c.body["message"]["token"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(tokens, vec!["tok-a".to_string(), "tok-b".to_string()]);
+    assert_eq!(result.status, DeliveryStatus::Sent);
+    assert_eq!(result.provider_id.as_deref(), Some("n/a;n/b"));
+    assert_eq!(result.error, None);
+}
+
+// --- Go-parity Channel adapter: real messages:send through the envelope -----
+
+#[tokio::test]
+async fn channel_send_maps_envelope_and_posts_real_request() {
+    let (base, calls) = spawn_mock(vec![CannedResponse::ok(
+        r#"{"name":"projects/firefly-prod/messages/chan-1"}"#,
+    )])
+    .await;
+
+    let channel = Channel::with_access_token(
+        Config {
+            project_id: "firefly-prod".into(),
+            ..Config::default()
+        },
+        "ya29.chan-token",
+    )
+    .with_base_url(&base);
+
+    channel
+        .send(Notification {
+            channel: Kind::PUSH,
+            to: "device-registration-token".into(),
+            subject: "Ping".into(),
+            body: "You have a new message".into(),
+            ..Notification::default()
+        })
+        .await
+        .expect("channel send should reach the mock and succeed");
+
+    let recorded = calls.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    let call = &recorded[0];
+    assert_eq!(call.project_id, "firefly-prod");
+    assert_eq!(call.action, "messages:send");
+    assert_eq!(
+        call.authorization.as_deref(),
+        Some("Bearer ya29.chan-token")
+    );
+    let payload = &call.body["message"];
+    assert_eq!(payload["token"], json!("device-registration-token"));
+    assert_eq!(
+        payload["notification"],
+        json!({"title": "Ping", "body": "You have a new message"})
+    );
+}
+
+#[tokio::test]
+async fn channel_send_non_2xx_maps_to_delivery_error() {
+    let (base, _calls) = spawn_mock(vec![CannedResponse::err(
+        StatusCode::NOT_FOUND,
+        "registration token not found",
+    )])
+    .await;
+
+    let channel = Channel::with_access_token(
+        Config {
+            project_id: "firefly-prod".into(),
+            ..Config::default()
+        },
+        "ya29.token",
+    )
+    .with_base_url(&base);
+
+    let err = channel
+        .send(Notification {
+            channel: Kind::PUSH,
+            to: "stale-token".into(),
+            body: "ping".into(),
+            ..Notification::default()
+        })
+        .await
+        .expect_err("a 404 from FCM must surface as a Delivery error");
+    assert!(err.to_string().contains("http 404"), "{err}");
 }

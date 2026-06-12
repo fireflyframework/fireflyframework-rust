@@ -268,3 +268,172 @@ fn status_mapping_table_matches_pyfly() {
 fn rest_provider_usable_as_trait_object() {
     let _p: Box<dyn ESignatureProvider> = Box::new(RestProvider::new("http://x", "t"));
 }
+
+// ---------------------------------------------------------------------------
+// get() — GET /agreements/{id}
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_parses_agreement_metadata() {
+    let shared: Shared = Arc::default();
+    let app = Router::new()
+        .route(
+            "/agreements/:id",
+            get(
+                |State(s): State<Shared>, Path(id): Path<String>, headers: HeaderMap| async move {
+                    capture(
+                        &s,
+                        "GET",
+                        format!("/agreements/{id}"),
+                        &headers,
+                        Value::Null,
+                    );
+                    Json(json!({
+                        "id": "CBJC-agr",
+                        "status": "SIGNED",
+                        "name": "Loan agreement",
+                        "displayDate": "2026-06-01T10:00:00Z",
+                    }))
+                },
+            ),
+        )
+        .with_state(shared.clone());
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, TOKEN);
+
+    let env = provider.get("CBJC-agr").await.unwrap().unwrap();
+    assert_eq!(env.id, "CBJC-agr");
+    assert_eq!(env.provider, "adobe-sign");
+    assert_eq!(env.status, SignatureStatus::Signed);
+    assert_eq!(env.provider_envelope_id.as_deref(), Some("CBJC-agr"));
+    assert_eq!(
+        env.sent_at.unwrap().to_rfc3339(),
+        "2026-06-01T10:00:00+00:00"
+    );
+
+    let c = shared.lock().unwrap().clone();
+    assert_eq!(c.method, "GET");
+    assert_eq!(c.path, "/agreements/CBJC-agr");
+    assert_eq!(c.authorization, format!("Bearer {TOKEN}"));
+}
+
+#[tokio::test]
+async fn get_returns_none_on_404() {
+    let app = Router::new().route(
+        "/agreements/:id",
+        get(|| async { (StatusCode::NOT_FOUND, "not found") }),
+    );
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, TOKEN);
+    assert!(provider.get("missing").await.unwrap().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// recipients() — GET /agreements/{id}/members
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn recipients_projects_participant_sets() {
+    let shared: Shared = Arc::default();
+    let app = Router::new()
+        .route(
+            "/agreements/:id/members",
+            get(
+                |State(s): State<Shared>, Path(id): Path<String>, headers: HeaderMap| async move {
+                    capture(
+                        &s,
+                        "GET",
+                        format!("/agreements/{id}/members"),
+                        &headers,
+                        Value::Null,
+                    );
+                    Json(json!({
+                        "participantSets": [
+                            { "status": "SIGNED", "memberInfos": [{ "email": "alice@example.com" }] },
+                            { "status": "WAITING_FOR_MY_SIGNATURE",
+                              "memberInfos": [{ "email": "bob@example.com" }] },
+                        ],
+                    }))
+                },
+            ),
+        )
+        .with_state(shared.clone());
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, TOKEN);
+
+    let recips = provider.recipients("agr-mem").await.unwrap();
+    assert_eq!(recips.len(), 2);
+    assert_eq!(recips[0].email, "alice@example.com");
+    assert_eq!(recips[0].status, SignatureStatus::Signed);
+    assert_eq!(recips[1].email, "bob@example.com");
+    assert_eq!(recips[1].status, SignatureStatus::Pending);
+
+    let c = shared.lock().unwrap().clone();
+    assert_eq!(c.method, "GET");
+    assert_eq!(c.path, "/agreements/agr-mem/members");
+    assert_eq!(c.authorization, format!("Bearer {TOKEN}"));
+}
+
+#[tokio::test]
+async fn recipients_returns_not_found_on_404() {
+    let app = Router::new().route(
+        "/agreements/:id/members",
+        get(|| async { (StatusCode::NOT_FOUND, "not found") }),
+    );
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, TOKEN);
+    let err = provider.recipients("missing").await.unwrap_err();
+    assert!(err.is_not_found());
+}
+
+// ---------------------------------------------------------------------------
+// download() — GET /agreements/{id}/combinedDocument
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn download_returns_combined_pdf_bytes() {
+    let shared: Shared = Arc::default();
+    let app = Router::new()
+        .route(
+            "/agreements/:id/combinedDocument",
+            get(
+                |State(s): State<Shared>, Path(id): Path<String>, headers: HeaderMap| async move {
+                    capture(
+                        &s,
+                        "GET",
+                        format!("/agreements/{id}/combinedDocument"),
+                        &headers,
+                        Value::Null,
+                    );
+                    (
+                        StatusCode::OK,
+                        [("content-type", "application/pdf")],
+                        b"%PDF-1.7 adobe".to_vec(),
+                    )
+                },
+            ),
+        )
+        .with_state(shared.clone());
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, TOKEN);
+
+    let bytes = provider.download("agr-doc").await.unwrap();
+    assert_eq!(bytes, b"%PDF-1.7 adobe");
+
+    let c = shared.lock().unwrap().clone();
+    assert_eq!(c.method, "GET");
+    assert_eq!(c.path, "/agreements/agr-doc/combinedDocument");
+    assert_eq!(c.authorization, format!("Bearer {TOKEN}"));
+}
+
+#[tokio::test]
+async fn download_returns_not_found_on_404() {
+    let app = Router::new().route(
+        "/agreements/:id/combinedDocument",
+        get(|| async { (StatusCode::NOT_FOUND, Vec::<u8>::new()) }),
+    );
+    let base = spawn(app).await;
+    let provider = RestProvider::new(base, TOKEN);
+    let err = provider.download("missing").await.unwrap_err();
+    assert!(err.is_not_found());
+}

@@ -73,6 +73,27 @@ pub enum Error {
     /// adapters raising `NotImplementedError` for provider-side operations.
     #[error("firefly/idp: operation not supported: {0}")]
     NotSupported(String),
+    /// A specific provider genuinely cannot perform `operation` because the
+    /// provider exposes no admin/management API for it — distinct from
+    /// [`Error::NotSupported`] (which means *this adapter* has not implemented
+    /// an otherwise-available operation).
+    ///
+    /// This is the precise, documented capability boundary an adapter returns
+    /// when it has implemented every operation the provider's API exposes and
+    /// the remaining operation is one the provider only performs interactively
+    /// server-side (e.g. verifying a one-time MFA code during an interactive
+    /// browser/auth-challenge sign-in, which Keycloak and Azure AD do not
+    /// surface through any admin REST endpoint). The rendered message names the
+    /// `provider`, the `operation`, and a human-readable `reason`.
+    #[error("firefly/idp: {provider} cannot perform operation '{operation}': {reason}")]
+    UnsupportedByProvider {
+        /// The provider that lacks the capability (e.g. `"keycloak"`).
+        provider: String,
+        /// The port operation that cannot be performed (e.g. `"mfa_verify"`).
+        operation: String,
+        /// Why the provider cannot perform it (the API gap), for diagnostics.
+        reason: String,
+    },
     /// Any other adapter-specific failure; the message is rendered verbatim.
     #[error("{0}")]
     Provider(String),
@@ -87,6 +108,20 @@ impl Error {
     /// Builds an [`Error::NotSupported`] naming the unsupported operation.
     pub fn not_supported(operation: impl Into<String>) -> Self {
         Error::NotSupported(operation.into())
+    }
+
+    /// Builds an [`Error::UnsupportedByProvider`] documenting a genuine
+    /// provider-API capability boundary.
+    pub fn unsupported_by_provider(
+        provider: impl Into<String>,
+        operation: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Error::UnsupportedByProvider {
+            provider: provider.into(),
+            operation: operation.into(),
+            reason: reason.into(),
+        }
     }
 }
 
@@ -437,6 +472,30 @@ mod tests {
         let e = Error::provider("idp/internal-db: malformed jwt");
         assert_eq!(e, Error::Provider("idp/internal-db: malformed jwt".into()));
         assert_eq!(e.to_string(), "idp/internal-db: malformed jwt");
+    }
+
+    #[test]
+    fn unsupported_by_provider_names_provider_operation_and_reason() {
+        let e = Error::unsupported_by_provider(
+            "keycloak",
+            "mfa_verify",
+            "Keycloak verifies TOTP only during the interactive browser sign-in",
+        );
+        assert_eq!(
+            e,
+            Error::UnsupportedByProvider {
+                provider: "keycloak".into(),
+                operation: "mfa_verify".into(),
+                reason: "Keycloak verifies TOTP only during the interactive browser sign-in".into(),
+            }
+        );
+        assert_eq!(
+            e.to_string(),
+            "firefly/idp: keycloak cannot perform operation 'mfa_verify': \
+             Keycloak verifies TOTP only during the interactive browser sign-in"
+        );
+        // Distinct from the generic NotSupported variant.
+        assert_ne!(e, Error::not_supported("mfa_verify"));
     }
 
     // ---------------------------------------------------------------------

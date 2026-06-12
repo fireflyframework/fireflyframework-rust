@@ -34,6 +34,41 @@
 //! [`ClientError::TransportNotRegistered`] — they predate the typed
 //! builders above, which are the supported entry points.
 //!
+//! ## Reactive surface: [`WebClient`]
+//!
+//! Alongside the eager [`RestClient`], the crate ships a **reactive**
+//! HTTP client — the Rust analog of Spring WebFlux's `WebClient`, built
+//! on [`firefly-reactive`](firefly_reactive)'s [`Mono`](firefly_reactive::Mono)
+//! / [`Flux`](firefly_reactive::Flux). It is strictly additive: the
+//! eager surface and its wire format are untouched.
+//!
+//! ```no_run
+//! # async fn demo() {
+//! use firefly_client::WebClientBuilder;
+//! use http::Method;
+//! use serde::Deserialize;
+//!
+//! #[derive(Deserialize)]
+//! struct Tick { seq: u64 }
+//!
+//! let client = WebClientBuilder::new("https://api.example.com").build();
+//!
+//! // body_to_mono: a single value -> Mono<T>.
+//! let one = client.method(Method::GET).uri("/latest")
+//!     .retrieve().body_to_mono::<Tick>();
+//!
+//! // body_to_flux: a streamed NDJSON / SSE body -> Flux<T>, lazily,
+//! // with backpressure.
+//! let stream = client.method(Method::GET).uri("/ticks")
+//!     .header("Accept", "application/x-ndjson")
+//!     .retrieve().body_to_flux::<Tick>();
+//! # let _ = (one, stream);
+//! # }
+//! ```
+//!
+//! See [`WebClient`], [`WebClientBuilder`], [`RequestSpec`],
+//! [`ResponseSpec`], and [`WebClientResponse`] for the full surface.
+//!
 //! ## Why a separate crate?
 //!
 //! The Java `firefly-service-client` integrates Resilience4j + service
@@ -105,6 +140,7 @@ mod graphql;
 mod rest;
 mod scaffold;
 mod soap;
+mod webclient;
 
 #[cfg(feature = "grpc")]
 mod grpc;
@@ -118,6 +154,10 @@ pub use scaffold::{
     new_grpc, new_soap, new_websocket, GrpcPlaceholder, SoapPlaceholder, WebSocketPlaceholder,
 };
 pub use soap::{wrap_envelope, SoapBuilder, SoapClient};
+pub use webclient::{
+    new_web_client, RequestSpec, ResponseSpec, WebClient, WebClientBuilder, WebClientResponse,
+    NDJSON_CONTENT_TYPE, SSE_CONTENT_TYPE,
+};
 
 #[cfg(feature = "grpc")]
 pub use grpc::{GrpcBuilder, GrpcError};

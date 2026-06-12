@@ -1,27 +1,36 @@
 # `firefly-ecm-storage-azure`
 
-> **Tier:** Adapter · **Status:** Production (`BlobStore`) + back-compat stub (`Store`) · **Backing tech:** Azure Blob Storage
+> **Tier:** Adapter · **Status:** Production · **Backing tech:** Azure Blob Storage
 
 ## Overview
 
-`firefly-ecm-storage-azure` is the Azure Blob Storage `ContentStore` adapter. It
-ships two flavours that share one `Config`:
+`firefly-ecm-storage-azure` is the Azure Blob Storage `ContentStore` adapter.
+`BlobStore` speaks the Azure Blob REST API directly over `reqwest`, authorizing
+every request with a **self-contained Shared Key signer** (`hmac`/`sha2`/`base64`
+— **no Azure SDK** is linked). Every operation is a real Blob REST call; there
+are no stubbed methods.
 
-* **`BlobStore`** — the real adapter (pyfly parity). It speaks the Azure Blob
-  REST API directly over `reqwest`, authorizing every request with a
-  **self-contained Shared Key signer** (`hmac`/`sha2`/`base64` — **no Azure
-  SDK** is linked). It bridges `firefly_ecm::ContentReader` both ways: `put`
-  drains the reader and `PUT`s a block blob, `get` returns the blob body as a
-  reader. It honours `Config.endpoint`, so it works against Azurite or the
-  in-process mock server used in tests.
-* **`Store`** — the original Go-parity stub, retained for backward
-  compatibility. Every method returns the not-yet-implemented sentinel, carried
-  as a `firefly_ecm::EcmError::Provider` whose message is bytes-equal to the Go
-  port's `ErrNotImplemented`:
+It bridges `firefly_ecm::ContentReader` both ways and honours `Config.endpoint`,
+so it works against Azurite or the in-process mock server used in tests.
 
-```rust
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/ecmstorageazure: not yet implemented";
-```
+## Operations
+
+Each method maps to one real Blob REST API call:
+
+| Method | Blob REST API | Request |
+| --- | --- | --- |
+| `ContentStore::put` | [`Put Blob`](https://learn.microsoft.com/en-us/rest/api/storageservices/put-blob) | `PUT /{container}/{blob}` block blob (drains the reader; returns bytes written) |
+| `ContentStore::get` | [`Get Blob`](https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob) | `GET /{container}/{blob}` (body as a reader; `404` → `NotFound`) |
+| `ContentStore::delete` | [`Delete Blob`](https://learn.microsoft.com/en-us/rest/api/storageservices/delete-blob) | `DELETE /{container}/{blob}` (missing blob is not an error) |
+| `BlobStore::list` | [`List Blobs`](https://learn.microsoft.com/en-us/rest/api/storageservices/list-blobs) | `GET /{container}?restype=container&comp=list&prefix=…` (parses `<Name>` from the XML) |
+| `BlobStore::copy` | [`Copy Blob`](https://learn.microsoft.com/en-us/rest/api/storageservices/copy-blob) | `PUT /{container}/{dst}` with a signed `x-ms-copy-source` header |
+| `BlobStore::properties` | [`Get Blob Properties`](https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob-properties) | `HEAD /{container}/{blob}` (returns `BlobProperties`: size, MIME, ETag) |
+
+`list`, `copy`, and `properties` are real provider capabilities exposed as
+inherent methods on `BlobStore` on top of the four-method `ContentStore`
+contract. For container-scoped requests the query parameters fold into the
+Shared Key canonical resource as sorted `\nname:value` lines, so the signature
+covers them.
 
 ## pyfly parity
 
@@ -33,7 +42,8 @@ This crate is the Rust analog of pyfly's `pyfly.ecm.adapters.azure_blob`
   Key code path against an in-process axum mock (`tests/blob_mock_test.rs`). The
   mock asserts the HTTP method, container/blob path, body, and `x-ms-*` headers,
   and — crucially — **recomputes the Shared Key signature server-side** to prove
-  the adapter signed exactly the request it sent.
+  the adapter signed exactly the request it sent (including the query-bearing
+  List Blobs canonical resource and the Copy Blob `x-ms-copy-source` header).
 * The version-aware `<doc-id>/v<n>` key scheme pyfly uses maps straight onto
   blob names — `BlobStore` is keyed by the opaque key the `ContentStore` port
   already exposes.
@@ -49,43 +59,30 @@ resource), signing with the base64-decoded account key. It is KAT-tested against
 an independently computed HMAC-SHA256 reference signature using the public
 Azurite development account key.
 
-## Why keep the stub?
-
-* The port boundary stays locked — existing consumers of `Store`,
-  `ERR_NOT_IMPLEMENTED`, and `is_not_implemented` keep compiling unchanged.
-* The Go-parity wire contract stays covered by the original smoke tests.
-
-## Public surface
-
-| Item | Description |
-| --- | --- |
-| `BlobStore` | The real `firefly_ecm::ContentStore` adapter over reqwest + Shared Key. `BlobStore::new(Config)` validates the wiring; `with_client` shares a `reqwest::Client`; `config()` exposes the wiring. |
-| `Config` | Wiring for both adapters (`bucket`, `region`, `access_key`, `secret_key`, `account`, `key`, `container`, `endpoint`). |
-| `sharedkey` | Self-contained Azure Shared Key signer (`sign`, `string_to_sign`, `Header`, `Request`). |
-| `Store` | Back-compat placeholder `firefly_ecm::ContentStore`; `Store::new(Config)` / `Store::config()`. |
-| `ERR_NOT_IMPLEMENTED` | The sentinel message returned by every stub method. |
-| `err_not_implemented()` | Builds the sentinel as an `EcmError::Provider`. |
-| `is_not_implemented(&EcmError)` | The analog of Go's `errors.Is(err, ErrNotImplemented)`. |
-| `VERSION` | Framework version stamp. |
-
 ## Usage
 
 ```rust
 use firefly_ecm::{bytes_reader, ContentStore};
-use firefly_ecm_storage_azure::{is_not_implemented, Config, Store};
+use firefly_ecm_storage_azure::{BlobStore, Config};
 
 #[tokio::main]
-async fn main() {
-    let store = Store::new(Config {
+async fn main() -> Result<(), firefly_ecm::EcmError> {
+    let store = BlobStore::new(Config {
         account: "fireflyacct".into(),
+        key: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==".into(),
         container: "documents".into(),
+        // Optional: point at Azurite for local development.
+        // endpoint: "http://127.0.0.1:10000/devstoreaccount1".into(),
         ..Default::default()
-    });
-    assert_eq!(store.name(), "ecmstorageazure-stub");
+    })?;
 
-    let err = store.put("k", bytes_reader(b"x".to_vec())).await.unwrap_err();
-    assert!(is_not_implemented(&err));
-    assert_eq!(err.to_string(), "firefly/ecmstorageazure: not yet implemented");
+    let n = store.put("doc-1/v1", bytes_reader(b"%PDF-1.7".to_vec())).await?;
+    assert_eq!(n, 8);
+
+    let names = store.list("doc-1/").await?;
+    let props = store.properties("doc-1/v1").await?;
+    let _ = (names, props);
+    Ok(())
 }
 ```
 
@@ -99,6 +96,16 @@ pub struct Config {
 }
 ```
 
+## Public surface
+
+| Item | Description |
+| --- | --- |
+| `BlobStore` | The real `firefly_ecm::ContentStore` adapter over reqwest + Shared Key. `new(Config)` validates the wiring; `with_client` shares a `reqwest::Client`; `config()` exposes the wiring; `list` / `copy` / `properties` add the container-level operations. |
+| `BlobProperties` | The `Get Blob Properties` result (`content_length`, `content_type`, `etag`). |
+| `Config` | Wiring for both cloud adapters (`bucket`, `region`, `access_key`, `secret_key`, `account`, `key`, `container`, `endpoint`). |
+| `sharedkey` | Self-contained Azure Shared Key signer (`sign`, `string_to_sign`, `Header`, `Request`). |
+| `VERSION` | Framework version stamp. |
+
 ## Testing
 
 ```bash
@@ -108,8 +115,7 @@ cargo test -p firefly-ecm-storage-azure
 * `sharedkey` unit tests verify the canonical headers, the string-to-sign
   shape, and a KAT signature against an independent HMAC-SHA256 reference.
 * `tests/blob_mock_test.rs` runs `BlobStore` end-to-end against an in-process
-  axum mock (port 0) that recomputes and verifies the Shared Key signature — no
-  real Azure, no Docker.
-* The original smoke tests still guard the back-compat `Store` stub.
+  axum mock (port 0) that recomputes and verifies the Shared Key signature for
+  put/get/delete **and** for list/copy/properties — no real Azure, no Docker.
 
 No test talks to a real Azure endpoint; `cargo test` passes on a bare machine.

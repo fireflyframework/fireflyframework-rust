@@ -45,11 +45,17 @@ let token = idp.login("alice", "pw").await?;
   (`get_roles`), `AdminAddUserToGroup` / `AdminRemoveUserFromGroup`
   (`assign_role` / `revoke_role`), and `AdminSetUserPassword`
   (`change_password` / `reset_password`).
+* **TOTP MFA (real API)** — `mfa_challenge` calls `AssociateSoftwareToken`
+  (unsigned; the `user_id` argument carries the user's access token) and returns
+  the TOTP `SecretCode` (in the challenge's `method` as `"TOTP:{secret}"`) plus
+  the Cognito `Session` (in `challenge_id`). `mfa_verify` calls
+  `VerifySoftwareToken` with that `Session` and the user's 6-digit code (a
+  non-`SUCCESS` status maps to `InvalidCredentials`). The admin
+  `set_mfa_preference(username, enabled)` helper calls `AdminSetUserMFAPreference`
+  (SigV4-signed) to make TOTP the user's preferred factor.
 
 `SECRET_HASH = Base64(HMAC-SHA256(client_secret, username + client_id))`, exposed
-as `Adapter::secret_hash`. `mfa_challenge` / `mfa_verify` return the
-`ERR_NOT_IMPLEMENTED` sentinel because Cognito manages MFA via its native auth
-challenge flow.
+as `Adapter::secret_hash`.
 
 ## Configuration
 
@@ -87,7 +93,7 @@ its output is byte-for-byte identical to AWS's reference signer.
 | `admin_add/remove_user_to_group` / `list_groups` / `admin_list_groups_for_user` | signed group ops |
 | `SECRET_HASH` computation | `Adapter::secret_hash` |
 | `login` → `AuthResult` | `login` → `Token`; `login_full` → `AuthResult` |
-| `mfa_challenge` / `mfa_verify` | sentinel (`ERR_NOT_IMPLEMENTED`) |
+| `mfa_challenge` / `mfa_verify` (raised `NotImplementedError`) | real `AssociateSoftwareToken` / `VerifySoftwareToken` + `AdminSetUserMFAPreference` |
 
 ## Testing
 

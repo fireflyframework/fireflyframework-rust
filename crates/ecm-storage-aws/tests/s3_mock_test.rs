@@ -24,9 +24,11 @@ use tokio::io::AsyncReadExt;
 struct Recorded {
     method: String,
     path: String,
+    query: String,
     authorization: String,
     amz_date: String,
     content_sha256: String,
+    copy_source: String,
     body: Vec<u8>,
 }
 
@@ -35,6 +37,8 @@ struct MockState {
     calls: Arc<Mutex<Vec<Recorded>>>,
     /// Body served back for GET requests.
     get_body: Arc<Mutex<Vec<u8>>>,
+    /// XML served back for ListObjectsV2 (GET on the bucket root).
+    list_xml: Arc<Mutex<String>>,
     /// When true, every request answers 404.
     not_found: Arc<Mutex<bool>>,
 }
@@ -45,7 +49,7 @@ async fn handler(
     method: axum::http::Method,
     headers: HeaderMap,
     body: Bytes,
-) -> (StatusCode, Vec<u8>) {
+) -> (StatusCode, HeaderMap, Vec<u8>) {
     let get = |name: &str| {
         headers
             .get(name)
@@ -56,22 +60,55 @@ async fn handler(
     // Capture the *raw* (still percent-encoded) request path, so the test can
     // assert exactly what went over the wire (axum's `Path` extractor would
     // otherwise decode it).
+    let path = uri.path().to_string();
+    let query = uri.query().unwrap_or("").to_string();
+    let copy_source = get("x-amz-copy-source");
     state.calls.lock().unwrap().push(Recorded {
         method: method.to_string(),
-        path: uri.path().to_string(),
+        path: path.clone(),
+        query: query.clone(),
         authorization: get("authorization"),
         amz_date: get("x-amz-date"),
         content_sha256: get("x-amz-content-sha256"),
+        copy_source: copy_source.clone(),
         body: body.to_vec(),
     });
 
+    let mut out_headers = HeaderMap::new();
     if *state.not_found.lock().unwrap() {
-        return (StatusCode::NOT_FOUND, b"<Error>NoSuchKey</Error>".to_vec());
+        return (
+            StatusCode::NOT_FOUND,
+            out_headers,
+            b"<Error>NoSuchKey</Error>".to_vec(),
+        );
     }
     match method.as_str() {
-        "GET" => (StatusCode::OK, state.get_body.lock().unwrap().clone()),
-        "DELETE" => (StatusCode::NO_CONTENT, Vec::new()),
-        _ => (StatusCode::OK, Vec::new()),
+        // ListObjectsV2 is a GET on the bucket root (path ends in `/`) with a
+        // `list-type=2` query; serve the canned XML.
+        "GET" if query.contains("list-type=2") => (
+            StatusCode::OK,
+            out_headers,
+            state.list_xml.lock().unwrap().clone().into_bytes(),
+        ),
+        "GET" => (
+            StatusCode::OK,
+            out_headers,
+            state.get_body.lock().unwrap().clone(),
+        ),
+        "HEAD" => {
+            out_headers.insert("content-length", "9".parse().unwrap());
+            out_headers.insert("content-type", "application/pdf".parse().unwrap());
+            out_headers.insert("etag", "\"d41d8cd98f00b204\"".parse().unwrap());
+            (StatusCode::OK, out_headers, Vec::new())
+        }
+        "DELETE" => (StatusCode::NO_CONTENT, out_headers, Vec::new()),
+        // CopyObject returns 200 with a CopyObjectResult body.
+        "PUT" if !copy_source.is_empty() => (
+            StatusCode::OK,
+            out_headers,
+            b"<CopyObjectResult><ETag>\"abc\"</ETag></CopyObjectResult>".to_vec(),
+        ),
+        _ => (StatusCode::OK, out_headers, Vec::new()),
     }
 }
 
@@ -270,4 +307,171 @@ async fn requires_complete_config() {
 
     let err = S3Store::new(Config::default()).unwrap_err();
     assert!(err.to_string().contains("bucket"), "{err}");
+}
+
+// -------------------------------------------------------------------------
+// ListObjectsV2 / CopyObject / HeadObject / presign — the operations added on
+// top of the ContentStore put/get/delete contract, each a real S3 REST call.
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_issues_signed_list_objects_v2_and_parses_keys() {
+    let (base, state) = spawn().await;
+    *state.list_xml.lock().unwrap() = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<ListBucketResult><Name>my-bucket</Name>",
+        "<Contents><Key>docs/a/v1</Key><Size>10</Size></Contents>",
+        "<Contents><Key>docs/b/v1</Key><Size>20</Size></Contents>",
+        "</ListBucketResult>"
+    )
+    .to_string();
+    let store = store(&base);
+
+    let keys = store.list("docs/", 100).await.unwrap();
+    assert_eq!(keys, vec!["docs/a/v1".to_string(), "docs/b/v1".to_string()]);
+
+    let calls = state.calls.lock().unwrap();
+    let rec = &calls[0];
+    assert_eq!(rec.method, "GET");
+    // Bucket-root path (path-style) and the SigV4-signed query.
+    assert_eq!(rec.path, "/my-bucket/");
+    assert!(rec.query.contains("list-type=2"), "query: {}", rec.query);
+    assert!(
+        rec.query.contains("prefix=docs%2F"),
+        "prefix must be encoded: {}",
+        rec.query
+    );
+    assert!(rec.query.contains("max-keys=100"), "query: {}", rec.query);
+    assert_auth(rec);
+}
+
+#[tokio::test]
+async fn list_without_prefix_lists_whole_bucket() {
+    let (base, state) = spawn().await;
+    *state.list_xml.lock().unwrap() =
+        "<ListBucketResult><Contents><Key>only</Key></Contents></ListBucketResult>".to_string();
+    let store = store(&base);
+
+    let keys = store.list("", 50).await.unwrap();
+    assert_eq!(keys, vec!["only".to_string()]);
+    let calls = state.calls.lock().unwrap();
+    assert!(
+        !calls[0].query.contains("prefix="),
+        "no prefix param: {}",
+        calls[0].query
+    );
+}
+
+#[tokio::test]
+async fn copy_sets_signed_copy_source_header() {
+    let (base, state) = spawn().await;
+    let store = store(&base);
+
+    store.copy("docs/a/v1", "docs/a/v2").await.unwrap();
+
+    let calls = state.calls.lock().unwrap();
+    let rec = &calls[0];
+    assert_eq!(rec.method, "PUT");
+    // Destination key is the request path; source is the copy header.
+    assert_eq!(rec.path, "/my-bucket/docs/a/v2");
+    assert_eq!(rec.copy_source, "/my-bucket/docs/a/v1");
+    // The copy is a metadata-only PUT (no body).
+    assert!(rec.body.is_empty());
+    // CopyObject signs an extra header, so the SignedHeaders list includes
+    // x-amz-copy-source between content-sha256 and date.
+    assert!(
+        rec.authorization
+            .contains("SignedHeaders=host;x-amz-content-sha256;x-amz-copy-source;x-amz-date"),
+        "copy must sign x-amz-copy-source: {}",
+        rec.authorization
+    );
+    assert!(
+        rec.authorization
+            .starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"),
+        "{}",
+        rec.authorization
+    );
+}
+
+#[tokio::test]
+async fn copy_missing_source_maps_to_not_found() {
+    let (base, state) = spawn().await;
+    *state.not_found.lock().unwrap() = true;
+    let store = store(&base);
+
+    match store.copy("missing", "dst").await {
+        Err(EcmError::NotFound) => {}
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn head_parses_object_metadata() {
+    let (base, state) = spawn().await;
+    let store = store(&base);
+
+    let meta = store.head("docs/a/v1").await.unwrap();
+    assert_eq!(meta.content_length, 9);
+    assert_eq!(meta.content_type, "application/pdf");
+    assert_eq!(meta.etag, "\"d41d8cd98f00b204\"");
+
+    let calls = state.calls.lock().unwrap();
+    assert_eq!(calls[0].method, "HEAD");
+    assert_eq!(calls[0].path, "/my-bucket/docs/a/v1");
+    assert_auth(&calls[0]);
+}
+
+#[tokio::test]
+async fn head_missing_maps_to_not_found() {
+    let (base, state) = spawn().await;
+    *state.not_found.lock().unwrap() = true;
+    let store = store(&base);
+
+    match store.head("gone").await {
+        Err(EcmError::NotFound) => {}
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn presign_get_builds_a_fetchable_url() {
+    // The presigned URL is computed locally; fetching it must serve the body
+    // without any Authorization header (auth is entirely in the query string).
+    let (base, state) = spawn().await;
+    *state.get_body.lock().unwrap() = b"PRESIGNED-BYTES".to_vec();
+    let store = store(&base);
+
+    let url = store.presign_get("docs/a/v1", 900).unwrap();
+    // All SigV4 query-string-auth params are present.
+    assert!(url.contains("X-Amz-Algorithm=AWS4-HMAC-SHA256"), "{url}");
+    assert!(url.contains("X-Amz-Credential="), "{url}");
+    assert!(url.contains("X-Amz-Date="), "{url}");
+    assert!(url.contains("X-Amz-Expires=900"), "{url}");
+    assert!(url.contains("X-Amz-SignedHeaders=host"), "{url}");
+    assert!(url.contains("X-Amz-Signature="), "{url}");
+
+    // A plain client (no creds) can fetch the object via the presigned URL.
+    let resp = reqwest::get(&url).await.unwrap();
+    assert!(resp.status().is_success());
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(&bytes[..], b"PRESIGNED-BYTES");
+
+    // The server saw a GET with no Authorization header.
+    let calls = state.calls.lock().unwrap();
+    assert_eq!(calls[0].method, "GET");
+    assert_eq!(calls[0].authorization, "");
+}
+
+#[tokio::test]
+async fn presign_rejects_out_of_range_expiry() {
+    let store = S3Store::new(Config {
+        bucket: "b".into(),
+        region: "eu-west-1".into(),
+        access_key: "AKIDEXAMPLE".into(),
+        secret_key: "secret".into(),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(store.presign_get("k", 0).is_err());
+    assert!(store.presign_get("k", 604_801).is_err());
 }

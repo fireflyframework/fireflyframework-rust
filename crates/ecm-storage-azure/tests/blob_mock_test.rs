@@ -33,10 +33,12 @@ const CONTAINER: &str = "my-container";
 struct Recorded {
     method: String,
     path: String,
+    query: String,
     authorization: String,
     x_ms_date: String,
     x_ms_version: String,
     blob_type: String,
+    copy_source: String,
     body: Vec<u8>,
     signature_verified: bool,
 }
@@ -45,6 +47,8 @@ struct Recorded {
 struct MockState {
     calls: Arc<Mutex<Vec<Recorded>>>,
     get_body: Arc<Mutex<Vec<u8>>>,
+    /// EnumerationResults XML served for List Blobs.
+    list_xml: Arc<Mutex<String>>,
     not_found: Arc<Mutex<bool>>,
 }
 
@@ -54,7 +58,7 @@ async fn handler(
     method: axum::http::Method,
     headers: HeaderMap,
     body: Bytes,
-) -> (StatusCode, Vec<u8>) {
+) -> (StatusCode, HeaderMap, Vec<u8>) {
     let get = |name: &str| {
         headers
             .get(name)
@@ -63,90 +67,165 @@ async fn handler(
             .to_string()
     };
     let path = uri.path().to_string();
+    let query = uri.query().unwrap_or("").to_string();
     let authorization = get("authorization");
     let x_ms_date = get("x-ms-date");
     let x_ms_version = get("x-ms-version");
     let blob_type = get("x-ms-blob-type");
+    let copy_source = get("x-ms-copy-source");
 
-    // Re-derive the canonical request from the received headers/path and check
-    // the Shared Key signature matches — this is the strong assertion that the
+    // Re-derive the canonical request from the received headers/path/query and
+    // check the Shared Key signature matches — the strong assertion that the
     // adapter signed *exactly* the request it sent.
-    let signature_verified = verify_signature(
-        method.as_str(),
-        &path,
-        &body,
-        &x_ms_date,
-        &x_ms_version,
-        &blob_type,
-        &authorization,
-    );
+    let signature_verified = verify_signature(VerifyInput {
+        method: method.as_str(),
+        path: &path,
+        query: &query,
+        body: &body,
+        x_ms_date: &x_ms_date,
+        x_ms_version: &x_ms_version,
+        blob_type: &blob_type,
+        copy_source: &copy_source,
+        authorization: &authorization,
+    });
 
     state.calls.lock().unwrap().push(Recorded {
         method: method.to_string(),
-        path,
+        path: path.clone(),
+        query: query.clone(),
         authorization,
         x_ms_date,
         x_ms_version,
         blob_type,
+        copy_source: copy_source.clone(),
         body: body.to_vec(),
         signature_verified,
     });
 
+    let mut out_headers = HeaderMap::new();
     if *state.not_found.lock().unwrap() {
-        return (StatusCode::NOT_FOUND, b"BlobNotFound".to_vec());
+        return (StatusCode::NOT_FOUND, out_headers, b"BlobNotFound".to_vec());
     }
     match method.as_str() {
-        "PUT" => (StatusCode::CREATED, Vec::new()),
-        "GET" => (StatusCode::OK, state.get_body.lock().unwrap().clone()),
-        "DELETE" => (StatusCode::ACCEPTED, Vec::new()),
-        _ => (StatusCode::OK, Vec::new()),
+        // List Blobs: GET with comp=list query.
+        "GET" if query.contains("comp=list") => (
+            StatusCode::OK,
+            out_headers,
+            state.list_xml.lock().unwrap().clone().into_bytes(),
+        ),
+        // Copy Blob: PUT with x-ms-copy-source → 202 Accepted.
+        "PUT" if !copy_source.is_empty() => {
+            out_headers.insert("x-ms-copy-status", "success".parse().unwrap());
+            (StatusCode::ACCEPTED, out_headers, Vec::new())
+        }
+        "PUT" => (StatusCode::CREATED, out_headers, Vec::new()),
+        "HEAD" => {
+            out_headers.insert("content-length", "9".parse().unwrap());
+            out_headers.insert("content-type", "application/pdf".parse().unwrap());
+            out_headers.insert("etag", "\"0x8DA\"".parse().unwrap());
+            (StatusCode::OK, out_headers, Vec::new())
+        }
+        "GET" => (
+            StatusCode::OK,
+            out_headers,
+            state.get_body.lock().unwrap().clone(),
+        ),
+        "DELETE" => (StatusCode::ACCEPTED, out_headers, Vec::new()),
+        _ => (StatusCode::OK, out_headers, Vec::new()),
     }
+}
+
+/// The fields the mock needs to recompute a Shared Key signature.
+struct VerifyInput<'a> {
+    method: &'a str,
+    path: &'a str,
+    query: &'a str,
+    body: &'a [u8],
+    x_ms_date: &'a str,
+    x_ms_version: &'a str,
+    blob_type: &'a str,
+    copy_source: &'a str,
+    authorization: &'a str,
 }
 
 /// Rebuilds the canonical request from the incoming HTTP request and confirms
 /// the `Authorization` header's signature matches a freshly computed one.
-#[allow(clippy::too_many_arguments)]
-fn verify_signature(
-    method: &str,
-    path: &str,
-    body: &[u8],
-    x_ms_date: &str,
-    x_ms_version: &str,
-    blob_type: &str,
-    authorization: &str,
-) -> bool {
-    let is_put = method == "PUT";
-    let content_length = if body.is_empty() {
-        String::new()
+fn verify_signature(input: VerifyInput<'_>) -> bool {
+    let is_put = input.method == "PUT";
+    let has_body = !input.body.is_empty();
+    let content_length = if has_body {
+        input.body.len().to_string()
     } else {
-        body.len().to_string()
+        String::new()
     };
-    let content_type = if is_put {
+    // Only a body-bearing PUT (block blob) sets content-type.
+    let content_type = if is_put && has_body {
         "application/octet-stream"
     } else {
         ""
     };
     let mut x_ms_headers = vec![
-        sharedkey::Header::new("x-ms-date", x_ms_date),
-        sharedkey::Header::new("x-ms-version", x_ms_version),
+        sharedkey::Header::new("x-ms-date", input.x_ms_date),
+        sharedkey::Header::new("x-ms-version", input.x_ms_version),
     ];
-    if !blob_type.is_empty() {
-        x_ms_headers.push(sharedkey::Header::new("x-ms-blob-type", blob_type));
+    if !input.blob_type.is_empty() {
+        x_ms_headers.push(sharedkey::Header::new("x-ms-blob-type", input.blob_type));
+    }
+    if !input.copy_source.is_empty() {
+        x_ms_headers.push(sharedkey::Header::new(
+            "x-ms-copy-source",
+            input.copy_source,
+        ));
     }
     // The mock is reached path-style (`/<container>/<blob>`); the canonical
-    // resource always names the account.
-    let canonical_resource = format!("/{ACCOUNT}{path}");
+    // resource always names the account. Query params (List Blobs) fold in as
+    // sorted `\nname:value` lines.
+    let mut canonical_resource = format!("/{ACCOUNT}{}", input.path);
+    if !input.query.is_empty() {
+        let mut params: Vec<(String, String)> = input
+            .query
+            .split('&')
+            .filter_map(|kv| kv.split_once('='))
+            .map(|(k, v)| (k.to_ascii_lowercase(), urldecode(v)))
+            .collect();
+        params.sort();
+        for (k, v) in params {
+            canonical_resource.push('\n');
+            canonical_resource.push_str(&k);
+            canonical_resource.push(':');
+            canonical_resource.push_str(&v);
+        }
+    }
     let req = sharedkey::Request {
-        method,
+        method: input.method,
         content_length: &content_length,
         content_type,
         x_ms_headers,
         canonical_resource: &canonical_resource,
     };
     match sharedkey::sign(&req, ACCOUNT, KEY) {
-        Ok((expected_authz, _, _)) => expected_authz == authorization,
+        Ok((expected_authz, _, _)) => expected_authz == input.authorization,
         Err(_) => false,
     }
+}
+
+/// Minimal percent-decoder for the query values the adapter sends (`%XX`).
+fn urldecode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 async fn spawn() -> (String, MockState) {
@@ -335,4 +414,128 @@ async fn requires_complete_config_and_valid_key() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("sign"), "{err}");
+}
+
+// -------------------------------------------------------------------------
+// List Blobs / Copy Blob / Get Blob Properties — the operations added on top
+// of the ContentStore put/get/delete contract, each a real Blob REST call.
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_issues_signed_list_blobs_and_parses_names() {
+    let (base, state) = spawn().await;
+    *state.list_xml.lock().unwrap() = concat!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+        "<EnumerationResults><Blobs>",
+        "<Blob><Name>docs/a/v1</Name></Blob>",
+        "<Blob><Name>docs/b/v1</Name></Blob>",
+        "</Blobs></EnumerationResults>"
+    )
+    .to_string();
+    let store = store(&base);
+
+    let names = store.list("docs/").await.unwrap();
+    assert_eq!(
+        names,
+        vec!["docs/a/v1".to_string(), "docs/b/v1".to_string()]
+    );
+
+    let calls = state.calls.lock().unwrap();
+    let rec = &calls[0];
+    assert_eq!(rec.method, "GET");
+    assert_eq!(rec.path, "/my-container");
+    assert!(rec.query.contains("comp=list"), "query: {}", rec.query);
+    assert!(
+        rec.query.contains("restype=container"),
+        "query: {}",
+        rec.query
+    );
+    assert!(rec.query.contains("prefix=docs/"), "query: {}", rec.query);
+    // The signature must verify over the query-bearing canonical resource.
+    assert!(
+        rec.signature_verified,
+        "List Blobs signature did not verify: {}",
+        rec.authorization
+    );
+}
+
+#[tokio::test]
+async fn list_without_prefix_lists_whole_container() {
+    let (base, state) = spawn().await;
+    *state.list_xml.lock().unwrap() =
+        "<EnumerationResults><Blobs><Blob><Name>only</Name></Blob></Blobs></EnumerationResults>"
+            .to_string();
+    let store = store(&base);
+
+    let names = store.list("").await.unwrap();
+    assert_eq!(names, vec!["only".to_string()]);
+    let calls = state.calls.lock().unwrap();
+    assert!(
+        !calls[0].query.contains("prefix="),
+        "no prefix param: {}",
+        calls[0].query
+    );
+    assert!(calls[0].signature_verified);
+}
+
+#[tokio::test]
+async fn copy_sets_signed_copy_source_header() {
+    let (base, state) = spawn().await;
+    let store = store(&base);
+
+    store.copy("docs/a/v1", "docs/a/v2").await.unwrap();
+
+    let calls = state.calls.lock().unwrap();
+    let rec = &calls[0];
+    assert_eq!(rec.method, "PUT");
+    assert_eq!(rec.path, "/my-container/docs/a/v2");
+    // The copy source is the *full URL* of the source blob.
+    assert!(
+        rec.copy_source.ends_with("/my-container/docs/a/v1"),
+        "copy source URL: {}",
+        rec.copy_source
+    );
+    // Copy is body-less.
+    assert!(rec.body.is_empty());
+    assert_auth(rec);
+}
+
+#[tokio::test]
+async fn copy_missing_source_maps_to_not_found() {
+    let (base, state) = spawn().await;
+    *state.not_found.lock().unwrap() = true;
+    let store = store(&base);
+
+    match store.copy("missing", "dst").await {
+        Err(EcmError::NotFound) => {}
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn properties_parses_blob_metadata() {
+    let (base, state) = spawn().await;
+    let store = store(&base);
+
+    let props = store.properties("docs/a/v1").await.unwrap();
+    assert_eq!(props.content_length, 9);
+    assert_eq!(props.content_type, "application/pdf");
+    assert_eq!(props.etag, "\"0x8DA\"");
+
+    let calls = state.calls.lock().unwrap();
+    assert_eq!(calls[0].method, "HEAD");
+    assert_eq!(calls[0].path, "/my-container/docs/a/v1");
+    assert_auth(&calls[0]);
+}
+
+#[tokio::test]
+async fn properties_missing_maps_to_not_found() {
+    let (base, state) = spawn().await;
+    *state.not_found.lock().unwrap() = true;
+    let store = store(&base);
+
+    match store.properties("gone").await {
+        Err(EcmError::NotFound) => {}
+        other => panic!("expected NotFound, got {other:?}"),
+    }
 }

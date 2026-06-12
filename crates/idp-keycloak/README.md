@@ -36,10 +36,18 @@ let token = idp.login("alice", "pw").await?;
 * **Password reset/change** via the admin `reset-password` endpoint.
 * **Realm role-mappings** — `assign_role`, `revoke_role`, `list_roles`,
   `get_roles`.
+* **TOTP MFA (real admin REST)** — `mfa_challenge` registers the
+  `CONFIGURE_TOTP` required action via `PUT /admin/realms/{realm}/users/{id}`
+  so Keycloak prompts TOTP enrollment at next sign-in. The admin OTP-credential
+  endpoints Keycloak does expose are wrapped as `list_otp_credentials` (`GET
+  .../users/{id}/credentials`, filtered to `type == "otp"`) and
+  `remove_otp_credential` (`DELETE .../users/{id}/credentials/{credId}`).
 
-`mfa_challenge` / `mfa_verify` return the `ERR_NOT_IMPLEMENTED` sentinel because
-Keycloak performs MFA server-side during the browser auth flow — exactly as
-pyfly raises `NotImplementedError`.
+`mfa_verify` is a **documented provider capability boundary**: Keycloak has no
+admin REST endpoint to verify a TOTP code out-of-band (verification happens
+server-side on the OTP form during the interactive browser login), so it returns
+the precise typed `Error::UnsupportedByProvider { provider: "keycloak",
+operation: "mfa_verify", reason: ... }` rather than a stub.
 
 ## Configuration
 
@@ -66,7 +74,8 @@ pub struct Config {
 | `change_password` / `reset_password` | same |
 | `assign_role` / `revoke_role` / `list_roles` / `get_roles` | realm role-mappings |
 | `get_user_info` / `register_user` | userinfo / self-registration |
-| `mfa_challenge` / `mfa_verify` | sentinel (`ERR_NOT_IMPLEMENTED`) |
+| `mfa_challenge` (raised `NotImplementedError`) | real `CONFIGURE_TOTP` required-action registration + OTP-credential CRUD |
+| `mfa_verify` (raised `NotImplementedError`) | typed `Error::UnsupportedByProvider` (no admin verify endpoint exists) |
 
 `login`'s `AuthResult.user` follow-up lookup is preserved in `login_full`; the
 port's `login` returns only the stateless `Token`.
