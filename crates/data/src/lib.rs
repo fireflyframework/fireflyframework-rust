@@ -36,6 +36,22 @@
 //! - **[`RoutingPolicy`] + [`read_only`]** — read/write datasource
 //!   routing; and **[`NamedDataSources`]**, a registry of additional
 //!   named datasources.
+//! - **[`Mapper`]** — a runtime object-to-object mapper (MapStruct
+//!   equivalent): [`map`](Mapper::map) / [`map_list`](Mapper::map_list) /
+//!   [`project`](Mapper::project) with source→dest field renaming,
+//!   value transformers, exclusion, and serde-driven nested-model
+//!   recursion.
+//! - **[`Pageable`] + [`RequestSort`] + [`Order`]** — Spring-style
+//!   pagination *request* types (1-based `page >= 1` validation,
+//!   `of` / `unpaged` / `next` / `previous` / `offset`, sort
+//!   composition), distinct from the [`Page`] *response* envelope, and
+//!   wired into the repository paging API via
+//!   [`Repository::find_page`].
+//! - **[`QueryMethodParser`]** — Spring-Data derived query methods:
+//!   parses `find_by_x_and_y_order_by_z`-style names into a
+//!   [`ParsedQuery`] that lowers (with bound arguments) to the
+//!   [`Filter`] / [`Specification`] DSL and executes against an
+//!   in-memory collection.
 //!
 //! # Quick start
 //!
@@ -68,7 +84,10 @@
 
 mod auditing;
 mod filter;
+mod mapper;
 mod page;
+mod pageable;
+mod query_parser;
 mod repository;
 mod routing;
 mod soft_delete;
@@ -76,7 +95,13 @@ mod specification;
 
 pub use auditing::{AuditStamps, Auditor};
 pub use filter::{Direction, Filter, Op, Predicate, Sort};
+pub use mapper::{MapError, Mapper, Mapping, Projection};
 pub use page::Page;
+pub use pageable::{Order, Pageable, PageableError, RequestSort, UNPAGED_SIZE};
+pub use query_parser::{
+    FieldPredicate, OrderClause, ParsedQuery, QueryBindError, QueryMethodParser, QueryOperator,
+    QueryParseError, QueryPrefix,
+};
 pub use repository::{DataError, MemoryRepository, Repository};
 pub use routing::{
     is_read_only, read_only, NamedDataSources, ReadOnlyGuard, RoutingError, RoutingPolicy,

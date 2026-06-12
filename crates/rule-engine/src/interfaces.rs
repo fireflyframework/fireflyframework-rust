@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::core::EvalError;
+use crate::core::{EvalError, EvaluationMode};
 use crate::models::{Action, RuleSet};
 
 /// A fact is the JSON object rules are evaluated against — the Rust
@@ -43,6 +43,26 @@ pub struct Verdict {
 #[async_trait]
 pub trait Evaluator: Send + Sync {
     /// Evaluates every rule of `set` against `fact` and returns the
-    /// merged [`Verdict`].
+    /// merged [`Verdict`] — equivalent to
+    /// [`evaluate_with_mode`](Evaluator::evaluate_with_mode) under
+    /// [`EvaluationMode::All`].
     async fn evaluate(&self, set: &RuleSet, fact: &Fact) -> Result<Verdict, EvalError>;
+
+    /// Evaluates `set` against `fact` under the given
+    /// [`EvaluationMode`].
+    ///
+    /// The default implementation ignores the mode and delegates to
+    /// [`evaluate`](Evaluator::evaluate) (i.e. always [`EvaluationMode::All`]),
+    /// so existing port implementations keep working unchanged; the
+    /// in-tree [`crate::core::AstEvaluator`] overrides it to honour
+    /// [`EvaluationMode::FirstMatch`].
+    async fn evaluate_with_mode(
+        &self,
+        set: &RuleSet,
+        fact: &Fact,
+        mode: EvaluationMode,
+    ) -> Result<Verdict, EvalError> {
+        let _ = mode;
+        self.evaluate(set, fact).await
+    }
 }

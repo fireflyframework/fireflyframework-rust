@@ -10,8 +10,9 @@
 //! email addresses, configurable password policies, UK sort codes,
 //! Australian BSBs, US SSNs, EU-style VAT numbers, and Spanish
 //! DNI/NIE/NIF identifiers — plus the pyfly banking predicates: CVV,
-//! PIN, monetary amounts, account numbers, interest-rate bands, and
-//! ISO-8601 dates/datetimes (chrono-backed).
+//! PIN, monetary amounts, account numbers, interest-rate bands,
+//! ISO-8601 dates/datetimes (chrono-backed), and the generic
+//! national-id / tax-id format checks.
 //!
 //! This crate is the Rust port of the Go module
 //! `github.com/fireflyframework/fireflyframework-go/validators`; error
@@ -579,6 +580,11 @@ pub fn validate_bsb(s: &str) -> Result<(), ValidationError> {
 // numbers are ASCII in every real scheme, so the Rust port restricts
 // the alphabet to ASCII.
 
+/// Generic tax-id alphabet, mirroring pyfly's
+/// `_TAX_ID_GENERIC = re.compile(r"^[A-Z0-9]{3,20}$")`.
+static TAX_ID_GENERIC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Z0-9]{3,20}$").expect("hard-coded regex"));
+
 /// Validates a card CVV/CVC: 3 or 4 ASCII digits — the port of pyfly's
 /// `is_valid_cvv`. Fails with reason `invalid CVV`.
 pub fn validate_cvv(s: &str) -> Result<(), ValidationError> {
@@ -740,6 +746,49 @@ pub fn validate_datetime(s: &str) -> Result<(), ValidationError> {
         || chrono::NaiveDate::parse_from_str(&normalised, "%Y-%m-%d").is_ok();
     if !ok {
         return Err(invalid("invalid datetime"));
+    }
+    Ok(())
+}
+
+/// Validates a generic national identifier — the port of pyfly's
+/// `is_valid_national_id`. After stripping spaces and dashes and
+/// upper-casing, the value must be 5..=20 ASCII alphanumerics. Fails
+/// with reason `invalid national id`.
+///
+/// This is the GENERIC format check pyfly exposes for any country to
+/// plug its own algebraic rules on top of; it is deliberately distinct
+/// from the nation-specific [`validate_dni`]/[`validate_nie`]/
+/// [`validate_nif`]/[`validate_ssn`] checksum validators this crate also
+/// ships.
+///
+/// Deliberate divergence: pyfly's `str.isalnum()` also accepts non-ASCII
+/// Unicode letters and digits; like the other ported banking predicates
+/// the Rust port restricts the alphabet to ASCII, since real national
+/// identifiers are ASCII in every scheme.
+pub fn validate_national_id(s: &str) -> Result<(), ValidationError> {
+    let normalised = s.replace([' ', '-'], "").to_uppercase();
+    if !(5..=20).contains(&normalised.len())
+        || normalised.is_empty()
+        || !normalised.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
+        return Err(invalid("invalid national id"));
+    }
+    Ok(())
+}
+
+/// Validates a generic tax identifier — the port of pyfly's
+/// `is_valid_tax_id`. After upper-casing (but with NO space/dash
+/// stripping, matching pyfly's `_TAX_ID_GENERIC.match(value.upper())`),
+/// the value must match `^[A-Z0-9]{3,20}$`. Fails with reason
+/// `invalid tax id`.
+///
+/// This is the GENERIC format check pyfly exposes — distinct from the
+/// EU-style [`validate_vat`] this crate also ships. Because no
+/// normalisation strips separators, any space, dash, or other
+/// non-`[A-Z0-9]` character causes a rejection.
+pub fn validate_tax_id(s: &str) -> Result<(), ValidationError> {
+    if !TAX_ID_GENERIC_RE.is_match(&s.to_uppercase()) {
+        return Err(invalid("invalid tax id"));
     }
     Ok(())
 }
@@ -1002,6 +1051,67 @@ mod tests {
         assert!(validate_nie("X123456L").is_err(), "bad NIE length");
         assert!(validate_dni("1234567Z").is_err(), "bad DNI length");
         assert!(validate_dni("1234567aZ").is_err(), "non-digit body");
+    }
+
+    #[test]
+    fn national_id_format_and_normalisation() {
+        // pyfly: strip spaces and dashes, upper-case, 5..=20 alnum.
+        validate_national_id("12345").expect("5 chars minimum");
+        validate_national_id("ABC123XYZ").expect("mixed alnum");
+        validate_national_id("12345678901234567890").expect("20 chars maximum");
+        validate_national_id("123 456-789").expect("separators stripped before length check");
+        validate_national_id("ab12c").expect("lowercase upper-cased then accepted");
+        for bad in [
+            "1234",                  // 4 chars after strip is too short
+            "123456789012345678901", // 21 chars too long
+            "ABC!23",                // punctuation is not alnum
+            "AB 12",                 // becomes "AB12" -> 4 chars, too short
+            "",                      // empty
+            "    ",                  // all spaces -> empty -> too short
+        ] {
+            assert!(
+                validate_national_id(bad).is_err(),
+                "bad national id passed: {bad:?}"
+            );
+        }
+        assert_eq!(
+            validate_national_id("x").expect_err("too short").reason(),
+            "invalid national id"
+        );
+    }
+
+    #[test]
+    fn tax_id_format_no_separator_stripping() {
+        // pyfly: only upper-cases, no space/dash stripping; ^[A-Z0-9]{3,20}$.
+        validate_tax_id("ABC").expect("3 chars minimum");
+        validate_tax_id("us1234567z").expect("lowercase upper-cased then accepted");
+        validate_tax_id("A1B2C3D4E5F6G7H8I9J0").expect("20 chars maximum");
+        for bad in [
+            "AB",                    // 2 chars too short
+            "A1B2C3D4E5F6G7H8I9J0K", // 21 chars too long
+            "AB-12",                 // dash not stripped -> fails alphabet
+            "AB 12",                 // space not stripped -> fails alphabet
+            "AB_12",                 // underscore not in alphabet
+            "",                      // empty
+        ] {
+            assert!(validate_tax_id(bad).is_err(), "bad tax id passed: {bad:?}");
+        }
+        assert_eq!(
+            validate_tax_id("AB").expect_err("too short").reason(),
+            "invalid tax id"
+        );
+    }
+
+    #[test]
+    fn national_id_and_tax_id_render_canonical_prefix() {
+        assert_eq!(
+            validate_national_id("x").expect_err("bad").to_string(),
+            "firefly/validators: invalid: invalid national id"
+        );
+        assert_eq!(
+            validate_tax_id("x").expect_err("bad").to_string(),
+            "firefly/validators: invalid: invalid tax id"
+        );
     }
 
     #[test]

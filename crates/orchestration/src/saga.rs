@@ -1,6 +1,18 @@
 //! Saga engine: sequential steps with reverse-order compensation.
+//!
+//! # Per-step retry and inter-step data passing (pyfly parity)
+//!
+//! A [`Step`] may declare a [`RetryPolicy`](crate::RetryPolicy) via
+//! [`Step::with_retry`] (enforced through
+//! [`invoke_with_policy`](crate::invoke_with_policy): max attempts,
+//! exponential backoff, jitter, per-attempt timeout) and a context-aware
+//! execute body via [`Step::with_context`] that can read prior step results
+//! from the run's [`StepContext`](crate::StepContext) — pyfly's
+//! `StepInvoker` + `Annotated[..., FromStep/Input]` argument injection.
 
-use crate::{boxed_action, ActionFn, BoxError, CancellationToken};
+use crate::step_context::StepContext;
+use crate::step_invoker::invoke_with_policy;
+use crate::{boxed_action, ActionFn, BoxError, CancellationToken, RetryPolicy};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -19,13 +31,37 @@ pub enum CompensationPolicy {
     StopOnError,
 }
 
+/// A context-aware action: receives the run's [`StepContext`] so it can read
+/// prior step results and publish its own.
+pub(crate) type CtxActionFn = Box<
+    dyn Fn(StepContext) -> futures::future::BoxFuture<'static, Result<(), BoxError>> + Send + Sync,
+>;
+
+/// The execute / compensate body — either a legacy zero-arg action or a
+/// context-aware one (inter-step data passing).
+enum Body {
+    Plain(ActionFn),
+    WithContext(CtxActionFn),
+}
+
+impl Body {
+    fn call(&self, ctx: &StepContext) -> futures::future::BoxFuture<'static, Result<(), BoxError>> {
+        match self {
+            Body::Plain(action) => action(),
+            Body::WithContext(action) => action(ctx.clone()),
+        }
+    }
+}
+
 /// A single saga unit. The execute action moves the saga forward; the
 /// optional compensation rolls back the side-effects of execute. Steps must
-/// be idempotent — the engine may retry both phases.
+/// be idempotent — the engine retries under the configured
+/// [`RetryPolicy`](crate::RetryPolicy).
 pub struct Step {
     name: String,
-    execute: ActionFn,
-    compensate: Option<ActionFn>,
+    execute: Body,
+    compensate: Option<Body>,
+    retry: RetryPolicy,
 }
 
 impl Step {
@@ -37,8 +73,28 @@ impl Step {
     {
         Self {
             name: name.into(),
-            execute: boxed_action(execute),
+            execute: Body::Plain(boxed_action(execute)),
             compensate: None,
+            retry: RetryPolicy::default(),
+        }
+    }
+
+    /// Creates a step whose execute body receives the run's
+    /// [`StepContext`] — the engine spelling of pyfly's
+    /// `Annotated[..., FromStep/Input/Variable]` argument injection. The
+    /// step can read prior step results and publish its own
+    /// ([`StepContext::set_result`](crate::StepContext::set_result)) for
+    /// later steps. Inter-step data passing.
+    pub fn with_context<F, Fut>(name: impl Into<String>, execute: F) -> Self
+    where
+        F: Fn(StepContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
+    {
+        Self {
+            name: name.into(),
+            execute: Body::WithContext(Box::new(move |ctx| Box::pin(execute(ctx)))),
+            compensate: None,
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -49,13 +105,39 @@ impl Step {
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
     {
-        self.compensate = Some(boxed_action(compensate));
+        self.compensate = Some(Body::Plain(boxed_action(compensate)));
+        self
+    }
+
+    /// Attaches a context-aware compensation action — pyfly's
+    /// `@compensation_step` consuming `@FromStep` / `@CompensationError`.
+    pub fn with_context_compensation<F, Fut>(mut self, compensate: F) -> Self
+    where
+        F: Fn(StepContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
+    {
+        self.compensate = Some(Body::WithContext(Box::new(move |ctx| {
+            Box::pin(compensate(ctx))
+        })));
+        self
+    }
+
+    /// Sets the [`RetryPolicy`](crate::RetryPolicy) applied to this step's
+    /// execute action — pyfly's per-step retry / backoff / jitter / timeout
+    /// enforcement via `StepInvoker`. The default policy runs the step once.
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
         self
     }
 
     /// The step name, as reported in [`Outcome`] and error messages.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The retry policy configured for this step.
+    pub fn retry_policy(&self) -> &RetryPolicy {
+        &self.retry
     }
 }
 
@@ -64,6 +146,7 @@ impl fmt::Debug for Step {
         f.debug_struct("Step")
             .field("name", &self.name)
             .field("has_compensation", &self.compensate.is_some())
+            .field("retry", &self.retry)
             .finish_non_exhaustive()
     }
 }
@@ -147,6 +230,28 @@ impl SagaError {
     pub fn is_compensation_error(&self) -> bool {
         matches!(self, Self::Compensation { .. })
     }
+}
+
+/// Unwraps a [`StepInvokeError`](crate::StepInvokeError) into the
+/// `BoxError` cause attached to a [`SagaError::Step`].
+///
+/// For the default single-attempt policy a hard failure unwraps to its
+/// original cause so the saga's `step "name": <cause>` message is byte-for-byte
+/// identical to the pre-retry engine. When the step genuinely retried (more
+/// than one attempt configured) or timed out, the richer invoker error is
+/// preserved so the retry context is visible.
+fn unwrap_invoke_cause(retry: &RetryPolicy, err: crate::StepInvokeError) -> BoxError {
+    // A single-attempt, no-timeout policy can only fail with `Failed`, whose
+    // source is the step's original error — unwrap it so the message shape is
+    // unchanged from the pre-retry engine.
+    if retry.max_attempts.max(1) == 1 && retry.timeout_ms == 0 {
+        if let Some(source) = err.into_source() {
+            return source;
+        }
+        // Unreachable in practice (no timeout configured); fall through.
+        return "step failed".into();
+    }
+    Box::new(err)
 }
 
 /// A failed saga run: the error that ended it plus the fully-populated
@@ -253,6 +358,31 @@ impl Saga {
     /// [`SagaStatus::Failed`]; no compensation is attempted, mirroring the
     /// Go port's `ctx.Err()` handling.
     pub async fn run_cancellable(&self, token: &CancellationToken) -> Result<Outcome, SagaFailure> {
+        self.run_inner(token, &StepContext::new()).await
+    }
+
+    /// Executes the saga threading `ctx` through every context-aware step
+    /// ([`Step::with_context`]) so later steps can consume earlier results —
+    /// inter-step data passing.
+    pub async fn run_with_context(&self, ctx: &StepContext) -> Result<Outcome, SagaFailure> {
+        self.run_inner(&CancellationToken::new(), ctx).await
+    }
+
+    /// Executes the saga with both an explicit cancellation token and a
+    /// shared [`StepContext`].
+    pub async fn run_with_context_cancellable(
+        &self,
+        token: &CancellationToken,
+        ctx: &StepContext,
+    ) -> Result<Outcome, SagaFailure> {
+        self.run_inner(token, ctx).await
+    }
+
+    async fn run_inner(
+        &self,
+        token: &CancellationToken,
+        ctx: &StepContext,
+    ) -> Result<Outcome, SagaFailure> {
         let started_at = Utc::now();
         let mut steps_executed: Vec<String> = Vec::new();
         let mut executed: Vec<usize> = Vec::new();
@@ -274,13 +404,24 @@ impl Saga {
                     error,
                 });
             }
-            if let Err(cause) = (step.execute)().await {
+            // Apply the per-step RetryPolicy (max attempts, exponential
+            // backoff, jitter, per-attempt timeout) — pyfly's StepInvoker.
+            let exec_result =
+                invoke_with_policy(&step.name, &step.retry, ctx, |ctx| step.execute.call(ctx))
+                    .await;
+            if let Err(invoke_err) = exec_result {
+                // Preserve the historical `step "name": <cause>` message
+                // shape: a single-attempt failure unwraps to its original
+                // cause, so the wrapping is identical to the pre-retry
+                // engine. A genuine retry-exhaustion / timeout surfaces the
+                // invoker error.
+                let cause: BoxError = unwrap_invoke_cause(&step.retry, invoke_err);
                 let step_error = SagaError::Step {
                     step: step.name.clone(),
                     source: cause,
                 };
                 let step_message = step_error.to_string();
-                let (steps_rolled, compensation_failure) = self.compensate(&executed).await;
+                let (steps_rolled, compensation_failure) = self.compensate(ctx, &executed).await;
                 let outcome = Outcome {
                     saga: self.name.clone(),
                     status: SagaStatus::Compensated,
@@ -324,7 +465,11 @@ impl Saga {
     /// rolled and the first compensation error (if any). Under
     /// [`CompensationPolicy::StopOnError`] the rollback aborts at the first
     /// failure; under [`CompensationPolicy::BestEffort`] it continues.
-    async fn compensate(&self, executed: &[usize]) -> (Vec<String>, Option<BoxError>) {
+    async fn compensate(
+        &self,
+        ctx: &StepContext,
+        executed: &[usize],
+    ) -> (Vec<String>, Option<BoxError>) {
         let mut rolled = Vec::new();
         let mut first_err: Option<BoxError> = None;
         for &i in executed.iter().rev() {
@@ -332,7 +477,7 @@ impl Saga {
             let Some(compensate) = &step.compensate else {
                 continue;
             };
-            match compensate().await {
+            match compensate.call(ctx).await {
                 Ok(()) => rolled.push(step.name.clone()),
                 Err(err) => {
                     if self.policy == CompensationPolicy::StopOnError {
@@ -593,5 +738,94 @@ mod tests {
         assert_eq!(SagaStatus::Completed.to_string(), "completed");
         assert_eq!(SagaStatus::Compensated.to_string(), "compensated");
         assert_eq!(SagaStatus::Failed.to_string(), "failed");
+    }
+
+    // ── Per-step retry enforcement (pyfly StepInvoker) ──────────────────
+
+    // A flaky step succeeds within its retry budget; the saga completes.
+    #[tokio::test]
+    async fn saga_step_retries_until_success() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = Arc::new(AtomicU32::new(0));
+        let a = attempts.clone();
+        let saga = Saga::new("retrying").step(
+            Step::new("flaky", move || {
+                let a = a.clone();
+                async move {
+                    if a.fetch_add(1, Ordering::SeqCst) < 2 {
+                        Err("transient".into())
+                    } else {
+                        Ok(())
+                    }
+                }
+            })
+            .with_retry(RetryPolicy {
+                max_attempts: 5,
+                backoff_ms: 1,
+                ..Default::default()
+            }),
+        );
+        let out = saga.run().await.expect("completes after retries");
+        assert_eq!(out.status, SagaStatus::Completed);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    // A step exhausting its retries fails the saga; the error surfaces the
+    // retry context and compensation runs.
+    #[tokio::test]
+    async fn saga_step_retry_exhausted_compensates() {
+        let rollbacks: Log = Arc::new(Mutex::new(Vec::new()));
+        let rb = rollbacks.clone();
+        let saga = Saga::new("exhaust")
+            .step(
+                Step::new("ok", || async { Ok(()) }).with_compensation(move || {
+                    let rb = rb.clone();
+                    async move {
+                        rb.lock().unwrap().push("ok".to_string());
+                        Ok(())
+                    }
+                }),
+            )
+            .step(
+                Step::new("always-fails", || async { Err("nope".into()) }).with_retry(
+                    RetryPolicy {
+                        max_attempts: 3,
+                        backoff_ms: 1,
+                        ..Default::default()
+                    },
+                ),
+            );
+        let failure = saga.run().await.expect_err("must fail");
+        assert_eq!(failure.outcome().status, SagaStatus::Compensated);
+        // Compensation of the earlier step ran.
+        assert_eq!(*rollbacks.lock().unwrap(), ["ok"]);
+        // The error message includes the retry-exhaustion context.
+        assert!(failure.to_string().contains("3 attempt"));
+    }
+
+    // ── Inter-step data passing (pyfly FromStep / Input argument injection) ──
+
+    #[tokio::test]
+    async fn saga_threads_data_between_steps() {
+        use serde_json::json;
+        let ctx = StepContext::with_input(json!({"amount": 250}));
+        let saga = Saga::new("payment")
+            .step(Step::with_context("authorize", |ctx| async move {
+                let amount = ctx.input_field("amount").unwrap();
+                ctx.set_result("authorize", json!({"auth_id": "A-1", "amount": amount}));
+                Ok(())
+            }))
+            .step(Step::with_context("capture", |ctx| async move {
+                // Read the prior step's auth id.
+                let auth = ctx.result_field("authorize", "auth_id").unwrap();
+                ctx.set_result("capture", json!({"captured": auth}));
+                Ok(())
+            }));
+        let out = saga.run_with_context(&ctx).await.expect("completes");
+        assert_eq!(out.status, SagaStatus::Completed);
+        assert_eq!(
+            ctx.result_field("capture", "captured").unwrap(),
+            json!("A-1")
+        );
     }
 }

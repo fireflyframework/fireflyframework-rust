@@ -20,20 +20,29 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use firefly_transactional::{exec, with_tx, Database, Executor, Row, SqlValue, TxContext, TxError};
 
-use crate::aggregate::{DomainEvent, EventStore};
+use crate::aggregate::{DomainEvent, EventStore, StreamedEvent};
 use crate::error::EventSourcingError;
 use crate::upcaster::{apply_upcasters, EventUpcaster};
 
 /// `CREATE TABLE IF NOT EXISTS` for the event store. Portable DDL — the
 /// `version` column plus `UNIQUE(aggregate_id, version)` enforce optimistic
 /// concurrency at the storage layer.
+///
+/// The `global_seq` column is a single, store-wide monotonic counter that
+/// gives the cross-aggregate [`stream_all`](EventStore::stream_all) a
+/// deterministic, gapless total order (pyfly orders its global stream by
+/// `occurred_at`, which is not strictly monotonic; a dedicated sequence is the
+/// robust equivalent). The `tenant_id` column is the persisted, filterable
+/// multi-tenancy field mirroring pyfly's `StoredEventEnvelope.tenant_id`.
 pub const DDL: &str = "CREATE TABLE IF NOT EXISTS firefly_event_store (\
+    global_seq      INTEGER NOT NULL,\
     event_id        TEXT NOT NULL,\
     aggregate_id    TEXT NOT NULL,\
     aggregate_type  TEXT NOT NULL,\
     version         INTEGER NOT NULL,\
     event_type      TEXT NOT NULL,\
     occurred_at     TEXT NOT NULL,\
+    tenant_id       TEXT NULL,\
     payload         TEXT NOT NULL,\
     UNIQUE (aggregate_id, version)\
 )";
@@ -142,8 +151,21 @@ impl EventStore for SqlEventStore {
             if head != expected_version {
                 return Err(concurrency_marker());
             }
+            // Read the global head once inside the tx so the per-batch
+            // global_seq stays gapless and monotonic across all aggregates.
+            let mut global_seq = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(global_seq), 0) FROM firefly_event_store",
+                    &[],
+                )?
+                .and_then(|r| match r.get_index(0) {
+                    Some(SqlValue::Integer(n)) => Some(*n),
+                    _ => None,
+                })
+                .unwrap_or(0);
             for (i, event) in events.iter().enumerate() {
                 let version = expected_version + (i as i64) + 1;
+                global_seq += 1;
                 // Stamp the authoritative aggregate id + store-assigned
                 // version onto the event before persisting, so the stored
                 // payload round-trips with the version the store chose
@@ -151,17 +173,23 @@ impl EventStore for SqlEventStore {
                 let mut stamped = event.clone();
                 stamped.aggregate_id = aggregate_id.clone();
                 stamped.version = version;
+                let tenant = stamped
+                    .tenant_id
+                    .clone()
+                    .map_or(SqlValue::Null, SqlValue::Text);
                 conn.execute(
                     "INSERT INTO firefly_event_store \
-                     (event_id, aggregate_id, aggregate_type, version, event_type, occurred_at, payload) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (global_seq, event_id, aggregate_id, aggregate_type, version, event_type, occurred_at, tenant_id, payload) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     &[
-                        SqlValue::Text(uuid::Uuid::new_v4().to_string()),
+                        SqlValue::Integer(global_seq),
+                        SqlValue::Text(format!("{global_seq:020}")),
                         SqlValue::Text(aggregate_id.clone()),
                         SqlValue::Text(stamped.aggregate_type.clone()),
                         SqlValue::Integer(version),
                         SqlValue::Text(stamped.event_type.clone()),
                         SqlValue::Text(stamped.time.to_rfc3339()),
+                        tenant,
                         SqlValue::Text(
                             serde_json::to_string(&stamped)
                                 .map_err(|e| TxError::database(e.to_string()))?,
@@ -215,6 +243,73 @@ impl EventStore for SqlEventStore {
         rows.into_iter()
             .map(|r| self.decode(&r))
             .collect::<Result<Vec<_>, _>>()
+    }
+
+    async fn stream_all(
+        &self,
+        after_event_id: Option<&str>,
+        limit: usize,
+        tenant: Option<&str>,
+    ) -> Result<Vec<StreamedEvent>, EventSourcingError> {
+        // The cursor key is the zero-padded global_seq, so it compares as a
+        // string in the same total order as the integer column — we resume
+        // strictly after it. Tenant filtering uses the persisted column.
+        let mut sql = String::from(
+            "SELECT global_seq, payload FROM firefly_event_store WHERE global_seq > ?1",
+        );
+        let mut params: Vec<SqlValue> = vec![SqlValue::Integer(cursor_to_seq(after_event_id))];
+        if let Some(t) = tenant {
+            sql.push_str(" AND tenant_id = ?2");
+            params.push(SqlValue::Text(t.to_string()));
+            sql.push_str(" ORDER BY global_seq LIMIT ?3");
+            params.push(SqlValue::Integer(limit as i64));
+        } else {
+            sql.push_str(" ORDER BY global_seq LIMIT ?2");
+            params.push(SqlValue::Integer(limit as i64));
+        }
+        let rows = self.db.query(&sql, &params).map_err(map_tx_err)?;
+        rows.into_iter()
+            .map(|r| {
+                let seq = match r.get("global_seq").or_else(|| r.get_index(0)) {
+                    Some(SqlValue::Integer(n)) => *n,
+                    other => {
+                        return Err(EventSourcingError::Projection(format!(
+                            "firefly/eventsourcing: unexpected global_seq column: {other:?}"
+                        )))
+                    }
+                };
+                let payload = match r.get("payload").or_else(|| r.get_index(1)) {
+                    Some(SqlValue::Text(s)) => s.clone(),
+                    other => {
+                        return Err(EventSourcingError::Projection(format!(
+                            "firefly/eventsourcing: unexpected payload column: {other:?}"
+                        )))
+                    }
+                };
+                let event: DomainEvent = serde_json::from_str(&payload).map_err(|e| {
+                    EventSourcingError::Projection(format!(
+                        "firefly/eventsourcing: corrupt stored event: {e}"
+                    ))
+                })?;
+                Ok(StreamedEvent {
+                    event_id: format!("{seq:020}"),
+                    event: apply_upcasters(event, &self.upcasters),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+    }
+}
+
+/// Parses a `stream_all` cursor (a zero-padded `global_seq` string) back into
+/// the integer column value to resume after. `None` (start from the
+/// beginning) and any unparsable cursor both map to `0`, so the first page
+/// starts at `global_seq > 0`.
+fn cursor_to_seq(after_event_id: Option<&str>) -> i64 {
+    match after_event_id {
+        None => 0,
+        // Zero-padded, so parse the whole string; an all-zero or unparsable
+        // cursor falls back to 0 (start from the beginning).
+        Some(cursor) => cursor.trim_start_matches('0').parse::<i64>().unwrap_or(0),
     }
 }
 

@@ -12,8 +12,9 @@ as an axum `Router`:
 | `GET /actuator/health`   | Per-indicator + overall status; 200 UP/DEGRADED, 503 DOWN                        |
 | `GET /actuator/info`     | Build info + app metadata + info contributors                                    |
 | `GET /actuator/metrics`  | Prometheus exposition format from the `MetricRegistry` Counter / Gauge primitives|
-| `GET /actuator/env`      | Redacted environment view (FIREFLY_* visible by default; everything else `***`)  |
+| `GET /actuator/env`      | Spring `{activeProfiles, propertySources}` when an `EnvSource` is wired; else a flat redacted env view |
 | `GET /actuator/tasks`    | `{"count": N}` alive tokio tasks; `?dump=true` returns a runtime report          |
+| `GET /actuator/threaddump`| Spring `{threads:[…]}` — the tokio runtime worker/task snapshot (Rust analog)   |
 | `GET /actuator/version`  | `{"firefly":"26.6.1","app":"orders","appVersion":"…","rust":"…"}`                |
 
 Bind these on a separate admin port (e.g. `:8081`) so they never leak
@@ -137,7 +138,22 @@ On top of the Go-parity surface above, the crate ports pyfly's
 | `GET /actuator/httpexchanges`         | The last 100 exchanges recorded by the `HttpExchangesLayer` ring buffer            |
 | `GET /actuator/metrics/{name}?tag=k:v`| Micrometer JSON meter detail with `measurements` + `availableTags`                 |
 | `GET /actuator/prometheus`            | Labeled Prometheus exposition (counters, gauges, histograms)                       |
+| `GET /actuator/env` + `/env/{toMatch}`| Spring `{activeProfiles, propertySources}` view + per-property drill-down (pyfly `EnvEndpoint`) when an `EnvSource` is wired |
+| `GET /actuator/threaddump`            | Spring `{threads:[…]}` — tokio worker/task snapshot (pyfly `ThreadDumpEndpoint` analog; async Rust has no per-task stacks) |
 | `GET /actuator/{id}[/{selector}]`     | Any custom `Endpoint` registered on the `EndpointRegistry`                         |
+
+### `/actuator/env` property-source bridge
+
+Spring's `/actuator/env` exposes the *ordered, masked property sources* that
+produced the effective configuration (`{activeProfiles, propertySources:
+[{name, properties: {key: {value, origin}}}]}`) plus a per-property
+`/actuator/env/{toMatch}` drill-down — pyfly's `EnvEndpoint`. To keep this
+crate decoupled from any concrete config crate, the capability is wired
+through a small local trait, `EnvSource`, that a starter implements over
+`firefly-config`'s `Layered::property_sources()` + `active_profiles()` and
+injects via `ActuatorConfig::env_source`. When no `EnvSource` is wired,
+`/actuator/env` keeps the legacy flat redacted process-environment map and the
+drill-down route is not mounted (backward compatible).
 
 ### Exposure model
 

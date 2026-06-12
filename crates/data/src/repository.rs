@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::filter::Filter;
 use crate::page::Page;
+use crate::pageable::Pageable;
 
 /// The error type shared by every [`Repository`] implementation.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -41,6 +42,19 @@ where
 
     /// Returns the page of entities selected by `filter`.
     async fn find(&self, filter: &Filter) -> Result<Page<T>, DataError>;
+
+    /// Returns the page of entities for a Spring-style
+    /// [`Pageable`](crate::Pageable) request.
+    ///
+    /// The default implementation lowers the pageable to a
+    /// [`Filter`](crate::Filter) via [`Pageable::to_filter`] (translating
+    /// the 1-based page number to the filter's 0-based page index and
+    /// projecting the sort orders) and delegates to [`Repository::find`].
+    /// Implementations may override it to push the pageable's sort/limit
+    /// into the backing store directly.
+    async fn find_page(&self, pageable: &Pageable) -> Result<Page<T>, DataError> {
+        self.find(&pageable.to_filter()).await
+    }
 
     /// Inserts or updates the entity (upsert by id) and returns the
     /// persisted value.
@@ -256,6 +270,48 @@ mod tests {
         .unwrap();
         let v = r.find_by_id(&"u1".to_string()).await.unwrap();
         assert_eq!(v.name, "alice");
+    }
+
+    /// `find_page` lowers a Spring-style `Pageable` (1-based page) to the
+    /// filter's 0-based page index and returns the right window.
+    #[tokio::test]
+    async fn test_find_page_with_pageable() {
+        use crate::pageable::Pageable;
+
+        let r = new_repo();
+        for c in 'a'..='f' {
+            r.save(User {
+                id: format!("u{c}"),
+                name: "x".into(),
+            })
+            .await
+            .unwrap();
+        }
+        // 1-based page 2, size 3 -> 0-based filter page 1 -> rows 3..6.
+        let pageable = Pageable::paged(2, 3).unwrap();
+        let page = r.find_page(&pageable).await.unwrap();
+        assert_eq!(page.content.len(), 3, "page: {page:?}");
+        assert_eq!(page.number, 1, "0-based page index");
+        assert_eq!(page.total_elements, 6);
+    }
+
+    /// An unpaged `Pageable` fetches everything via `find_page`.
+    #[tokio::test]
+    async fn test_find_page_unpaged_returns_everything() {
+        use crate::pageable::Pageable;
+
+        let r = new_repo();
+        for i in 0..4 {
+            r.save(User {
+                id: format!("u{i}"),
+                name: "x".into(),
+            })
+            .await
+            .unwrap();
+        }
+        let page = r.find_page(&Pageable::unpaged()).await.unwrap();
+        assert_eq!(page.content.len(), 4);
+        assert_eq!(page.total_elements, 4);
     }
 
     /// Rust-specific: the in-memory repository is Send + Sync so it can

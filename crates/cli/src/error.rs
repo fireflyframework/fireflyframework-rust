@@ -52,6 +52,17 @@ pub enum CliError {
         /// A human-readable failure reason.
         message: String,
     },
+
+    /// A database / migration operation failed (the `firefly db` group).
+    #[error("{0}")]
+    Database(String),
+
+    /// A requested operation is not supported by the Rust port (and the
+    /// divergence is documented). Mapped to a non-zero exit with an
+    /// explanatory message, mirroring pyfly's `SystemExit(1)` for an
+    /// unavailable capability.
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 impl From<minijinja::Error> for CliError {

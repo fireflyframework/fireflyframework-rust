@@ -1,17 +1,58 @@
 //! Workflow engine: a DAG of nodes executed in topological waves.
+//!
+//! # Step compensation (pyfly parity)
+//!
+//! Beyond the original fail-fast model, a [`Node`] may declare a
+//! [`Node::with_compensation`] hook. On any node failure the workflow rolls
+//! back the *already-completed compensatable* nodes in reverse completion
+//! order before surfacing the original error — mirroring pyfly's
+//! `WorkflowExecutor._compensate` + `@compensation_step`. This reuses the
+//! [`Saga`](crate::Saga) reverse-order [`CompensationPolicy`](crate::CompensationPolicy)
+//! shape.
 
+use crate::condition::evaluate as evaluate_condition;
+use crate::saga::CompensationPolicy;
+use crate::step_context::StepContext;
 use crate::{boxed_action, ActionFn, BoxError, CancellationToken};
 use std::collections::HashSet;
 use std::fmt;
 use std::future::Future;
+use std::sync::Arc;
 use thiserror::Error;
+
+/// A context-aware node action: it receives the run's [`StepContext`] so it
+/// can read prior step results and publish its own.
+pub(crate) type CtxActionFn = Box<
+    dyn Fn(StepContext) -> futures::future::BoxFuture<'static, Result<(), BoxError>> + Send + Sync,
+>;
+
+/// The body a node runs — either a legacy zero-arg action (the original API)
+/// or a context-aware one.
+enum NodeBody {
+    /// Original zero-arg closure.
+    Plain(ActionFn),
+    /// Context-aware closure (inter-step data passing).
+    WithContext(CtxActionFn),
+}
 
 /// A single workflow vertex. Its dependencies list the names of nodes that
 /// must complete before this one runs.
+///
+/// A node may additionally declare a compensation hook
+/// ([`Node::with_compensation`]), a skip condition ([`Node::when`]), and
+/// fire-and-forget semantics ([`Node::fire_and_forget`]) — pyfly's
+/// `@workflow_step` compensation / `condition=` / `async_=True` options.
 pub struct Node {
     name: String,
     depends_on: Vec<String>,
-    run: ActionFn,
+    body: NodeBody,
+    compensate: Option<CtxActionFn>,
+    /// SpEL-substitute condition expression — the node is skipped when it
+    /// evaluates to false (pyfly's `@workflow_step(condition=...)`).
+    condition: Option<String>,
+    /// Fire-and-forget: the node is scheduled and the workflow proceeds
+    /// without awaiting it (pyfly's `@workflow_step(async_=True)`).
+    fire_and_forget: bool,
 }
 
 impl Node {
@@ -24,7 +65,51 @@ impl Node {
         Self {
             name: name.into(),
             depends_on: Vec::new(),
-            run: boxed_action(run),
+            body: NodeBody::Plain(boxed_action(run)),
+            compensate: None,
+            condition: None,
+            fire_and_forget: false,
+        }
+    }
+
+    /// Creates a node whose action receives the run's [`StepContext`], so it
+    /// can read prior step results and publish its own — the engine spelling
+    /// of pyfly's `Annotated[..., FromStep/Input/Variable]` argument
+    /// injection. Inter-step data passing.
+    ///
+    /// ```
+    /// use firefly_orchestration::{Node, StepContext, Workflow};
+    /// use serde_json::json;
+    ///
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let workflow = Workflow::new("pipeline")
+    ///     .node(Node::with_context("reserve", |ctx| async move {
+    ///         ctx.set_result("reserve", json!({"id": "R-1"}));
+    ///         Ok(())
+    ///     }))
+    ///     .node(
+    ///         Node::with_context("charge", |ctx| async move {
+    ///             // Consume the prior step's output.
+    ///             assert_eq!(ctx.result_field("reserve", "id").unwrap(), json!("R-1"));
+    ///             Ok(())
+    ///         })
+    ///         .depends_on(["reserve"]),
+    ///     );
+    /// workflow.run().await.expect("ok");
+    /// # });
+    /// ```
+    pub fn with_context<F, Fut>(name: impl Into<String>, run: F) -> Self
+    where
+        F: Fn(StepContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
+    {
+        Self {
+            name: name.into(),
+            depends_on: Vec::new(),
+            body: NodeBody::WithContext(Box::new(move |ctx| Box::pin(run(ctx)))),
+            compensate: None,
+            condition: None,
+            fire_and_forget: false,
         }
     }
 
@@ -39,6 +124,42 @@ impl Node {
         self
     }
 
+    /// Attaches a context-aware compensation hook that rolls back this
+    /// node's side effects — the engine spelling of pyfly's
+    /// `@workflow_step(compensatable=True, compensation_method=...)` plus
+    /// `@compensation_step`. On any workflow failure, completed compensatable
+    /// nodes are rolled back in reverse completion order before the original
+    /// error propagates.
+    pub fn with_compensation<F, Fut>(mut self, compensate: F) -> Self
+    where
+        F: Fn(StepContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
+    {
+        self.compensate = Some(Box::new(move |ctx| Box::pin(compensate(ctx))));
+        self
+    }
+
+    /// Sets a skip condition expression evaluated against the run's facts
+    /// (`results`, `variables`, `headers`, `input`). When it resolves to
+    /// false the node is skipped entirely — pyfly's
+    /// `@workflow_step(condition=...)`. A malformed condition fails closed
+    /// (the node is skipped).
+    ///
+    /// See [`crate::condition`] for the supported expression grammar.
+    pub fn when(mut self, condition: impl Into<String>) -> Self {
+        self.condition = Some(condition.into());
+        self
+    }
+
+    /// Marks this node fire-and-forget: the workflow schedules it and
+    /// proceeds without awaiting it — pyfly's
+    /// `@workflow_step(async_=True)`. A fire-and-forget node never fails the
+    /// workflow and is never compensated.
+    pub fn fire_and_forget(mut self) -> Self {
+        self.fire_and_forget = true;
+        self
+    }
+
     /// The node name.
     pub fn name(&self) -> &str {
         &self.name
@@ -48,6 +169,46 @@ impl Node {
     pub fn dependencies(&self) -> &[String] {
         &self.depends_on
     }
+
+    /// `true` when this node has a compensation hook.
+    pub fn is_compensatable(&self) -> bool {
+        self.compensate.is_some()
+    }
+
+    /// `true` when this node is fire-and-forget.
+    pub fn is_fire_and_forget(&self) -> bool {
+        self.fire_and_forget
+    }
+
+    /// Runs the node body with the supplied context.
+    async fn run(&self, ctx: &StepContext) -> Result<(), BoxError> {
+        self.run_owned(ctx.clone()).await
+    }
+
+    /// Produces a `'static` future for the node body — used for both blocking
+    /// execution and fire-and-forget scheduling. The action callbacks
+    /// themselves return owned `'static` futures, so the returned future does
+    /// not borrow `self`.
+    fn run_owned(
+        &self,
+        ctx: StepContext,
+    ) -> futures::future::BoxFuture<'static, Result<(), BoxError>> {
+        match &self.body {
+            NodeBody::Plain(action) => action(),
+            NodeBody::WithContext(action) => action(ctx),
+        }
+    }
+
+    /// Evaluates this node's skip condition (if any) against the run facts.
+    /// Returns `true` (run the node) when there is no condition or it holds;
+    /// `false` (skip) when the condition resolves to false or is malformed
+    /// (fail-closed) — pyfly's `_evaluate_condition`.
+    fn condition_holds(&self, ctx: &StepContext) -> bool {
+        match &self.condition {
+            None => true,
+            Some(expr) => evaluate_condition(expr, ctx).unwrap_or(false),
+        }
+    }
 }
 
 impl fmt::Debug for Node {
@@ -55,6 +216,9 @@ impl fmt::Debug for Node {
         f.debug_struct("Node")
             .field("name", &self.name)
             .field("depends_on", &self.depends_on)
+            .field("compensatable", &self.compensate.is_some())
+            .field("condition", &self.condition)
+            .field("fire_and_forget", &self.fire_and_forget)
             .finish_non_exhaustive()
     }
 }
@@ -130,23 +294,39 @@ impl WorkflowError {
 /// Runs a DAG of [`Node`]s. Independent nodes execute concurrently within a
 /// wave; a failure short-circuits remaining waves and returns the
 /// aggregated errors.
+///
+/// When any node declares a compensation hook ([`Node::with_compensation`]),
+/// a failure additionally rolls back the already-completed compensatable
+/// nodes in reverse completion order under the configured
+/// [`CompensationPolicy`](crate::CompensationPolicy) before the error
+/// surfaces — pyfly's `WorkflowExecutor._compensate`.
 pub struct Workflow {
     name: String,
     nodes: Vec<Node>,
+    policy: CompensationPolicy,
 }
 
 impl Workflow {
-    /// Creates an empty workflow.
+    /// Creates an empty workflow with the default
+    /// [`CompensationPolicy::BestEffort`].
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             nodes: Vec::new(),
+            policy: CompensationPolicy::default(),
         }
     }
 
     /// Appends a node to the DAG.
     pub fn node(mut self, node: Node) -> Self {
         self.nodes.push(node);
+        self
+    }
+
+    /// Sets the compensation policy applied during rollback — same shape as
+    /// [`Saga::policy`](crate::Saga::policy).
+    pub fn policy(mut self, policy: CompensationPolicy) -> Self {
+        self.policy = policy;
         self
     }
 
@@ -185,6 +365,32 @@ impl Workflow {
     /// cancelled token short-circuits the run with
     /// [`WorkflowError::Cancelled`].
     pub async fn run_cancellable(&self, token: &CancellationToken) -> Result<(), WorkflowError> {
+        self.run_inner(token, &StepContext::new()).await
+    }
+
+    /// Executes the workflow threading `ctx` through every context-aware
+    /// node ([`Node::with_context`]) and into compensation hooks. Use this
+    /// to seed input ([`StepContext::with_input`]) or to inspect step
+    /// results afterwards — pyfly's `WorkflowExecutor.execute(definition, ctx)`.
+    pub async fn run_with_context(&self, ctx: &StepContext) -> Result<(), WorkflowError> {
+        self.run_inner(&CancellationToken::new(), ctx).await
+    }
+
+    /// Executes the workflow with both an explicit cancellation token and a
+    /// shared [`StepContext`].
+    pub async fn run_with_context_cancellable(
+        &self,
+        token: &CancellationToken,
+        ctx: &StepContext,
+    ) -> Result<(), WorkflowError> {
+        self.run_inner(token, ctx).await
+    }
+
+    async fn run_inner(
+        &self,
+        token: &CancellationToken,
+        ctx: &StepContext,
+    ) -> Result<(), WorkflowError> {
         let mut names: HashSet<&str> = HashSet::with_capacity(self.nodes.len());
         for node in &self.nodes {
             if !names.insert(node.name.as_str()) {
@@ -211,6 +417,12 @@ impl Workflow {
         // derived `runCtx`.
         let internal = CancellationToken::new();
         let mut done: HashSet<String> = HashSet::with_capacity(self.nodes.len());
+        // Completed compensatable node names, in completion order, used to
+        // roll back newest-first on failure (pyfly's _compensate ordering).
+        let completed_order = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        // Strong handles to fire-and-forget tasks so they are not dropped
+        // mid-flight, mirroring pyfly's `_async_step_tasks` set.
+        let mut async_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let mut pending: Vec<&Node> = self.nodes.iter().collect();
 
         while !pending.is_empty() {
@@ -218,19 +430,55 @@ impl Workflow {
                 .into_iter()
                 .partition(|node| node.depends_on.iter().all(|dep| done.contains(dep)));
             if ready.is_empty() {
+                self.compensate(ctx, &completed_order).await;
                 return Err(WorkflowError::NoProgress {
                     workflow: self.name.clone(),
                 });
             }
 
-            let wave = ready.iter().map(|node| {
+            // Fire-and-forget nodes are scheduled and treated as done so the
+            // wave proceeds without awaiting them (pyfly async_=True).
+            let mut blocking = Vec::with_capacity(ready.len());
+            for node in &ready {
+                if node.fire_and_forget {
+                    if !node.condition_holds(ctx) {
+                        done.insert(node.name.clone());
+                        continue;
+                    }
+                    let ctx = ctx.clone();
+                    // SAFETY: the node body outlives the task because the
+                    // workflow awaits all spawned tasks before returning.
+                    let fut = node.run_owned(ctx);
+                    async_tasks.push(tokio::spawn(async move {
+                        let _ = fut.await;
+                    }));
+                    done.insert(node.name.clone());
+                } else {
+                    blocking.push(*node);
+                }
+            }
+
+            let wave = blocking.iter().map(|node| {
                 let internal = internal.clone();
+                let completed_order = Arc::clone(&completed_order);
                 async move {
                     if token.is_cancelled() || internal.is_cancelled() {
                         return Err(WorkflowError::Cancelled);
                     }
-                    match (node.run)().await {
-                        Ok(()) => Ok(node.name.clone()),
+                    // Skip-when-condition-false (pyfly condition=...).
+                    if !node.condition_holds(ctx) {
+                        return Ok(node.name.clone());
+                    }
+                    match node.run(ctx).await {
+                        Ok(()) => {
+                            if node.is_compensatable() {
+                                completed_order
+                                    .lock()
+                                    .expect("lock")
+                                    .push(node.name.clone());
+                            }
+                            Ok(node.name.clone())
+                        }
                         Err(source) => {
                             internal.cancel();
                             Err(WorkflowError::Node {
@@ -252,11 +500,51 @@ impl Workflow {
                 }
             }
             if !errors.is_empty() {
+                // Roll back completed compensatable nodes before surfacing.
+                self.compensate(ctx, &completed_order).await;
+                Self::join_async(async_tasks).await;
                 return Err(WorkflowError::join(errors));
             }
             pending = still_pending;
         }
+        Self::join_async(async_tasks).await;
         Ok(())
+    }
+
+    /// Awaits every fire-and-forget task to completion so they run to the
+    /// end (pyfly keeps strong references; the Rust port joins them at the
+    /// end of the run rather than detaching).
+    async fn join_async(tasks: Vec<tokio::task::JoinHandle<()>>) {
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+
+    /// Rolls back completed compensatable nodes in reverse completion order,
+    /// honoring the configured [`CompensationPolicy`](crate::CompensationPolicy) —
+    /// pyfly's `WorkflowExecutor._compensate`. Compensation errors never mask
+    /// the original failure: under
+    /// [`CompensationPolicy::BestEffort`](crate::CompensationPolicy::BestEffort)
+    /// rollback continues; under
+    /// [`CompensationPolicy::StopOnError`](crate::CompensationPolicy::StopOnError)
+    /// it aborts at the first failure.
+    async fn compensate(
+        &self,
+        ctx: &StepContext,
+        completed_order: &Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let order: Vec<String> = completed_order.lock().expect("lock").clone();
+        for name in order.iter().rev() {
+            if let Some(node) = self.nodes.iter().find(|n| &n.name == name) {
+                if let Some(compensate) = &node.compensate {
+                    if compensate(ctx.clone()).await.is_err()
+                        && self.policy == CompensationPolicy::StopOnError
+                    {
+                        return;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -463,5 +751,277 @@ mod tests {
             other => panic!("unexpected error: {other}"),
         }
         assert!(err.to_string().contains("node \"a\": boom-a"));
+    }
+
+    // ── Workflow step compensation (pyfly test_compensation.py) ──────────
+
+    type Log = Arc<Mutex<Vec<String>>>;
+
+    fn comp_node(name: &str, fail: bool, deps: &[&str], log: &Log) -> Node {
+        let run_entry = name.to_string();
+        let comp_entry = name.to_string();
+        let run_log = log.clone();
+        let comp_log = log.clone();
+        Node::with_context(name, move |_ctx| {
+            let log = run_log.clone();
+            let entry = run_entry.clone();
+            async move {
+                log.lock().unwrap().push(entry);
+                if fail {
+                    Err("boom".into())
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .depends_on(deps.iter().copied())
+        .with_compensation(move |_ctx| {
+            let log = comp_log.clone();
+            let entry = format!("undo_{comp_entry}");
+            async move {
+                log.lock().unwrap().push(entry);
+                Ok(())
+            }
+        })
+    }
+
+    // Port of pyfly test_completed_compensatable_step_is_rolled_back_on_later_failure.
+    #[tokio::test]
+    async fn completed_compensatable_step_rolled_back_on_later_failure() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let workflow = Workflow::new("comp-basic")
+            .node(comp_node("reserve", false, &[], &log))
+            .node(
+                Node::new("charge", || async { Err("payment declined".into()) })
+                    .depends_on(["reserve"]),
+            );
+        let err = workflow.run().await.expect_err("must fail");
+        assert!(matches!(err, WorkflowError::Node { .. }));
+        // reserve ran, charge failed, reserve's compensation ran.
+        assert_eq!(*log.lock().unwrap(), ["reserve", "undo_reserve"]);
+    }
+
+    // Port of pyfly test_multiple_compensations_run_in_reverse_order.
+    #[tokio::test]
+    async fn multiple_compensations_run_in_reverse_order() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let workflow = Workflow::new("comp-order")
+            .node(comp_node("a", false, &[], &log))
+            .node(comp_node("b", false, &["a"], &log))
+            .node(Node::new("c", || async { Err("boom".into()) }).depends_on(["b"]));
+        let err = workflow.run().await.expect_err("must fail");
+        assert!(matches!(err, WorkflowError::Node { .. }));
+        let order = log.lock().unwrap();
+        // a, b ran; then compensation newest-first: undo_b, undo_a.
+        assert_eq!(*order, ["a", "b", "undo_b", "undo_a"]);
+    }
+
+    // Port of pyfly test_non_compensatable_step_is_not_compensated.
+    #[tokio::test]
+    async fn non_compensatable_step_is_not_compensated() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let plain_log = log.clone();
+        let workflow = Workflow::new("comp-skip")
+            .node(Node::with_context("plain", move |_ctx| {
+                let log = plain_log.clone();
+                async move {
+                    log.lock().unwrap().push("plain".to_string());
+                    Ok(())
+                }
+            }))
+            .node(Node::new("fail", || async { Err("boom".into()) }).depends_on(["plain"]));
+        let err = workflow.run().await.expect_err("must fail");
+        assert!(matches!(err, WorkflowError::Node { .. }));
+        // 'plain' is not compensatable -> no rollback recorded.
+        assert_eq!(*log.lock().unwrap(), ["plain"]);
+    }
+
+    // Port of pyfly test_compensation_receives_triggering_error_and_step_result:
+    // compensation can read the prior step's result from the context.
+    #[tokio::test]
+    async fn compensation_reads_prior_step_result() {
+        use serde_json::json;
+        let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let cap = captured.clone();
+        let workflow = Workflow::new("comp-args")
+            .node(
+                Node::with_context("reserve", |ctx| async move {
+                    ctx.set_result("reserve", json!({"reservation_id": "R-1"}));
+                    Ok(())
+                })
+                .with_compensation(move |ctx| {
+                    let cap = cap.clone();
+                    async move {
+                        *cap.lock().unwrap() = ctx.result("reserve");
+                        Ok(())
+                    }
+                }),
+            )
+            .node(Node::new("charge", || async { Err("declined".into()) }).depends_on(["reserve"]));
+        workflow.run().await.expect_err("must fail");
+        assert_eq!(
+            captured.lock().unwrap().clone().unwrap(),
+            json!({"reservation_id": "R-1"})
+        );
+    }
+
+    // Port of pyfly test_no_compensation_when_workflow_succeeds.
+    #[tokio::test]
+    async fn no_compensation_on_success() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let workflow = Workflow::new("comp-happy")
+            .node(comp_node("reserve", false, &[], &log))
+            .node(comp_node("charge", false, &["reserve"], &log));
+        workflow.run().await.expect("must complete");
+        // Only the run actions, never the compensations.
+        assert_eq!(*log.lock().unwrap(), ["reserve", "charge"]);
+    }
+
+    // StopOnError policy aborts the rollback at the first compensation
+    // failure, mirroring the saga policy shape reused here.
+    #[tokio::test]
+    async fn workflow_compensation_stop_on_error() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let a_log = log.clone();
+        let a = Node::with_context("a", |_ctx| async { Ok(()) }).with_compensation(move |_ctx| {
+            let log = a_log.clone();
+            async move {
+                log.lock().unwrap().push("undo_a".to_string());
+                Ok(())
+            }
+        });
+        // b's compensation fails; under StopOnError, a's never runs.
+        let b = Node::with_context("b", |_ctx| async { Ok(()) })
+            .depends_on(["a"])
+            .with_compensation(|_ctx| async { Err("compensate-fail".into()) });
+        let c = Node::new("c", || async { Err("trigger".into()) }).depends_on(["b"]);
+        let workflow = Workflow::new("policy")
+            .policy(CompensationPolicy::StopOnError)
+            .node(a)
+            .node(b)
+            .node(c);
+        workflow.run().await.expect_err("must fail");
+        // Rollback aborted at b's failure → a's compensation did not run.
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    // ── Conditional steps (pyfly test_step_condition_false_skips_step) ───
+
+    #[tokio::test]
+    async fn conditional_step_skipped_when_predicate_false() {
+        use serde_json::json;
+        let ran: Log = Arc::new(Mutex::new(Vec::new()));
+        let always_log = ran.clone();
+        let maybe_log = ran.clone();
+        let workflow = Workflow::new("condwf")
+            .node(Node::with_context("always", move |ctx| {
+                let log = always_log.clone();
+                async move {
+                    log.lock().unwrap().push("always".to_string());
+                    ctx.set_result("always", json!("ran"));
+                    Ok(())
+                }
+            }))
+            .node(
+                Node::with_context("maybe", move |_ctx| {
+                    let log = maybe_log.clone();
+                    async move {
+                        log.lock().unwrap().push("maybe".to_string());
+                        Ok(())
+                    }
+                })
+                .depends_on(["always"])
+                .when("results['always'] == 'nope'"),
+            );
+        workflow.run().await.expect("completes");
+        // 'maybe' was skipped by its condition.
+        assert_eq!(*ran.lock().unwrap(), ["always"]);
+    }
+
+    #[tokio::test]
+    async fn conditional_step_runs_when_predicate_true() {
+        use serde_json::json;
+        let ran: Log = Arc::new(Mutex::new(Vec::new()));
+        let maybe_log = ran.clone();
+        let workflow = Workflow::new("condwf2")
+            .node(Node::with_context("always", |ctx| async move {
+                ctx.set_result("always", json!("ran"));
+                Ok(())
+            }))
+            .node(
+                Node::with_context("maybe", move |_ctx| {
+                    let log = maybe_log.clone();
+                    async move {
+                        log.lock().unwrap().push("maybe".to_string());
+                        Ok(())
+                    }
+                })
+                .depends_on(["always"])
+                .when("results['always'] == 'ran'"),
+            );
+        workflow.run().await.expect("completes");
+        assert_eq!(*ran.lock().unwrap(), ["maybe"]);
+    }
+
+    // ── Async fire-and-forget steps (pyfly test_async_step_is_fire_and_forget) ──
+
+    #[tokio::test]
+    async fn async_step_is_fire_and_forget() {
+        let done = Arc::new(tokio::sync::Notify::new());
+        let notify = done.clone();
+        let workflow = Workflow::new("asyncwf").node(
+            Node::new("bg", move || {
+                let notify = notify.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    notify.notify_one();
+                    Ok(())
+                }
+            })
+            .fire_and_forget(),
+        );
+        // The workflow completes; the bg task runs to completion in the
+        // background (the engine joins fire-and-forget tasks before return).
+        tokio::time::timeout(Duration::from_millis(500), workflow.run())
+            .await
+            .expect("must finish")
+            .expect("completes");
+    }
+
+    // A fire-and-forget step that errors never fails the workflow.
+    #[tokio::test]
+    async fn async_step_error_does_not_fail_workflow() {
+        let workflow = Workflow::new("asyncwf2")
+            .node(Node::new("bg", || async { Err("ignored".into()) }).fire_and_forget())
+            .node(Node::new("main", || async { Ok(()) }));
+        workflow.run().await.expect("completes despite bg error");
+    }
+
+    // ── Inter-step data passing (pyfly FromStep argument injection) ──────
+
+    #[tokio::test]
+    async fn workflow_threads_step_results_between_nodes() {
+        use serde_json::json;
+        let ctx = StepContext::with_input(json!({"order": "O-1"}));
+        let workflow = Workflow::new("pipeline")
+            .node(Node::with_context("reserve", |ctx| async move {
+                let order = ctx.input_field("order").unwrap();
+                ctx.set_result("reserve", json!({"order": order, "reservation": "R-9"}));
+                Ok(())
+            }))
+            .node(
+                Node::with_context("charge", |ctx| async move {
+                    // Consume the prior step's output.
+                    let reservation = ctx.result_field("reserve", "reservation").unwrap();
+                    ctx.set_result("charge", json!({"charged_for": reservation}));
+                    Ok(())
+                })
+                .depends_on(["reserve"]),
+            );
+        workflow.run_with_context(&ctx).await.expect("completes");
+        assert_eq!(
+            ctx.result_field("charge", "charged_for").unwrap(),
+            json!("R-9")
+        );
     }
 }

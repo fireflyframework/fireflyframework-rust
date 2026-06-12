@@ -84,6 +84,14 @@
 //!   the [`mask`] module (Spring `Sanitizer` parity).
 //! - **Multi-profile** — [`active_profiles`] reads a comma-separated
 //!   `FIREFLY_PROFILE`, overlaid by [`multi_profile_sources`].
+//! - **Profile expressions** — [`accepts_profiles`] evaluates the Spring
+//!   Boot 2.4+ profile-expression grammar (`!prod`, `prod & cloud`,
+//!   `(prod & cloud) | qa`, comma-OR) against an active-profile list.
+//! - **In-process events** — [`ApplicationEventBus`] is a synchronous,
+//!   `TypeId`-dispatched, `@order`-sorted pub/sub for the lifecycle
+//!   events [`ContextRefreshedEvent`] / [`ApplicationReadyEvent`] /
+//!   [`ContextClosedEvent`] and arbitrary in-VM domain events (distinct
+//!   from the async `firefly-eda` broker).
 //! - **Remote config** — [`ConfigClient`] fetches a Spring-Cloud-Config
 //!   `/{app}/{profile}/{label}` document and flattens it into a
 //!   [`StaticSource`].
@@ -94,6 +102,7 @@
 mod binder;
 mod client;
 mod error;
+mod events;
 mod introspect;
 pub mod mask;
 mod placeholder;
@@ -105,12 +114,17 @@ mod yaml;
 pub use binder::{bind, load};
 pub use client::ConfigClient;
 pub use error::ConfigError;
+pub use events::{
+    ApplicationEvent, ApplicationEventBus, ApplicationEventPublisher, ApplicationReadyEvent,
+    ContextClosedEvent, ContextRefreshedEvent,
+};
 pub use introspect::{
     PropertySourceView, PropertyView, SYSTEM_ENVIRONMENT_ORIGIN, SYSTEM_ENVIRONMENT_SOURCE,
 };
 pub use placeholder::resolve_placeholders;
 pub use profile::{
-    active_profile, active_profiles, load_from_profile, multi_profile_sources, profile_sources,
+    accepts_profiles, active_profile, active_profiles, load_from_profile, multi_profile_sources,
+    profile_sources,
 };
 pub use reload::{Refresher, ReloadableConfig};
 pub use source::{from_env, EnvSource, FlagSource, Layered, Source, StaticSource};

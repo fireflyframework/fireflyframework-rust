@@ -6,11 +6,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use firefly_eda::{
-    handler, new_kafka_broker, new_rabbitmq_broker, wrap_listener, Broker, EdaError, Event,
-    InMemoryBroker, KafkaConfig, ListenerPolicy, Publisher, RabbitMqConfig, Subscriber,
-    HEADER_EXCEPTION, HEADER_ORIGINAL_TOPIC,
+    handler, new_kafka_broker, new_rabbitmq_broker, with_filters, wrap_listener, Broker,
+    EdaDeadLetterStore, EdaError, Event, EventPublisherHealthIndicator, HeaderEventFilter,
+    InMemoryBroker, InMemoryEdaDeadLetterStore, KafkaConfig, ListenerPolicy, PredicateEventFilter,
+    Publisher, RabbitMqConfig, Subscriber, HEADER_EXCEPTION, HEADER_ORIGINAL_TOPIC,
 };
 use firefly_kernel::{with_correlation_id_sync, FireflyError};
+use firefly_observability::{Indicator, Status};
 
 /// Go: `TestInMemoryFanout`.
 #[tokio::test]
@@ -684,4 +686,137 @@ async fn wrap_listener_routes_to_dlq_end_to_end() {
         Some(FireflyError::validation("x").code.as_str())
     );
     broker.close().unwrap();
+}
+
+// ---------------------------------------------------------------------
+// pyfly-parity surface: event filters, the queryable dead-letter store,
+// and the broker health indicator (P3 gap closure).
+// ---------------------------------------------------------------------
+
+/// A header filter attached to a subscription drops non-matching events
+/// before the handler runs, end-to-end through the broker — pyfly's
+/// `eda.filter.HeaderEventFilter` on an `@event_listener`.
+#[tokio::test]
+async fn header_filter_gates_subscription_end_to_end() {
+    let broker = InMemoryBroker::new();
+    let calls = Arc::new(AtomicU32::new(0));
+    let c = Arc::clone(&calls);
+    let inner = handler(move |_ev: Event| {
+        let c = Arc::clone(&c);
+        async move {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    });
+    let gated = with_filters(
+        inner,
+        [HeaderEventFilter::new("x-tenant", r"^acme-.+$").unwrap()],
+    );
+    broker.subscribe("orders", gated).unwrap();
+
+    // Rejected: dropped before the handler runs.
+    broker
+        .publish(Event::new("orders", "OrderPlaced", "svc", None).with_header("x-tenant", "other"))
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    // Accepted: handler runs.
+    broker
+        .publish(
+            Event::new("orders", "OrderPlaced", "svc", None).with_header("x-tenant", "acme-eu"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    broker.close().unwrap();
+}
+
+/// A predicate filter gates delivery on an arbitrary envelope property —
+/// pyfly's `PredicateEventFilter`.
+#[tokio::test]
+async fn predicate_filter_gates_by_event_type() {
+    let broker = InMemoryBroker::new();
+    let calls = Arc::new(AtomicU32::new(0));
+    let c = Arc::clone(&calls);
+    let inner = handler(move |_ev: Event| {
+        let c = Arc::clone(&c);
+        async move {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    });
+    let gated = with_filters(
+        inner,
+        [PredicateEventFilter::new(|e: &Event| {
+            e.event_type.starts_with("Order")
+        })],
+    );
+    broker.subscribe("orders", gated).unwrap();
+
+    broker
+        .publish(Event::new("orders", "ShipmentReady", "svc", None))
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    broker
+        .publish(Event::new("orders", "OrderPlaced", "svc", None))
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    broker.close().unwrap();
+}
+
+/// An exhausted event flows through the broker into the queryable
+/// dead-letter store, where an operator can list / get / remove it —
+/// pyfly's `EdaDeadLetterStore` wired into the retry/DLQ path.
+#[tokio::test]
+async fn dead_letter_store_captures_exhausted_event_end_to_end() {
+    let broker = Arc::new(InMemoryBroker::new());
+    let store = Arc::new(InMemoryEdaDeadLetterStore::new());
+
+    let inner = handler(|_ev: Event| async { Err(FireflyError::validation("bad order")) });
+    let wrapped = wrap_listener(
+        inner,
+        broker.clone(),
+        ListenerPolicy::with_retries(1).dead_letter_store(store.clone()),
+    );
+    broker.subscribe("orders", wrapped).unwrap();
+
+    broker
+        .publish(Event::new(
+            "orders",
+            "OrderPlaced",
+            "svc",
+            Some(b"body".to_vec()),
+        ))
+        .await
+        .expect("publish must not fail");
+
+    let listed = store.list(100).await;
+    assert_eq!(listed.len(), 1);
+    let id = listed[0].id.clone();
+    assert_eq!(listed[0].event.topic, "orders");
+    assert_eq!(listed[0].error_message, "bad order");
+    assert_eq!(listed[0].attempts, 2); // initial + 1 retry
+
+    assert!(store.get(&id).await.is_some());
+    assert!(store.remove(&id).await);
+    assert!(store.list(100).await.is_empty());
+    broker.close().unwrap();
+}
+
+/// The broker health indicator reports `UP` for a live broker and `DOWN`
+/// once closed — pyfly's `EventPublisherHealthIndicator`.
+#[tokio::test]
+async fn broker_health_indicator_tracks_liveness() {
+    let broker = Arc::new(InMemoryBroker::new());
+    let indicator = EventPublisherHealthIndicator::new(broker.clone());
+    assert_eq!(indicator.name(), "eventPublisher");
+    assert_eq!(indicator.check().await.status, Status::Up);
+
+    broker.close().unwrap();
+    let down = indicator.check().await;
+    assert_eq!(down.status, Status::Down);
+    assert!(down.details.contains_key("error"));
 }

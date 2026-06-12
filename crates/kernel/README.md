@@ -120,7 +120,7 @@ payload and the startup banner.
 
 ## pyfly parity
 
-The pyfly-parity layer adds three surfaces, all additive.
+The pyfly-parity layer adds four surfaces, all additive.
 
 ### `ddd` module — the `pyfly.domain` kit
 
@@ -185,6 +185,40 @@ let fresh = new_request_id(); // 32-char hex, generated per HTTP call
 Header constants: `HEADER_REQUEST_ID` (`X-Request-Id`, generated when
 absent) and `HEADER_TENANT_ID` (`X-Tenant-Id`, never generated
 server-side — `None` means "unscoped").
+
+### Typed structured-error model (`ErrorResponse`)
+
+`ErrorResponse` ports pyfly's `kernel/types.py` `ErrorResponse` — a
+classification-rich error model **additive over** `ProblemDetail` (it
+does not touch the Go-parity `application/problem+json` bytes). It adds
+first-class `ErrorCategory` / `ErrorSeverity` enums, `retryable` /
+`retry_after`, tracing ids (`trace_id` / `span_id` / `transaction_id`),
+and per-field `FieldError`s.
+
+```rust,ignore
+use firefly_kernel::{ErrorCategory, ErrorResponse, ErrorSeverity, FieldError};
+
+let resp = ErrorResponse::new("2026-06-12T00:00:00Z", 422, "Validation Error",
+        "Input validation failed", "VALIDATION_ERROR", "/api/users")
+    .with_category(ErrorCategory::Validation)
+    .with_severity(ErrorSeverity::Low)
+    .with_field_error(FieldError::new("email", "Invalid").with_rejected_value("nope"));
+
+let v = resp.to_value();           // pyfly's `to_dict()` shape
+assert_eq!(v["category"], "VALIDATION");
+assert_eq!(v["retryable"], false); // category/severity/retryable always present
+assert!(v.get("trace_id").is_none()); // unset optionals omitted
+```
+
+`to_value()` / `Serialize` match pyfly's `to_dict()` exactly: the six
+core members plus `category`/`severity`/`retryable` are always present;
+every other optional is omitted when unset or empty; keys use pyfly's
+`snake_case` names (`field_errors`, `retry_after`, …) — **not** the
+`ProblemDetail` wire keys. `ErrorCategory` defaults to `Technical`,
+`ErrorSeverity` to `Medium` (pyfly defaults). Pick the model whose wire
+contract you need: cross-runtime `problem+json` clients consume
+`ProblemDetail`; pyfly-shaped structured-error consumers consume
+`ErrorResponse`.
 
 ## Quick start
 

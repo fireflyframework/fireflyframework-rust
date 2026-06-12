@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{handler, Event, Handler, Publisher};
+use crate::{handler, EdaDeadLetterEntry, EdaDeadLetterStore, Event, Handler, Publisher};
 
 /// Header stamped on a dead-lettered event recording the topic it was
 /// originally published to — pyfly's `x-original-topic`.
@@ -30,7 +30,12 @@ pub const HEADER_EXCEPTION: &str = "x-exception";
 ///   (1-based) is `retry_delay * n`. Zero means retry immediately.
 /// - `dead_letter_topic` — where to republish an event whose retries
 ///   are exhausted. `None` re-raises the last error instead.
-#[derive(Debug, Clone)]
+/// - `dead_letter_store` — an optional queryable [`EdaDeadLetterStore`]
+///   into which an exhausted event is captured (in addition to any
+///   republishing), so dead-lettered events stay inspectable, not just
+///   re-routed. This is the wiring of pyfly's `EdaDeadLetterStore` into
+///   the retry/DLQ path.
+#[derive(Clone, Default)]
 pub struct ListenerPolicy {
     /// Number of retries after the initial attempt.
     pub retries: u32,
@@ -38,17 +43,20 @@ pub struct ListenerPolicy {
     pub retry_delay: Duration,
     /// Optional dead-letter topic for exhausted events.
     pub dead_letter_topic: Option<String>,
+    /// Optional queryable store for exhausted events.
+    pub dead_letter_store: Option<Arc<dyn EdaDeadLetterStore>>,
 }
 
-impl Default for ListenerPolicy {
-    /// The no-op policy: zero retries and no dead-letter topic, so
-    /// [`wrap_listener`] returns the handler untouched.
-    fn default() -> Self {
-        Self {
-            retries: 0,
-            retry_delay: Duration::ZERO,
-            dead_letter_topic: None,
-        }
+impl std::fmt::Debug for ListenerPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListenerPolicy")
+            .field("retries", &self.retries)
+            .field("retry_delay", &self.retry_delay)
+            .field("dead_letter_topic", &self.dead_letter_topic)
+            // The store is a trait object with no Debug bound; surface
+            // only whether one is configured.
+            .field("dead_letter_store", &self.dead_letter_store.is_some())
+            .finish()
     }
 }
 
@@ -75,28 +83,44 @@ impl ListenerPolicy {
         self
     }
 
+    /// Sets the queryable dead-letter store and returns the policy. An
+    /// exhausted event is captured into the store (alongside any
+    /// republishing to the [`dead_letter_topic`](Self::dead_letter_topic))
+    /// so it stays inspectable.
+    #[must_use]
+    pub fn dead_letter_store(mut self, store: Arc<dyn EdaDeadLetterStore>) -> Self {
+        self.dead_letter_store = Some(store);
+        self
+    }
+
     /// Whether the policy actually wraps anything. A policy with no
-    /// retries and no DLQ is a pass-through.
+    /// retries, no dead-letter topic, and no dead-letter store is a
+    /// pass-through.
     fn is_noop(&self) -> bool {
-        self.retries == 0 && self.dead_letter_topic.is_none()
+        self.retries == 0 && self.dead_letter_topic.is_none() && self.dead_letter_store.is_none()
     }
 }
 
 /// Wraps `h` so a failing delivery is retried up to `policy.retries`
-/// times (linear `policy.retry_delay` backoff) and, if still failing
-/// and `policy.dead_letter_topic` is set, republished there with the
-/// [`HEADER_ORIGINAL_TOPIC`] / [`HEADER_EXCEPTION`] diagnostic headers.
+/// times (linear `policy.retry_delay` backoff) and, if still failing,
+/// dead-lettered. On exhaustion the exhausted event is, in order:
 ///
-/// With no retries and no dead-letter topic the original `h` is returned
-/// unchanged (zero overhead) — the same `is handler` fast path pyfly's
-/// `wrap_listener` takes.
+/// 1. captured into `policy.dead_letter_store` (when set) as a queryable
+///    [`EdaDeadLetterEntry`] recording the error code/message and total
+///    attempts, so the failed event stays inspectable; then
+/// 2. republished to `policy.dead_letter_topic` (when set) with the
+///    [`HEADER_ORIGINAL_TOPIC`] / [`HEADER_EXCEPTION`] diagnostic headers.
 ///
-/// On exhaustion without a dead-letter topic, the last handler error is
-/// returned to the caller (re-raised). When a dead-letter topic *is*
-/// configured, the exhausted event is republished and the wrapped
-/// handler returns `Ok(())` (the failure has been routed, not crashed) —
-/// matching pyfly. A failure to publish to the dead-letter topic itself
-/// is propagated.
+/// With no retries, no dead-letter topic, and no dead-letter store the
+/// original `h` is returned unchanged (zero overhead) — the same
+/// `is handler` fast path pyfly's `wrap_listener` takes.
+///
+/// On exhaustion the wrapped handler returns `Ok(())` whenever the
+/// failure was *handled* — i.e. captured into the store and/or
+/// republished to a topic (the failure has been routed/recorded, not
+/// crashed), matching pyfly. Only when **neither** a topic nor a store
+/// is configured is the last handler error re-raised to the caller. A
+/// failure to publish to the dead-letter topic itself is propagated.
 ///
 /// ```
 /// use std::sync::Arc;
@@ -122,11 +146,13 @@ pub fn wrap_listener(h: Handler, publisher: Arc<dyn Publisher>, policy: Listener
     let retries = policy.retries;
     let retry_delay = policy.retry_delay;
     let dead_letter_topic = policy.dead_letter_topic;
+    let dead_letter_store = policy.dead_letter_store;
 
     handler(move |ev: Event| {
         let h = Arc::clone(&h);
         let publisher = Arc::clone(&publisher);
         let dead_letter_topic = dead_letter_topic.clone();
+        let dead_letter_store = dead_letter_store.clone();
         async move {
             let mut attempt: u32 = 0;
             loop {
@@ -143,14 +169,34 @@ pub fn wrap_listener(h: Handler, publisher: Arc<dyn Publisher>, policy: Listener
                             }
                             continue;
                         }
-                        match &dead_letter_topic {
-                            Some(dlt) => {
-                                let dlq_event = dead_letter_event(&ev, dlt, &err.code);
-                                publisher.publish(dlq_event).await?;
-                                return Ok(());
-                            }
-                            None => return Err(err),
+
+                        // Retries exhausted. Capture into the queryable
+                        // store first (total attempts = initial + retries),
+                        // so the failed event stays inspectable even when
+                        // routing to a topic is also configured.
+                        if let Some(store) = &dead_letter_store {
+                            let entry = EdaDeadLetterEntry::new(
+                                ev.clone(),
+                                err.code.clone(),
+                                err.detail.clone(),
+                                attempt + 1,
+                            );
+                            store.add(entry).await;
                         }
+
+                        if let Some(dlt) = &dead_letter_topic {
+                            let dlq_event = dead_letter_event(&ev, dlt, &err.code);
+                            publisher.publish(dlq_event).await?;
+                            return Ok(());
+                        }
+
+                        // Captured to the store but not routed to a topic:
+                        // the failure has been recorded, so do not re-raise.
+                        if dead_letter_store.is_some() {
+                            return Ok(());
+                        }
+
+                        return Err(err);
                     }
                 }
             }
@@ -181,7 +227,7 @@ mod tests {
     use firefly_kernel::FireflyError;
 
     use super::*;
-    use crate::EdaResult;
+    use crate::{EdaResult, InMemoryEdaDeadLetterStore};
 
     /// Records every published event so DLQ routing can be asserted —
     /// the Rust analog of pyfly's `_FakeBroker`.
@@ -271,6 +317,58 @@ mod tests {
         );
         // Original headers are carried forward.
         assert_eq!(dlq.headers.get("h").map(String::as_str), Some("1"));
+    }
+
+    /// An exhausted event is captured into the queryable dead-letter
+    /// store with the error code/message and total attempts, so it stays
+    /// inspectable — pyfly's `EdaDeadLetterStore` wired into the DLQ path.
+    /// With a store but no topic, the wrapped handler does not re-raise.
+    #[tokio::test]
+    async fn exhausted_retries_captured_in_store() {
+        let inner = handler(|_ev: Event| async { Err(FireflyError::not_found("missing order")) });
+        let publisher: Arc<dyn Publisher> = Arc::new(RecordingPublisher::default());
+        let store = Arc::new(InMemoryEdaDeadLetterStore::new());
+        let wrapped = wrap_listener(
+            inner,
+            publisher,
+            ListenerPolicy::with_retries(2).dead_letter_store(store.clone()),
+        );
+        wrapped(msg())
+            .await
+            .expect("store capture must not re-raise");
+
+        let listed = store.list(100).await;
+        assert_eq!(listed.len(), 1);
+        let entry = &listed[0];
+        assert_eq!(entry.event.topic, "orders");
+        assert_eq!(entry.event.payload.as_deref(), Some(&b"data"[..]));
+        assert_eq!(entry.error_message, "missing order");
+        assert_eq!(entry.error_type, FireflyError::not_found("x").code);
+        // initial attempt + 2 retries = 3
+        assert_eq!(entry.attempts, 3);
+    }
+
+    /// With both a store and a topic configured, the exhausted event is
+    /// *both* captured (queryable) and republished (routed).
+    #[tokio::test]
+    async fn exhausted_retries_captured_and_routed() {
+        let inner = handler(|_ev: Event| async { Err(FireflyError::internal("boom")) });
+        let publisher = Arc::new(RecordingPublisher::default());
+        let store = Arc::new(InMemoryEdaDeadLetterStore::new());
+        let wrapped = wrap_listener(
+            inner,
+            publisher.clone(),
+            ListenerPolicy::with_retries(1)
+                .dead_letter_topic("orders.DLT")
+                .dead_letter_store(store.clone()),
+        );
+        wrapped(msg()).await.expect("must not raise");
+
+        // Captured AND routed.
+        assert_eq!(store.list(100).await.len(), 1);
+        let published = publisher.published.lock().unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].topic, "orders.DLT");
     }
 
     /// pyfly `test_exhausted_retries_without_dlq_reraises`: with no DLQ

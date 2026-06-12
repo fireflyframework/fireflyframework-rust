@@ -17,6 +17,9 @@ serde_yaml = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+firefly-migrations = { workspace = true }
+firefly-openapi = { workspace = true }
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

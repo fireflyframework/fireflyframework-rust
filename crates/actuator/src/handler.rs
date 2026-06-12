@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 
 use crate::caches::{CacheOps, CACHE_MANAGER};
 use crate::endpoint::EndpointRegistry;
+use crate::env_source::{EnvSource, PropertySourceView};
 use crate::exposure::ExposureConfig;
 use crate::health::{HealthComposite, HealthResult, HealthStatus};
 use crate::http_exchanges::HttpExchangeRecorder;
@@ -27,6 +28,7 @@ use crate::loggers::{LoggersError, LoggersState};
 use crate::metrics::MetricRegistry;
 use crate::refresh::Refresher;
 use crate::scheduledtasks::{render_tasks, ScheduledTasksSource};
+use crate::threaddump::thread_dump;
 use crate::VERSION;
 
 /// A function contributing extra top-level entries to `/actuator/info` —
@@ -35,13 +37,14 @@ pub type InfoContributor = Box<dyn Fn() -> serde_json::Map<String, Value> + Send
 
 /// Endpoint ids handled by [`mount`] itself; custom endpoints with these
 /// ids are skipped to avoid route collisions.
-const BUILTIN_IDS: [&str; 12] = [
+const BUILTIN_IDS: [&str; 13] = [
     "health",
     "info",
     "metrics",
     "prometheus",
     "env",
     "tasks",
+    "threaddump",
     "version",
     "loggers",
     "scheduledtasks",
@@ -69,8 +72,19 @@ pub struct ActuatorConfig {
 
     /// Prefix list of env var names whose values are returned by
     /// `/actuator/env` (everything else is redacted to `"***"`).
-    /// Defaults to `["FIREFLY_"]`. Matching is case-insensitive.
+    /// Defaults to `["FIREFLY_"]`. Matching is case-insensitive. Only
+    /// consulted when [`env_source`](Self::env_source) is `None`.
     pub env_allow_prefixes: Vec<String>,
+
+    /// When set, `/actuator/env` returns the Spring-style
+    /// `{activeProfiles, propertySources}` view (with masked values and a
+    /// per-property `/actuator/env/{toMatch}` drill-down) sourced from the
+    /// application's configuration layer — pyfly's `EnvEndpoint`. When `None`
+    /// (the default), `/actuator/env` keeps the legacy flat redacted
+    /// process-environment map. Wire this in a starter over
+    /// `firefly-config`'s `Layered::property_sources` to keep the actuator
+    /// crate decoupled from any concrete config crate.
+    pub env_source: Option<Arc<dyn EnvSource>>,
 
     /// Registry consulted by `/actuator/metrics`, `/actuator/metrics/{name}`,
     /// and `/actuator/prometheus`; defaults to an empty registry.
@@ -124,6 +138,7 @@ impl Default for ActuatorConfig {
             health: Arc::default(),
             info_contributors: Vec::new(),
             env_allow_prefixes: Vec::new(),
+            env_source: None,
             metric_registry: Arc::default(),
             exposure: ExposureConfig::default(),
             endpoints: Arc::default(),
@@ -145,6 +160,7 @@ struct ActuatorState {
     health: Arc<HealthComposite>,
     info_contributors: Vec<InfoContributor>,
     env_allow_prefixes: Vec<String>,
+    env_source: Option<Arc<dyn EnvSource>>,
     metric_registry: Arc<MetricRegistry>,
     loggers: Option<Arc<LoggersState>>,
     scheduled_tasks: Option<Arc<dyn ScheduledTasksSource>>,
@@ -174,10 +190,16 @@ type SharedState = Arc<ActuatorState>;
 ///   `Accept: application/json`: the Micrometer `{"names": […]}` list)
 /// - `GET {bp}/metrics/{name}?tag=k:v` — Micrometer JSON meter detail
 /// - `GET {bp}/prometheus` — Prometheus exposition format (labeled)
-/// - `GET {bp}/env` — redacted environment view
+/// - `GET {bp}/env` — Spring `{activeProfiles, propertySources}` when an
+///   [`EnvSource`] is wired (masked, origin-attributed); otherwise the legacy
+///   flat redacted environment map
+/// - `GET {bp}/env/{toMatch}` — one property's value across the ordered
+///   sources (only mounted when an [`EnvSource`] is wired)
 /// - `GET {bp}/tasks` — `{"count": N}` alive tokio tasks; `?dump=true`
 ///   returns a plain-text runtime report (the async analog of Go's
 ///   `/actuator/goroutines`)
+/// - `GET {bp}/threaddump` — Spring `{threads:[…]}`; the tokio runtime
+///   worker/task snapshot (the async-Rust analog of a JVM thread dump)
 /// - `GET {bp}/version` — framework / app / language version stamp
 /// - `GET {bp}/loggers`, `GET/POST {bp}/loggers/{name}` — runtime log
 ///   levels (when `loggers` is wired)
@@ -212,6 +234,7 @@ pub fn mount(cfg: ActuatorConfig) -> Router {
         health: cfg.health,
         info_contributors: cfg.info_contributors,
         env_allow_prefixes,
+        env_source: cfg.env_source,
         metric_registry: cfg.metric_registry,
         loggers: cfg.loggers,
         scheduled_tasks: cfg.scheduled_tasks,
@@ -251,10 +274,19 @@ pub fn mount(cfg: ActuatorConfig) -> Router {
     if expose("env", true) {
         exposed_ids.push("env".into());
         router = router.route(&format!("{bp}/env"), get(env_handler));
+        // Spring's per-property drill-down — only meaningful (and only
+        // mounted) when a property-source view is wired.
+        if state.env_source.is_some() {
+            router = router.route(&format!("{bp}/env/:selector"), get(env_selector_handler));
+        }
     }
     if expose("tasks", true) {
         exposed_ids.push("tasks".into());
         router = router.route(&format!("{bp}/tasks"), get(tasks_handler));
+    }
+    if expose("threaddump", true) {
+        exposed_ids.push("threaddump".into());
+        router = router.route(&format!("{bp}/threaddump"), get(threaddump_handler));
     }
     if expose("version", true) {
         exposed_ids.push("version".into());
@@ -559,9 +591,19 @@ async fn prometheus_handler(State(st): State<SharedState>) -> Response {
         .into_response()
 }
 
-/// `GET /actuator/env` — every process environment variable, with values
-/// outside the allow-prefix list redacted to `"***"`.
+/// `GET /actuator/env` — when an [`EnvSource`] is wired, the Spring-style
+/// `{activeProfiles, propertySources:[{name, properties:{k:{value, origin}}}]}`
+/// view with masked values (pyfly's `EnvEndpoint`); otherwise the legacy flat
+/// process-environment map with values outside the allow-prefix list redacted
+/// to `"***"`.
 async fn env_handler(State(st): State<SharedState>) -> Response {
+    if let Some(source) = &st.env_source {
+        let body = json!({
+            "activeProfiles": source.active_profiles(),
+            "propertySources": source.property_sources(),
+        });
+        return json_response(StatusCode::OK, &body);
+    }
     let mut out = BTreeMap::new();
     for (key, value) in std::env::vars_os() {
         let key = key.to_string_lossy().into_owned();
@@ -570,6 +612,50 @@ async fn env_handler(State(st): State<SharedState>) -> Response {
         out.insert(key, redacted);
     }
     json_response(StatusCode::OK, &out)
+}
+
+/// `GET /actuator/env/{toMatch}` — Spring's per-property drill-down: the
+/// property's winning value (the first source that has it, highest precedence
+/// first) plus its appearance in each source. Only mounted when an
+/// [`EnvSource`] is wired. Mirrors pyfly's `EnvEndpoint._property_detail`.
+async fn env_selector_handler(
+    State(st): State<SharedState>,
+    Path(selector): Path<String>,
+) -> Response {
+    let Some(source) = &st.env_source else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let profiles = source.active_profiles();
+    let sources = source.property_sources();
+    json_response(
+        StatusCode::OK,
+        &render_property_detail(&selector, profiles, &sources),
+    )
+}
+
+/// Builds the `/actuator/env/{toMatch}` body: `{property, activeProfiles,
+/// propertySources}` where `property` is the winning `{source, value}` (or
+/// `null`) and `propertySources` lists each source that carries the property.
+fn render_property_detail(
+    name: &str,
+    profiles: Vec<String>,
+    sources: &[PropertySourceView],
+) -> Value {
+    let mut winning: Option<Value> = None;
+    let mut per_source: Vec<Value> = Vec::new();
+    for source in sources {
+        if let Some(prop) = source.properties.get(name) {
+            per_source.push(json!({ "name": source.name, "property": prop }));
+            if winning.is_none() {
+                winning = Some(json!({ "source": source.name, "value": prop.value }));
+            }
+        }
+    }
+    json!({
+        "property": winning,
+        "activeProfiles": profiles,
+        "propertySources": per_source,
+    })
 }
 
 /// Returns `value` when `key` matches an allow prefix (case-insensitive),
@@ -603,6 +689,14 @@ async fn tasks_handler(Query(params): Query<HashMap<String, String>>) -> Respons
         StatusCode::OK,
         &json!({ "count": metrics.num_alive_tasks() }),
     )
+}
+
+/// `GET /actuator/threaddump` — Spring Boot's thread-dump endpoint, adapted
+/// to async Rust: `{"threads": […]}` describing the tokio runtime's worker
+/// threads plus a synthetic runtime-summary thread (async Rust has no
+/// per-task stack frames — see [`crate::thread_dump`]).
+async fn threaddump_handler() -> Response {
+    json_response(StatusCode::OK, &thread_dump())
 }
 
 /// `GET /actuator/version` — framework, app, and language version stamp.

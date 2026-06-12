@@ -194,6 +194,95 @@ broker.subscribe("orders", wrapped).unwrap();
 # });
 ```
 
+### Event filters (delivery gates)
+
+`EventFilter` is a per-envelope delivery gate layered *over* the broker's
+glob topic matching — pyfly's `eda.filter`. Where the broker decides
+*which* subscriptions a topic reaches, a filter decides whether a reached
+subscription actually *runs*. Two filters ship:
+
+- `HeaderEventFilter::new(name, pattern)` — accepts events whose header
+  `name` matches a start-anchored regular expression (pyfly's
+  `re.match` semantics; a missing header is treated as the empty string).
+- `PredicateEventFilter::new(closure)` — accepts events for which an
+  arbitrary `Fn(&Event) -> bool` returns `true`.
+
+Attach a chain to a handler with `with_filters` (or `with_filter_chain`
+for a pre-boxed `Vec<Arc<dyn EventFilter>>`). An event must pass *every*
+filter to be delivered; a non-matching event is dropped before the
+handler body runs (the wrapped handler returns `Ok(())`). An empty chain
+returns the original handler `Arc` unchanged (zero overhead).
+
+```rust
+use firefly_eda::{handler, with_filters, Event, HeaderEventFilter, InMemoryBroker};
+
+# tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+let broker = InMemoryBroker::new();
+let inner = handler(|_ev: Event| async { Ok(()) });
+let gated = with_filters(inner, [HeaderEventFilter::new("x-tenant", r"^acme-.+$").unwrap()]);
+broker.subscribe("orders", gated).unwrap();
+# });
+```
+
+### Queryable dead-letter store
+
+`EdaDeadLetterStore` is a store of *failed events* captured for operator
+inspection and replay — pyfly's `eda.dlq`. It is distinct from the
+routing DLQ above: `wrap_listener`'s `dead_letter_topic` republishes an
+exhausted event to a dead-letter *topic*, whereas the store keeps an
+inspectable, queryable record (`add` / `list(limit)` / `get(id)` /
+`remove(id)`) of the failed events themselves. `EdaDeadLetterEntry`
+carries the full failing `Event`, a stable id, the error `code`/detail,
+the capture timestamp, and the total attempt count; `list` returns
+entries most-recent-first.
+
+Wire a store into the retry/DLQ path with
+`ListenerPolicy::dead_letter_store`: an exhausted event is captured into
+the store (and, when a topic is also set, republished). With a store
+configured the wrapped handler does not re-raise on exhaustion.
+
+```rust
+use std::sync::Arc;
+use firefly_eda::{handler, wrap_listener, InMemoryBroker, InMemoryEdaDeadLetterStore, ListenerPolicy};
+
+# tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+let broker = Arc::new(InMemoryBroker::new());
+let store = Arc::new(InMemoryEdaDeadLetterStore::new());
+let inner = handler(|_ev| async { Err(firefly_kernel::FireflyError::validation("bad")) });
+let wrapped = wrap_listener(
+    inner,
+    broker.clone(),
+    ListenerPolicy::with_retries(2).dead_letter_store(store.clone()),
+);
+broker.subscribe("orders", wrapped).unwrap();
+# });
+```
+
+### Broker health indicator
+
+`EventPublisherHealthIndicator` adapts any broker that implements the
+`BrokerHealth` trait (a `ping()` liveness probe) to a
+`firefly_observability::Indicator`, surfacing broker liveness on
+`/actuator/health` under the `eventPublisher` id — pyfly's
+`eda.health.EventPublisherHealthIndicator`. `InMemoryBroker` implements
+`BrokerHealth` (live unless closed); the Kafka / RabbitMQ transport
+crates can implement it with a real connection probe and register their
+own indicator.
+
+```rust
+use std::sync::Arc;
+use firefly_eda::{EventPublisherHealthIndicator, InMemoryBroker};
+use firefly_observability::{Indicator, Status};
+
+# tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+let broker = Arc::new(InMemoryBroker::new());
+let indicator = EventPublisherHealthIndicator::new(broker.clone());
+assert_eq!(indicator.check().await.status, Status::Up);
+broker.close().unwrap();
+assert_eq!(indicator.check().await.status, Status::Down);
+# });
+```
+
 For Kafka in production:
 
 ```rust

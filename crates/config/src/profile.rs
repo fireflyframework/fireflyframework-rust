@@ -131,9 +131,281 @@ pub fn load_from_profile<T: DeserializeOwned>(
     load(&sources)
 }
 
+/// Evaluates the **Spring Boot 2.4+ profile-expression grammar** of
+/// pyfly's `Environment.accepts_profiles(*exprs)` against an explicit
+/// active-profile list.
+///
+/// Returns `true` when **any** of the given `exprs` matches `active`.
+/// Each expression supports:
+///
+/// - **Simple profiles** — `"dev"` matches when `"dev"` is active.
+/// - **Negation** — `"!prod"` / `"!(prod)"`.
+/// - **Boolean operators with grouping** — `"prod & cloud"`,
+///   `"prod | qa"`, `"(prod & cloud) | qa"`.
+/// - **Comma-OR (legacy)** — `"dev,test"` matches when either is active.
+///
+/// An expression is treated as a boolean expression when it contains any
+/// of `&`, `|` or `(`; otherwise, if it contains `,` it is the legacy
+/// comma-OR of single tokens; otherwise it is a single (optionally
+/// `!`-negated) token. Whitespace around tokens and around the whole
+/// expression is ignored. A malformed boolean expression evaluates to
+/// `false` (never panics), matching pyfly.
+///
+/// Where pyfly reads the active list off the [`Environment`], the Rust
+/// port takes it as a slice so it composes with [`active_profiles`]:
+///
+/// ```
+/// use firefly_config::accepts_profiles;
+///
+/// let active = ["prod".to_string(), "cloud".to_string()];
+/// assert!(accepts_profiles(&active, &["prod & cloud"]));
+/// assert!(!accepts_profiles(&active, &["prod & staging"]));
+/// assert!(accepts_profiles(&active, &["!test"]));
+/// assert!(accepts_profiles(&active, &["(prod & cloud) | qa"]));
+/// ```
+///
+/// [`Environment`]: https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/core/env/Environment.html
+#[must_use]
+pub fn accepts_profiles<S: AsRef<str>>(active: &[S], exprs: &[&str]) -> bool {
+    let active: Vec<&str> = active.iter().map(AsRef::as_ref).collect();
+    exprs
+        .iter()
+        .any(|expr| matches_profile_expression(&active, expr))
+}
+
+/// Evaluates a single profile expression against `active`.
+fn matches_profile_expression(active: &[&str], expr: &str) -> bool {
+    let expr = expr.trim();
+    if expr.contains('&') || expr.contains('|') || expr.contains('(') {
+        return eval_boolean_profile(active, expr);
+    }
+    if expr.contains(',') {
+        return expr
+            .split(',')
+            .map(str::trim)
+            .filter(|sub| !sub.is_empty())
+            .any(|sub| matches_single(active, sub));
+    }
+    matches_single(active, expr)
+}
+
+/// Evaluates a single token, honoring an optional `!` negation prefix.
+fn matches_single(active: &[&str], profile: &str) -> bool {
+    let profile = profile.trim();
+    if let Some(rest) = profile.strip_prefix('!') {
+        !active.contains(&rest.trim())
+    } else {
+        active.contains(&profile)
+    }
+}
+
+/// A token in a boolean profile expression.
+#[derive(Debug, Clone, PartialEq)]
+enum ProfileToken {
+    /// `&`
+    And,
+    /// `|`
+    Or,
+    /// `!`
+    Not,
+    /// `(`
+    LParen,
+    /// `)`
+    RParen,
+    /// `true` if the named profile is active, else `false`.
+    Value(bool),
+}
+
+/// Evaluates a boolean profile expression (`&` / `|` / `!` / grouping).
+/// Mirrors pyfly's `_eval_boolean_profile`: a parse/structure error
+/// resolves to `false` rather than propagating.
+fn eval_boolean_profile(active: &[&str], expr: &str) -> bool {
+    let Some(tokens) = tokenize_profile(active, expr) else {
+        return false;
+    };
+    let mut parser = ProfileParser {
+        tokens: &tokens,
+        pos: 0,
+    };
+    match parser.parse_or() {
+        Some(value) if parser.pos == tokens.len() => value,
+        _ => false,
+    }
+}
+
+/// Splits `expr` into [`ProfileToken`]s, resolving bare identifiers to
+/// `Value(active?)`. Returns `None` on an unexpected character. The
+/// identifier charset matches pyfly's token regex
+/// (`[A-Za-z0-9_.\-]+`).
+fn tokenize_profile(active: &[&str], expr: &str) -> Option<Vec<ProfileToken>> {
+    let mut tokens = Vec::new();
+    let chars: Vec<char> = expr.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            c if c.is_whitespace() => i += 1,
+            '&' => {
+                tokens.push(ProfileToken::And);
+                i += 1;
+            }
+            '|' => {
+                tokens.push(ProfileToken::Or);
+                i += 1;
+            }
+            '!' => {
+                tokens.push(ProfileToken::Not);
+                i += 1;
+            }
+            '(' => {
+                tokens.push(ProfileToken::LParen);
+                i += 1;
+            }
+            ')' => {
+                tokens.push(ProfileToken::RParen);
+                i += 1;
+            }
+            c if c.is_alphanumeric() || c == '_' || c == '.' || c == '-' => {
+                let start = i;
+                while i < chars.len() {
+                    let n = chars[i];
+                    if n.is_alphanumeric() || n == '_' || n == '.' || n == '-' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let ident: String = chars[start..i].iter().collect();
+                tokens.push(ProfileToken::Value(active.contains(&ident.as_str())));
+            }
+            _ => return None,
+        }
+    }
+    Some(tokens)
+}
+
+/// A tiny recursive-descent parser for boolean profile expressions with
+/// the grammar `or := and ('|' and)*`, `and := unary ('&' unary)*`,
+/// `unary := '!' unary | primary`, `primary := '(' or ')' | value`.
+/// `|` and `&` bind looser than `!`, and grouping wins, matching the
+/// precedence of Python's `or`/`and`/`not` that pyfly leans on.
+struct ProfileParser<'a> {
+    tokens: &'a [ProfileToken],
+    pos: usize,
+}
+
+impl ProfileParser<'_> {
+    fn peek(&self) -> Option<&ProfileToken> {
+        self.tokens.get(self.pos)
+    }
+
+    fn parse_or(&mut self) -> Option<bool> {
+        let mut value = self.parse_and()?;
+        while matches!(self.peek(), Some(ProfileToken::Or)) {
+            self.pos += 1;
+            let rhs = self.parse_and()?;
+            value = value || rhs;
+        }
+        Some(value)
+    }
+
+    fn parse_and(&mut self) -> Option<bool> {
+        let mut value = self.parse_unary()?;
+        while matches!(self.peek(), Some(ProfileToken::And)) {
+            self.pos += 1;
+            let rhs = self.parse_unary()?;
+            value = value && rhs;
+        }
+        Some(value)
+    }
+
+    fn parse_unary(&mut self) -> Option<bool> {
+        if matches!(self.peek(), Some(ProfileToken::Not)) {
+            self.pos += 1;
+            return Some(!self.parse_unary()?);
+        }
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Option<bool> {
+        match self.peek() {
+            Some(ProfileToken::LParen) => {
+                self.pos += 1;
+                let value = self.parse_or()?;
+                if matches!(self.peek(), Some(ProfileToken::RParen)) {
+                    self.pos += 1;
+                    Some(value)
+                } else {
+                    None
+                }
+            }
+            Some(ProfileToken::Value(v)) => {
+                let v = *v;
+                self.pos += 1;
+                Some(v)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_profiles_and() {
+        let active = ["prod".to_string(), "cloud".to_string()];
+        assert!(accepts_profiles(&active, &["prod & cloud"]));
+        assert!(!accepts_profiles(&active, &["prod & staging"]));
+    }
+
+    #[test]
+    fn accepts_profiles_or() {
+        let active = ["prod".to_string()];
+        assert!(accepts_profiles(&active, &["prod | qa"]));
+        assert!(!accepts_profiles(&active, &["dev | qa"]));
+    }
+
+    #[test]
+    fn accepts_profiles_not() {
+        let active = ["prod".to_string()];
+        assert!(accepts_profiles(&active, &["!test"]));
+        assert!(!accepts_profiles(&active, &["!prod"]));
+        assert!(accepts_profiles(&active, &["prod & !test"]));
+    }
+
+    #[test]
+    fn accepts_profiles_grouping() {
+        let active = ["cloud".to_string(), "qa".to_string()];
+        assert!(accepts_profiles(&active, &["(prod & cloud) | qa"]));
+        assert!(!accepts_profiles(&active, &["(prod & cloud) & qa"]));
+        assert!(accepts_profiles(&active, &["!(prod | dev)"]));
+    }
+
+    #[test]
+    fn accepts_profiles_legacy_comma_and_simple() {
+        let active = ["dev".to_string()];
+        assert!(accepts_profiles(&active, &["dev,test"]));
+        assert!(accepts_profiles(&active, &["dev"]));
+        assert!(!accepts_profiles(&active, &["test"]));
+    }
+
+    #[test]
+    fn accepts_profiles_any_of_many() {
+        let active = ["qa".to_string()];
+        assert!(accepts_profiles(&active, &["prod", "qa"]));
+        assert!(!accepts_profiles(&active, &["prod", "dev"]));
+        assert!(!accepts_profiles::<String>(&active, &[]));
+    }
+
+    #[test]
+    fn accepts_profiles_malformed_is_false() {
+        let active = ["prod".to_string()];
+        assert!(!accepts_profiles(&active, &["prod &"]));
+        assert!(!accepts_profiles(&active, &["(prod"]));
+        assert!(!accepts_profiles(&active, &[")"]));
+    }
 
     #[test]
     fn profile_sources_defaults_app_name_and_orders_base_first() {

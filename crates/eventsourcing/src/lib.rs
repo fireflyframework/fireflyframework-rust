@@ -22,6 +22,18 @@
 //!   over `firefly-eda`).
 //! * [`SqlEventStore`] — a SQL-backed [`EventStore`] over the
 //!   `firefly-transactional` `Database` port.
+//! * [`EventStore::stream_all`] — the global, cross-aggregate ordered event
+//!   stream with a resumable cursor, driving read-model projections that span
+//!   many aggregates (pyfly `EventStore.stream_all`). [`ProjectionRunner`]
+//!   consumes it via [`ProjectionRunner::drive_once`] /
+//!   [`ProjectionRunner::replay_all`], plus [`FunctionProjection`].
+//! * Event-store multi-tenancy — an optional [`DomainEvent::tenant_id`]
+//!   (persisted/filterable; omitted from JSON when `None` so the wire format
+//!   is unchanged) threaded through append / load / `stream_all`
+//!   (pyfly `StoredEventEnvelope.tenant_id`).
+//! * [`EventSourcedRepository`] + [`EventSourcedAggregate`] — ties load
+//!   (snapshot + replay) and save (append uncommitted + snapshot policy)
+//!   together (pyfly `eventsourcing.repository.EventSourcedRepository`).
 //!
 //! The [`DomainEvent`] JSON wire format (camelCase field names, base64
 //! payload, `metadata` omitted when empty) is byte-compatible with the
@@ -51,14 +63,16 @@ mod aggregate;
 mod error;
 mod outbox;
 mod projection;
+mod repository;
 mod snapshot;
 mod sql_store;
 mod upcaster;
 
-pub use aggregate::{AggregateRoot, DomainEvent, EventStore, MemoryEventStore};
+pub use aggregate::{AggregateRoot, DomainEvent, EventStore, MemoryEventStore, StreamedEvent};
 pub use error::EventSourcingError;
 pub use outbox::{EdaSink, OutboxRecord, OutboxSink, TransactionalOutbox};
-pub use projection::{Projection, ProjectionRunner};
+pub use projection::{FunctionProjection, Projection, ProjectionRunner};
+pub use repository::{EventSourcedAggregate, EventSourcedRepository};
 pub use snapshot::{MemorySnapshotStore, Snapshot, SnapshotStore};
 pub use sql_store::{parse_occurred_at, SqlEventStore, DDL};
 pub use upcaster::{EventUpcaster, NoOpUpcaster};

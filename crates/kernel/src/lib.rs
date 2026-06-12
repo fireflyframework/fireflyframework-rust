@@ -18,8 +18,12 @@
 //! DDD kit: [`ddd::Specification`], [`ddd::Entity`],
 //! [`ddd::PendingEvents`], [`ddd::TransientDomainEvent`]), the
 //! domain-error constructors [`FireflyError::business_rule`] /
-//! [`FireflyError::aggregate_not_found`], and the request-id /
-//! tenant-id task-local scopes alongside the correlation id.
+//! [`FireflyError::aggregate_not_found`], the request-id /
+//! tenant-id task-local scopes alongside the correlation id, and the
+//! typed structured-error model [`ErrorResponse`] (with
+//! [`ErrorCategory`] / [`ErrorSeverity`] / [`FieldError`]) — additive
+//! over [`ProblemDetail`], matching pyfly's `ErrorResponse.to_dict()`
+//! shape without changing the Go-parity `problem+json` bytes.
 //!
 //! ## Why a separate crate?
 //!
@@ -53,6 +57,7 @@
 mod clock;
 mod correlation;
 pub mod ddd;
+mod error_response;
 mod errors;
 mod problem;
 
@@ -67,6 +72,7 @@ pub use ddd::{
     AndSpec, BoxedDomainEvent, Entity, EventMeta, NotSpec, OrSpec, PendingEvents, Specification,
     TransientDomainEvent,
 };
+pub use error_response::{ErrorCategory, ErrorResponse, ErrorSeverity, FieldError};
 pub use errors::{as_problem, is_firefly, status_of, FireflyError, FireflyResult};
 pub use problem::{
     ProblemDetail, PROBLEM_CONTENT_TYPE, TYPE_BAD_REQUEST, TYPE_CONFLICT, TYPE_FORBIDDEN,

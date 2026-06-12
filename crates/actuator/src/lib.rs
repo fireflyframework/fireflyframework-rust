@@ -13,8 +13,10 @@
 //! | `GET /actuator/metrics`             | Prometheus text (`Accept: application/json` → Micrometer `{"names":[…]}`)        |
 //! | `GET /actuator/metrics/{name}`      | Micrometer JSON detail with `?tag=k:v` drill-down + `availableTags`              |
 //! | `GET /actuator/prometheus`          | Prometheus exposition format (labeled), the scrape target                        |
-//! | `GET /actuator/env`                 | Redacted environment view (`FIREFLY_*` visible by default; everything else `***`)|
+//! | `GET /actuator/env`                 | Spring `{activeProfiles, propertySources}` when an [`EnvSource`] is wired; else a flat redacted env view |
+//! | `GET /actuator/env/{toMatch}`       | One property's value across the ordered sources (when an [`EnvSource`] is wired)|
 //! | `GET /actuator/tasks`               | `{"count": N}` alive tokio tasks; `?dump=true` returns a runtime report          |
+//! | `GET /actuator/threaddump`          | Spring `{threads:[…]}` — the tokio runtime worker/task snapshot (Rust analog)    |
 //! | `GET /actuator/version`             | `{"firefly":"26.6.1","app":"orders","appVersion":"…","rust":"…"}`                |
 //! | `GET/POST /actuator/loggers[/{n}]`  | Runtime log levels over a `tracing_subscriber` reload handle                     |
 //! | `GET /actuator/scheduledtasks`      | Tasks grouped by trigger (cron / fixedDelay / fixedRate)                         |
@@ -73,6 +75,7 @@
 
 mod caches;
 mod endpoint;
+mod env_source;
 mod exposure;
 mod handler;
 mod health;
@@ -81,9 +84,11 @@ mod loggers;
 mod metrics;
 mod refresh;
 mod scheduledtasks;
+mod threaddump;
 
 pub use caches::{CacheDescriptor, CacheOps};
 pub use endpoint::{Endpoint, EndpointRegistry};
+pub use env_source::{EnvSource, PropertySourceView, PropertyView};
 pub use exposure::{ExposureConfig, DEFAULT_BASE_PATH};
 pub use handler::{mount, ActuatorConfig, InfoContributor};
 pub use health::{
@@ -97,6 +102,7 @@ pub use loggers::{LoggersError, LoggersState, SPRING_LEVELS};
 pub use metrics::{Counter, Gauge, Histogram, MetricRegistry, TimerGuard, DEFAULT_BUCKETS};
 pub use refresh::Refresher;
 pub use scheduledtasks::{ScheduledTasksSource, StaticScheduledTasks, TaskDescriptor, TaskTrigger};
+pub use threaddump::{thread_dump, StackFrame, ThreadInfo};
 
 /// Released framework version. Calendar-versioned (`YY.M.PATCH`), the
 /// Rust port's counterpart of the Go `kernel.Version` constant.
@@ -127,6 +133,10 @@ mod tests {
         assert_send_sync::<HttpExchangesLayer>();
         assert_send_sync::<TaskDescriptor>();
         assert_send_sync::<CacheDescriptor>();
+        assert_send_sync::<PropertySourceView>();
+        assert_send_sync::<PropertyView>();
+        assert_send_sync::<ThreadInfo>();
+        assert_send_sync::<StackFrame>();
     }
 
     #[test]

@@ -7,11 +7,11 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use firefly_observability::{
-    counted_result, current_traceparent, current_tracestate, inject_headers, inject_reqwest,
-    subscriber_with_writer, subscriber_with_writer_and_handle, timed, with_trace_context,
-    BufferWriter, Counted, FileConfig, LogConfig, LogFormat, MaskStyle, MetricsRegistry,
-    ProcessMetricsCollector, RedactionConfig, Timed, TraceContextLayer, TraceParent, TraceState,
-    TRACEPARENT_HEADER, TRACESTATE_HEADER,
+    apply_external_config, counted_result, current_traceparent, current_tracestate, inject_headers,
+    inject_reqwest, load_log_config, subscriber_with_writer, subscriber_with_writer_and_handle,
+    timed, with_trace_context, BufferWriter, Counted, FileConfig, LogConfig, LogFormat, MaskStyle,
+    MetricsRegistry, ProcessMetricsCollector, RedactionConfig, Timed, TraceContextLayer,
+    TraceParent, TraceState, TRACEPARENT_HEADER, TRACESTATE_HEADER,
 };
 use http::{HeaderMap, Request, Response};
 use tower::{Layer, Service, ServiceExt};
@@ -535,4 +535,125 @@ fn log_config_file_failure_falls_back_to_console() {
         tracing::info!("still logged");
     });
     assert!(buf.as_string().contains("still logged"));
+}
+
+// ---------------------------------------------------------------------------
+// console renderer — pyfly StructlogAdapter ConsoleRenderer branch
+// ---------------------------------------------------------------------------
+
+/// `LogFormat::from_name` maps the pyfly format names: `console`/`pretty`/`dev`
+/// select the console renderer; `logfmt`/`text` select text; everything else
+/// JSON.
+#[test]
+fn console_format_name_mapping_matches_pyfly() {
+    assert_eq!(LogFormat::from_name("console"), LogFormat::Console);
+    assert_eq!(LogFormat::from_name("pretty"), LogFormat::Console);
+    assert_eq!(LogFormat::from_name("dev"), LogFormat::Console);
+    assert_eq!(LogFormat::from_name("logfmt"), LogFormat::Text);
+    assert_eq!(LogFormat::from_name("text"), LogFormat::Text);
+    assert_eq!(LogFormat::from_name("json"), LogFormat::Json);
+    assert_eq!(LogFormat::from_name(""), LogFormat::Json);
+}
+
+/// The console renderer emits a human-readable `time [LEVEL] msg key=value`
+/// line — leading time/level/msg, trailing fields — and is plain text (no
+/// ANSI) by default, matching pyfly's `ConsoleRenderer(colors=False)`.
+#[test]
+fn console_renderer_emits_pretty_plain_line() {
+    let buf = BufferWriter::new();
+    let cfg = LogConfig::new().with_format(LogFormat::Console);
+    let sub = subscriber_with_writer(cfg, buf.clone());
+    tracing::subscriber::with_default(sub, || {
+        tracing::info!(order_id = "42", "placed order");
+    });
+    let line = buf.as_string();
+    // Not JSON (no leading brace) and not bare logfmt (level is bracketed).
+    assert!(!line.trim_start().starts_with('{'), "{line}");
+    assert!(line.contains("[INFO"), "{line}");
+    assert!(line.contains("placed order"), "{line}");
+    assert!(line.contains("order_id=42"), "{line}");
+    // Plain by default: no ANSI escape bytes.
+    assert!(
+        !line.contains('\u{1b}'),
+        "default console is uncolored: {line}"
+    );
+}
+
+/// With `console_colors` enabled, the level is colorized (ANSI escapes
+/// present); the message text is still readable.
+#[test]
+fn console_renderer_colors_when_enabled() {
+    let buf = BufferWriter::new();
+    let cfg = LogConfig::new()
+        .with_format(LogFormat::Console)
+        .with_console_colors(true);
+    let sub = subscriber_with_writer(cfg, buf.clone());
+    tracing::subscriber::with_default(sub, || {
+        tracing::warn!("watch out");
+    });
+    let line = buf.as_string();
+    assert!(line.contains('\u{1b}'), "colored console has ANSI: {line}");
+    assert!(line.contains("watch out"), "{line}");
+}
+
+// ---------------------------------------------------------------------------
+// external logging-config-file loading — pyfly logging.config_loader
+// ---------------------------------------------------------------------------
+
+/// pyfly `test_apply_dictconfig_yaml` analog (JSON dictConfig shape): an
+/// external file sets root level, format, and per-target levels, folded over
+/// the base config.
+#[test]
+fn external_json_config_reconfigures_logging() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("logging.json");
+    std::fs::write(
+        &path,
+        r#"{"level":"DEBUG","format":"console","levels":{"firefly_web":"WARN"}}"#,
+    )
+    .unwrap();
+    let cfg = load_log_config(&path, LogConfig::default()).unwrap();
+    assert_eq!(cfg.level, Level::DEBUG);
+    assert_eq!(cfg.format, LogFormat::Console);
+    assert_eq!(cfg.levels.get("firefly_web"), Some(&Level::WARN));
+}
+
+/// pyfly `test_apply_fileconfig_ini` analog (flat key=value): an external
+/// `.properties` file reconfigures logging.
+#[test]
+fn external_properties_config_reconfigures_logging() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("logging.properties");
+    std::fs::write(&path, "level = warn\nformat = logfmt\n").unwrap();
+    let cfg = load_log_config(&path, LogConfig::default()).unwrap();
+    assert_eq!(cfg.level, Level::WARN);
+    assert_eq!(cfg.format, LogFormat::Text);
+}
+
+/// pyfly `test_apply_missing_returns_false`: a missing path falls back to the
+/// base config unchanged and reports `applied == false` (startup not crashed).
+#[test]
+fn external_config_missing_path_falls_back() {
+    let base = LogConfig::default().with_service("svc");
+    let (cfg, applied) = apply_external_config("/nope/logging.json", base.clone());
+    assert!(!applied);
+    assert_eq!(cfg, base);
+}
+
+/// An externally-loaded config drives a live subscriber: a `.json` file
+/// switching the root level to DEBUG lets debug records through that the
+/// default INFO config would have dropped.
+#[test]
+fn external_config_drives_live_subscriber() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("logging.json");
+    std::fs::write(&path, r#"{"level":"DEBUG"}"#).unwrap();
+    let (cfg, applied) = apply_external_config(&path, LogConfig::default());
+    assert!(applied);
+    let buf = BufferWriter::new();
+    let sub = subscriber_with_writer(cfg, buf.clone());
+    tracing::subscriber::with_default(sub, || {
+        tracing::debug!("verbose detail");
+    });
+    assert!(buf.as_string().contains("verbose detail"));
 }

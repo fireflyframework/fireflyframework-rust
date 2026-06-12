@@ -35,6 +35,8 @@ Coverage:
 | `validate_interest_rate` | Percentage band 0..=100, `_within` variant *(pyfly parity)*               |
 | `validate_date`        | ISO-8601 calendar date, `_with_format` strftime variant *(pyfly parity)*    |
 | `validate_datetime`    | ISO-8601 datetime (`T` or space, fractional secs, offset or `Z`) *(pyfly parity)* |
+| `validate_national_id` | Generic national id — 5..20 alphanumerics after stripping spaces/dashes *(pyfly parity)* |
+| `validate_tax_id`      | Generic tax id — `^[A-Z0-9]{3,20}$` after upper-casing (no separator stripping) *(pyfly parity)* |
 
 ## Why pure functions?
 
@@ -98,6 +100,8 @@ pub fn validate_interest_rate_within(value: f64, min_pct: f64, max_pct: f64) -> 
 pub fn validate_date(s: &str) -> Result<(), ValidationError>;                      // %Y-%m-%d
 pub fn validate_date_with_format(s: &str, fmt: &str) -> Result<(), ValidationError>;
 pub fn validate_datetime(s: &str) -> Result<(), ValidationError>;
+pub fn validate_national_id(s: &str) -> Result<(), ValidationError>;               // 5..=20 alnum after strip
+pub fn validate_tax_id(s: &str) -> Result<(), ValidationError>;                    // ^[A-Z0-9]{3,20}$ after upper
 ```
 
 ## pyfly parity
@@ -129,10 +133,19 @@ as the rest of the crate:
   `±HH:MM`/`±HHMM` offsets or trailing `Z`, minute precision, and bare
   dates. Compact "basic" forms (`20260507T120000`) and hour-only times
   are deliberately not accepted.
+* **`validate_national_id` / `validate_tax_id` are GENERIC format
+  checks** — distinct from the nation-specific `validate_dni` / `nie` /
+  `nif` / `ssn` / `vat` validators above. `validate_national_id` strips
+  spaces and dashes, upper-cases, then requires 5..=20 alphanumerics
+  (pyfly's `is_valid_national_id`); `validate_tax_id` only upper-cases
+  (no separator stripping) and matches `^[A-Z0-9]{3,20}$` (pyfly's
+  `is_valid_tax_id`), so any space/dash/punctuation in a tax id is
+  rejected. Reasons are pyfly's `invalid national id` / `invalid tax id`.
 * **Deliberate divergences**: alphabets are ASCII-only (Python's
   `str.isdigit`/`str.isalnum` would also accept non-ASCII Unicode
-  digits/letters), and the amount/interest validators take a typed
-  `f64` instead of pyfly's "anything `float()` can coerce".
+  digits/letters — this applies to `validate_national_id` too), and the
+  amount/interest validators take a typed `f64` instead of pyfly's
+  "anything `float()` can coerce".
 
 ```rust
 use firefly_validators::{validate_amount_with, validate_cvv, validate_datetime};

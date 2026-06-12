@@ -53,12 +53,52 @@ the Go struct tags exactly, so rule files transfer across the Java,
 
 ## Operators
 
-`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `notIn`, `contains`,
-`startsWith`, `endsWith`, `matches` (regex), `isNull`, `isNotNull`.
+**Go-parity set:** `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `notIn`,
+`contains`, `startsWith`, `endsWith`, `matches` (regex), `isNull`,
+`isNotNull`.
+
+**pyfly-parity additions:** `between`, `notContains`, `exists`,
+`isEmpty`:
+
+| Op            | Semantics                                                            |
+|---------------|----------------------------------------------------------------------|
+| `between`     | operand `[lo, hi]`; true when `lo <= fact <= hi` (numeric or lexical). A null/absent fact is false; a non-2-element operand fails at evaluation. |
+| `notContains` | inverse of `contains`; a null/absent fact is false (neither holds). |
+| `exists`      | true when the field is present **and** non-null; operand ignored.    |
+| `isEmpty`     | true when the field is null/absent, `""`, `[]`, or `{}`; `0`/`false` are *not* empty; operand ignored. |
+
+`Op::from` also accepts pyfly's **snake_case** spellings (`not_in`,
+`starts_with`, `ends_with`, `is_null`, `is_not_null`, `not_contains`,
+`is_empty`, and `regex` → `matches`), normalising them to the canonical
+camelCase variant — so rule documents authored against the pyfly DSL
+parse unchanged. Re-serialization always emits the canonical camelCase
+wire spelling, keeping the Go-parity byte stream intact.
 
 Like Go's open `type Op string`, an unrecognised operator survives
 parsing (`Op::Other`) and is rejected at **evaluation** time with
 `ruleengine: unknown op: …`.
+
+### Rule `otherwise` / `enabled` and `EvaluationMode`
+
+On top of the Go set, the Rust `Rule` carries pyfly's two extra fields:
+
+* `otherwise` — else-branch actions emitted when `when` evaluates
+  **false** (the verdict collects them but the rule is **not** listed in
+  `matched`). Empty by default and **omitted from the wire**.
+* `enabled` — when `false`, the rule is **skipped entirely** (it never
+  matches and fires no actions). Defaults to `true` and is omitted from
+  the wire when enabled.
+
+Both serialize byte-for-byte as before for any rule that does not opt in,
+so existing Go-parity rule files are unaffected.
+
+`AstEvaluator::evaluate_with_mode` and `RuleEngineService::with_mode`
+accept an `EvaluationMode`:
+
+* `EvaluationMode::All` (default) — evaluate every enabled rule.
+* `EvaluationMode::FirstMatch` — stop after the first *matching* rule
+  (non-matching rules before it are still evaluated and their
+  `otherwise` actions still fire).
 
 ### Number semantics (Go parity)
 
@@ -80,13 +120,24 @@ verbatim so identical wire bytes yield identical verdicts.
 ```rust,ignore
 // models
 pub enum   Op        { Eq, Ne, Lt, Lte, Gt, Gte, In, NotIn, Contains,
-                       StartsWith, EndsWith, Matches, IsNull, IsNotNull, Other(String) }
+                       StartsWith, EndsWith, Matches, IsNull, IsNotNull,
+                       Between, NotContains, Exists, IsEmpty, Other(String) }
 pub struct Condition { path: String, op: Op, value: Value }
 pub struct Logic     { all: Vec<Logic>, any: Vec<Logic>, not: Option<Box<Logic>>, cond: Option<Condition> }
 pub struct Action    { action_type: String, params: Map<String, Value> }   // serialized as `type`
-pub struct Rule      { id, description: String, priority: i64, when: Logic, then: Vec<Action> }
+pub struct Rule      { id, description: String, priority: i64, enabled: bool,
+                       when: Logic, then: Vec<Action>, otherwise: Vec<Action> }
 pub struct RuleSet   { name, version: String, rules: Vec<Rule> }
 impl RuleSet         { fn from_yaml(&str) -> Result<Self, DslError>; fn to_yaml(&self) -> Result<String, DslError> }
+
+// core
+pub enum   EvaluationMode { All, FirstMatch }   // ALL is the default
+impl AstEvaluator    { fn evaluate_with_mode(&self, &RuleSet, &Fact, EvaluationMode) -> Result<Verdict, EvalError> }
+
+// validation
+pub fn     validate_ruleset(&RuleSet) -> Vec<String>;   // empty = valid
+pub struct RuleSetValidator;     // ::check / ::assert_valid
+pub struct RuleValidationError { ruleset_name: String, issues: Vec<String> }
 
 // interfaces
 pub type   Fact    = serde_json::Map<String, Value>;
@@ -233,6 +284,7 @@ pub struct MemoryRuleSetRepository;   // RwLock-backed, keyed by RuleSet.name
 
 pub struct RuleEngineService;         // RuleEngineService::in_memory()
 impl RuleEngineService {
+    fn with_mode(self, EvaluationMode) -> Self;   // ALL (default) | FIRST_MATCH
     async fn register(&self, ruleset: RuleSet);
     async fn evaluate(&self, &RuleSet, &Fact) -> Result<EvaluationOutcome, EvalError>;
     async fn evaluate_by_name(&self, name, &Fact) -> Result<EvaluationOutcome, ServiceError>;
@@ -246,7 +298,33 @@ pub struct EvaluationOutcome {
 Rulesets are keyed by `RuleSet::name` (the Rust port has no separate
 `id`). `evaluate`/`evaluate_by_name` run the matched verdict's actions
 over a **copy** of the input fact (the input is never mutated) and return
-the post-execution `facts` alongside the verdict.
+the post-execution `facts` alongside the verdict. The service honours its
+`EvaluationMode` (set via `with_mode`): in `FirstMatch`, only the actions
+of rules up to and including the first match are executed. Matched rules'
+`then` and non-matched rules' `otherwise` actions both run; disabled
+rules are skipped.
+
+### `validation` — `validate_ruleset` / `RuleSetValidator`
+
+A static linter (pyfly's `rule_engine.validation`) that returns a list of
+human-readable issues a consumer can run before deploying a rule set —
+the AST itself only rejects malformed DSL at parse time.
+
+```rust,ignore
+pub fn validate_ruleset(&RuleSet) -> Vec<String>;   // empty = valid
+pub struct RuleSetValidator;
+impl RuleSetValidator {
+    fn check(&RuleSet) -> Vec<String>;
+    fn assert_valid(&RuleSet) -> Result<(), RuleValidationError>;
+}
+```
+
+Reports: duplicate rule ids, unknown operators (`Op::Other`), malformed
+`between` operands (not a 2-element list), ambiguous logic nodes (more
+than one of `cond`/`all`/`any`/`not` set), `set`/`increment` actions
+missing a `target`, and unknown action types (outside
+`set`/`increment`/`log`/`call`/`calculate`). Both `then` and `otherwise`
+branches are validated.
 
 ### REST: evaluate-by-name (`web`)
 

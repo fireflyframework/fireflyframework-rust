@@ -257,6 +257,16 @@ strings → typed predicates).
     (`SET … EX` / `GET` / `DEL`, configurable key prefix + TTL), and
     `PostgresTokenStore` (lazy table creation, SQL-identifier-validated
     table name).
+* **`PasswordEncoder` + `BcryptPasswordEncoder`** (pyfly
+  `pyfly.security.password`) — a standalone, reusable credential
+  hash/verify primitive, usable independently of any IdP (a worker, a
+  custom user store, a rotation job). `BcryptPasswordEncoder::new()` uses
+  the pyfly default work factor (`DEFAULT_ROUNDS = 12`);
+  `with_rounds(n)` mirrors pyfly's `rounds=`. `hash` / `verify` return a
+  `Result<_, SecurityError>` (Rust surfaces a malformed stored hash as a
+  value, not an exception); a correct-but-mismatching password is
+  `Ok(false)`. Wire-compatible `$2b$` bcrypt hashes interchange with the
+  `firefly-idp-internal-db` adapter and the Go/Java/.NET ports.
 
 ### pyfly-parity tests
 

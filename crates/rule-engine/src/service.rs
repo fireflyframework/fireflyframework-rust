@@ -40,7 +40,7 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 
 use crate::actions::ActionRegistry;
-use crate::core::{AstEvaluator, EvalError};
+use crate::core::{AstEvaluator, EvalError, EvaluationMode};
 use crate::interfaces::{Evaluator, Fact, Verdict};
 use crate::models::RuleSet;
 
@@ -156,10 +156,12 @@ pub struct RuleEngineService {
     repository: Arc<dyn RuleSetRepository>,
     evaluator: Arc<dyn Evaluator>,
     registry: Arc<ActionRegistry>,
+    mode: EvaluationMode,
 }
 
 impl RuleEngineService {
-    /// Wires the given repository, evaluator, and action registry.
+    /// Wires the given repository, evaluator, and action registry under
+    /// [`EvaluationMode::All`] (every enabled rule is evaluated).
     pub fn new(
         repository: Arc<dyn RuleSetRepository>,
         evaluator: Arc<dyn Evaluator>,
@@ -169,7 +171,25 @@ impl RuleEngineService {
             repository,
             evaluator,
             registry,
+            mode: EvaluationMode::All,
         }
+    }
+
+    /// Sets the [`EvaluationMode`], builder-style.
+    ///
+    /// [`EvaluationMode::FirstMatch`] makes [`evaluate`](Self::evaluate)
+    /// / [`evaluate_by_name`](Self::evaluate_by_name) stop after the
+    /// first matching rule (pyfly parity); the default is
+    /// [`EvaluationMode::All`].
+    #[must_use]
+    pub fn with_mode(mut self, mode: EvaluationMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Returns the service's [`EvaluationMode`].
+    pub fn mode(&self) -> EvaluationMode {
+        self.mode
     }
 
     /// Builds a service backed by a fresh [`MemoryRuleSetRepository`], the
@@ -226,7 +246,10 @@ impl RuleEngineService {
         ruleset: &RuleSet,
         fact: &Fact,
     ) -> Result<EvaluationOutcome, EvalError> {
-        let verdict = self.evaluator.evaluate(ruleset, fact).await?;
+        let verdict = self
+            .evaluator
+            .evaluate_with_mode(ruleset, fact, self.mode)
+            .await?;
         let mut facts = fact.clone();
         let outcome = self.registry.execute(&verdict.actions, &mut facts);
         Ok(EvaluationOutcome {
@@ -269,6 +292,7 @@ impl std::fmt::Debug for RuleEngineService {
 mod tests {
     use super::*;
     use crate::actions::ActionError;
+    use crate::core::EvaluationMode;
     use crate::models::{Action, Logic, Op, Rule};
     use serde_json::json;
 
@@ -408,6 +432,114 @@ mod tests {
         let outcome = service.evaluate(&rs, &Fact::new()).await.unwrap();
         assert!(outcome.error.is_none());
         assert_eq!(outcome.facts["called"], json!("svc"));
+    }
+
+    // ----- EvaluationMode (ports pyfly test_modes.py through the service) --
+
+    fn modes_ruleset() -> RuleSet {
+        RuleSet::new("rs")
+            .with_rule(
+                Rule::new("high", Logic::cond("tier", Op::Eq, json!("gold")))
+                    .with_priority(10)
+                    .with_action(
+                        Action::new("set")
+                            .with_param("target", "high_ran")
+                            .with_param("value", true),
+                    ),
+            )
+            .with_rule(
+                Rule::new("low", Logic::cond("tier", Op::Eq, json!("gold")))
+                    .with_priority(1)
+                    .with_action(
+                        Action::new("set")
+                            .with_param("target", "low_ran")
+                            .with_param("value", true),
+                    ),
+            )
+    }
+
+    #[tokio::test]
+    async fn all_mode_fires_actions_for_all_matching_rules() {
+        let service = RuleEngineService::in_memory(); // ALL is the default
+        assert_eq!(service.mode(), EvaluationMode::All);
+        let outcome = service
+            .evaluate(&modes_ruleset(), &fact(json!({"tier": "gold"})))
+            .await
+            .unwrap();
+        assert_eq!(outcome.verdict.matched, ["high", "low"]);
+        assert_eq!(outcome.facts["high_ran"], json!(true));
+        assert_eq!(outcome.facts["low_ran"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn first_match_mode_lower_priority_actions_do_not_fire() {
+        let service = RuleEngineService::in_memory().with_mode(EvaluationMode::FirstMatch);
+        let outcome = service
+            .evaluate(&modes_ruleset(), &fact(json!({"tier": "gold"})))
+            .await
+            .unwrap();
+        assert_eq!(outcome.verdict.matched, ["high"]);
+        assert_eq!(outcome.facts["high_ran"], json!(true));
+        assert!(
+            !outcome.facts.contains_key("low_ran"),
+            "low-priority rule must NOT have executed"
+        );
+    }
+
+    #[tokio::test]
+    async fn first_match_mode_returns_all_when_no_rule_matches() {
+        let service = RuleEngineService::in_memory().with_mode(EvaluationMode::FirstMatch);
+        let outcome = service
+            .evaluate(&modes_ruleset(), &fact(json!({"tier": "bronze"})))
+            .await
+            .unwrap();
+        assert!(outcome.verdict.matched.is_empty());
+        assert!(!outcome.facts.contains_key("high_ran"));
+        assert!(!outcome.facts.contains_key("low_ran"));
+    }
+
+    // ----- otherwise branch through the service ---------------------------
+
+    #[tokio::test]
+    async fn otherwise_actions_execute_when_when_is_false() {
+        let service = RuleEngineService::in_memory();
+        let rs = RuleSet::new("rs").with_rule(
+            Rule::new("r", Logic::cond("tier", Op::Eq, json!("gold")))
+                .with_action(
+                    Action::new("set")
+                        .with_param("target", "result")
+                        .with_param("value", "then"),
+                )
+                .with_otherwise(
+                    Action::new("set")
+                        .with_param("target", "result")
+                        .with_param("value", "else"),
+                ),
+        );
+        let outcome = service
+            .evaluate(&rs, &fact(json!({"tier": "bronze"})))
+            .await
+            .unwrap();
+        assert!(outcome.verdict.matched.is_empty());
+        assert_eq!(outcome.facts["result"], json!("else"));
+        assert_eq!(outcome.actions_executed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn disabled_rule_fires_nothing_through_service() {
+        let service = RuleEngineService::in_memory();
+        let rs = RuleSet::new("rs").with_rule(
+            Rule::new("off", Logic::default())
+                .with_enabled(false)
+                .with_action(
+                    Action::new("set")
+                        .with_param("target", "x")
+                        .with_param("value", 1),
+                ),
+        );
+        let outcome = service.evaluate(&rs, &Fact::new()).await.unwrap();
+        assert!(outcome.verdict.matched.is_empty());
+        assert!(!outcome.facts.contains_key("x"));
     }
 
     // ----- passthrough -----------------------------------------------------

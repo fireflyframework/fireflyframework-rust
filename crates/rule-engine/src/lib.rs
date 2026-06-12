@@ -19,7 +19,10 @@
 //!   the `set`/`increment`/`log` builtins, and [`ActionRegistry`].
 //! * [`service`] — pyfly-parity named-ruleset management:
 //!   [`RuleSetRepository`], [`MemoryRuleSetRepository`], and
-//!   [`RuleEngineService`] (`register` / `evaluate_by_name`).
+//!   [`RuleEngineService`] (`register` / `evaluate_by_name`, with an
+//!   [`EvaluationMode`]).
+//! * [`validation`] — pyfly-parity static linter:
+//!   [`validate_ruleset`] / [`RuleSetValidator`].
 //! * [`web`] — REST admin router ([`rule_engine_router`]) and the
 //!   named-ruleset service router ([`rule_engine_service_router`]).
 //! * [`sdk`] — typed admin client ([`RuleEngineClient`]).
@@ -43,12 +46,24 @@
 //!
 //! ## Operators
 //!
-//! `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `notIn`, `contains`,
-//! `startsWith`, `endsWith`, `matches` (regex), `isNull`, `isNotNull`.
+//! Go-parity set: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `notIn`,
+//! `contains`, `startsWith`, `endsWith`, `matches` (regex), `isNull`,
+//! `isNotNull`.
+//!
+//! pyfly-parity additions: `between` (inclusive `[lo, hi]` range),
+//! `notContains` (inverse of `contains`), `exists` (present and
+//! non-null), `isEmpty` (null/absent, empty string, empty list, or
+//! empty object). [`Op::from`] also accepts pyfly's snake_case spellings
+//! (`not_in`, `starts_with`, `is_null`, `not_contains`, `is_empty`,
+//! `regex` → `matches`, …), so rule documents authored against the
+//! pyfly DSL parse unchanged.
 //!
 //! Rules fire in **descending priority order**; ties broken by document
 //! order. The [`Verdict`] returns the matched rule ids and the merged
-//! action list.
+//! action list. A rule may carry an `otherwise` branch (else-actions
+//! fired when `when` is false) and an `enabled` flag (a disabled rule is
+//! skipped entirely). [`EvaluationMode::FirstMatch`] stops evaluation
+//! after the first matching rule.
 //!
 //! ## Quick start
 //!
@@ -90,19 +105,21 @@ pub mod interfaces;
 pub mod models;
 pub mod sdk;
 pub mod service;
+pub mod validation;
 pub mod web;
 
 pub use crate::actions::{
     ActionError, ActionHandler, ActionOutcome, ActionRegistry, IncrementHandler, LogHandler,
     SetHandler,
 };
-pub use crate::core::{AstEvaluator, EvalError};
+pub use crate::core::{AstEvaluator, EvalError, EvaluationMode};
 pub use crate::interfaces::{Evaluator, Fact, Verdict};
 pub use crate::models::{Action, Condition, DslError, Logic, Op, Rule, RuleSet};
 pub use crate::sdk::{HttpTransport, ReqwestTransport, RuleEngineClient, SdkError};
 pub use crate::service::{
     EvaluationOutcome, MemoryRuleSetRepository, RuleEngineService, RuleSetRepository, ServiceError,
 };
+pub use crate::validation::{validate_ruleset, RuleSetValidator, RuleValidationError};
 pub use crate::web::{
     rule_engine_router, rule_engine_router_with, rule_engine_service_router,
     rule_engine_service_router_with, ErrorBody, EvaluateByNameRequest, EvaluateByNameResponse,

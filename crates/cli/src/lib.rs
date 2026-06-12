@@ -10,6 +10,8 @@
 //! - [`generate`] — `firefly generate` per-artifact code generators.
 //! - [`scaffold`] — the high-level `firefly new` flow (validation, git init).
 //! - [`actuator`] — the remote `/actuator/*` introspection client.
+//! - [`db`] — the `firefly db` migration command group (firefly-migrations).
+//! - [`openapi`] — the `firefly openapi` skeleton-spec export.
 //! - [`diagnostics`] — `firefly info` / `firefly doctor` environment checks.
 //! - [`cli`] — the clap v4 command definitions and dispatcher.
 //!
@@ -24,10 +26,12 @@
 
 pub mod actuator;
 pub mod cli;
+pub mod db;
 pub mod diagnostics;
 pub mod error;
 pub mod generate;
 pub mod naming;
+pub mod openapi;
 pub mod project;
 pub mod scaffold;
 pub mod templates;

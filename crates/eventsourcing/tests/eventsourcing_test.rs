@@ -289,6 +289,7 @@ fn domain_event_json_wire_format_matches_go() {
         time: Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap(),
         payload: br#"{"name":"alice"}"#.to_vec(),
         metadata: BTreeMap::new(),
+        tenant_id: None,
     };
     let json = serde_json::to_string(&ev).unwrap();
     // Field names, ordering, RFC 3339 time, base64 payload and the
@@ -312,6 +313,7 @@ fn domain_event_json_round_trip_with_metadata() {
         time: Utc.with_ymd_and_hms(2026, 6, 12, 10, 0, 0).unwrap(),
         payload: b"{}".to_vec(),
         metadata,
+        tenant_id: None,
     };
     let json = serde_json::to_string(&ev).unwrap();
     // BTreeMap sorts keys — matching Go's sorted map-key encoding.

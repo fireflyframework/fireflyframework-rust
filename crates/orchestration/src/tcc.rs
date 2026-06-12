@@ -1,6 +1,16 @@
 //! TCC engine: Try-Confirm-Cancel two-phase orchestration.
+//!
+//! # Per-step retry (pyfly parity)
+//!
+//! A [`TccParticipant`] may declare a [`RetryPolicy`](crate::RetryPolicy)
+//! via [`TccParticipant::with_retry`]; the try and confirm phases are then
+//! invoked through [`invoke_with_policy`](crate::invoke_with_policy) (max
+//! attempts, exponential backoff, jitter, per-attempt timeout) — pyfly's
+//! `ParticipantInvoker` / `StepInvoker`.
 
-use crate::{boxed_action, ActionFn, BoxError};
+use crate::step_context::StepContext;
+use crate::step_invoker::invoke_with_policy;
+use crate::{boxed_action, ActionFn, BoxError, RetryPolicy};
 use std::fmt;
 use std::future::Future;
 use thiserror::Error;
@@ -13,6 +23,7 @@ pub struct TccParticipant {
     try_action: ActionFn,
     confirm_action: ActionFn,
     cancel_action: Option<ActionFn>,
+    retry: RetryPolicy,
 }
 
 impl TccParticipant {
@@ -34,6 +45,7 @@ impl TccParticipant {
             try_action: boxed_action(try_action),
             confirm_action: boxed_action(confirm_action),
             cancel_action: None,
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -48,9 +60,23 @@ impl TccParticipant {
         self
     }
 
+    /// Sets the [`RetryPolicy`](crate::RetryPolicy) applied to this
+    /// participant's try and confirm phases — pyfly's per-step retry /
+    /// backoff / jitter / timeout enforcement. The default policy runs each
+    /// phase once.
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
+    }
+
     /// The participant name, as reported in error messages.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The retry policy configured for this participant.
+    pub fn retry_policy(&self) -> &RetryPolicy {
+        &self.retry
     }
 }
 
@@ -59,6 +85,7 @@ impl fmt::Debug for TccParticipant {
         f.debug_struct("TccParticipant")
             .field("name", &self.name)
             .field("has_cancel", &self.cancel_action.is_some())
+            .field("retry", &self.retry)
             .finish_non_exhaustive()
     }
 }
@@ -105,6 +132,19 @@ pub enum TccError {
     Confirm(Vec<ConfirmError>),
 }
 
+/// Unwraps a [`StepInvokeError`](crate::StepInvokeError) into the
+/// `BoxError` cause attached to a TCC error, preserving the historical
+/// message shape for the default single-attempt / no-timeout policy.
+fn unwrap_invoke_cause(retry: &RetryPolicy, err: crate::StepInvokeError) -> BoxError {
+    if retry.max_attempts.max(1) == 1 && retry.timeout_ms == 0 {
+        if let Some(source) = err.into_source() {
+            return source;
+        }
+        return "participant failed".into();
+    }
+    Box::new(err)
+}
+
 /// Orchestrates a two-phase commit across a set of participants.
 pub struct Tcc {
     name: String,
@@ -147,15 +187,24 @@ impl Tcc {
     /// is invoked on the participants that succeeded their try
     /// (best-effort, reverse order). On success, confirm is invoked on
     /// every participant.
+    ///
+    /// Each try and confirm phase is invoked under the participant's
+    /// [`RetryPolicy`](crate::RetryPolicy) ([`TccParticipant::with_retry`]).
     pub async fn run(&self) -> Result<(), TccError> {
+        let ctx = StepContext::new();
         let mut tried: Vec<usize> = Vec::with_capacity(self.participants.len());
         for (i, participant) in self.participants.iter().enumerate() {
-            if let Err(source) = (participant.try_action)().await {
+            let try_result =
+                invoke_with_policy(&participant.name, &participant.retry, &ctx, |_ctx| {
+                    (participant.try_action)()
+                })
+                .await;
+            if let Err(invoke_err) = try_result {
                 self.cancel_tried(&tried).await;
                 return Err(TccError::Try {
                     tcc: self.name.clone(),
                     participant: participant.name.clone(),
-                    source,
+                    source: unwrap_invoke_cause(&participant.retry, invoke_err),
                 });
             }
             tried.push(i);
@@ -164,10 +213,15 @@ impl Tcc {
         let mut failures: Vec<ConfirmError> = Vec::new();
         for &i in &tried {
             let participant = &self.participants[i];
-            if let Err(source) = (participant.confirm_action)().await {
+            let confirm_result =
+                invoke_with_policy(&participant.name, &participant.retry, &ctx, |_ctx| {
+                    (participant.confirm_action)()
+                })
+                .await;
+            if let Err(invoke_err) = confirm_result {
                 failures.push(ConfirmError {
                     participant: participant.name.clone(),
-                    source,
+                    source: unwrap_invoke_cause(&participant.retry, invoke_err),
                 });
             }
         }
@@ -347,5 +401,55 @@ mod tests {
     #[tokio::test]
     async fn tcc_with_no_participants_is_ok() {
         Tcc::new("empty").run().await.expect("empty is ok");
+    }
+
+    // ── Per-step retry enforcement (pyfly ParticipantInvoker) ───────────
+
+    // A flaky try succeeds within its retry budget; the TCC confirms.
+    #[tokio::test]
+    async fn tcc_try_retries_until_success() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let tries = Arc::new(AtomicU32::new(0));
+        let t = tries.clone();
+        let tcc = Tcc::new("retrying").participant(
+            TccParticipant::new(
+                "p",
+                move || {
+                    let t = t.clone();
+                    async move {
+                        if t.fetch_add(1, Ordering::SeqCst) < 1 {
+                            Err("transient".into())
+                        } else {
+                            Ok(())
+                        }
+                    }
+                },
+                || async { Ok(()) },
+            )
+            .with_retry(RetryPolicy {
+                max_attempts: 3,
+                backoff_ms: 1,
+                ..Default::default()
+            }),
+        );
+        tcc.run().await.expect("confirms after retry");
+        assert_eq!(tries.load(Ordering::SeqCst), 2);
+    }
+
+    // A try exhausting its retries fails the TCC with a Try error carrying
+    // the retry context.
+    #[tokio::test]
+    async fn tcc_try_retry_exhausted_fails() {
+        let tcc = Tcc::new("exhaust").participant(
+            TccParticipant::new("p", || async { Err("nope".into()) }, || async { Ok(()) })
+                .with_retry(RetryPolicy {
+                    max_attempts: 2,
+                    backoff_ms: 1,
+                    ..Default::default()
+                }),
+        );
+        let err = tcc.run().await.expect_err("must fail");
+        assert!(matches!(err, TccError::Try { .. }));
+        assert!(err.to_string().contains("2 attempt"));
     }
 }

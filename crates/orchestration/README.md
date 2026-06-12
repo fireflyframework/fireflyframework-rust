@@ -10,8 +10,12 @@ engines** every Firefly platform agrees on:
 | Engine     | Topology                      | Compensation                       |
 |------------|-------------------------------|------------------------------------|
 | `Saga`     | Sequential steps              | Reverse-order, configurable policy |
-| `Workflow` | DAG with parallel branches    | None — fail-fast                   |
+| `Workflow` | DAG with parallel branches    | Reverse-order, configurable policy |
 | `Tcc`      | Try-all then Confirm-all      | Cancel-tried-on-Try-failure        |
+
+All three engines additionally apply a per-step `RetryPolicy` (max attempts,
+exponential backoff, jitter, per-attempt timeout) and thread a typed
+`StepContext` blackboard so a step can consume the outputs of prior steps.
 
 Each engine accepts a typed step / node / participant built from async
 closures, runs as a plain future on the caller's task, and respects
@@ -87,6 +91,13 @@ unreachable node aborts the run with `"no progress (dependency cycle?)"`.
 Failures within the same wave are aggregated one message per line,
 mirroring Go's `errors.Join`.
 
+Nodes built with `Node::with_compensation` are rolled back in reverse
+completion order on any failure (pyfly's `WorkflowExecutor._compensate`),
+under the configurable `CompensationPolicy` — the same shape as `Saga`.
+`Node::with_context` lets a node read prior step results, `Node::when`
+skips it on a false predicate, and `Node::fire_and_forget` schedules it
+without blocking the wave.
+
 ## `Tcc`
 
 Try-Confirm-Cancel. Try-all participants; Confirm-all on success;
@@ -115,10 +126,12 @@ assert!(result.is_ok());
 
 ```rust,ignore
 pub struct Step;                       // Step::new(name, execute).with_compensation(f)
+                                      // Step::with_context(name, |ctx| ..).with_retry(policy)
 pub struct Saga;                       // Saga::new(name).policy(p).step(s)
 impl Saga {
     pub async fn run(&self) -> Result<Outcome, SagaFailure>;
     pub async fn run_cancellable(&self, token: &CancellationToken) -> Result<Outcome, SagaFailure>;
+    pub async fn run_with_context(&self, ctx: &StepContext) -> Result<Outcome, SagaFailure>;
 }
 pub enum CompensationPolicy { BestEffort, StopOnError }
 pub enum SagaStatus { Completed, Compensated, Failed }
@@ -127,14 +140,18 @@ pub enum SagaError { Step, Compensation, Cancelled }  // SagaError::is_compensat
 pub struct SagaFailure;                // .outcome() / .error() / .into_parts()
 
 pub struct Node;                       // Node::new(name, run).depends_on(["a", "b"])
-pub struct Workflow;                   // Workflow::new(name).node(n)
+                                      // Node::with_context(name, |ctx| ..).with_compensation(c)
+                                      //   .when("results['x'] == 1").fire_and_forget()
+pub struct Workflow;                   // Workflow::new(name).policy(p).node(n)
 impl Workflow {
     pub async fn run(&self) -> Result<(), WorkflowError>;
     pub async fn run_cancellable(&self, token: &CancellationToken) -> Result<(), WorkflowError>;
+    pub async fn run_with_context(&self, ctx: &StepContext) -> Result<(), WorkflowError>;
 }
 pub enum WorkflowError { DuplicateNode, UnknownDependency, NoProgress, Node, Cancelled, Multiple }
 
 pub struct TccParticipant;             // TccParticipant::new(name, try, confirm).with_cancel(f)
+                                      //   .with_retry(policy)
 pub struct Tcc;                        // Tcc::new(name).participant(p)
 impl Tcc { pub async fn run(&self) -> Result<(), TccError>; }
 pub enum TccError { Try, Confirm }
@@ -142,6 +159,16 @@ pub struct ConfirmError { participant, source }
 
 pub struct CancellationToken;          // new() / cancel() / is_cancelled()
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+// Advanced layer (pyfly transactional.workflow parity).
+pub struct StepContext;                // typed inter-step blackboard
+pub async fn invoke_with_policy(step, &RetryPolicy, &StepContext, action) -> Result<(), StepInvokeError>;
+pub enum StepInvokeError { Failed, TimedOut }
+pub async fn wait_all(..); pub async fn wait_any(..);   // gather / race
+pub enum WaitTarget { Signal, Timer } pub enum WaitOutcome { Signal, Timer } pub enum WaitError { .. }
+pub struct ChildWorkflowService; pub struct ContinueAsNew; pub struct ChildHandle;
+pub struct WorkflowQueryService; pub struct DurableWorkflowState;
+pub struct ConditionError;
 ```
 
 ## pyfly parity — durable orchestration layer
@@ -214,6 +241,52 @@ pub struct TimerService;       // sleep_ms / sleep
 Node::timer(name, Duration)    // sleeps, then completes
 ```
 
+### Per-step retry, inter-step data & advanced workflow primitives
+
+Ports pyfly's `pyfly.transactional.workflow` advanced layer (audit highs).
+
+```rust,ignore
+// Per-step retry / backoff / jitter / timeout (pyfly StepInvoker).
+pub async fn invoke_with_policy(step, &RetryPolicy, &StepContext, action)
+    -> Result<(), StepInvokeError>;
+Step::new(..).with_retry(RetryPolicy { max_attempts, backoff_ms, timeout_ms, .. })
+TccParticipant::new(..).with_retry(RetryPolicy { .. })
+
+// Inter-step data passing — typed blackboard threaded through the run
+// (pyfly @FromStep / @Input / @Variable / @Header argument injection).
+pub struct StepContext;        // set_result / result / result_field / input /
+                              // input_field / set_variable / variable / header /
+                              // to_snapshot / from_snapshot (durable)
+Step::with_context(name, |ctx| async move { .. })   // reads prior step results
+Saga::run_with_context(&ctx)                          // threads ctx through steps
+
+// Workflow step compensation (pyfly WorkflowExecutor._compensate).
+Node::with_context(name, |ctx| async move { .. })
+    .with_compensation(|ctx| async move { .. })       // reverse-order rollback
+Workflow::policy(CompensationPolicy::StopOnError)     // reuses the saga policy
+
+// Conditional + async fire-and-forget steps (pyfly condition= / async_=True).
+Node::with_context(..).when("results['always'] == 'ran'")   // skip when false
+Node::new(..).fire_and_forget()                              // scheduled, not awaited
+
+// Wait/compose gates (pyfly WaitForAll / WaitForAny).
+pub async fn wait_all(&signals, &timers, &[WaitTarget], Option<Duration>) -> Result<(), WaitError>;
+pub async fn wait_any(&signals, &timers, &[WaitTarget], Option<Duration>) -> Result<WaitOutcome, WaitError>;
+pub enum WaitTarget { Signal { correlation_id, signal }, Timer { delay } }
+
+// Child workflows / continue-as-new / query service / durable suspend-resume.
+pub struct ChildWorkflowService;  // register(id, factory) / start / start_with_timeout /
+                                 // start_async (fire-and-forget)
+pub struct ContinueAsNew;         // restart(id, input) — fresh correlation id
+pub struct WorkflowQueryService;  // register / register_query / query / active (pyfly @workflow_query)
+pub struct DurableWorkflowState;  // suspend(&ctx) / resume(cid) over PersistenceProvider
+```
+
+A step that retries unwraps to its original error message for the default
+single-attempt policy, so the historical `step "name": <cause>` wire shape is
+unchanged; a genuine retry-exhaustion or timeout surfaces the richer
+`StepInvokeError` context.
+
 ### Event gateway, scheduler & registry
 
 ```rust,ignore
@@ -274,3 +347,12 @@ dead-letter capture/retry, signal delivery, timer nodes, event-gateway
 dispatch and broker-driven saga starts, scheduled fixed-rate/delay starts,
 DAG validation, execution reports, and the `axum` REST router exercised via
 `tower::ServiceExt::oneshot`.
+
+The advanced layer adds the ported pyfly `workflow` suites: workflow step
+compensation (reverse order, non-compensatable skip, compensation reading
+the prior step's result, StopOnError policy), `wait_all` / `wait_any`
+gather/race with timeout, child workflows (sync / timeout / fire-and-forget),
+continue-as-new, conditional + async fire-and-forget steps, per-step
+retry/backoff/timeout (`StepInvoker`), inter-step data passing, the
+condition expression evaluator, the workflow query service, and durable
+suspend/resume across a simulated restart over `PersistenceProvider`.

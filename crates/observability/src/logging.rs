@@ -29,25 +29,34 @@ use crate::appender::{FileConfig, RollingFileWriter, TeeWriter};
 use crate::redaction::{build_redactor, RedactionConfig, Redactor, RegexRedactor, REDACTED};
 
 /// Output encoding of the log stream — the counterpart of the Go
-/// `LogConfig.Format` string (`"json"` | `"text"`).
+/// `LogConfig.Format` string (`"json"` | `"text"`) and pyfly's
+/// `pyfly.logging.format` (`json` | `logfmt` | `console`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum LogFormat {
     /// One JSON object per line (the production default on every port).
     #[default]
     Json,
-    /// `key=value` pairs, mirroring Go's `slog.NewTextHandler`.
+    /// `key=value` pairs, mirroring Go's `slog.NewTextHandler` and pyfly's
+    /// `logfmt` renderer.
     Text,
+    /// A human-friendly console/dev renderer — pyfly's
+    /// `structlog.dev.ConsoleRenderer`. Renders `time [LEVEL] msg` with the
+    /// remaining fields as `key=value` pairs, optionally ANSI-colored by
+    /// level. Intended for local development, not production pipelines.
+    Console,
 }
 
 impl LogFormat {
-    /// Maps the Go config string to a format: `"text"` selects
-    /// [`LogFormat::Text`], anything else (including `""`) selects
-    /// [`LogFormat::Json`] — the exact branch `NewLogger` takes in Go.
+    /// Maps a config string to a format: `"text"` or `"logfmt"` select
+    /// [`LogFormat::Text`]; `"console"`, `"pretty"`, or `"dev"` select
+    /// [`LogFormat::Console`]; anything else (including `""`) selects
+    /// [`LogFormat::Json`]. The Go branch only knew `"text"`; the `logfmt`
+    /// alias and the console family are pyfly-parity additions.
     pub fn from_name(name: &str) -> Self {
-        if name == "text" {
-            LogFormat::Text
-        } else {
-            LogFormat::Json
+        match name {
+            "text" | "logfmt" => LogFormat::Text,
+            "console" | "pretty" | "dev" => LogFormat::Console,
+            _ => LogFormat::Json,
         }
     }
 }
@@ -78,6 +87,12 @@ pub struct LogConfig {
     /// Optional PII redaction — pyfly's `pyfly.logging.redaction.*`.
     /// `None` (the default) keeps every existing wire shape untouched.
     pub redaction: Option<RedactionConfig>,
+    /// Whether [`LogFormat::Console`] emits ANSI color escapes (level color +
+    /// dim field keys). Ignored by the JSON/text renderers. Defaults to
+    /// `false` — matching pyfly's `ConsoleRenderer(colors=False)` so the
+    /// console output is plain text unless explicitly opted in. Enable it for
+    /// an interactive terminal.
+    pub console_colors: bool,
 }
 
 impl Default for LogConfig {
@@ -90,6 +105,7 @@ impl Default for LogConfig {
             levels: BTreeMap::new(),
             file: None,
             redaction: None,
+            console_colors: false,
         }
     }
 }
@@ -146,6 +162,14 @@ impl LogConfig {
     #[must_use]
     pub fn with_redaction(mut self, redaction: RedactionConfig) -> Self {
         self.redaction = Some(redaction);
+        self
+    }
+
+    /// Enables ANSI coloring for the [`LogFormat::Console`] renderer
+    /// (builder-style). No effect on the JSON/text renderers.
+    #[must_use]
+    pub fn with_console_colors(mut self, enabled: bool) -> Self {
+        self.console_colors = enabled;
         self
     }
 }
@@ -348,6 +372,7 @@ pub struct CorrelationLayer {
     state: Arc<RwLock<LevelState>>,
     service: String,
     format: LogFormat,
+    console_colors: bool,
     redactor: Option<RegexRedactor>,
     allow_fields: HashSet<String>,
     deny_fields: HashSet<String>,
@@ -394,6 +419,7 @@ impl CorrelationLayer {
             })),
             service: cfg.service,
             format: cfg.format,
+            console_colors: cfg.console_colors,
             redactor,
             allow_fields,
             deny_fields,
@@ -452,6 +478,7 @@ impl CorrelationLayer {
         let mut line = match self.format {
             LogFormat::Json => render_json(record),
             LogFormat::Text => render_text(record),
+            LogFormat::Console => render_console(record, self.console_colors),
         };
         line.push('\n');
         if let Ok(mut w) = self.writer.lock() {
@@ -597,6 +624,87 @@ fn text_value(v: &Value) -> String {
         }
         other => other.to_string(),
     }
+}
+
+/// ANSI escape that resets all styling.
+const ANSI_RESET: &str = "\u{1b}[0m";
+/// Dim/faint styling for the leading timestamp and field keys.
+const ANSI_DIM: &str = "\u{1b}[2m";
+
+/// The ANSI color for each level name — green INFO, yellow WARN, red ERROR,
+/// cyan DEBUG (matching structlog's `ConsoleRenderer` palette closely
+/// enough for log-watching).
+fn level_color(level: &str) -> &'static str {
+    match level {
+        "ERROR" => "\u{1b}[31m", // red
+        "WARN" => "\u{1b}[33m",  // yellow
+        "INFO" => "\u{1b}[32m",  // green
+        _ => "\u{1b}[36m",       // cyan (DEBUG/other)
+    }
+}
+
+/// Renders the record as a human-friendly console line — the Rust analog of
+/// pyfly's `structlog.dev.ConsoleRenderer`. Layout:
+///
+/// `<time> [<LEVEL>] <msg> key=value key=value`
+///
+/// `time`, `level`, and `msg` lead the line (in the same fixed positions as
+/// every renderer); the remaining fields trail as `key=value` pairs in
+/// insertion order. With `colors`, the level is colorized and the timestamp +
+/// field keys are dimmed; without it the output is plain text (pyfly's
+/// `colors=False` default). Intended for local development, never for a
+/// production log pipeline.
+fn render_console(fields: &FieldSet, colors: bool) -> String {
+    let mut time = "";
+    let mut level = "";
+    let mut msg = "";
+    let mut rest: Vec<(&str, &Value)> = Vec::new();
+    for (k, v) in &fields.0 {
+        match k.as_str() {
+            "time" => time = v.as_str().unwrap_or(""),
+            "level" => level = v.as_str().unwrap_or(""),
+            "msg" => msg = v.as_str().unwrap_or(""),
+            _ => rest.push((k, v)),
+        }
+    }
+
+    let mut out = String::new();
+    if !time.is_empty() {
+        if colors {
+            out.push_str(ANSI_DIM);
+            out.push_str(time);
+            out.push_str(ANSI_RESET);
+        } else {
+            out.push_str(time);
+        }
+        out.push(' ');
+    }
+    // Level padded to a fixed width so messages align in a terminal.
+    let level_field = format!("[{level:<5}]");
+    if colors {
+        out.push_str(level_color(level));
+        out.push_str(&level_field);
+        out.push_str(ANSI_RESET);
+    } else {
+        out.push_str(&level_field);
+    }
+    out.push(' ');
+    out.push_str(msg);
+
+    for (k, v) in rest {
+        out.push(' ');
+        if colors {
+            out.push_str(ANSI_DIM);
+            out.push_str(k);
+            out.push('=');
+            out.push_str(ANSI_RESET);
+        } else {
+            out.push_str(k);
+            out.push('=');
+        }
+        out.push_str(&text_value(v));
+    }
+    out
 }
 
 /// Builds a complete subscriber (registry + [`CorrelationLayer`]) writing

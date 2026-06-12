@@ -61,6 +61,24 @@ pub enum Op {
     IsNull,
     /// The fact path resolves to a non-null value (`isNotNull`).
     IsNotNull,
+    /// Inclusive range check (`between`): the operand must be a
+    /// two-element list `[lo, hi]` and the predicate holds when
+    /// `lo <= fact <= hi`. A null/absent fact never matches. Ported
+    /// from pyfly's `between` leaf operator.
+    Between,
+    /// Negated containment (`notContains`): the inverse of
+    /// [`Op::Contains`]. A null/absent fact never matches (so neither
+    /// `contains` nor `notContains` holds when the fact is absent),
+    /// matching pyfly's `not_contains`.
+    NotContains,
+    /// The fact path is present **and** non-null (`exists`). The
+    /// converse of [`Op::IsNull`]; the operand is ignored. Ported from
+    /// pyfly's `exists`.
+    Exists,
+    /// The fact is null/absent, the empty string, the empty list, or
+    /// the empty object (`isEmpty`). The operand is ignored. Ported
+    /// from pyfly's `is_empty`.
+    IsEmpty,
     /// Any operator string the engine does not implement; evaluation
     /// fails with an unknown-op error, mirroring Go's open `Op string`.
     Other(String),
@@ -68,7 +86,7 @@ pub enum Op {
 
 impl Op {
     /// Every operator the evaluator implements, in documentation order.
-    pub const ALL: [Op; 14] = [
+    pub const ALL: [Op; 18] = [
         Op::Eq,
         Op::Ne,
         Op::Lt,
@@ -83,10 +101,20 @@ impl Op {
         Op::Matches,
         Op::IsNull,
         Op::IsNotNull,
+        Op::Between,
+        Op::NotContains,
+        Op::Exists,
+        Op::IsEmpty,
     ];
 
     /// The wire spelling of the operator — exactly the string used in
     /// YAML/JSON rule documents (`"eq"`, `"notIn"`, `"isNotNull"`, …).
+    ///
+    /// The four pyfly-parity operators added on top of the Go set keep
+    /// the crate's camelCase convention (`"notContains"`, `"isEmpty"`);
+    /// [`Op::from`] additionally accepts pyfly's snake_case spellings
+    /// (`"not_contains"`, `"is_empty"`, `"not_in"`, `"is_null"`, …) so
+    /// rule documents authored against the pyfly DSL parse unchanged.
     pub fn as_str(&self) -> &str {
         match self {
             Op::Eq => "eq",
@@ -103,6 +131,10 @@ impl Op {
             Op::Matches => "matches",
             Op::IsNull => "isNull",
             Op::IsNotNull => "isNotNull",
+            Op::Between => "between",
+            Op::NotContains => "notContains",
+            Op::Exists => "exists",
+            Op::IsEmpty => "isEmpty",
             Op::Other(s) => s,
         }
     }
@@ -124,13 +156,19 @@ impl From<&str> for Op {
             "gt" => Op::Gt,
             "gte" => Op::Gte,
             "in" => Op::In,
-            "notIn" => Op::NotIn,
+            // Canonical camelCase plus pyfly's snake_case alias.
+            "notIn" | "not_in" => Op::NotIn,
             "contains" => Op::Contains,
-            "startsWith" => Op::StartsWith,
-            "endsWith" => Op::EndsWith,
-            "matches" => Op::Matches,
-            "isNull" => Op::IsNull,
-            "isNotNull" => Op::IsNotNull,
+            "startsWith" | "starts_with" => Op::StartsWith,
+            "endsWith" | "ends_with" => Op::EndsWith,
+            // pyfly spells regex `regex`; the Go/Rust spelling is `matches`.
+            "matches" | "regex" => Op::Matches,
+            "isNull" | "is_null" => Op::IsNull,
+            "isNotNull" | "is_not_null" => Op::IsNotNull,
+            "between" => Op::Between,
+            "notContains" | "not_contains" => Op::NotContains,
+            "exists" => Op::Exists,
+            "isEmpty" | "is_empty" => Op::IsEmpty,
             other => Op::Other(other.to_owned()),
         }
     }
@@ -282,8 +320,33 @@ fn priority_is_zero(p: &i64) -> bool {
     *p == 0
 }
 
+/// Default for [`Rule::enabled`] — a rule is enabled unless the document
+/// explicitly sets `enabled: false`.
+fn enabled_default() -> bool {
+    true
+}
+
+/// Serde skip predicate for [`Rule::enabled`]: an enabled rule is the
+/// default, so `enabled: true` is omitted from the wire to keep the
+/// Go-parity byte stream unchanged for rules that never opt out.
+fn enabled_is_default(enabled: &bool) -> bool {
+    *enabled
+}
+
 /// `Rule` is the top-level DSL document: an id, an optional priority,
 /// a `when` logic tree and the `then` actions emitted on match.
+///
+/// On top of the Go set, the Rust port carries pyfly's `otherwise` and
+/// `enabled` fields:
+///
+/// * `otherwise` — the **else-branch** actions emitted when `when`
+///   evaluates **false** (pyfly's `Rule.otherwise`). Empty by default
+///   and omitted from the wire, so a rule that never uses it serializes
+///   byte-for-byte as before.
+/// * `enabled` — when `false`, the rule is **skipped** entirely (it
+///   never matches and fires neither `then` nor `otherwise`), matching
+///   pyfly's disabled-rule short-circuit. Defaults to `true` and is
+///   omitted from the wire when enabled.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rule {
     /// Stable identifier reported in [`crate::Verdict::matched`].
@@ -295,24 +358,39 @@ pub struct Rule {
     /// when `0`, matching Go's `omitempty`.
     #[serde(default, skip_serializing_if = "priority_is_zero")]
     pub priority: i64,
+    /// Whether the rule participates in evaluation. A disabled rule
+    /// (`enabled: false`) is skipped entirely — it never matches and
+    /// fires no actions. Defaults to `true`; omitted from the wire when
+    /// enabled (pyfly parity).
+    #[serde(
+        default = "enabled_default",
+        skip_serializing_if = "enabled_is_default"
+    )]
+    pub enabled: bool,
     /// Guard logic; an absent/empty `when` always fires.
     #[serde(default)]
     pub when: Logic,
     /// Actions emitted when `when` evaluates true.
     #[serde(default)]
     pub then: Vec<Action>,
+    /// Else-branch actions emitted when `when` evaluates false (pyfly's
+    /// `otherwise`). Empty by default and omitted from the wire.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub otherwise: Vec<Action>,
 }
 
 impl Rule {
     /// Builds a rule with the given id and guard logic, no description,
-    /// priority `0` and no actions.
+    /// priority `0`, enabled, and no actions.
     pub fn new(id: impl Into<String>, when: Logic) -> Self {
         Rule {
             id: id.into(),
             description: String::new(),
             priority: 0,
+            enabled: true,
             when,
             then: Vec::new(),
+            otherwise: Vec::new(),
         }
     }
 
@@ -330,10 +408,26 @@ impl Rule {
         self
     }
 
-    /// Appends one action, builder-style.
+    /// Sets the `enabled` flag, builder-style. A disabled rule is
+    /// skipped entirely during evaluation (pyfly parity).
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Appends one `then` action, builder-style.
     #[must_use]
     pub fn with_action(mut self, action: Action) -> Self {
         self.then.push(action);
+        self
+    }
+
+    /// Appends one `otherwise` (else-branch) action, builder-style —
+    /// fired when `when` evaluates false (pyfly parity).
+    #[must_use]
+    pub fn with_otherwise(mut self, action: Action) -> Self {
+        self.otherwise.push(action);
         self
     }
 }
@@ -572,6 +666,108 @@ rules:
             let back: Op = serde_json::from_str(&json).unwrap();
             assert_eq!(back, op);
         }
+    }
+
+    #[test]
+    fn new_operators_round_trip_camel_case() {
+        // The four pyfly-parity operators round-trip through their
+        // canonical camelCase wire spelling.
+        for (op, wire) in [
+            (Op::Between, "between"),
+            (Op::NotContains, "notContains"),
+            (Op::Exists, "exists"),
+            (Op::IsEmpty, "isEmpty"),
+        ] {
+            assert_eq!(op.as_str(), wire);
+            assert_eq!(Op::from(wire), op);
+            let json = serde_json::to_string(&op).unwrap();
+            assert_eq!(json, format!("{wire:?}"));
+            assert_eq!(serde_json::from_str::<Op>(&json).unwrap(), op);
+        }
+    }
+
+    #[test]
+    fn op_accepts_pyfly_snake_case_aliases() {
+        // pyfly authors rule documents with snake_case operator
+        // spellings; the Rust parser accepts them and normalises to the
+        // canonical Op variant (and thus camelCase on re-serialize).
+        assert_eq!(Op::from("not_in"), Op::NotIn);
+        assert_eq!(Op::from("starts_with"), Op::StartsWith);
+        assert_eq!(Op::from("ends_with"), Op::EndsWith);
+        assert_eq!(Op::from("is_null"), Op::IsNull);
+        assert_eq!(Op::from("is_not_null"), Op::IsNotNull);
+        assert_eq!(Op::from("not_contains"), Op::NotContains);
+        assert_eq!(Op::from("is_empty"), Op::IsEmpty);
+        // pyfly spells regex `regex`; Go/Rust spell it `matches`.
+        assert_eq!(Op::from("regex"), Op::Matches);
+        // A pyfly snake_case condition parses through the YAML DSL.
+        let rs = RuleSet::from_yaml(
+            "name: x\nrules:\n  - id: r\n    when:\n      cond: { path: s, op: not_contains, value: bad }\n",
+        )
+        .unwrap();
+        assert_eq!(rs.rules[0].when.cond.as_ref().unwrap().op, Op::NotContains);
+    }
+
+    #[test]
+    fn rule_otherwise_and_enabled_wire_format() {
+        // Default (enabled, no otherwise) keeps the Go-parity byte
+        // stream: neither `enabled` nor `otherwise` appears.
+        let plain = Rule::new("r1", Logic::default());
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            json!({"id": "r1", "when": {}, "then": []})
+        );
+        // A disabled rule with an otherwise branch surfaces both keys.
+        let rich = Rule::new("r2", Logic::cond("x", Op::Eq, json!(1)))
+            .with_enabled(false)
+            .with_otherwise(Action::new("set").with_param("target", "y"));
+        let v = serde_json::to_value(&rich).unwrap();
+        assert_eq!(v["enabled"], json!(false));
+        assert_eq!(v["otherwise"][0]["type"], json!("set"));
+    }
+
+    #[test]
+    fn rule_otherwise_and_enabled_parse_from_yaml() {
+        let rs = RuleSet::from_yaml(
+            r#"
+name: x
+rules:
+  - id: gated
+    enabled: false
+    when:
+      cond: { path: tier, op: eq, value: gold }
+    then:
+      - type: set
+        params: { target: a }
+    otherwise:
+      - type: set
+        params: { target: b }
+"#,
+        )
+        .unwrap();
+        let rule = &rs.rules[0];
+        assert!(!rule.enabled);
+        assert_eq!(rule.then.len(), 1);
+        assert_eq!(rule.otherwise.len(), 1);
+        assert_eq!(rule.otherwise[0].params["target"], json!("b"));
+    }
+
+    #[test]
+    fn rule_enabled_defaults_to_true_when_absent() {
+        let rs = RuleSet::from_yaml("name: x\nrules:\n  - id: r\n").unwrap();
+        assert!(rs.rules[0].enabled);
+        assert!(rs.rules[0].otherwise.is_empty());
+    }
+
+    #[test]
+    fn between_operand_round_trips() {
+        let rs = RuleSet::from_yaml(
+            "name: x\nrules:\n  - id: r\n    when:\n      cond: { path: age, op: between, value: [18, 65] }\n",
+        )
+        .unwrap();
+        let cond = rs.rules[0].when.cond.as_ref().unwrap();
+        assert_eq!(cond.op, Op::Between);
+        assert_eq!(cond.value, json!([18, 65]));
     }
 
     #[test]

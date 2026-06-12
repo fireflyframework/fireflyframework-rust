@@ -239,6 +239,119 @@ context manager; nesting restores the outer scope's state. The factory
 type `S` is generic, so the crate stays free of any SQL driver.
 `NamedDataSources` is the registry of additional named datasources.
 
+### `Mapper` (runtime object-to-object mapper / MapStruct equivalent)
+
+```rust,ignore
+pub struct Mapper { /* registered mappings + projections, keyed by (S, D) */ }
+
+impl Mapper {
+    pub fn new() -> Self;
+    pub fn add_mapping<S, D>(&mut self, mapping: Mapping);            // custom rename/transform/exclude
+    pub fn register_projection<S, D>(&mut self, projection: Projection);
+    pub fn map<S: Serialize, D: DeserializeOwned>(&self, source: &S) -> Result<D, MapError>;
+    pub fn map_list<S, D>(&self, sources: &[S]) -> Result<Vec<D>, MapError>;
+    pub fn project<S, D>(&self, source: &S) -> Result<D, MapError>;
+}
+
+// fluent config builders
+let mapping = Mapping::new()
+    .rename("username", "name")                                      // source -> dest
+    .transform("name", |v| json!(v.as_str().unwrap().to_uppercase())) // dest-keyed
+    .exclude("is_active");                                           // keep dest default
+let projection = Projection::new()
+    .computed("total", |src| json!(src["quantity"].as_f64().unwrap() * src["unit_price"].as_f64().unwrap()));
+```
+
+The Rust port of pyfly's `data.mapper`. Rust has no runtime field
+reflection, so the mapper bridges through `serde_json`: the source is
+serialised to a JSON object, renames / exclusions / transformers are
+applied, and the result is deserialised into the destination type — so
+**nested models and collections of models recurse automatically** via
+serde. `map` does name-matched conversion (with optional `Mapping`
+config); `map_list` maps a slice; `project` maps onto a (usually
+smaller) projection type with optional `Projection::computed` fields
+that receive the whole source. Field renaming is **source → destination**
+(pyfly's `field_map`); transformers and computed fields are keyed by
+**destination** name.
+
+### `Pageable` + `RequestSort` + `Order` (pagination request types)
+
+```rust,ignore
+pub struct Order { pub property: String, pub direction: Direction }
+impl Order { fn asc(p) -> Self; fn desc(p) -> Self; }
+
+pub struct RequestSort { pub orders: Vec<Order> }
+impl RequestSort {
+    fn by(props) -> Self;                  // ascending sort by properties
+    fn unsorted() -> Self;
+    fn and_then(self, &RequestSort) -> Self;
+    fn ascending(self) -> Self;            // flip all to asc
+    fn descending(self) -> Self;           // flip all to desc
+    fn to_sorts(&self) -> Vec<Sort>;       // lower to the filter DSL
+}
+
+pub struct Pageable { pub page: usize, pub size: usize, pub sort: RequestSort } // page is 1-based
+impl Pageable {
+    fn of(page, size, sort) -> Result<Self, PageableError>; // validates page>=1, size>=1
+    fn paged(page, size) -> Result<Self, PageableError>;    // unsorted
+    fn unpaged() -> Self;                                   // size == UNPAGED_SIZE
+    fn is_paged(&self) -> bool;
+    fn offset(&self) -> usize;                              // (page-1)*size
+    fn next(&self) -> Pageable;
+    fn previous(&self) -> Pageable;                         // min page 1
+    fn to_filter(&self) -> Filter;                          // 1-based page -> 0-based filter page
+    fn apply_to(&self, filter: Filter) -> Filter;           // keep predicates, set paging+sort
+}
+```
+
+The Rust port of pyfly's `data.pageable`. These are the **request**
+side of paging (what the caller asks for), distinct from the `Page<T>`
+**response** envelope. The page number is **1-based** with `page >= 1`
+validation (`PageableError`); `to_filter` translates it to the filter
+DSL's **0-based** page index. The sort collection is named `RequestSort`
+(not `Sort`) to avoid colliding with the SQL-render `Sort` already
+exported by the filter DSL. Paging is wired into the repository contract
+via `Repository::find_page(&self, &Pageable)`, a default method lowering
+through `to_filter` to `find`.
+
+### `QueryMethodParser` (Spring-Data derived query methods)
+
+```rust,ignore
+pub struct QueryMethodParser;
+impl QueryMethodParser {
+    pub fn parse(&self, method_name: &str) -> Result<ParsedQuery, QueryParseError>;
+}
+
+pub struct ParsedQuery {
+    pub prefix: QueryPrefix,                 // Find | Count | Exists | Delete
+    pub predicates: Vec<FieldPredicate>,     // field + QueryOperator
+    pub connectors: Vec<String>,             // "and" | "or"
+    pub order_clauses: Vec<OrderClause>,
+}
+impl ParsedQuery {
+    pub fn arg_count(&self) -> usize;
+    pub fn to_specification(&self, args: &[Value]) -> Result<Specification, QueryBindError>;
+    pub fn to_filter(&self, args: &[Value]) -> Result<Option<Filter>, QueryBindError>; // None for OR
+    pub fn evaluate<'a, T: Serialize>(&self, entities: &'a [T], args: &[Value]) -> Result<Vec<&'a T>, QueryBindError>;
+    pub fn count<T: Serialize>(&self, entities: &[T], args: &[Value]) -> Result<usize, QueryBindError>;
+    pub fn exists<T: Serialize>(&self, entities: &[T], args: &[Value]) -> Result<bool, QueryBindError>;
+}
+```
+
+The Rust port of pyfly's `data.query_parser`. Parses
+`find_by_status_and_role_order_by_name_desc`-style method names into a
+structured `ParsedQuery` (prefixes `find_by`/`count_by`/`exists_by`/
+`delete_by`, connectors `_and_`/`_or_`, operator suffixes checked
+longest-first so `_greater_than_equal` beats `_greater_than`, and
+chainable `_order_by_…` clauses). A `ParsedQuery` lowers — **with bound
+argument values** — to the existing `Specification` tree
+(`to_specification`) or a flat `Filter` (`to_filter`, `None` when the
+query contains an `OR` the AND-only filter cannot represent), and
+executes against any in-memory `serde`-serialisable collection via
+`evaluate` / `count` / `exists`. `_between` lowers to two predicates
+(`>=` and `<=`), `_containing` to `LIKE %value%`, `_is_not_null` to
+`NOT (… IS NULL)`.
+
 ## Testing
 
 ```bash

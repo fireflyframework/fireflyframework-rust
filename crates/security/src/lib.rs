@@ -31,6 +31,9 @@
 //!    presets), the browser login flow (auth-code + state/nonce +
 //!    PKCE S256), and an authorization server (client_credentials +
 //!    refresh_token) with pluggable token stores.
+//! 10. [`PasswordEncoder`] + [`BcryptPasswordEncoder`] — a standalone,
+//!     reusable credential hash/verify primitive (pyfly's
+//!     `pyfly.security.password`), usable independently of any IdP.
 //!
 //! ## Mental model
 //!
@@ -121,6 +124,7 @@ mod filter_chain;
 pub mod guards;
 mod jwks;
 pub mod oauth2;
+mod password;
 mod problem;
 mod role_hierarchy;
 
@@ -136,6 +140,7 @@ pub use csrf::{
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
 pub use guards::{require, AuthorizationGuard};
 pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier};
+pub use password::{BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
 pub use role_hierarchy::RoleHierarchy;
 
 /// Framework version stamp.

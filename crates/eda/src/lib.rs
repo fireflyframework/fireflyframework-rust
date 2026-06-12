@@ -60,19 +60,44 @@
 //! ([`firefly_kernel::with_correlation_id`]) — the Rust analog of the
 //! Go module extracting it from `context.Context` via
 //! `kernel.CorrelationIDFrom`.
+//!
+//! ## Delivery gates, dead-letter store, and health
+//!
+//! Three pyfly-parity surfaces layer over the broker:
+//!
+//! - [`EventFilter`] / [`HeaderEventFilter`] / [`PredicateEventFilter`]
+//!   are delivery gates that decide — per envelope — whether a reached
+//!   subscription actually runs; attach a chain with [`with_filters`]
+//!   (pyfly's `eda.filter`).
+//! - [`EdaDeadLetterStore`] / [`EdaDeadLetterEntry`] /
+//!   [`InMemoryEdaDeadLetterStore`] capture failed *events* in a
+//!   queryable store (list / get / remove). Wire one into
+//!   [`ListenerPolicy::dead_letter_store`] so exhausted events are
+//!   inspectable, not just republished (pyfly's `eda.dlq`).
+//! - [`EventPublisherHealthIndicator`] adapts any [`BrokerHealth`]
+//!   broker to a [`firefly_observability::Indicator`], surfacing broker
+//!   liveness on `/actuator/health` (pyfly's `eda.health`).
 
 #![warn(missing_docs)]
 
+mod dlq;
 mod error;
 mod event;
+mod filter;
+mod health;
 mod inmemory;
 mod kafka;
 mod listener;
 mod ports;
 mod rabbitmq;
 
+pub use dlq::{EdaDeadLetterEntry, EdaDeadLetterStore, InMemoryEdaDeadLetterStore};
 pub use error::{EdaError, EdaResult};
 pub use event::Event;
+pub use filter::{
+    with_filter_chain, with_filters, EventFilter, HeaderEventFilter, PredicateEventFilter,
+};
+pub use health::{BrokerHealth, EventPublisherHealthIndicator};
 pub use inmemory::InMemoryBroker;
 pub use kafka::{new_kafka_broker, KafkaConfig};
 pub use listener::{wrap_listener, ListenerPolicy, HEADER_EXCEPTION, HEADER_ORIGINAL_TOPIC};

@@ -202,6 +202,49 @@ one `application-{p}.yaml` per profile in order, and
 `load_from_profile` now composes both (single-profile behavior is
 unchanged).
 
+### Profile expressions (Spring Boot 2.4+)
+
+`accepts_profiles(&active, &exprs)` evaluates the Spring Boot 2.4+
+profile-expression grammar against an active-profile list — negation,
+boolean operators with grouping, and the legacy comma-OR:
+
+```rust,ignore
+let active = active_profiles("dev"); // e.g. ["prod", "cloud"]
+accepts_profiles(&active, &["prod & cloud"]);        // AND
+accepts_profiles(&active, &["prod | qa"]);           // OR
+accepts_profiles(&active, &["!test"]);               // negation
+accepts_profiles(&active, &["(prod & cloud) | qa"]); // grouping
+accepts_profiles(&active, &["dev,test"]);            // legacy comma-OR
+```
+
+It returns `true` when **any** expression matches; a malformed
+expression evaluates to `false` (never panics). Where pyfly reads the
+active list off the `Environment`, the Rust port takes it as a slice so
+it composes with `active_profiles`.
+
+### In-process application events
+
+`ApplicationEventBus` is a **synchronous, in-process, `TypeId`-dispatched,
+`@order`-sorted** pub/sub — Spring's `ApplicationEventPublisher` model,
+distinct from the asynchronous `firefly-eda` broker (no transport, no
+topics, listeners run on the publishing thread):
+
+```rust,ignore
+let bus = ApplicationEventBus::new();
+bus.subscribe::<ApplicationReadyEvent, _>(|_e| { /* … */ });
+bus.subscribe_ordered::<ContextRefreshedEvent, _>(1, |_e| { /* runs first */ });
+bus.publish(&ApplicationReadyEvent);
+
+// ApplicationEventPublisher fans into a shared Rc<ApplicationEventBus>.
+let publisher = ApplicationEventPublisher::new(Rc::new(bus));
+```
+
+Lifecycle events: `ContextRefreshedEvent`, `ApplicationReadyEvent`,
+`ContextClosedEvent`. Any `'static` type can be published as a domain
+event. Dispatch is keyed on the concrete `TypeId` (Rust has no runtime
+subclass relationship, so a listener receives exactly the type it
+subscribed to).
+
 ### Spring-Cloud-Config client
 
 ```rust,ignore
@@ -229,6 +272,9 @@ failures raise `ConfigError::Remote`.
 | `mask::{mask_value, is_sensitive_key, sanitize_uri, MASK}` | Spring Sanitizer parity |
 | `active_profiles(fallback)` | Comma-separated `FIREFLY_PROFILE` list |
 | `multi_profile_sources(dir, app, &profiles)` | One overlay per active profile |
+| `accepts_profiles(&active, &exprs)` | Spring Boot 2.4+ profile-expression evaluator (`!`/`&`/`\|`/grouping/comma-OR) |
+| `ApplicationEventBus` / `ApplicationEventPublisher` | Synchronous in-process `TypeId`-dispatched, `@order`-sorted pub/sub |
+| `ContextRefreshedEvent` / `ApplicationReadyEvent` / `ContextClosedEvent` | Lifecycle event types |
 | `ConfigClient` | Spring-Cloud-Config `/{app}/{profile}/{label}` fetch → `StaticSource` |
 | `ConfigError::{Placeholder, Remote}` | New failure shapes |
 

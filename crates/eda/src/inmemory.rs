@@ -212,6 +212,30 @@ impl InMemoryBroker {
         inner.group_cursors.clear();
         Ok(())
     }
+
+    /// Whether the broker has been [`close`](InMemoryBroker::close)d. The
+    /// in-memory broker has no other failure mode, so this is the liveness
+    /// signal the [`EventPublisherHealthIndicator`](crate::EventPublisherHealthIndicator)
+    /// surfaces.
+    pub fn is_closed(&self) -> bool {
+        self.inner
+            .read()
+            .expect("firefly/eda: lock poisoned")
+            .closed
+    }
+}
+
+#[async_trait]
+impl crate::BrokerHealth for InMemoryBroker {
+    /// The in-memory broker is live unless it has been closed; a closed
+    /// broker pings with [`EdaError::Closed`].
+    async fn ping(&self) -> EdaResult<()> {
+        if self.is_closed() {
+            Err(EdaError::Closed)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[async_trait]

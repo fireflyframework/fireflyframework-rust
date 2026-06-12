@@ -14,11 +14,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use firefly_eventsourcing::{
-    AggregateRoot, DomainEvent, EventSourcingError, EventStore, EventUpcaster, MemoryEventStore,
-    NoOpUpcaster, OutboxSink, SqlEventStore, TransactionalOutbox,
+    AggregateRoot, DomainEvent, EventSourcedAggregate, EventSourcedRepository, EventSourcingError,
+    EventStore, EventUpcaster, FunctionProjection, MemoryEventStore, MemorySnapshotStore,
+    NoOpUpcaster, OutboxSink, Projection, ProjectionRunner, SnapshotStore, SqlEventStore,
+    TransactionalOutbox,
 };
 use firefly_transactional::{Database, Executor, Row, SqlValue, Transaction, TxError};
 use rusqlite::Connection;
+use std::sync::atomic::AtomicI64;
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -502,4 +505,471 @@ async fn sql_store_applies_upcasters_on_load() {
     let loaded = store.load("acc-1").await.expect("load");
     assert_eq!(loaded[0].event_type, "account.opened");
     assert_eq!(loaded[0].payload, br#"{"upcast":true}"#.to_vec());
+}
+
+// ---------------------------------------------------------------------------
+// Global cross-aggregate stream — test_eventsourcing.TestInMemoryEventStore::test_stream_all
+// + test_eventsourcing.TestProjection::test_projection_consumes_events
+// ---------------------------------------------------------------------------
+
+/// Stamps a tenant id onto a freshly-raised event.
+fn env_tenant(aggregate_id: &str, event_type: &str, tenant: &str) -> DomainEvent {
+    let mut agg = AggregateRoot::new(aggregate_id, "Account").with_tenant(tenant);
+    agg.raise(event_type, b"{}".to_vec());
+    agg.take_uncommitted().remove(0)
+}
+
+#[tokio::test]
+async fn memory_stream_all_returns_global_log_in_append_order() {
+    // pyfly TestInMemoryEventStore::test_stream_all: one event per aggregate,
+    // stream_all sees all three.
+    let store = MemoryEventStore::new();
+    for i in 0..3 {
+        store
+            .append(
+                &format!("o-{i}"),
+                0,
+                vec![env(&format!("o-{i}"), "OrderPlaced", b"{}")],
+            )
+            .await
+            .expect("append");
+    }
+    let all = store.stream_all(None, 100, None).await.expect("stream_all");
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[0].event.aggregate_id, "o-0");
+    assert_eq!(all[2].event.aggregate_id, "o-2");
+    // Cursor keys are distinct and monotonic.
+    assert!(all[0].event_id < all[1].event_id);
+    assert!(all[1].event_id < all[2].event_id);
+}
+
+#[tokio::test]
+async fn memory_stream_all_cursor_resumes_and_limits() {
+    let store = MemoryEventStore::new();
+    for i in 0..5 {
+        store
+            .append(
+                &format!("o-{i}"),
+                0,
+                vec![env(&format!("o-{i}"), "E", b"{}")],
+            )
+            .await
+            .expect("append");
+    }
+    // First page of 2.
+    let page1 = store.stream_all(None, 2, None).await.unwrap();
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1[0].event.aggregate_id, "o-0");
+    // Resume after the last event of page1.
+    let cursor = page1.last().unwrap().event_id.clone();
+    let page2 = store.stream_all(Some(&cursor), 2, None).await.unwrap();
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2[0].event.aggregate_id, "o-2");
+    let cursor = page2.last().unwrap().event_id.clone();
+    let page3 = store.stream_all(Some(&cursor), 2, None).await.unwrap();
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3[0].event.aggregate_id, "o-4");
+    // Drained.
+    let cursor = page3.last().unwrap().event_id.clone();
+    assert!(store
+        .stream_all(Some(&cursor), 2, None)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn memory_stream_all_unknown_cursor_yields_empty_page() {
+    let store = MemoryEventStore::new();
+    store
+        .append("o-1", 0, vec![env("o-1", "E", b"{}")])
+        .await
+        .unwrap();
+    assert!(store
+        .stream_all(Some("does-not-exist"), 100, None)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn memory_stream_all_filters_by_tenant() {
+    // Multi-tenancy: tenant_id persisted on the event, filterable in stream_all.
+    let store = MemoryEventStore::new();
+    store
+        .append("a-1", 0, vec![env_tenant("a-1", "E", "acme")])
+        .await
+        .unwrap();
+    store
+        .append("g-1", 0, vec![env_tenant("g-1", "E", "globex")])
+        .await
+        .unwrap();
+    store
+        .append("a-2", 0, vec![env_tenant("a-2", "E", "acme")])
+        .await
+        .unwrap();
+
+    let acme = store.stream_all(None, 100, Some("acme")).await.unwrap();
+    assert_eq!(acme.len(), 2);
+    assert!(acme.iter().all(|s| s.tenant_id() == Some("acme")));
+    assert_eq!(acme[0].event.aggregate_id, "a-1");
+    assert_eq!(acme[1].event.aggregate_id, "a-2");
+
+    let globex = store.stream_all(None, 100, Some("globex")).await.unwrap();
+    assert_eq!(globex.len(), 1);
+    assert_eq!(globex[0].event.aggregate_id, "g-1");
+
+    // Unfiltered sees all three.
+    assert_eq!(store.stream_all(None, 100, None).await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn tenant_id_round_trips_through_event_json() {
+    // The tenant_id is part of the persisted envelope (round-trips through
+    // serialize/deserialize) but a None tenant is omitted from the wire form.
+    let ev = env_tenant("a-1", "E", "acme");
+    assert_eq!(ev.tenant_id.as_deref(), Some("acme"));
+    let json = serde_json::to_string(&ev).unwrap();
+    assert!(json.contains(r#""tenantId":"acme""#), "{json}");
+    let back: DomainEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.tenant_id.as_deref(), Some("acme"));
+
+    let no_tenant = env("a-1", "E", b"{}");
+    assert_eq!(no_tenant.tenant_id, None);
+    assert!(!serde_json::to_string(&no_tenant)
+        .unwrap()
+        .contains("tenantId"));
+}
+
+/// A projection that records every event id it sees, and optionally fails on
+/// a designated event id (to prove the cursor does not advance past it).
+struct Recording {
+    name: &'static str,
+    seen: Mutex<Vec<String>>,
+    fail_on_type: Option<&'static str>,
+}
+#[async_trait]
+impl Projection for Recording {
+    fn name(&self) -> &str {
+        self.name
+    }
+    async fn apply(&self, event: &DomainEvent) -> Result<(), EventSourcingError> {
+        if Some(event.event_type.as_str()) == self.fail_on_type {
+            return Err(EventSourcingError::Projection("boom".into()));
+        }
+        self.seen.lock().unwrap().push(event.aggregate_id.clone());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn projection_runner_replay_all_drains_global_stream() {
+    // pyfly TestProjection::test_projection_consumes_events, but deterministic
+    // (no background poll / sleeps): replay_all drains the whole global log.
+    let store = MemoryEventStore::new();
+    for i in 0..3 {
+        store
+            .append(
+                &format!("o-{i}"),
+                0,
+                vec![env(&format!("o-{i}"), "OrderPlaced", b"{}")],
+            )
+            .await
+            .unwrap();
+    }
+    let projection = Arc::new(Recording {
+        name: "collect",
+        seen: Mutex::new(Vec::new()),
+        fail_on_type: None,
+    });
+    let runner = ProjectionRunner::new();
+    runner.register(projection.clone());
+
+    // Batch size 2 to exercise the paging loop.
+    let cursor = runner.replay_all(&store, None, 2, None).await.unwrap();
+    assert_eq!(projection.seen.lock().unwrap().len(), 3);
+    assert!(cursor.is_some());
+
+    // A second replay_all from the cursor is a no-op (idempotent resume).
+    let cursor2 = runner
+        .replay_all(&store, cursor.clone(), 2, None)
+        .await
+        .unwrap();
+    assert_eq!(cursor2, cursor);
+    assert_eq!(projection.seen.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn projection_drive_once_does_not_advance_past_a_failing_event() {
+    // At-least-once, in-order: a failing event halts the batch and the cursor
+    // stays on the last good event so the failure is retried (pyfly _loop).
+    let store = MemoryEventStore::new();
+    store
+        .append("o-0", 0, vec![env("o-0", "Good", b"{}")])
+        .await
+        .unwrap();
+    store
+        .append("o-1", 0, vec![env("o-1", "Bad", b"{}")])
+        .await
+        .unwrap();
+    store
+        .append("o-2", 0, vec![env("o-2", "Good", b"{}")])
+        .await
+        .unwrap();
+
+    let projection = Arc::new(Recording {
+        name: "collect",
+        seen: Mutex::new(Vec::new()),
+        fail_on_type: Some("Bad"),
+    });
+    let runner = ProjectionRunner::new();
+    runner.register(projection.clone());
+
+    let (cursor, err) = runner.drive_once(&store, None, 100, None).await.unwrap();
+    // Applied the first Good, then halted on Bad — cursor sits on o-0.
+    assert!(err.is_some());
+    assert_eq!(projection.seen.lock().unwrap().as_slice(), &["o-0"]);
+    let first = store.stream_all(None, 1, None).await.unwrap()[0]
+        .event_id
+        .clone();
+    assert_eq!(cursor.as_deref(), Some(first.as_str()));
+}
+
+#[tokio::test]
+async fn function_projection_consumes_via_runner() {
+    let store = MemoryEventStore::new();
+    store
+        .append("o-1", 0, vec![env("o-1", "E", b"{}")])
+        .await
+        .unwrap();
+    let count = Arc::new(AtomicI64::new(0));
+    let sink = Arc::clone(&count);
+    let projection = Arc::new(FunctionProjection::new("fn", move |_: &DomainEvent| {
+        let sink = Arc::clone(&sink);
+        async move {
+            sink.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }));
+    let runner = ProjectionRunner::new();
+    runner.register(projection);
+    runner.replay_all(&store, None, 10, None).await.unwrap();
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn sql_store_stream_all_global_order_cursor_and_tenant() {
+    let store = SqlEventStore::new(Arc::new(SqliteDatabase::temp()));
+    store.initialize().expect("ddl");
+    store
+        .append("a-1", 0, vec![env_tenant("a-1", "E", "acme")])
+        .await
+        .unwrap();
+    store
+        .append("g-1", 0, vec![env_tenant("g-1", "E", "globex")])
+        .await
+        .unwrap();
+    store
+        .append("a-2", 0, vec![env_tenant("a-2", "E", "acme")])
+        .await
+        .unwrap();
+
+    // Global order across aggregates.
+    let all = store.stream_all(None, 100, None).await.unwrap();
+    assert_eq!(
+        all.iter()
+            .map(|s| s.event.aggregate_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a-1", "g-1", "a-2"]
+    );
+
+    // Cursor resume.
+    let cursor = all[0].event_id.clone();
+    let after = store.stream_all(Some(&cursor), 100, None).await.unwrap();
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0].event.aggregate_id, "g-1");
+
+    // Tenant filter (persisted column).
+    let acme = store.stream_all(None, 100, Some("acme")).await.unwrap();
+    assert_eq!(acme.len(), 2);
+    assert!(acme.iter().all(|s| s.tenant_id() == Some("acme")));
+}
+
+// ---------------------------------------------------------------------------
+// Generic EventSourcedRepository — test_eventsourcing.TestRepository
+// ---------------------------------------------------------------------------
+
+/// pyfly's `Order` aggregate: OrderPlaced sets amount, OrderShipped flips a flag.
+#[derive(Default)]
+struct Order {
+    root: AggregateRoot,
+    amount: i64,
+    shipped: bool,
+}
+
+impl Order {
+    fn place(&mut self, amount: i64) {
+        self.amount = amount;
+        self.root.raise(
+            "OrderPlaced",
+            format!(r#"{{"amount":{amount}}}"#).into_bytes(),
+        );
+    }
+    fn ship(&mut self) {
+        self.shipped = true;
+        self.root
+            .raise("OrderShipped", br#"{"carrier":"ups"}"#.to_vec());
+    }
+}
+
+impl EventSourcedAggregate for Order {
+    const AGGREGATE_TYPE: &'static str = "Order";
+    fn root(&self) -> &AggregateRoot {
+        &self.root
+    }
+    fn root_mut(&mut self) -> &mut AggregateRoot {
+        &mut self.root
+    }
+    fn apply_event(&mut self, event: &DomainEvent) -> Result<(), EventSourcingError> {
+        match event.event_type.as_str() {
+            "OrderPlaced" => {
+                let v: serde_json::Value = serde_json::from_slice(&event.payload)
+                    .map_err(|e| EventSourcingError::Projection(e.to_string()))?;
+                self.amount = v["amount"].as_i64().unwrap_or(0);
+            }
+            "OrderShipped" => self.shipped = true,
+            other => {
+                return Err(EventSourcingError::Projection(format!(
+                    "no handler for {other}"
+                )))
+            }
+        }
+        Ok(())
+    }
+    fn snapshot_payload(&self) -> Result<Vec<u8>, EventSourcingError> {
+        serde_json::to_vec(&serde_json::json!({"amount": self.amount, "shipped": self.shipped}))
+            .map_err(|e| EventSourcingError::Projection(e.to_string()))
+    }
+    fn restore_snapshot(&mut self, payload: &[u8]) -> Result<(), EventSourcingError> {
+        let v: serde_json::Value = serde_json::from_slice(payload)
+            .map_err(|e| EventSourcingError::Projection(e.to_string()))?;
+        self.amount = v["amount"].as_i64().unwrap_or(0);
+        self.shipped = v["shipped"].as_bool().unwrap_or(false);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn repository_save_and_load_round_trip() {
+    // pyfly TestRepository::test_save_and_load_round_trip.
+    let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::new());
+    let repo = EventSourcedRepository::<Order>::new(Arc::clone(&store));
+
+    let mut order = Order::default();
+    order.root.id = "o-1".into();
+    order.root.aggregate_type = "Order".into();
+    order.place(99);
+    order.ship();
+    assert_eq!(order.root.version, 2);
+    repo.save(&mut order).await.expect("save");
+    // Uncommitted drained after save.
+    assert!(order.root.uncommitted().is_empty());
+
+    let reloaded = repo.load("o-1").await.expect("load").expect("present");
+    assert_eq!(reloaded.amount, 99);
+    assert!(reloaded.shipped);
+    assert_eq!(reloaded.root.version, 2);
+}
+
+#[tokio::test]
+async fn repository_load_missing_returns_none() {
+    let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::new());
+    let repo = EventSourcedRepository::<Order>::new(store);
+    assert!(repo.load("ghost").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn repository_save_is_noop_without_pending_events() {
+    let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::new());
+    let repo = EventSourcedRepository::<Order>::new(store);
+    let mut order = Order::default();
+    order.root.id = "o-1".into();
+    // No events raised.
+    repo.save(&mut order).await.expect("no-op save");
+    assert!(repo.load("o-1").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn repository_snapshots_when_batch_crosses_interval() {
+    // Snapshot policy: interval 2. A two-event batch crosses the boundary
+    // (0 -> 2) and triggers a snapshot; load then restores it + replays the
+    // (empty) tail.
+    let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::new());
+    let snapshots: Arc<dyn SnapshotStore> = Arc::new(MemorySnapshotStore::new());
+    let repo = EventSourcedRepository::<Order>::with_snapshots(
+        Arc::clone(&store),
+        Arc::clone(&snapshots),
+        2,
+    );
+
+    let mut order = Order::default();
+    order.root.id = "o-1".into();
+    order.root.aggregate_type = "Order".into();
+    order.place(50);
+    order.ship();
+    repo.save(&mut order).await.expect("save");
+
+    // A snapshot at version 2 was written.
+    let snap = snapshots.latest("o-1").await.unwrap().expect("snapshot");
+    assert_eq!(snap.version, 2);
+    assert_eq!(snap.aggregate_type, "Order");
+
+    let reloaded = repo.load("o-1").await.unwrap().expect("present");
+    assert_eq!(reloaded.amount, 50);
+    assert!(reloaded.shipped);
+    assert_eq!(reloaded.root.version, 2);
+}
+
+#[tokio::test]
+async fn repository_does_not_snapshot_below_interval() {
+    let store: Arc<dyn EventStore> = Arc::new(MemoryEventStore::new());
+    let snapshots: Arc<dyn SnapshotStore> = Arc::new(MemorySnapshotStore::new());
+    let repo = EventSourcedRepository::<Order>::with_snapshots(
+        Arc::clone(&store),
+        Arc::clone(&snapshots),
+        100,
+    );
+    let mut order = Order::default();
+    order.root.id = "o-1".into();
+    order.root.aggregate_type = "Order".into();
+    order.place(50);
+    repo.save(&mut order).await.expect("save");
+    assert!(snapshots.latest("o-1").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn repository_round_trips_over_sql_store_with_tenant() {
+    // The repository works over any EventStore; here the SQL adapter, and the
+    // tenant id threads through append -> stored column -> load -> replay.
+    let sql = SqlEventStore::new(Arc::new(SqliteDatabase::temp()));
+    sql.initialize().expect("ddl");
+    let store: Arc<dyn EventStore> = Arc::new(sql);
+    let repo = EventSourcedRepository::<Order>::new(Arc::clone(&store));
+
+    let mut order = Order {
+        root: AggregateRoot::new("o-9", "Order").with_tenant("acme"),
+        ..Default::default()
+    };
+    order.place(7);
+    order.ship();
+    repo.save(&mut order).await.expect("save");
+
+    let reloaded = repo.load("o-9").await.unwrap().expect("present");
+    assert_eq!(reloaded.amount, 7);
+    assert!(reloaded.shipped);
+
+    // The persisted events carry the tenant id, filterable via stream_all.
+    let acme = store.stream_all(None, 100, Some("acme")).await.unwrap();
+    assert_eq!(acme.len(), 2);
+    assert!(acme.iter().all(|s| s.tenant_id() == Some("acme")));
 }

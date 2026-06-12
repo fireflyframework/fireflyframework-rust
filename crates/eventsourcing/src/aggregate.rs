@@ -61,6 +61,17 @@ pub struct DomainEvent {
     /// Go's sorted map-key encoding.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    /// Optional tenant identifier for multi-tenant event stores — mirrors
+    /// pyfly's `StoredEventEnvelope.tenant_id`. Omitted from JSON when `None`
+    /// (the default), so an event raised without a tenant serialises
+    /// byte-for-byte identically to the Go/Java/.NET wire format. When set, it
+    /// is persisted as a filterable column by [`SqlEventStore`] and threaded
+    /// through [`EventStore::append`] / [`EventStore::load`] /
+    /// [`EventStore::stream_all`] for tenant scoping.
+    ///
+    /// [`SqlEventStore`]: crate::SqlEventStore
+    #[serde(rename = "tenantId", default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 /// AggregateRoot is held (composed) by domain aggregates — the Rust analog
@@ -75,6 +86,10 @@ pub struct AggregateRoot {
     pub aggregate_type: String,
     /// Version of the last event raised or loaded; starts at 0.
     pub version: i64,
+    /// Optional tenant identifier stamped onto every raised event when set —
+    /// the per-aggregate counterpart of [`DomainEvent::tenant_id`]. Use
+    /// [`AggregateRoot::with_tenant`] to set it at construction.
+    pub tenant_id: Option<String>,
     uncommitted: Vec<DomainEvent>,
 }
 
@@ -85,12 +100,24 @@ impl AggregateRoot {
             id: id.into(),
             aggregate_type: aggregate_type.into(),
             version: 0,
+            tenant_id: None,
             uncommitted: Vec::new(),
         }
     }
 
+    /// Sets the tenant id stamped onto every subsequently raised event — the
+    /// builder form of [`AggregateRoot::tenant_id`]. Mirrors pyfly threading a
+    /// `tenant_id` through the repository onto each `StoredEventEnvelope`.
+    #[must_use]
+    pub fn with_tenant(mut self, tenant_id: impl Into<String>) -> Self {
+        self.tenant_id = Some(tenant_id.into());
+        self
+    }
+
     /// Records a state-changing event. The event is buffered until
-    /// [`EventStore::append`] persists it.
+    /// [`EventStore::append`] persists it. The aggregate's
+    /// [`tenant_id`](AggregateRoot::tenant_id) (if any) is stamped onto the
+    /// event.
     pub fn raise(&mut self, event_type: impl Into<String>, payload: impl Into<Vec<u8>>) {
         self.version += 1;
         self.uncommitted.push(DomainEvent {
@@ -101,6 +128,7 @@ impl AggregateRoot {
             time: Utc::now(),
             payload: payload.into(),
             metadata: BTreeMap::new(),
+            tenant_id: self.tenant_id.clone(),
         });
     }
 
@@ -122,6 +150,29 @@ impl AggregateRoot {
     /// Empties the uncommitted buffer.
     pub fn clear(&mut self) {
         self.uncommitted.clear();
+    }
+}
+
+/// One event read off the global, cross-aggregate ordered stream.
+///
+/// Ports pyfly's `StoredEventEnvelope` view as seen by `stream_all`: it pairs
+/// the [`DomainEvent`] with a stable, store-assigned `event_id` cursor key so
+/// a [`ProjectionRunner`](crate::ProjectionRunner) can resume from where it
+/// left off ([`EventStore::stream_all`]). The [`DomainEvent`] itself keeps its
+/// pinned Go-parity wire format; the cursor key lives only on this wrapper.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamedEvent {
+    /// Stable, monotonic-within-store cursor key — pass as `after_event_id`
+    /// to [`EventStore::stream_all`] to resume after this event.
+    pub event_id: String,
+    /// The stored domain event (Go-parity wire shape preserved).
+    pub event: DomainEvent,
+}
+
+impl StreamedEvent {
+    /// The event's tenant id, if any (sugar over `self.event.tenant_id`).
+    pub fn tenant_id(&self) -> Option<&str> {
+        self.event.tenant_id.as_deref()
     }
 }
 
@@ -149,6 +200,29 @@ pub trait EventStore: Send + Sync {
         aggregate_id: &str,
         since_version: i64,
     ) -> Result<Vec<DomainEvent>, EventSourcingError>;
+
+    /// Returns a page of the global, cross-aggregate ordered event stream —
+    /// the Rust analog of pyfly's `EventStore.stream_all`.
+    ///
+    /// Events are returned in global append order. `after_event_id` is a
+    /// cursor: pass `None` to start from the very beginning, or the
+    /// [`StreamedEvent::event_id`] of the last consumed event to resume after
+    /// it (cursor-style, at-least-once, in-order). At most `limit` events are
+    /// returned. When `tenant` is `Some`, only events with a matching
+    /// [`DomainEvent::tenant_id`] are returned.
+    ///
+    /// The default implementation returns an empty page — a store that has no
+    /// global log opts out without breaking the contract. [`MemoryEventStore`]
+    /// and [`SqlEventStore`](crate::SqlEventStore) override it.
+    async fn stream_all(
+        &self,
+        after_event_id: Option<&str>,
+        limit: usize,
+        tenant: Option<&str>,
+    ) -> Result<Vec<StreamedEvent>, EventSourcingError> {
+        let _ = (after_event_id, limit, tenant);
+        Ok(Vec::new())
+    }
 }
 
 /// MemoryEventStore is the in-process [`EventStore`] — suitable for tests
@@ -162,8 +236,20 @@ pub trait EventStore: Send + Sync {
 /// never touched.
 #[derive(Default)]
 pub struct MemoryEventStore {
-    streams: RwLock<HashMap<String, Vec<DomainEvent>>>,
+    inner: RwLock<MemoryState>,
     upcasters: Vec<Arc<dyn EventUpcaster>>,
+}
+
+/// The mutable interior of [`MemoryEventStore`]: the per-aggregate streams
+/// plus a single global, append-ordered log that backs
+/// [`stream_all`](EventStore::stream_all). Each global entry carries a stable,
+/// monotonic `event_id` used as the cursor key, mirroring pyfly's
+/// `InMemoryEventStore._all` list keyed by `StoredEventEnvelope.event_id`.
+#[derive(Default)]
+struct MemoryState {
+    streams: HashMap<String, Vec<DomainEvent>>,
+    all: Vec<(String, DomainEvent)>,
+    next_seq: u64,
 }
 
 impl std::fmt::Debug for MemoryEventStore {
@@ -185,7 +271,7 @@ impl MemoryEventStore {
     /// `InMemoryEventStore(upcasters=[...])`.
     pub fn with_upcasters(upcasters: Vec<Arc<dyn EventUpcaster>>) -> Self {
         MemoryEventStore {
-            streams: RwLock::new(HashMap::new()),
+            inner: RwLock::new(MemoryState::default()),
             upcasters,
         }
     }
@@ -202,21 +288,32 @@ impl EventStore for MemoryEventStore {
         if events.is_empty() {
             return Ok(());
         }
-        let mut streams = self.streams.write().expect("event store lock poisoned");
-        let current = streams.get(aggregate_id).map_or(0, |s| s.len() as i64);
+        let mut inner = self.inner.write().expect("event store lock poisoned");
+        let current = inner
+            .streams
+            .get(aggregate_id)
+            .map_or(0, |s| s.len() as i64);
         if expected_version != current {
             return Err(EventSourcingError::Concurrency);
         }
-        streams
-            .entry(aggregate_id.to_string())
-            .or_default()
-            .extend(events);
+        for event in events {
+            // Stamp a stable, monotonic global cursor key and mirror the event
+            // into the global log so stream_all observes it in append order.
+            let event_id = format!("{:020}", inner.next_seq);
+            inner.next_seq += 1;
+            inner
+                .streams
+                .entry(aggregate_id.to_string())
+                .or_default()
+                .push(event.clone());
+            inner.all.push((event_id, event));
+        }
         Ok(())
     }
 
     async fn load(&self, aggregate_id: &str) -> Result<Vec<DomainEvent>, EventSourcingError> {
-        let streams = self.streams.read().expect("event store lock poisoned");
-        match streams.get(aggregate_id) {
+        let inner = self.inner.read().expect("event store lock poisoned");
+        match inner.streams.get(aggregate_id) {
             Some(events) if !events.is_empty() => Ok(events
                 .iter()
                 .cloned()
@@ -231,8 +328,9 @@ impl EventStore for MemoryEventStore {
         aggregate_id: &str,
         since_version: i64,
     ) -> Result<Vec<DomainEvent>, EventSourcingError> {
-        let streams = self.streams.read().expect("event store lock poisoned");
-        Ok(streams
+        let inner = self.inner.read().expect("event store lock poisoned");
+        Ok(inner
+            .streams
             .get(aggregate_id)
             .map(|events| {
                 events
@@ -243,5 +341,41 @@ impl EventStore for MemoryEventStore {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    async fn stream_all(
+        &self,
+        after_event_id: Option<&str>,
+        limit: usize,
+        tenant: Option<&str>,
+    ) -> Result<Vec<StreamedEvent>, EventSourcingError> {
+        let inner = self.inner.read().expect("event store lock poisoned");
+        // Find the start index: just past `after_event_id`, or 0 from the
+        // beginning. An unknown cursor yields an empty page (the event it
+        // pointed at is gone), matching pyfly's "scan until matched, else
+        // empty" behaviour.
+        let start = match after_event_id {
+            None => 0,
+            Some(cursor) => match inner.all.iter().position(|(id, _)| id == cursor) {
+                Some(idx) => idx + 1,
+                None => return Ok(Vec::new()),
+            },
+        };
+        let mut out = Vec::new();
+        for (event_id, event) in inner.all[start..].iter() {
+            if let Some(t) = tenant {
+                if event.tenant_id.as_deref() != Some(t) {
+                    continue;
+                }
+            }
+            out.push(StreamedEvent {
+                event_id: event_id.clone(),
+                event: apply_upcasters(event.clone(), &self.upcasters),
+            });
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
     }
 }

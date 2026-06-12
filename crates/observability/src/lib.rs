@@ -65,6 +65,7 @@
 
 mod appender;
 mod banner;
+mod config_loader;
 mod health;
 mod logging;
 mod metrics;
@@ -74,6 +75,7 @@ mod trace_context;
 
 pub use appender::{parse_size, FileConfig, RollingFileWriter, TeeWriter};
 pub use banner::{banner_string, print_banner, render_banner, BannerData, RUSTC_VERSION};
+pub use config_loader::{apply_external_config, load_log_config, ConfigLoadError};
 pub use health::{Composite, HealthResult, Indicator, IndicatorFn, Status};
 pub use logging::{
     init_logging, init_logging_with_handle, subscriber, subscriber_with_handle,

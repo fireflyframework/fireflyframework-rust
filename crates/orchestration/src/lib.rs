@@ -6,13 +6,36 @@
 //! | Engine       | Topology                   | Compensation                       |
 //! |--------------|----------------------------|------------------------------------|
 //! | [`Saga`]     | Sequential steps           | Reverse-order, configurable policy |
-//! | [`Workflow`] | DAG with parallel branches | None — fail-fast                   |
+//! | [`Workflow`] | DAG with parallel branches | Reverse-order, configurable policy |
 //! | [`Tcc`]      | Try-all then Confirm-all   | Cancel-tried-on-Try-failure        |
 //!
 //! Each engine accepts a typed step / node / participant built from async
 //! closures, runs as a plain future on the caller's task, and respects
 //! cooperative cancellation through a [`CancellationToken`] — the Rust
 //! analogue of the Go port's `context.Context` cancellation.
+//!
+//! # pyfly parity — advanced orchestration
+//!
+//! On top of the in-process engines the crate ports pyfly's
+//! `pyfly.transactional.workflow` advanced layer:
+//!
+//! * **Per-step retry** — [`invoke_with_policy`] applies a
+//!   [`RetryPolicy`] (max attempts, exponential backoff, jitter, per-attempt
+//!   timeout) to every step; opt in with [`Step::with_retry`] /
+//!   [`TccParticipant::with_retry`] — pyfly's `StepInvoker`.
+//! * **Inter-step data passing** — the [`StepContext`] blackboard threads
+//!   prior step results, variables, headers and input through
+//!   [`Step::with_context`] / [`Node::with_context`] — pyfly's `@FromStep` /
+//!   `@Input` / `@Variable` argument injection.
+//! * **Workflow step compensation** — [`Node::with_compensation`] rolls back
+//!   completed compensatable nodes in reverse order on any failure — pyfly's
+//!   `WorkflowExecutor._compensate`.
+//! * **Advanced primitives** — [`wait_all`] / [`wait_any`] gather/race over
+//!   signals + timers, [`ChildWorkflowService`] (child workflows),
+//!   [`ContinueAsNew`], conditional steps ([`Node::when`]), async
+//!   fire-and-forget steps ([`Node::fire_and_forget`]),
+//!   [`WorkflowQueryService`] and durable suspend/resume
+//!   ([`DurableWorkflowState`]).
 //!
 //! # Quick start
 //!
@@ -45,6 +68,7 @@ mod tcc;
 mod workflow;
 
 // ── pyfly-parity durable-orchestration layer ────────────────────────────
+mod condition;
 mod dlq;
 mod gateway;
 mod model;
@@ -54,9 +78,13 @@ mod registry;
 mod report;
 mod scheduling;
 mod signal;
+mod step_context;
+mod step_invoker;
 mod timer;
 mod validator;
+mod wait;
 mod web;
+mod workflow_advanced;
 
 pub use cancel::CancellationToken;
 pub use saga::{CompensationPolicy, Outcome, Saga, SagaError, SagaFailure, SagaStatus, Step};
@@ -82,6 +110,21 @@ pub use dlq::{
 // Signal + timer services (workflow wait nodes).
 pub use signal::{SignalError, SignalService};
 pub use timer::TimerService;
+// Inter-step data passing (runtime blackboard).
+pub use step_context::StepContext;
+// Conditional-step expression error (Node::when).
+pub use condition::ConditionError;
+// Per-step retry / backoff / jitter / timeout enforcement.
+pub use step_invoker::{invoke_with_policy, StepInvokeError};
+// Advanced wait/compose primitives (wait-all / wait-any).
+pub use wait::{wait_all, wait_any, WaitError, WaitOutcome, WaitTarget};
+// Advanced workflow primitives: compensation, child workflow,
+// continue-as-new, conditional + async steps, query service, and durable
+// suspend/resume.
+pub use workflow_advanced::{
+    ChildHandle, ChildWorkflowError, ChildWorkflowService, ContinueAsNew, DurableWorkflowState,
+    WorkflowFactory, WorkflowQueryError, WorkflowQueryService,
+};
 // Event gateway + broker-driven saga starts.
 pub use gateway::{trigger_handler, EventGateway, EventTrigger, TriggerHandler};
 // Definition registry + listing accessors.

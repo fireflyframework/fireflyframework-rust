@@ -31,6 +31,10 @@ pub enum EvalError {
     /// The `matches` operator was given an invalid regular expression.
     #[error("matches: bad regex: {0}")]
     BadRegex(String),
+    /// The `between` operator was given an operand that is not a
+    /// two-element list `[lo, hi]`.
+    #[error("between: value must be a 2-element list, got {0}")]
+    BadBetween(String),
     /// A numeric comparison (`lt`/`lte`/`gt`/`gte`) was applied to a
     /// non-numeric operand. `left`/`right` are JSON type names.
     #[error("compare {op}: non-numeric ({left} vs {right})")]
@@ -54,6 +58,27 @@ pub enum EvalError {
     },
 }
 
+/// Controls how many rules of a [`RuleSet`] are evaluated — the Rust
+/// counterpart of pyfly's `EvaluationMode`.
+///
+/// Both modes walk rules in **descending priority order** (ties broken
+/// by document order) and honour the [`Rule::enabled`] flag (a disabled
+/// rule is skipped entirely).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvaluationMode {
+    /// Evaluate **every** enabled rule (the default, Go-parity
+    /// behaviour). All matching rules contribute their `then` actions
+    /// and all non-matching rules contribute their `otherwise` actions.
+    #[default]
+    All,
+    /// Evaluate rules in priority order and stop immediately after the
+    /// **first matching** rule. Non-matching rules encountered before
+    /// the first match are still evaluated (and their `otherwise`
+    /// actions still fire); rules after the first match are never
+    /// evaluated. Mirrors pyfly's `EvaluationMode.FIRST_MATCH`.
+    FirstMatch,
+}
+
 /// `AstEvaluator` is the default, stateless rule-engine implementation
 /// — the counterpart of Go's `core.Evaluator` (`core.New()`).
 #[derive(Debug, Clone, Copy, Default)]
@@ -68,13 +93,40 @@ impl AstEvaluator {
     /// Synchronous evaluation — the engine is pure CPU, so callers
     /// that are not inside an async context can use this directly. The
     /// [`Evaluator`] trait implementation delegates here.
+    ///
+    /// Uses [`EvaluationMode::All`]: every enabled rule is evaluated; a
+    /// matched rule contributes its `then` actions and a non-matched
+    /// rule its `otherwise` actions to the merged [`Verdict`]. Disabled
+    /// rules ([`Rule::enabled`] = `false`) are skipped entirely.
     pub fn evaluate_sync(&self, set: &RuleSet, fact: &Fact) -> Result<Verdict, EvalError> {
+        self.evaluate_with_mode(set, fact, EvaluationMode::All)
+    }
+
+    /// Evaluates `set` against `fact` under the given [`EvaluationMode`].
+    ///
+    /// In [`EvaluationMode::All`] every enabled rule is evaluated; in
+    /// [`EvaluationMode::FirstMatch`] evaluation stops after the first
+    /// matching rule. In both modes, matched rules contribute `then`
+    /// actions, non-matched rules contribute `otherwise` actions, and
+    /// disabled rules are skipped — the Rust counterpart of pyfly's
+    /// `RuleSetEvaluator.evaluate`.
+    pub fn evaluate_with_mode(
+        &self,
+        set: &RuleSet,
+        fact: &Fact,
+        mode: EvaluationMode,
+    ) -> Result<Verdict, EvalError> {
         let mut rules: Vec<&Rule> = set.rules.iter().collect();
         // Stable sort: descending priority, ties keep document order.
         rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
 
         let mut verdict = Verdict::default();
         for rule in rules {
+            // pyfly parity: a disabled rule short-circuits to non-matched
+            // and fires neither `then` nor `otherwise`.
+            if !rule.enabled {
+                continue;
+            }
             let ok = self.eval(&rule.when, fact).map_err(|e| EvalError::Rule {
                 id: rule.id.clone(),
                 source: Box::new(e),
@@ -82,6 +134,12 @@ impl AstEvaluator {
             if ok {
                 verdict.matched.push(rule.id.clone());
                 verdict.actions.extend(rule.then.iter().cloned());
+                if mode == EvaluationMode::FirstMatch {
+                    break;
+                }
+            } else {
+                // pyfly fires the else-branch when `when` is false.
+                verdict.actions.extend(rule.otherwise.iter().cloned());
             }
         }
         Ok(verdict)
@@ -126,6 +184,12 @@ impl AstEvaluator {
             Op::In => Ok(in_list(&cond.value, found)),
             Op::NotIn => Ok(!in_list(&cond.value, found)),
             Op::Contains => Ok(contains(found, &cond.value)),
+            Op::NotContains => {
+                // pyfly parity: a null/absent fact matches neither
+                // `contains` nor `notContains` (both short-circuit to
+                // false), so this is *not* a plain `!contains`.
+                Ok(!is_null(found) && !contains(found, &cond.value))
+            }
             Op::StartsWith => Ok(to_text(found).starts_with(&value_text(&cond.value))),
             Op::EndsWith => Ok(to_text(found).ends_with(&value_text(&cond.value))),
             Op::Matches => {
@@ -133,6 +197,9 @@ impl AstEvaluator {
                     .map_err(|e| EvalError::BadRegex(e.to_string()))?;
                 Ok(re.is_match(&to_text(found)))
             }
+            Op::Between => between(found, &cond.value),
+            Op::Exists => Ok(!is_null(found)),
+            Op::IsEmpty => Ok(is_empty(found)),
             Op::Other(name) => Err(EvalError::UnknownOp(name.clone())),
         }
     }
@@ -142,6 +209,15 @@ impl AstEvaluator {
 impl Evaluator for AstEvaluator {
     async fn evaluate(&self, set: &RuleSet, fact: &Fact) -> Result<Verdict, EvalError> {
         self.evaluate_sync(set, fact)
+    }
+
+    async fn evaluate_with_mode(
+        &self,
+        set: &RuleSet,
+        fact: &Fact,
+        mode: EvaluationMode,
+    ) -> Result<Verdict, EvalError> {
+        AstEvaluator::evaluate_with_mode(self, set, fact, mode)
     }
 }
 
@@ -328,6 +404,58 @@ fn contains(haystack: Option<&Value>, needle: &Value) -> bool {
     match haystack {
         Some(Value::String(s)) => s.contains(&value_text(needle)),
         Some(Value::Array(items)) => items.iter().any(|x| go_deep_eq(x, needle)),
+        _ => false,
+    }
+}
+
+/// `between`: true when `lo <= fact <= hi`, where `operand` is a
+/// two-element list `[lo, hi]` — pyfly's `between`.
+///
+/// A null/absent fact never matches (returns `Ok(false)`), mirroring
+/// pyfly's `if actual is None: return False`. Numeric facts and bounds
+/// compare numerically (matching the `lt`/`gt` family); string facts
+/// and bounds compare lexically (Python's `<=` over `str`). An operand
+/// that is not a two-element list raises [`EvalError::BadBetween`], and
+/// a fact/bound type that cannot be ordered raises
+/// [`EvalError::NonNumericCompare`].
+fn between(fact: Option<&Value>, operand: &Value) -> Result<bool, EvalError> {
+    let bounds = match operand {
+        Value::Array(items) if items.len() == 2 => items,
+        other => return Err(EvalError::BadBetween(other.to_string())),
+    };
+    // pyfly: a null/absent fact is never within range.
+    if is_null(fact) {
+        return Ok(false);
+    }
+    let lo = &bounds[0];
+    let hi = &bounds[1];
+    // Numeric path (consistent with the lt/gt family): coerce all three
+    // operands to f64 when they are JSON numbers.
+    if let (Some(f), Some(l), Some(h)) = (to_f64(fact), to_f64(Some(lo)), to_f64(Some(hi))) {
+        return Ok(l <= f && f <= h);
+    }
+    // String path: Python compares str with `<=` lexically.
+    if let (Some(Value::String(f)), Value::String(l), Value::String(h)) = (fact, lo, hi) {
+        return Ok(l.as_str() <= f.as_str() && f.as_str() <= h.as_str());
+    }
+    Err(EvalError::NonNumericCompare {
+        op: Op::Between,
+        left: json_type_name(fact),
+        right: json_type_name(Some(lo)),
+    })
+}
+
+/// `isEmpty`: true when the fact is null/absent, the empty string, the
+/// empty list, or the empty object — pyfly's `is_empty`. A numeric `0`
+/// or boolean `false` is **not** empty (they are present, non-collection
+/// values), matching pyfly's `actual == "" or actual == [] or actual ==
+/// {}` (which is false for `0`/`False`).
+fn is_empty(fact: Option<&Value>) -> bool {
+    match fact {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => s.is_empty(),
+        Some(Value::Array(a)) => a.is_empty(),
+        Some(Value::Object(o)) => o.is_empty(),
         _ => false,
     }
 }
@@ -649,6 +777,188 @@ mod tests {
         assert!(!run("a", Op::IsNotNull));
     }
 
+    /// Helper: evaluate a single-condition rule and report whether it
+    /// matched. Ports pyfly's `_eval(cond, ctx)` from
+    /// `tests/rule_engine/test_operators.py`.
+    fn op_matches(path: &str, op: Op, value: serde_json::Value, ctx: serde_json::Value) -> bool {
+        let rs = RuleSet::default().with_rule(Rule::new("t", Logic::cond(path, op, value)));
+        AstEvaluator::new()
+            .evaluate_sync(&rs, &fact(ctx))
+            .unwrap()
+            .matched
+            .len()
+            == 1
+    }
+
+    /// Port of pyfly `TestBetween` (test_operators.py). Note: the Rust
+    /// port coerces JSON numbers numerically (a `[1, 10]` int operand
+    /// works against an int/float fact alike — unlike `eq`, which uses
+    /// DeepEqual).
+    #[test]
+    fn between_operator() {
+        assert!(op_matches(
+            "x",
+            Op::Between,
+            json!([1, 10]),
+            json!({"x": 5})
+        ));
+        assert!(op_matches(
+            "x",
+            Op::Between,
+            json!([1, 10]),
+            json!({"x": 1})
+        )); // lower bound
+        assert!(op_matches(
+            "x",
+            Op::Between,
+            json!([1, 10]),
+            json!({"x": 10})
+        )); // upper bound
+        assert!(!op_matches(
+            "x",
+            Op::Between,
+            json!([5, 10]),
+            json!({"x": 4})
+        )); // below
+        assert!(!op_matches(
+            "x",
+            Op::Between,
+            json!([5, 10]),
+            json!({"x": 11})
+        )); // above
+            // None/missing field is false (never crashes).
+        assert!(!op_matches(
+            "missing",
+            Op::Between,
+            json!([1, 10]),
+            json!({})
+        ));
+        // Float fact and float bounds also work.
+        assert!(op_matches(
+            "x",
+            Op::Between,
+            json!([1.0, 10.0]),
+            json!({"x": 5.5})
+        ));
+        // String range (Python-style lexical comparison).
+        assert!(op_matches(
+            "s",
+            Op::Between,
+            json!(["a", "m"]),
+            json!({"s": "f"})
+        ));
+        assert!(!op_matches(
+            "s",
+            Op::Between,
+            json!(["a", "m"]),
+            json!({"s": "z"})
+        ));
+    }
+
+    #[test]
+    fn between_bad_operand_is_an_error() {
+        // A non-2-element operand fails loudly at evaluation time.
+        for bad in [json!(5), json!([1, 2, 3]), json!("nope")] {
+            let rs =
+                RuleSet::default().with_rule(Rule::new("r", Logic::cond("x", Op::Between, bad)));
+            let err = AstEvaluator::new()
+                .evaluate_sync(&rs, &fact(json!({"x": 5})))
+                .unwrap_err();
+            assert!(err.to_string().contains("between"), "message: {err}");
+        }
+    }
+
+    /// Port of pyfly `TestNotContains` (test_operators.py).
+    #[test]
+    fn not_contains_operator() {
+        // substring absent → true; present → false
+        assert!(op_matches(
+            "s",
+            Op::NotContains,
+            json!("bad"),
+            json!({"s": "good text"})
+        ));
+        assert!(!op_matches(
+            "s",
+            Op::NotContains,
+            json!("bad"),
+            json!({"s": "this is bad"})
+        ));
+        // list member absent → true; present → false
+        assert!(op_matches(
+            "tags",
+            Op::NotContains,
+            json!("blocked"),
+            json!({"tags": ["active", "vip"]})
+        ));
+        assert!(!op_matches(
+            "tags",
+            Op::NotContains,
+            json!("blocked"),
+            json!({"tags": ["active", "blocked"]})
+        ));
+        // None/missing field is false (pyfly: neither contains nor
+        // not_contains holds for a null fact).
+        assert!(!op_matches(
+            "missing",
+            Op::NotContains,
+            json!("x"),
+            json!({})
+        ));
+    }
+
+    /// Port of pyfly `TestExists` (test_operators.py).
+    #[test]
+    fn exists_operator() {
+        assert!(op_matches(
+            "name",
+            Op::Exists,
+            Value::Null,
+            json!({"name": "Alice"})
+        ));
+        assert!(!op_matches("name", Op::Exists, Value::Null, json!({}))); // absent
+        assert!(!op_matches(
+            "name",
+            Op::Exists,
+            Value::Null,
+            json!({"name": null})
+        )); // explicit null
+            // Falsy-but-present value still exists; the operand is ignored.
+        assert!(op_matches(
+            "x",
+            Op::Exists,
+            json!("anything"),
+            json!({"x": 0})
+        ));
+    }
+
+    /// Port of pyfly `TestIsEmpty` (test_operators.py).
+    #[test]
+    fn is_empty_operator() {
+        // Empty variants → true (null, "", [], {}); absent → true.
+        for v in [json!(null), json!(""), json!([]), json!({})] {
+            assert!(
+                op_matches("x", Op::IsEmpty, Value::Null, json!({ "x": v.clone() })),
+                "value {v} should be empty"
+            );
+        }
+        assert!(op_matches("x", Op::IsEmpty, Value::Null, json!({}))); // absent → null → empty
+                                                                       // Non-empty variants → false (incl. `0` and `false`, which are
+                                                                       // present non-collection values).
+        for v in [
+            json!("hello"),
+            json!([1]),
+            json!({"a": 1}),
+            json!(0),
+            json!(false),
+        ] {
+            assert!(
+                !op_matches("x", Op::IsEmpty, Value::Null, json!({ "x": v.clone() })),
+                "value {v} should NOT be empty"
+            );
+        }
+    }
+
     #[test]
     fn non_numeric_compare_is_an_error() {
         let rs =
@@ -774,6 +1084,165 @@ rules:
         let rs = RuleSet::default().with_rule(Rule::new("r", Logic::default()));
         let v = futures::executor::block_on(eval.evaluate(&rs, &Fact::new())).unwrap();
         assert_eq!(v.matched, ["r"]);
+    }
+
+    // ----- EvaluationMode (ports pyfly test_modes.py) ---------------------
+
+    /// Two rules that both match a `tier == gold` fact; high priority
+    /// fires first.
+    fn modes_ruleset() -> RuleSet {
+        RuleSet::default()
+            .with_rule(
+                Rule::new("high", Logic::cond("tier", Op::Eq, json!("gold")))
+                    .with_priority(10)
+                    .with_action(
+                        Action::new("set")
+                            .with_param("target", "high_ran")
+                            .with_param("value", true),
+                    ),
+            )
+            .with_rule(
+                Rule::new("low", Logic::cond("tier", Op::Eq, json!("gold")))
+                    .with_priority(1)
+                    .with_action(
+                        Action::new("set")
+                            .with_param("target", "low_ran")
+                            .with_param("value", true),
+                    ),
+            )
+    }
+
+    #[test]
+    fn all_mode_evaluates_every_matching_rule() {
+        let v = AstEvaluator::new()
+            .evaluate_with_mode(
+                &modes_ruleset(),
+                &fact(json!({"tier": "gold"})),
+                EvaluationMode::All,
+            )
+            .unwrap();
+        assert_eq!(v.matched, ["high", "low"]);
+        assert_eq!(v.actions.len(), 2);
+    }
+
+    #[test]
+    fn all_is_the_default_mode() {
+        // evaluate_sync == evaluate_with_mode(ALL).
+        let f = fact(json!({"tier": "gold"}));
+        let a = AstEvaluator::new()
+            .evaluate_sync(&modes_ruleset(), &f)
+            .unwrap();
+        let b = AstEvaluator::new()
+            .evaluate_with_mode(&modes_ruleset(), &f, EvaluationMode::default())
+            .unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.matched, ["high", "low"]);
+    }
+
+    #[test]
+    fn first_match_stops_after_first_matching_rule() {
+        let v = AstEvaluator::new()
+            .evaluate_with_mode(
+                &modes_ruleset(),
+                &fact(json!({"tier": "gold"})),
+                EvaluationMode::FirstMatch,
+            )
+            .unwrap();
+        // Only the high-priority rule fires; low is never reached.
+        assert_eq!(v.matched, ["high"]);
+        assert_eq!(v.actions.len(), 1);
+        assert_eq!(v.actions[0].params["target"], json!("high_ran"));
+    }
+
+    #[test]
+    fn first_match_continues_past_non_matching_rules() {
+        // high does NOT match (platinum) → evaluation continues; low
+        // matches → stops.
+        let rs = RuleSet::default()
+            .with_rule(
+                Rule::new("high", Logic::cond("tier", Op::Eq, json!("platinum"))).with_priority(10),
+            )
+            .with_rule(
+                Rule::new("low", Logic::cond("tier", Op::Eq, json!("gold"))).with_priority(1),
+            );
+        let v = AstEvaluator::new()
+            .evaluate_with_mode(
+                &rs,
+                &fact(json!({"tier": "gold"})),
+                EvaluationMode::FirstMatch,
+            )
+            .unwrap();
+        assert_eq!(v.matched, ["low"]);
+    }
+
+    #[test]
+    fn first_match_no_rule_matches_evaluates_all() {
+        let v = AstEvaluator::new()
+            .evaluate_with_mode(
+                &modes_ruleset(),
+                &fact(json!({"tier": "bronze"})),
+                EvaluationMode::FirstMatch,
+            )
+            .unwrap();
+        assert!(v.matched.is_empty());
+        assert!(v.actions.is_empty());
+    }
+
+    // ----- enabled / otherwise (pyfly Rule.enabled / Rule.otherwise) -------
+
+    #[test]
+    fn disabled_rule_is_skipped_entirely() {
+        let rs = RuleSet::default().with_rule(
+            Rule::new("off", Logic::default())
+                .with_enabled(false)
+                .with_action(
+                    Action::new("set")
+                        .with_param("target", "x")
+                        .with_param("value", 1),
+                )
+                .with_otherwise(
+                    Action::new("set")
+                        .with_param("target", "y")
+                        .with_param("value", 2),
+                ),
+        );
+        let v = AstEvaluator::new()
+            .evaluate_sync(&rs, &Fact::new())
+            .unwrap();
+        // A disabled rule never matches and fires neither then nor otherwise.
+        assert!(v.matched.is_empty());
+        assert!(v.actions.is_empty());
+    }
+
+    #[test]
+    fn otherwise_actions_fire_when_when_is_false() {
+        let rs = RuleSet::default().with_rule(
+            Rule::new("r", Logic::cond("tier", Op::Eq, json!("gold")))
+                .with_action(Action::new("set").with_param("target", "then_ran"))
+                .with_otherwise(Action::new("set").with_param("target", "else_ran")),
+        );
+        // when=false (tier != gold) → otherwise fires, rule is NOT matched.
+        let v = AstEvaluator::new()
+            .evaluate_sync(&rs, &fact(json!({"tier": "bronze"})))
+            .unwrap();
+        assert!(v.matched.is_empty(), "non-match must not be in matched");
+        assert_eq!(v.actions.len(), 1);
+        assert_eq!(v.actions[0].params["target"], json!("else_ran"));
+    }
+
+    #[test]
+    fn then_actions_fire_when_when_is_true_not_otherwise() {
+        let rs = RuleSet::default().with_rule(
+            Rule::new("r", Logic::cond("tier", Op::Eq, json!("gold")))
+                .with_action(Action::new("set").with_param("target", "then_ran"))
+                .with_otherwise(Action::new("set").with_param("target", "else_ran")),
+        );
+        let v = AstEvaluator::new()
+            .evaluate_sync(&rs, &fact(json!({"tier": "gold"})))
+            .unwrap();
+        assert_eq!(v.matched, ["r"]);
+        assert_eq!(v.actions.len(), 1);
+        assert_eq!(v.actions[0].params["target"], json!("then_ran"));
     }
 
     #[test]

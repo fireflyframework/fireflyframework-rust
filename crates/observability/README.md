@@ -25,8 +25,8 @@ building blocks that compose with the `tracing` ecosystem.
 ### Logging
 
 ```rust,ignore
-pub enum LogFormat { Json, Text }            // Go: "json" | "text"
-impl LogFormat { pub fn from_name(&str) -> Self; }
+pub enum LogFormat { Json, Text, Console }   // Go: "json" | "text"; +Console (pyfly dev renderer)
+impl LogFormat { pub fn from_name(&str) -> Self; }  // console|pretty|dev -> Console; logfmt|text -> Text
 
 pub struct LogConfig {                       // Go: LogConfig
     pub level: tracing::Level,               //   Level   slog.Level
@@ -326,6 +326,44 @@ tees output to console and file; an unopenable file falls back to
 console only — a logging misconfiguration never crashes the
 application.
 
+### Console / dev log renderer (pyfly `StructlogAdapter` `ConsoleRenderer`)
+
+```rust,ignore
+pub enum LogFormat { Json, Text, Console }   // +Console (pyfly json|logfmt|console)
+impl LogConfig { pub fn with_console_colors(self, bool) -> Self; } // default false
+```
+
+`LogFormat::Console` renders a human-friendly `time [LEVEL] msg key=value`
+line — leading `time`/`level`/`msg`, trailing fields — the Rust analog of
+pyfly's `structlog.dev.ConsoleRenderer`. It is plain text by default
+(matching pyfly's `colors=False`); `with_console_colors(true)` enables ANSI
+level coloring + dimmed timestamp/field keys for an interactive terminal.
+Intended for local development; the production JSON/logfmt wire shapes are
+unchanged.
+
+### External logging-config-file loading (pyfly `logging/config_loader.py`)
+
+```rust,ignore
+pub fn load_log_config(path, base: LogConfig) -> Result<LogConfig, ConfigLoadError>;
+pub fn apply_external_config(path, base: LogConfig) -> (LogConfig, bool); // (merged, applied)
+pub enum ConfigLoadError { NotFound, Io, Parse, UnsupportedFormat }
+```
+
+The Rust analog of pyfly's `apply_external_config`: load a logging
+definition from a file at startup and fold its `level` / `format` /
+`service` / per-target `levels` over a base `LogConfig`. Two shapes,
+chosen by extension — `.json` (the dictConfig analog) and
+`.properties` / `.conf` / `.ini` (`key=value`, the fileConfig analog,
+with per-target overrides under the `level.` prefix). `apply_external_config`
+mirrors pyfly's lenient contract: an empty/missing path, read error, parse
+error, or unsupported extension returns `(base, false)` — the base config
+unchanged, startup never crashed (pyfly logs a warning and falls back). An
+unknown level/format value is ignored, leaving that field untouched so a
+single bad value doesn't drop the rest of the file. dictConfig/fileConfig
+are Python-stdlib `logging` constructs with no Rust equivalent, so this
+reproduces the *intent* (file-driven reconfiguration) over a small,
+language-neutral schema that maps onto the `LogConfig` builder.
+
 ## Testing
 
 ```bash
@@ -344,4 +382,5 @@ registries, `@timed`/`@counted` Micrometer naming and tags, W3C
 inject/extract round trips, the tracing-filter inbound-trace test) and
 `tests/logging/` (redaction engine/processor/patterns including Luhn,
 `parse_size`, rotation + backup pruning, per-logger levels and runtime
-`set_level`) suites.
+`set_level`, the `ConsoleRenderer` branch of `test_structlog_adapter`, and
+`test_config_loader` for external-file reconfiguration) suites.

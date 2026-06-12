@@ -14,14 +14,15 @@ use axum::body::Body;
 use axum::routing::get;
 use axum::Router;
 use firefly_actuator::{
-    mount, ActuatorConfig, CacheDescriptor, CacheOps, Endpoint, EndpointRegistry, ExposureConfig,
-    HealthComposite, HealthResult, HttpExchangeRecorder, HttpExchangesLayer, IndicatorFn,
-    LoggersState, MetricRegistry, ProbeGroup, Refresher, StaticScheduledTasks, TaskDescriptor,
-    TaskTrigger,
+    mount, ActuatorConfig, CacheDescriptor, CacheOps, Endpoint, EndpointRegistry, EnvSource,
+    ExposureConfig, HealthComposite, HealthResult, HttpExchangeRecorder, HttpExchangesLayer,
+    IndicatorFn, LoggersState, MetricRegistry, ProbeGroup, PropertySourceView, PropertyView,
+    Refresher, StaticScheduledTasks, TaskDescriptor, TaskTrigger,
 };
 use http::{header, HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------
@@ -943,4 +944,186 @@ async fn spring_default_index_links_only_health_and_info() {
     assert!(links.contains_key("info"));
     assert!(!links.contains_key("metrics"));
     assert!(!links.contains_key("env"));
+}
+
+// ---------------------------------------------------------------------
+// /actuator/env Spring property-source view (pyfly EnvEndpoint)
+// ---------------------------------------------------------------------
+
+/// A test [`EnvSource`] reproducing the firefly-config bridge: two ordered
+/// sources (highest precedence first) plus a couple of active profiles, with
+/// a pre-masked secret value.
+struct FakeEnvSource;
+
+impl EnvSource for FakeEnvSource {
+    fn active_profiles(&self) -> Vec<String> {
+        vec!["dev".into(), "test".into()]
+    }
+    fn property_sources(&self) -> Vec<PropertySourceView> {
+        vec![
+            PropertySourceView {
+                name: "systemEnvironment".into(),
+                properties: BTreeMap::from([(
+                    "app.name".into(),
+                    PropertyView {
+                        value: "orders".into(),
+                        origin: "System Environment Property".into(),
+                    },
+                )]),
+            },
+            PropertySourceView {
+                name: "applicationConfig".into(),
+                properties: BTreeMap::from([
+                    (
+                        "app.name".into(),
+                        PropertyView {
+                            value: "orders-file".into(),
+                            origin: "applicationConfig".into(),
+                        },
+                    ),
+                    (
+                        "db.password".into(),
+                        PropertyView {
+                            value: "******".into(),
+                            origin: "applicationConfig".into(),
+                        },
+                    ),
+                ]),
+            },
+        ]
+    }
+}
+
+fn mount_with_env_source() -> Router {
+    mount(ActuatorConfig {
+        exposure: ExposureConfig::from_csv("*", ""),
+        env_source: Some(Arc::new(FakeEnvSource)),
+        ..ActuatorConfig::default()
+    })
+}
+
+/// pyfly `test_shows_active_profiles` + Spring `/actuator/env` shape: when an
+/// `EnvSource` is wired, `/actuator/env` returns `{activeProfiles,
+/// propertySources}` with ordered, masked, origin-attributed properties.
+#[tokio::test]
+async fn env_returns_spring_property_source_view() {
+    let (status, body) = get_json(mount_with_env_source(), "/actuator/env").await;
+    assert_eq!(status, StatusCode::OK);
+    let profiles = body["activeProfiles"].as_array().unwrap();
+    assert!(profiles.iter().any(|p| p == "dev"));
+    assert!(profiles.iter().any(|p| p == "test"));
+    let sources = body["propertySources"].as_array().unwrap();
+    // highest precedence first
+    assert_eq!(sources[0]["name"], "systemEnvironment");
+    assert_eq!(sources[1]["name"], "applicationConfig");
+    assert_eq!(
+        sources[0]["properties"]["app.name"],
+        json!({"value": "orders", "origin": "System Environment Property"})
+    );
+    // secret stays masked exactly as the source provided it
+    assert_eq!(sources[1]["properties"]["db.password"]["value"], "******");
+}
+
+/// Spring `/actuator/env/{toMatch}` drill-down: the winning value is the
+/// highest-precedence source carrying the property, and every source that has
+/// it is listed.
+#[tokio::test]
+async fn env_property_detail_drill_down() {
+    let (status, body) = get_json(mount_with_env_source(), "/actuator/env/app.name").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["property"],
+        json!({"source": "systemEnvironment", "value": "orders"})
+    );
+    let per_source = body["propertySources"].as_array().unwrap();
+    assert_eq!(per_source.len(), 2);
+    assert_eq!(per_source[0]["name"], "systemEnvironment");
+    assert!(body["activeProfiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p == "dev"));
+}
+
+/// An unknown property returns a well-formed body with a `null` winning
+/// property and an empty per-source list (Spring shape preserved).
+#[tokio::test]
+async fn env_property_detail_unknown_is_null() {
+    let (status, body) = get_json(mount_with_env_source(), "/actuator/env/nope").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["property"].is_null());
+    assert!(body["propertySources"].as_array().unwrap().is_empty());
+}
+
+/// Without an `EnvSource` the legacy flat redacted env map is preserved
+/// (backward compatibility) and the per-property drill-down route is not
+/// mounted (404).
+#[tokio::test]
+async fn env_without_source_is_flat_and_no_drill_down() {
+    let app = mount(ActuatorConfig {
+        exposure: ExposureConfig::from_csv("*", ""),
+        ..ActuatorConfig::default()
+    });
+    let (status, body) = get_json(app, "/actuator/env").await;
+    assert_eq!(status, StatusCode::OK);
+    // Flat map: no Spring envelope keys.
+    assert!(body.get("activeProfiles").is_none());
+    assert!(body.get("propertySources").is_none());
+
+    let app = mount(ActuatorConfig {
+        exposure: ExposureConfig::from_csv("*", ""),
+        ..ActuatorConfig::default()
+    });
+    let (status, _, _) = request(app, "GET", "/actuator/env/anything", None, &[]).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------
+// /actuator/threaddump (pyfly ThreadDumpEndpoint)
+// ---------------------------------------------------------------------
+
+/// pyfly `test_threaddump_returns_threads`: `/actuator/threaddump` returns
+/// `{threads:[…]}` with at least one entry carrying a `stackTrace` field and
+/// the Spring field set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn threaddump_returns_threads() {
+    let app = mount(ActuatorConfig {
+        exposure: ExposureConfig::from_csv("*", ""),
+        ..ActuatorConfig::default()
+    });
+    let (status, body) = get_json(app, "/actuator/threaddump").await;
+    assert_eq!(status, StatusCode::OK);
+    let threads = body["threads"].as_array().unwrap();
+    assert!(!threads.is_empty());
+    let first = &threads[0];
+    assert!(first.get("threadName").is_some());
+    assert!(first.get("threadId").is_some());
+    assert!(first.get("daemon").is_some());
+    assert!(first.get("threadState").is_some());
+    assert!(first["stackTrace"].is_array());
+}
+
+/// `/actuator/threaddump` is wired into the index `_links` when exposed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn threaddump_in_index() {
+    let app = mount(ActuatorConfig {
+        exposure: ExposureConfig::from_csv("*", ""),
+        ..ActuatorConfig::default()
+    });
+    let (_, body) = get_json(app, "/actuator").await;
+    assert!(body["_links"]
+        .as_object()
+        .unwrap()
+        .contains_key("threaddump"));
+}
+
+/// `/actuator/threaddump` honors exposure exclusion (Spring-default omits it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn threaddump_excluded_when_not_exposed() {
+    let app = mount(ActuatorConfig {
+        exposure: ExposureConfig::spring_default(),
+        ..ActuatorConfig::default()
+    });
+    let (status, _, _) = request(app, "GET", "/actuator/threaddump", None, &[]).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
