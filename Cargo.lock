@@ -439,13 +439,16 @@ version = "26.6.1"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "firefly-client",
+ "firefly-kernel",
  "futures",
  "hex",
  "hmac",
  "http",
  "http-body-util",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -705,14 +708,10 @@ dependencies = [
  "bcrypt",
  "chrono",
  "firefly-idp",
- "futures",
  "jsonwebtoken",
- "rand",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -1010,6 +1009,7 @@ dependencies = [
 name = "firefly-starter-core"
 version = "26.6.1"
 dependencies = [
+ "async-trait",
  "axum",
  "firefly-actuator",
  "firefly-cache",
@@ -1027,6 +1027,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -1122,11 +1123,15 @@ dependencies = [
  "base64",
  "chrono",
  "firefly-client",
+ "firefly-kernel",
+ "firefly-testkit",
  "futures",
  "hex",
  "hmac",
  "http",
  "http-body-util",
+ "rand",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

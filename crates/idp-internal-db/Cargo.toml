@@ -12,17 +12,11 @@ description = "Firefly Framework for Rust — Self-hosted IdP (bcrypt + HS256 JW
 firefly-idp = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
 chrono = { workspace = true }
-uuid = { workspace = true }
 bcrypt = { workspace = true }
 jsonwebtoken = { workspace = true }
-base64 = { workspace = true }
-tokio = { workspace = true }
-rand = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-futures = { workspace = true }
 serde_json = { workspace = true }
+base64 = { workspace = true }
