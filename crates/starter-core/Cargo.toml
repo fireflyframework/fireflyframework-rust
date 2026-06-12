@@ -1,0 +1,32 @@
+[package]
+name = "firefly-starter-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — Bundles web + cache + observability + eda + cqrs + actuator + lifecycle + scheduling"
+
+[dependencies]
+firefly-kernel = { workspace = true }
+firefly-web = { workspace = true }
+firefly-cache = { workspace = true }
+firefly-observability = { workspace = true }
+firefly-eda = { workspace = true }
+firefly-cqrs = { workspace = true }
+firefly-actuator = { workspace = true }
+firefly-lifecycle = { workspace = true }
+firefly-scheduling = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }
+http = { workspace = true }

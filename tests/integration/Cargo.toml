@@ -1,0 +1,33 @@
+[package]
+name = "firefly-integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — cross-module integration suite"
+publish = false
+
+[dependencies]
+firefly-kernel = { workspace = true }
+firefly-cqrs = { workspace = true }
+firefly-observability = { workspace = true }
+firefly-orchestration = { workspace = true }
+firefly-callbacks = { workspace = true }
+firefly-webhooks = { workspace = true }
+firefly-starter-core = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

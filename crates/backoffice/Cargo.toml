@@ -1,0 +1,29 @@
+[package]
+name = "firefly-backoffice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — starter-application + back-office context middleware"
+
+[dependencies]
+firefly-kernel = { workspace = true }
+firefly-starter-application = { workspace = true }
+firefly-starter-core = { workspace = true }
+firefly-web = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }

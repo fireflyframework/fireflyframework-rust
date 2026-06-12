@@ -1,0 +1,29 @@
+[package]
+name = "firefly-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — Problem renderer, correlation, idempotency, PII masking middleware"
+
+[dependencies]
+firefly-kernel = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }

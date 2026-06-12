@@ -1,0 +1,23 @@
+[package]
+name = "firefly-migrations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — Versioned SQL migrations (V001__init.sql)"
+
+[dependencies]
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+regex = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+tempfile = { workspace = true }

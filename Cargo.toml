@@ -1,0 +1,156 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kernel",
+    "crates/utils",
+    "crates/validators",
+    "crates/web",
+    "crates/config",
+    "crates/i18n",
+    "crates/cache",
+    "crates/observability",
+    "crates/data",
+    "crates/cqrs",
+    "crates/eda",
+    "crates/eventsourcing",
+    "crates/orchestration",
+    "crates/rule-engine",
+    "crates/plugins",
+    "crates/lifecycle",
+    "crates/actuator",
+    "crates/scheduling",
+    "crates/resilience",
+    "crates/security",
+    "crates/migrations",
+    "crates/openapi",
+    "crates/sse",
+    "crates/transactional",
+    "crates/testkit",
+    "crates/client",
+    "crates/config-server",
+    "crates/idp",
+    "crates/idp-internal-db",
+    "crates/idp-keycloak",
+    "crates/idp-azure-ad",
+    "crates/idp-aws-cognito",
+    "crates/ecm",
+    "crates/ecm-storage-aws",
+    "crates/ecm-storage-azure",
+    "crates/ecm-esignature-docusign",
+    "crates/ecm-esignature-adobe-sign",
+    "crates/ecm-esignature-logalty",
+    "crates/notifications",
+    "crates/notifications-sendgrid",
+    "crates/notifications-resend",
+    "crates/notifications-twilio",
+    "crates/notifications-firebase",
+    "crates/callbacks",
+    "crates/webhooks",
+    "crates/starter-core",
+    "crates/starter-application",
+    "crates/starter-domain",
+    "crates/starter-data",
+    "crates/backoffice",
+    "tests/integration",
+    "samples/orders",
+]
+
+[workspace.package]
+version = "26.6.1"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/fireflyframework/fireflyframework-rust"
+authors = ["Firefly Framework contributors"]
+rust-version = "1.85"
+
+[workspace.dependencies]
+# ---- internal crates ----
+firefly-kernel = { path = "crates/kernel", version = "26.6.1" }
+firefly-utils = { path = "crates/utils", version = "26.6.1" }
+firefly-validators = { path = "crates/validators", version = "26.6.1" }
+firefly-web = { path = "crates/web", version = "26.6.1" }
+firefly-config = { path = "crates/config", version = "26.6.1" }
+firefly-i18n = { path = "crates/i18n", version = "26.6.1" }
+firefly-cache = { path = "crates/cache", version = "26.6.1" }
+firefly-observability = { path = "crates/observability", version = "26.6.1" }
+firefly-data = { path = "crates/data", version = "26.6.1" }
+firefly-cqrs = { path = "crates/cqrs", version = "26.6.1" }
+firefly-eda = { path = "crates/eda", version = "26.6.1" }
+firefly-eventsourcing = { path = "crates/eventsourcing", version = "26.6.1" }
+firefly-orchestration = { path = "crates/orchestration", version = "26.6.1" }
+firefly-rule-engine = { path = "crates/rule-engine", version = "26.6.1" }
+firefly-plugins = { path = "crates/plugins", version = "26.6.1" }
+firefly-lifecycle = { path = "crates/lifecycle", version = "26.6.1" }
+firefly-actuator = { path = "crates/actuator", version = "26.6.1" }
+firefly-scheduling = { path = "crates/scheduling", version = "26.6.1" }
+firefly-resilience = { path = "crates/resilience", version = "26.6.1" }
+firefly-security = { path = "crates/security", version = "26.6.1" }
+firefly-migrations = { path = "crates/migrations", version = "26.6.1" }
+firefly-openapi = { path = "crates/openapi", version = "26.6.1" }
+firefly-sse = { path = "crates/sse", version = "26.6.1" }
+firefly-transactional = { path = "crates/transactional", version = "26.6.1" }
+firefly-testkit = { path = "crates/testkit", version = "26.6.1" }
+firefly-client = { path = "crates/client", version = "26.6.1" }
+firefly-config-server = { path = "crates/config-server", version = "26.6.1" }
+firefly-idp = { path = "crates/idp", version = "26.6.1" }
+firefly-idp-internal-db = { path = "crates/idp-internal-db", version = "26.6.1" }
+firefly-idp-keycloak = { path = "crates/idp-keycloak", version = "26.6.1" }
+firefly-idp-azure-ad = { path = "crates/idp-azure-ad", version = "26.6.1" }
+firefly-idp-aws-cognito = { path = "crates/idp-aws-cognito", version = "26.6.1" }
+firefly-ecm = { path = "crates/ecm", version = "26.6.1" }
+firefly-ecm-storage-aws = { path = "crates/ecm-storage-aws", version = "26.6.1" }
+firefly-ecm-storage-azure = { path = "crates/ecm-storage-azure", version = "26.6.1" }
+firefly-ecm-esignature-docusign = { path = "crates/ecm-esignature-docusign", version = "26.6.1" }
+firefly-ecm-esignature-adobe-sign = { path = "crates/ecm-esignature-adobe-sign", version = "26.6.1" }
+firefly-ecm-esignature-logalty = { path = "crates/ecm-esignature-logalty", version = "26.6.1" }
+firefly-notifications = { path = "crates/notifications", version = "26.6.1" }
+firefly-notifications-sendgrid = { path = "crates/notifications-sendgrid", version = "26.6.1" }
+firefly-notifications-resend = { path = "crates/notifications-resend", version = "26.6.1" }
+firefly-notifications-twilio = { path = "crates/notifications-twilio", version = "26.6.1" }
+firefly-notifications-firebase = { path = "crates/notifications-firebase", version = "26.6.1" }
+firefly-callbacks = { path = "crates/callbacks", version = "26.6.1" }
+firefly-webhooks = { path = "crates/webhooks", version = "26.6.1" }
+firefly-starter-core = { path = "crates/starter-core", version = "26.6.1" }
+firefly-starter-application = { path = "crates/starter-application", version = "26.6.1" }
+firefly-starter-domain = { path = "crates/starter-domain", version = "26.6.1" }
+firefly-starter-data = { path = "crates/starter-data", version = "26.6.1" }
+firefly-backoffice = { path = "crates/backoffice", version = "26.6.1" }
+
+# ---- async runtime + web ----
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "net", "fs"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+async-trait = "0.1"
+axum = "0.7"
+tower = { version = "0.5", features = ["util"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+reqwest = { version = "0.12", features = ["json"] }
+
+# ---- serialization ----
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# ---- errors / ids / time ----
+thiserror = "1"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+
+# ---- crypto / encoding ----
+sha2 = "0.10"
+hmac = "0.12"
+aes-gcm = "0.10"
+base64 = "0.22"
+hex = "0.4"
+bcrypt = "0.15"
+jsonwebtoken = "9"
+rand = "0.8"
+
+# ---- misc ----
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"

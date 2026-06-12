@@ -1,0 +1,21 @@
+[package]
+name = "firefly-transactional"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — with_tx transaction helper over a database port"
+
+[dependencies]
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
