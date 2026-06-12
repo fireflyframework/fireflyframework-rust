@@ -11,11 +11,9 @@ description = "Firefly Framework for Rust — Typed YAML+env binding with profil
 [dependencies]
 serde = { workspace = true }
 serde_yaml = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-futures = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

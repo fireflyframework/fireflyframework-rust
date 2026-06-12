@@ -1,6 +1,111 @@
-//! firefly-cqrs — Command + query bus with validation + caching middleware
+//! # firefly-cqrs
 //!
-//! Port pending: this placeholder is replaced by the real implementation.
+//! The framework's **type-dispatched command/query bus**, plus pluggable
+//! middleware for validation, query caching, and any custom
+//! cross-cutting concern. Service authors register typed handlers at
+//! startup and dispatch through [`Bus::send`] / [`Bus::query`]; the bus
+//! matches by [`TypeId`](std::any::TypeId) — the Rust spelling of the Go
+//! module's `reflect.Type` registry and the Java `firefly-common-cqrs`
+//! class-keyed dispatch.
+//!
+//! ## Why generics + `TypeId`?
+//!
+//! The Java original dispatches by class, the .NET port by type, the Go
+//! port by `reflect.Type` behind a generic facade. Rust gets the same
+//! single dispatch path with zero casts in user code: handlers are
+//! registered and invoked fully typed, and only the internal registry is
+//! type-erased.
+//!
+//! ## Optional capabilities
+//!
+//! Go discovers extra behaviour through optional interfaces
+//! (`Validatable`, `Cacheable`). Rust has no runtime interface queries,
+//! so they become overridable default methods on the [`Message`] trait —
+//! the corresponding middleware ([`ValidationMiddleware`],
+//! [`QueryCache::middleware`]) picks them up automatically.
+//!
+//! ## Quick start
+//!
+//! ```
+//! use std::time::Duration;
+//! use firefly_cqrs::{Bus, CqrsError, Message, QueryCache, ValidationMiddleware};
+//! use serde::Serialize;
+//!
+//! #[derive(Clone, Serialize)]
+//! struct CreateUser { name: String }
+//!
+//! impl Message for CreateUser {
+//!     fn validate(&self) -> Result<(), CqrsError> {
+//!         if self.name.is_empty() {
+//!             return Err(CqrsError::validation("name required"));
+//!         }
+//!         Ok(())
+//!     }
+//! }
+//!
+//! #[derive(Clone, Serialize)]
+//! struct GetUser { id: String }
+//!
+//! impl Message for GetUser {
+//!     fn cache_ttl(&self) -> Option<Duration> { Some(Duration::from_secs(60)) }
+//! }
+//!
+//! #[derive(Clone, Debug)]
+//! struct UserCreated { id: String, name: String }
+//!
+//! # fn main() {
+//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! let bus = Bus::new();
+//! bus.use_middleware(ValidationMiddleware::new());
+//! let cache = QueryCache::new();
+//! bus.use_middleware(cache.middleware());
+//!
+//! bus.register(|c: CreateUser| async move {
+//!     Ok::<_, CqrsError>(UserCreated { id: "u1".into(), name: c.name })
+//! });
+//! bus.register(|q: GetUser| async move {
+//!     Ok::<_, CqrsError>(UserCreated { id: q.id, name: "alice".into() })
+//! });
+//!
+//! let created: UserCreated = bus.send(CreateUser { name: "alice".into() }).await.unwrap();
+//! let view: UserCreated = bus.query(GetUser { id: created.id }).await.unwrap();
+//! assert_eq!(view.name, "alice");
+//!
+//! cache.invalidate_type::<GetUser>(); // after a mutation
+//! # });
+//! # }
+//! ```
+//!
+//! ## Mental model
+//!
+//! ```text
+//!                               ┌──────────────┐
+//!                               │ msg ↦ TypeId  │
+//!                               └──────────────┘
+//!                                     │
+//!                       registered handlers HashMap<TypeId, _>
+//!                                     │
+//!    middleware chain  ────────────────┘
+//!    (use_middleware)
+//!    ┌───┐ ┌───┐ ┌───┐
+//!    │ V │ │ Q │ │ T │  V = ValidationMiddleware
+//!    └───┘ └───┘ └───┘  Q = QueryCache::middleware
+//!                        T = your tracing/auth/etc.
+//! ```
 
-/// Framework version stamp.
+#![warn(missing_docs)]
+
+mod bus;
+mod cache;
+mod error;
+
+pub use bus::{
+    AnyResult, Bus, DynHandler, Envelope, HandlerFuture, Message, Middleware, ValidationMiddleware,
+};
+pub use cache::{QueryCache, QueryCacheMiddleware};
+pub use error::CqrsError;
+
+/// The released framework version. Calendar-versioned (`YY.M.PATCH`)
+/// expressed as valid semver — the Go port's `26.05.01` corresponds to
+/// `26.6.1` in the June 2026 release window.
 pub const VERSION: &str = "26.6.1";

@@ -1,6 +1,93 @@
-//! firefly-observability — Structured logging + correlation, health composite, startup banner
+//! # firefly-observability
 //!
-//! Port pending: this placeholder is replaced by the real implementation.
+//! Three orthogonal observability concerns for Firefly Rust services —
+//! the counterpart of the Java `firefly-otel-spring-boot-starter`, the
+//! .NET `FireflyFramework.Observability` project, and the Go
+//! `observability` module:
+//!
+//! 1. **Structured logging** — a [`tracing_subscriber`] layer
+//!    ([`CorrelationLayer`]) that formats every event as one JSON (or
+//!    logfmt text) line and auto-enriches it with the correlation id from
+//!    the [`firefly_kernel`] task-local scope. JSON field names (`time`,
+//!    `level`, `msg`, `service`, `correlationId`) are identical to the Go
+//!    `slog` output, so one log pipeline parses every port.
+//! 2. **Health indicators** — composable [`Indicator`] probes with a
+//!    [`Composite`] aggregator producing the canonical
+//!    UP / DEGRADED / DOWN / UNKNOWN rollup and per-check timing.
+//! 3. **Startup banner** — the ASCII Firefly banner + framework version +
+//!    runtime identifying line ([`print_banner`]).
+//!
+//! OpenTelemetry SDK wiring (exporters, sampling, resource attributes) is
+//! left to the application's `main.rs` — this crate exposes only the
+//! building blocks that compose with the `tracing` ecosystem.
+//!
+//! ## Quick start
+//!
+//! ```
+//! use firefly_observability::{
+//!     subscriber_with_writer, BufferWriter, Composite, HealthResult, IndicatorFn, LogConfig,
+//!     Status,
+//! };
+//!
+//! // Logging: every record carries the correlation id in scope.
+//! let buf = BufferWriter::new();
+//! let cfg = LogConfig::new().with_service("orders");
+//! tracing::subscriber::with_default(subscriber_with_writer(cfg, buf.clone()), || {
+//!     firefly_kernel::with_correlation_id_sync("abc-123", || {
+//!         tracing::info!(id = "42", "placed order");
+//!     });
+//! });
+//! // {"time":"…","level":"INFO","msg":"placed order","service":"orders","correlationId":"abc-123","id":"42"}
+//! assert!(buf.as_string().contains(r#""correlationId":"abc-123""#));
+//!
+//! // Health: DOWN beats DEGRADED beats UP.
+//! let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+//! rt.block_on(async {
+//!     let health = Composite::new();
+//!     health.add(IndicatorFn::new("db", || async { HealthResult::up() }));
+//!     health.add(IndicatorFn::new("cache", || async {
+//!         HealthResult::degraded("cold start")
+//!     }));
+//!     let (overall, results) = health.check_all().await;
+//!     assert_eq!(overall, Status::Degraded);
+//!     assert_eq!(results.len(), 2);
+//! });
+//!
+//! // Banner: printed by starter-core on boot.
+//! let banner = firefly_observability::banner_string("starter-core", "orders");
+//! assert!(banner.contains("Firefly Framework for Rust"));
+//! ```
+//!
+//! The `firefly-actuator` crate mounts a composite like this one on
+//! `GET /actuator/health`.
 
-/// Framework version stamp.
-pub const VERSION: &str = "26.6.1";
+#![warn(missing_docs)]
+
+mod banner;
+mod health;
+mod logging;
+
+pub use banner::{banner_string, print_banner, render_banner, BannerData, RUSTC_VERSION};
+pub use health::{Composite, HealthResult, Indicator, IndicatorFn, Status};
+pub use logging::{
+    init_logging, subscriber, subscriber_with_writer, BufferWriter, CorrelationLayer, LogConfig,
+    LogFormat,
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn public_types_are_send_sync() {
+        assert_send_sync::<Composite>();
+        assert_send_sync::<HealthResult>();
+        assert_send_sync::<Status>();
+        assert_send_sync::<CorrelationLayer>();
+        assert_send_sync::<BufferWriter>();
+        assert_send_sync::<LogConfig>();
+        assert_send_sync::<BannerData>();
+    }
+}

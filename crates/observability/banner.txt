@@ -1,0 +1,9 @@
+  _____.__                _____.__
+_/ ____\__|______   _____/ ____\  | ___.__.
+\   __\|  \_  __ \_/ __ \   __\|  |<   |  |
+ |  |  |  ||  | \/\  ___/|  |  |  |_\___  |
+ |__|  |__||__|    \___  >__|  |____/ ____|
+                       \/           \/
+
+  Firefly Framework for Rust  ::  v{version}
+  Starter: {starter}    App: {app}    Runtime: Rust {rust_version}

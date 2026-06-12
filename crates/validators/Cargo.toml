@@ -11,8 +11,3 @@ description = "Firefly Framework for Rust — IBAN, BIC, Luhn, currency, phone, 
 [dependencies]
 regex = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true }
-futures = { workspace = true }
-serde_json = { workspace = true }

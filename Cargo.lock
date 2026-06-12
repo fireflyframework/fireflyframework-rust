@@ -395,7 +395,6 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
- "futures",
  "http",
  "http-body-util",
  "serde",
@@ -428,8 +427,6 @@ name = "firefly-cache"
 version = "26.6.1"
 dependencies = [
  "async-trait",
- "chrono",
- "futures",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -463,23 +460,20 @@ dependencies = [
 name = "firefly-client"
 version = "26.6.1"
 dependencies = [
- "async-trait",
+ "axum",
  "firefly-kernel",
- "futures",
  "http",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "uuid",
 ]
 
 [[package]]
 name = "firefly-config"
 version = "26.6.1"
 dependencies = [
- "futures",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -492,13 +486,11 @@ dependencies = [
 name = "firefly-config-server"
 version = "26.6.1"
 dependencies = [
+ "async-trait",
  "axum",
- "futures",
- "http",
  "http-body-util",
  "serde",
  "serde_json",
- "serde_yaml",
  "thiserror 1.0.69",
  "tokio",
  "tower",
@@ -508,10 +500,11 @@ dependencies = [
 name = "firefly-cqrs"
 version = "26.6.1"
 dependencies = [
- "async-trait",
  "futures",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -521,7 +514,6 @@ name = "firefly-data"
 version = "26.6.1"
 dependencies = [
  "async-trait",
- "futures",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -533,9 +525,7 @@ name = "firefly-ecm"
 version = "26.6.1"
 dependencies = [
  "async-trait",
- "base64",
  "chrono",
- "futures",
  "hex",
  "serde",
  "serde_json",
@@ -626,6 +616,7 @@ name = "firefly-eda"
 version = "26.6.1"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "firefly-kernel",
  "futures",
@@ -633,7 +624,6 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -641,25 +631,27 @@ name = "firefly-eventsourcing"
 version = "26.6.1"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
- "futures",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "uuid",
 ]
 
 [[package]]
 name = "firefly-i18n"
 version = "26.6.1"
 dependencies = [
- "futures",
+ "axum",
+ "http",
+ "http-body-util",
  "serde",
  "serde_json",
  "serde_yaml",
  "thiserror 1.0.69",
  "tokio",
+ "tower",
 ]
 
 [[package]]
@@ -668,12 +660,10 @@ version = "26.6.1"
 dependencies = [
  "async-trait",
  "chrono",
- "futures",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -770,7 +760,6 @@ name = "firefly-kernel"
 version = "26.6.1"
 dependencies = [
  "chrono",
- "futures",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -782,9 +771,6 @@ dependencies = [
 name = "firefly-lifecycle"
 version = "26.6.1"
 dependencies = [
- "async-trait",
- "futures",
- "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -794,16 +780,13 @@ dependencies = [
 name = "firefly-migrations"
 version = "26.6.1"
 dependencies = [
- "async-trait",
- "futures",
+ "chrono",
  "hex",
  "regex",
  "rusqlite",
- "serde_json",
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
- "tokio",
 ]
 
 [[package]]
@@ -812,12 +795,10 @@ version = "26.6.1"
 dependencies = [
  "async-trait",
  "chrono",
- "futures",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -879,7 +860,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "firefly-kernel",
- "futures",
  "serde",
  "serde_json",
  "tokio",
@@ -892,12 +872,11 @@ name = "firefly-openapi"
 version = "26.6.1"
 dependencies = [
  "axum",
- "futures",
+ "chrono",
  "http",
  "http-body-util",
  "serde",
  "serde_json",
- "serde_yaml",
  "thiserror 1.0.69",
  "tokio",
  "tower",
@@ -907,14 +886,12 @@ dependencies = [
 name = "firefly-orchestration"
 version = "26.6.1"
 dependencies = [
- "async-trait",
  "chrono",
  "futures",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -922,8 +899,6 @@ name = "firefly-plugins"
 version = "26.6.1"
 dependencies = [
  "async-trait",
- "futures",
- "serde_json",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -933,9 +908,6 @@ name = "firefly-resilience"
 version = "26.6.1"
 dependencies = [
  "async-trait",
- "futures",
- "rand",
- "serde_json",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -949,6 +921,8 @@ dependencies = [
  "futures",
  "http",
  "http-body-util",
+ "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -983,10 +957,8 @@ dependencies = [
 name = "firefly-scheduling"
 version = "26.6.1"
 dependencies = [
- "async-trait",
  "chrono",
  "futures",
- "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -998,8 +970,6 @@ version = "26.6.1"
 dependencies = [
  "async-trait",
  "axum",
- "base64",
- "futures",
  "http",
  "http-body-util",
  "serde",
@@ -1019,6 +989,7 @@ dependencies = [
  "http",
  "http-body-util",
  "serde_json",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tower",
@@ -1083,28 +1054,20 @@ dependencies = [
 name = "firefly-testkit"
 version = "26.6.1"
 dependencies = [
- "async-trait",
  "base64",
- "futures",
  "hex",
  "hmac",
  "serde",
  "serde_json",
  "sha2",
- "tokio",
 ]
 
 [[package]]
 name = "firefly-transactional"
 version = "26.6.1"
 dependencies = [
- "async-trait",
- "futures",
  "rusqlite",
- "serde_json",
- "tempfile",
  "thiserror 1.0.69",
- "tokio",
 ]
 
 [[package]]
@@ -1113,10 +1076,8 @@ version = "26.6.1"
 dependencies = [
  "aes-gcm",
  "base64",
- "futures",
- "hex",
  "rand",
- "regex",
+ "serde",
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
@@ -1127,11 +1088,8 @@ dependencies = [
 name = "firefly-validators"
 version = "26.6.1"
 dependencies = [
- "futures",
  "regex",
- "serde_json",
  "thiserror 1.0.69",
- "tokio",
 ]
 
 [[package]]
@@ -1140,17 +1098,19 @@ version = "26.6.1"
 dependencies = [
  "async-trait",
  "axum",
- "bytes",
+ "base64",
+ "chrono",
  "firefly-kernel",
  "futures",
+ "hex",
  "http",
  "http-body-util",
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tower",
- "tracing",
- "uuid",
 ]
 
 [[package]]

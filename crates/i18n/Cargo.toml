@@ -9,12 +9,14 @@ rust-version.workspace = true
 description = "Firefly Framework for Rust — Locale-aware message bundles + Accept-Language picker"
 
 [dependencies]
+axum = { workspace = true }
+http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+tower = { workspace = true }
 
 [dev-dependencies]
+http-body-util = { workspace = true }
 tokio = { workspace = true }
-futures = { workspace = true }
-serde_json = { workspace = true }

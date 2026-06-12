@@ -1,0 +1,98 @@
+//! The error family shared by the bus, its middleware, and handlers.
+
+use thiserror::Error;
+
+/// Errors produced by the CQRS [`Bus`](crate::Bus), its middleware, and
+/// the handlers it dispatches to.
+///
+/// Mirrors the Go module's error surface: the `NoHandler` variant plays
+/// the role of Go's `ErrNoHandler` sentinel (test for it with
+/// [`CqrsError::is_no_handler`]), the two mismatch variants reproduce the
+/// `handler type mismatch` / `result type mismatch` dynamic-dispatch
+/// guards, and `Validation` carries a validation failure verbatim — just
+/// like Go's validation middleware returns the `Validate()` error
+/// unchanged.
+#[derive(Debug, Error)]
+pub enum CqrsError {
+    /// No handler is registered for the dispatched message type.
+    ///
+    /// The Rust spelling of Go's `ErrNoHandler` sentinel; the display
+    /// string carries the unrouted message's type name exactly like Go's
+    /// `fmt.Errorf("%w: %T", ErrNoHandler, msg)`.
+    #[error("firefly/cqrs: no handler registered: {type_name}")]
+    NoHandler {
+        /// Fully-qualified Rust type name of the unrouted message.
+        type_name: &'static str,
+    },
+
+    /// The registered handler received a message of an unexpected type.
+    ///
+    /// Unreachable through the typed [`Bus::send`](crate::Bus::send) path
+    /// (the registry is keyed by [`TypeId`](std::any::TypeId)) but kept
+    /// for parity with Go's dynamic-dispatch guard — custom middleware
+    /// that swaps envelopes could still trip it.
+    #[error("firefly/cqrs: handler type mismatch want {want} got {got}")]
+    HandlerTypeMismatch {
+        /// Message type the handler was registered for.
+        want: &'static str,
+        /// Message type that actually arrived.
+        got: &'static str,
+    },
+
+    /// The handler produced a result of a different type than the caller
+    /// asked for — e.g. a handler registered as `CreateUser -> UserCreated`
+    /// dispatched via `send::<CreateUser, SomethingElse>`.
+    #[error("firefly/cqrs: result type mismatch want {want} got {got}")]
+    ResultTypeMismatch {
+        /// Result type the caller expected.
+        want: &'static str,
+        /// Result type the handler actually returned.
+        got: &'static str,
+    },
+
+    /// Pre-dispatch validation failure raised by
+    /// [`Message::validate`](crate::Message::validate) and surfaced by the
+    /// [`ValidationMiddleware`](crate::ValidationMiddleware).
+    ///
+    /// Displays the message verbatim, matching Go where the middleware
+    /// returns the `Validate()` error unchanged.
+    #[error("{0}")]
+    Validation(String),
+
+    /// JSON-encoding the message for the query-cache key failed. The
+    /// caching middleware treats this as "skip the cache and dispatch",
+    /// matching Go's `keyOf` fall-through.
+    #[error("firefly/cqrs: cache key serialization failed: {0}")]
+    Serialization(String),
+
+    /// Domain failure raised by a handler. Displays the message verbatim
+    /// — the analog of a Go handler returning an arbitrary `error`.
+    #[error("{0}")]
+    Handler(String),
+}
+
+impl CqrsError {
+    /// Builds a [`CqrsError::Validation`] — the conventional return value
+    /// of a failing [`Message::validate`](crate::Message::validate).
+    pub fn validation(message: impl Into<String>) -> Self {
+        Self::Validation(message.into())
+    }
+
+    /// Builds a [`CqrsError::Handler`] — the conventional failure channel
+    /// for domain errors inside a handler.
+    pub fn handler(message: impl Into<String>) -> Self {
+        Self::Handler(message.into())
+    }
+
+    /// Returns `true` when the error is [`CqrsError::NoHandler`] — the
+    /// Rust spelling of Go's `errors.Is(err, ErrNoHandler)`.
+    pub fn is_no_handler(&self) -> bool {
+        matches!(self, Self::NoHandler { .. })
+    }
+}
+
+impl From<serde_json::Error> for CqrsError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Serialization(err.to_string())
+    }
+}

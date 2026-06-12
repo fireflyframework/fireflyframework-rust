@@ -10,12 +10,10 @@ description = "Firefly Framework for Rust — Identity provider Adapter port"
 
 [dependencies]
 async-trait = { workspace = true }
-serde = { workspace = true }
-thiserror = { workspace = true }
 chrono = { workspace = true }
-uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-futures = { workspace = true }
-serde_json = { workspace = true }

@@ -1,6 +1,114 @@
-//! firefly-security — Authentication context, bearer middleware, RBAC filter chain
+//! # firefly-security
 //!
-//! Port pending: this placeholder is replaced by the real implementation.
+//! The framework's **HTTP-layer authentication and authorization tier**
+//! — the Rust port of the Go `security` module (Java original: Spring
+//! Security; .NET counterpart: `Microsoft.AspNetCore.Authentication.JwtBearer`).
+//!
+//! It provides four pieces:
+//!
+//! 1. [`Verifier`] — the authentication port for token validators (any
+//!    IDP adapter satisfies it).
+//! 2. [`BearerLayer`] — a tower layer that extracts
+//!    `Authorization: Bearer <token>`, calls the [`Verifier`], and
+//!    stores the resulting [`Authentication`] on the request.
+//! 3. [`FilterChain`] — a path-prefix-keyed RBAC matcher composable
+//!    with the bearer layer.
+//! 4. [`Authentication`] — the principal + authorities tuple persisted
+//!    on the request for downstream handlers and CQRS handlers alike.
+//!
+//! ## Mental model
+//!
+//! ```text
+//!                     incoming request
+//!                             │
+//!                             ▼
+//!         ┌──────────────────────────────────────┐
+//!         │           BearerLayer                 │
+//!         │  • reads Authorization: Bearer <tok>  │
+//!         │  • calls Verifier (idp adapter)       │
+//!         │  • stores Authentication on request   │
+//!         │  • 401 application/problem+json on err│
+//!         └──────────────────────────────────────┘
+//!                             │
+//!                             ▼
+//!         ┌──────────────────────────────────────┐
+//!         │        FilterChain::layer()           │
+//!         │  permit(prefix)              → public │
+//!         │  require(prefix, roles)      → RBAC   │
+//!         │  401 / 403 problem+json on miss       │
+//!         └──────────────────────────────────────┘
+//!                             │
+//!                             ▼
+//!                        your handlers
+//!              (read Extension<Authentication>)
+//! ```
+//!
+//! ## Context propagation
+//!
+//! Where the Go port stores the [`Authentication`] on the request's
+//! `context.Context`, the Rust port stores it in the request's
+//! [`http::Extensions`] — axum handlers retrieve it with the
+//! `Extension<Authentication>` extractor, or any middleware can use
+//! [`authentication_from`] / [`must_auth_from`].
+//!
+//! ## Wire compatibility
+//!
+//! Rejections are emitted as RFC 7807 `application/problem+json`
+//! envelopes with the canonical Firefly type URIs
+//! (`https://fireflyframework.org/problems/unauthorized` and
+//! `…/forbidden`) — byte-for-byte the same JSON the Java, .NET, Go,
+//! and Python ports produce.
+//!
+//! ## Quick start
+//!
+//! ```rust,no_run
+//! use axum::{routing::get, Extension, Router};
+//! use firefly_security::{
+//!     Authentication, BearerConfig, BearerLayer, FilterChain, SecurityError, VerifierFn,
+//! };
+//!
+//! let verifier = VerifierFn(|token: String| async move {
+//!     if token == "letmein" {
+//!         Ok(Authentication {
+//!             principal: "u1".into(),
+//!             username: "alice".into(),
+//!             roles: vec!["ADMIN".into()],
+//!             ..Default::default()
+//!         })
+//!     } else {
+//!         Err(SecurityError::verification("unknown token"))
+//!     }
+//! });
+//!
+//! let chain = FilterChain::new()
+//!     .permit("/actuator/health")
+//!     .permit("/actuator/info")
+//!     .require("/admin/", &["ADMIN"])
+//!     .require("/api/", &["USER", "ADMIN"]);
+//!
+//! let app: Router = Router::new()
+//!     .route(
+//!         "/admin/users",
+//!         get(|Extension(auth): Extension<Authentication>| async move {
+//!             format!("hello, {}", auth.username)
+//!         }),
+//!     )
+//!     // Layers run outermost-last: bearer first, then the chain.
+//!     .layer(chain.layer())
+//!     .layer(BearerLayer::new(BearerConfig::new(verifier)));
+//! ```
+
+mod authentication;
+mod bearer;
+mod filter_chain;
+mod problem;
+
+pub use authentication::{
+    authentication_from, must_auth_from, with_authentication, Authentication, SecurityError,
+    Verifier, VerifierFn, ANONYMOUS_ID,
+};
+pub use bearer::{BearerConfig, BearerLayer, BearerService, UnauthorizedHandler};
+pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.1";

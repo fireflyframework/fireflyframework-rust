@@ -9,14 +9,12 @@ rust-version.workspace = true
 description = "Firefly Framework for Rust — Command + query bus with validation + caching middleware"
 
 [dependencies]
-async-trait = { workspace = true }
-tokio = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
-futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-futures = { workspace = true }
-serde_json = { workspace = true }

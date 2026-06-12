@@ -16,6 +16,8 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
