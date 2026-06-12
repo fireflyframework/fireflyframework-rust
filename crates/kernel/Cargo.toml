@@ -10,7 +10,9 @@ description = "Firefly Framework for Rust — RFC 7807 ProblemDetail, Result env
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
+# raw_value: ProblemDetail's Serialize impl pre-renders Go-parity JSON
+# (HTML-escaped like Go's encoding/json) and emits it via RawValue.
+serde_json = { workspace = true, features = ["raw_value"] }
 chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }

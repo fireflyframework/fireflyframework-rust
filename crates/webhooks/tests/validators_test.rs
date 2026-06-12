@@ -220,13 +220,25 @@ fn github_validator_rejects_wrong_secret_and_missing_header() {
 
 const TWILIO_URL: &str = "https://example.com/cb";
 
+/// Twilio request headers: the signature plus the form Content-Type
+/// real Twilio traffic carries (and Go's `ParseForm` requires before
+/// it parses the body).
+fn twilio_headers(sig: &str) -> HeaderMap {
+    let mut headers = headers_with("X-Twilio-Signature", sig);
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        "application/x-www-form-urlencoded".parse().expect("ct"),
+    );
+    headers
+}
+
 #[test]
 fn twilio_validator_accepts_testkit_signature() {
     let v = TwilioValidator::new(b"tok", TWILIO_URL);
     // The urlencoded body for form {From: "+1", Body: "hi"}.
     let body = b"From=%2B1&Body=hi";
     let sig = sign_twilio(b"tok", TWILIO_URL, &[("From", "+1"), ("Body", "hi")]);
-    let headers = headers_with("X-Twilio-Signature", &sig);
+    let headers = twilio_headers(&sig);
     v.verify(&headers, body).expect("testkit twilio signature");
     assert_eq!(v.provider(), "twilio");
 }
@@ -235,7 +247,7 @@ fn twilio_validator_accepts_testkit_signature() {
 fn twilio_validator_rejects_wrong_token_url_or_form() {
     let body = b"From=%2B1&Body=hi";
     let sig = sign_twilio(b"tok", TWILIO_URL, &[("From", "+1"), ("Body", "hi")]);
-    let headers = headers_with("X-Twilio-Signature", &sig);
+    let headers = twilio_headers(&sig);
 
     // Wrong auth token.
     let v = TwilioValidator::new(b"other", TWILIO_URL);
@@ -255,6 +267,76 @@ fn twilio_validator_rejects_wrong_token_url_or_form() {
 
     // Malformed urlencoded body (Go's ParseForm error path).
     assert!(v.verify(&headers, b"From=%zz").is_err());
+}
+
+#[test]
+fn twilio_validator_signs_url_only_for_non_form_content_types() {
+    // Go's ParseForm leaves PostForm empty unless the Content-Type
+    // media type is application/x-www-form-urlencoded, so for e.g. a
+    // JSON body Go signs the URL alone — the body bytes never
+    // participate. Regression test: the Rust port used to fold the raw
+    // body into the signed string regardless of Content-Type.
+    let v = TwilioValidator::new(b"tok", TWILIO_URL);
+    let url_only_sig = sign_twilio(b"tok", TWILIO_URL, &[]);
+
+    // JSON Content-Type: a URL-only signature verifies, as in Go.
+    let mut headers = headers_with("X-Twilio-Signature", &url_only_sig);
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        "application/json".parse().expect("ct"),
+    );
+    v.verify(&headers, br#"{"a":1}"#)
+        .expect("Go signs the URL alone for a JSON body");
+
+    // Missing Content-Type counts as application/octet-stream (RFC
+    // 7231 §3.1.1.5) — also URL-only, even for form-shaped bytes.
+    let headers = headers_with("X-Twilio-Signature", &url_only_sig);
+    v.verify(&headers, b"From=%2B1")
+        .expect("a body without a Content-Type is not a form");
+
+    // The old (buggy) signed string — URL + raw body folded in as a
+    // bare form key — must no longer verify.
+    let folded_sig = sign_twilio(b"tok", TWILIO_URL, &[(r#"{"a":1}"#, "")]);
+    let mut headers = headers_with("X-Twilio-Signature", &folded_sig);
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        "application/json".parse().expect("ct"),
+    );
+    assert!(
+        v.verify(&headers, br#"{"a":1}"#).is_err(),
+        "non-form body bytes must not fold into the signed string"
+    );
+}
+
+#[test]
+fn twilio_validator_follows_go_content_type_parsing() {
+    let v = TwilioValidator::new(b"tok", TWILIO_URL);
+    let body = b"From=%2B1";
+    let form_sig = sign_twilio(b"tok", TWILIO_URL, &[("From", "+1")]);
+
+    // Media-type casing and parameters are normalized away, as in
+    // Go's mime.ParseMediaType.
+    let mut headers = headers_with("X-Twilio-Signature", &form_sig);
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        "Application/X-WWW-Form-URLencoded; charset=UTF-8"
+            .parse()
+            .expect("ct"),
+    );
+    v.verify(&headers, body)
+        .expect("casing and media-type parameters are ignored");
+
+    // A Content-Type mime.ParseMediaType rejects makes Go's ParseForm
+    // return an error → signature mismatch, whatever the signature.
+    for bad in [
+        "application/",
+        "form/urlencoded/extra",
+        "application/x-www-form-urlencoded; charset",
+    ] {
+        let mut headers = headers_with("X-Twilio-Signature", &form_sig);
+        headers.insert(http::header::CONTENT_TYPE, bad.parse().expect("ct"));
+        assert!(v.verify(&headers, body).is_err(), "Content-Type {bad:?}");
+    }
 }
 
 // --- Inbound wire shape --------------------------------------------------------

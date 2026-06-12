@@ -12,8 +12,12 @@ into a more specific module:
   value surfaced as a `TryError`.
 - **retry / retry_if** — async exponential-backoff retry with jitter
   and a pluggable retryable-error predicate (`RetryConfig`).
-- **slugify** — URL-safe lower-case slug from any UTF-8 string,
-  folding accented Latin letters and dropping combining marks.
+- **slugify** — URL-safe lower-case slug from any UTF-8 string. Like
+  the Go port, input is canonically decomposed (NFD) and non-spacing
+  combining marks (Unicode `Mn`) are dropped, so every canonically
+  decomposable letter — Latin-1, Latin Extended-A/B, Vietnamese,
+  pinyin, … — folds to its ASCII base; all ports produce identical
+  slugs.
 - **AES-256-GCM crypto** — `encrypt_aes_gcm`, `decrypt_aes_gcm`, plus
   `derive_key256` (SHA-256 KDF) and base64 helpers. The wire format
   (`nonce || ciphertext || tag`) is byte-compatible with the Go,

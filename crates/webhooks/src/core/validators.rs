@@ -219,8 +219,16 @@ impl Validator for GitHubValidator {
 }
 
 /// Twilio's `X-Twilio-Signature` scheme: HMAC-SHA1 of
-/// `URL + sorted(form key+value)`, base64-encoded. The body must be an
-/// `application/x-www-form-urlencoded` form; only the first value of a
+/// `URL + sorted(form key+value)`, base64-encoded.
+///
+/// Form parameters participate only when the request's `Content-Type`
+/// media type is `application/x-www-form-urlencoded`, mirroring Go's
+/// `Request.ParseForm` on the POSTs the ingestion endpoint admits: for
+/// any other body — JSON, a missing `Content-Type` (treated as
+/// `application/octet-stream`, RFC 7231 §3.1.1.5), multipart — the
+/// signed string degenerates to the URL alone, exactly like Go's empty
+/// `PostForm`. A malformed `Content-Type` or form body is a signature
+/// mismatch (Go's `ParseForm` error path). Only the first value of a
 /// repeated key participates (Go's `url.Values.Get`).
 #[derive(Debug, Clone)]
 pub struct TwilioValidator {
@@ -255,7 +263,7 @@ impl Validator for TwilioValidator {
         if got.is_empty() {
             return Err(WebhookError::SignatureMismatch);
         }
-        let Some(form) = parse_form(body) else {
+        let Some(form) = post_form(headers, body) else {
             return Err(WebhookError::SignatureMismatch);
         };
         let mut signed = self.url.clone();
@@ -269,6 +277,37 @@ impl Validator for TwilioValidator {
         }
         Ok(())
     }
+}
+
+/// Go's `ParseForm` body cap for non-`MaxBytesReader` bodies:
+/// `int64(10 << 20)` — "10 MB is a lot of text."
+const MAX_FORM_SIZE: usize = 10 << 20;
+
+/// Mirrors Go's `Request.ParseForm` on the POSTs the ingestion
+/// endpoint admits: the body is parsed as a form only when the
+/// `Content-Type` media type is `application/x-www-form-urlencoded`
+/// (a missing `Content-Type` counts as `application/octet-stream`,
+/// RFC 7231 §3.1.1.5). Any other media type yields an *empty*
+/// parameter map — Go leaves `PostForm` empty — so the Twilio signed
+/// string is the URL alone. Returns `None` where `ParseForm` would
+/// error: a `Content-Type` that `mime.ParseMediaType` rejects, a
+/// malformed form body, or a form body over Go's 10 MB cap
+/// (`http: POST too large`).
+fn post_form(headers: &HeaderMap, body: &[u8]) -> Option<BTreeMap<String, String>> {
+    let ct = header_str(headers, "Content-Type");
+    let ct = if ct.is_empty() {
+        "application/octet-stream"
+    } else {
+        ct
+    };
+    let media_type = crate::core::mime::parse_media_type(ct)?;
+    if media_type != "application/x-www-form-urlencoded" {
+        return Some(BTreeMap::new());
+    }
+    if body.len() > MAX_FORM_SIZE {
+        return None;
+    }
+    parse_form(body)
 }
 
 /// Parses an `application/x-www-form-urlencoded` body into a sorted

@@ -23,6 +23,13 @@ struct MemEntry {
     exp: Option<Instant>,
 }
 
+impl MemEntry {
+    /// Reports whether the entry's TTL deadline has passed.
+    fn expired(&self) -> bool {
+        matches!(self.exp, Some(exp) if Instant::now() > exp)
+    }
+}
+
 impl MemoryAdapter {
     /// Returns an empty memory adapter.
     #[must_use]
@@ -48,16 +55,26 @@ impl Adapter for MemoryAdapter {
             let entries = self.entries.read().await;
             match entries.get(key) {
                 None => return Err(CacheError::NotFound),
-                Some(e) => match e.exp {
-                    // Expired — fall through to the lazy eviction below.
-                    Some(exp) if Instant::now() > exp => {}
-                    // Copy-on-read so callers can't mutate stored bytes.
-                    _ => return Ok(e.value.clone()),
-                },
+                // Copy-on-read so callers can't mutate stored bytes.
+                Some(e) if !e.expired() => return Ok(e.value.clone()),
+                // Expired — fall through to the lazy eviction below.
+                Some(_) => {}
             }
         }
-        self.entries.write().await.remove(key);
-        Err(CacheError::NotFound)
+        // Lazy eviction. A concurrent set() may have replaced the entry in the
+        // window between dropping the read guard above and acquiring the write
+        // lock here, so re-check expiry under the write lock and only remove
+        // the entry if it is still expired — never delete a live write.
+        let mut entries = self.entries.write().await;
+        match entries.get(key) {
+            None => Err(CacheError::NotFound),
+            // A concurrent set() landed a fresh entry: serve it.
+            Some(e) if !e.expired() => Ok(e.value.clone()),
+            Some(_) => {
+                entries.remove(key);
+                Err(CacheError::NotFound)
+            }
+        }
     }
 
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<(), CacheError> {

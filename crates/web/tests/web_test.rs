@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Extension, Router};
 use base64::engine::general_purpose::STANDARD;
@@ -124,6 +125,46 @@ async fn correlation_layer_generates_and_echoes() {
     let (_, headers, _) = send(app, req).await;
     assert_eq!(headers.get(HEADER_CORRELATION_ID).unwrap(), "abc-xyz");
     assert_eq!(*captured.lock().unwrap(), "abc-xyz");
+}
+
+// Regression (Go parity): the X-Correlation-Id header must survive the
+// panic→500 path. Go's CorrelationMiddleware stages the header on the
+// shared response map before invoking next, so the 500 written by the
+// recover middleware still carries it.
+
+#[tokio::test]
+async fn correlation_header_survives_panic() {
+    async fn handler() -> &'static str {
+        panic!("boom")
+    }
+    let app = Router::new().route("/x", get(handler)).layer(
+        tower::ServiceBuilder::new()
+            .layer(ProblemLayer::new())
+            .layer(CorrelationLayer::new()),
+    );
+
+    // A supplied id is echoed on the recovered 500.
+    let req = Request::builder()
+        .uri("/x")
+        .header(HEADER_CORRELATION_ID, "abc-123")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        headers.get(HEADER_CORRELATION_ID).unwrap(),
+        "abc-123",
+        "correlation header lost on panic path"
+    );
+    let pd: ProblemDetail = serde_json::from_slice(&body).unwrap();
+    assert_eq!(pd.problem_type, TYPE_INTERNAL);
+    assert_eq!(pd.detail, "boom");
+
+    // A generated id is present too.
+    let (status, headers, _) = send(app, get_req("/x")).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let generated = headers.get(HEADER_CORRELATION_ID).expect("header missing");
+    assert!(!generated.to_str().unwrap().is_empty());
 }
 
 // Rust-specific: the id is also exposed via request extensions.
@@ -260,6 +301,66 @@ async fn idempotency_ignores_unconfigured_methods() {
     assert_eq!(calls.load(Ordering::SeqCst), 2, "GET must not be replayed");
 }
 
+// Regression (Go parity): the first keyed response must stream through
+// to the client as the handler produces it — Go's captureWriter
+// forwards every Write immediately while copying it — rather than being
+// fully buffered before the first byte is sent. The fully streamed body
+// must still be captured and replayed.
+
+#[tokio::test]
+async fn idempotency_streams_response_body_through() {
+    let (tx, rx) = futures::channel::mpsc::unbounded::<Result<Vec<u8>, std::io::Error>>();
+    let rx_slot = Arc::new(Mutex::new(Some(rx)));
+    let rx_clone = Arc::clone(&rx_slot);
+    let app = Router::new()
+        .route(
+            "/orders",
+            post(move || {
+                let rx = rx_clone.lock().unwrap().take();
+                async move {
+                    match rx {
+                        Some(rx) => (StatusCode::CREATED, Body::from_stream(rx)).into_response(),
+                        // A replay must not reach the handler again.
+                        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                    }
+                }
+            }),
+        )
+        .layer(IdempotencyLayer::default());
+
+    tx.unbounded_send(Ok(b"hello ".to_vec())).unwrap();
+
+    // With a buffered implementation, the response head would not
+    // resolve until the stream closes — so guard with timeouts.
+    let res = tokio::time::timeout(
+        Duration::from_secs(2),
+        app.clone().oneshot(keyed_post(r#"{"x":1}"#)),
+    )
+    .await
+    .expect("response head must arrive while the body stream is still open")
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let mut body = res.into_body();
+    let first = tokio::time::timeout(Duration::from_secs(2), body.frame())
+        .await
+        .expect("first chunk must arrive while the body stream is still open")
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.data_ref().unwrap().as_ref(), b"hello ");
+
+    tx.unbounded_send(Ok(b"world".to_vec())).unwrap();
+    drop(tx);
+    let rest = body.collect().await.unwrap().to_bytes();
+    assert_eq!(rest.as_ref(), b"world");
+
+    // The streamed response was captured in full and now replays.
+    let (status, headers, body) = send(app, keyed_post(r#"{"x":1}"#)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(headers.get("Idempotent-Replay").unwrap(), "true");
+    assert_eq!(body, b"hello world");
+}
+
 // Rust-specific: non-2xx responses are not persisted, so the inner
 // handler runs again on retry.
 
@@ -378,6 +479,41 @@ fn pii_masking() {
     );
     assert_eq!(masked["email"], "[REDACTED:email]");
     assert_eq!(masked["untouched"], 42);
+}
+
+// Regression (Go parity): Go's RE2 gives `\b`/`\d` ASCII semantics, so
+// a card/phone/IBAN adjacent to a non-ASCII letter is still masked, and
+// non-ASCII digit runs are not mistaken for card numbers. The Rust
+// patterns must behave identically (`(?-u)`), or full PII leaks into
+// logs for international free-form text.
+
+#[test]
+fn pii_masking_uses_ascii_semantics_like_go() {
+    // Unicode letters adjacent to the number must not suppress the
+    // word boundary (Go masks both of these).
+    assert_eq!(
+        mask_pii("nº4111111111111111 done"),
+        "nº[REDACTED:card] done",
+        "card adjacent to non-ASCII letter must be masked"
+    );
+    assert_eq!(
+        mask_pii("tel:+34911223344é end"),
+        "tel:[REDACTED:phone]é end",
+        "phone adjacent to non-ASCII letter must be masked"
+    );
+    assert_eq!(
+        mask_pii("éGB82WEST12345698765432"),
+        "é[REDACTED:iban]",
+        "iban adjacent to non-ASCII letter must be masked"
+    );
+
+    // Arabic-Indic digits are not `\d` in Go; they must stay unmasked.
+    let arabic = "رقم ٠١٢٣٤٥٦٧٨٩٠١٢٣٤٥";
+    assert_eq!(
+        mask_pii(arabic),
+        arabic,
+        "non-ASCII digit runs must not be redacted"
+    );
 }
 
 // Rust-specific: problem_response wire bytes match the Go WriteProblem

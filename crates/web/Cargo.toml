@@ -13,6 +13,9 @@ firefly-kernel = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 http = { workspace = true }
+# Same major as axum's transitive http-body; needed to implement the
+# response-teeing CaptureBody without buffering (Go captureWriter parity).
+http-body = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

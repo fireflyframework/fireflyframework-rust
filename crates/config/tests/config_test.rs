@@ -243,6 +243,63 @@ fn load_from_profile_uses_fallback_when_env_unset() {
     assert_eq!(cfg.web.port, 3000);
 }
 
+// Regression (bug): numeric-looking scalars used to be re-rendered
+// through typed YAML nodes, silently corrupting them ("1.10" -> "1.1",
+// "0x1A" -> "26", "1e3" -> "1000.0", "2.50" -> "2.5"). The Go scanner
+// keeps the source lexeme verbatim, so binding onto String fields must
+// yield exactly what was written in application.yaml.
+#[test]
+fn yaml_scalars_bind_verbatim_onto_string_fields() {
+    #[derive(Debug, Deserialize)]
+    struct Cfg {
+        version: String,
+        build: String,
+        num: String,
+        ratio: String,
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("application.yaml");
+    std::fs::write(&path, "version: 1.10\nbuild: 0x1A\nnum: 1e3\nratio: 2.50\n").unwrap();
+
+    let sources: Vec<Box<dyn Source>> = vec![Box::new(from_yaml(path))];
+    let cfg: Cfg = load(&sources).unwrap();
+    assert_eq!(cfg.version, "1.10");
+    assert_eq!(cfg.build, "0x1A");
+    assert_eq!(cfg.num, "1e3");
+    assert_eq!(cfg.ratio, "2.50");
+}
+
+// Regression (bug): YAML documents that load fine on the Go port used to
+// hard-fail the whole load() here — duplicate keys raised "duplicate
+// entry" and out-of-range integer literals raised an u128 parse error.
+// Go applies last-write-wins and stores the lexeme as a string.
+#[test]
+fn yaml_accepts_duplicate_keys_and_out_of_range_integer_literals() {
+    #[derive(Debug, Deserialize)]
+    struct DupWeb {
+        port: i32,
+    }
+    #[derive(Debug, Deserialize)]
+    struct Cfg {
+        web: DupWeb,
+        big: String,
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("application.yaml");
+    std::fs::write(
+        &path,
+        "web:\n  port: 1\nweb:\n  port: 2\nbig: 12345678901234567890123\n",
+    )
+    .unwrap();
+
+    let sources: Vec<Box<dyn Source>> = vec![Box::new(from_yaml(path))];
+    let cfg: Cfg = load(&sources).unwrap();
+    assert_eq!(cfg.web.port, 2, "duplicate keys must be last-write-wins");
+    assert_eq!(cfg.big, "12345678901234567890123");
+}
+
 #[test]
 fn sources_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}

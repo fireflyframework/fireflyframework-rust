@@ -46,7 +46,7 @@ internal registry — `HashMap<TypeId, DynHandler>` — is type-erased.
 | `ValidationMiddleware`              | Calls `Message::validate` before dispatch and short-circuits on error                 |
 | `QueryCache::middleware()`          | Memoises results for messages whose `Message::cache_ttl` returns `Some`               |
 | `QueryCache::invalidate(prefix)`    | Removes every entry whose key starts with `prefix` (`<type name>:<sha-256 of JSON>`)  |
-| `QueryCache::invalidate_type::<Q>()`| Typed convenience: invalidates every cached result for query type `Q`                 |
+| `QueryCache::invalidate_type::<Q>()`| Typed convenience: invalidates every cached result for exactly query type `Q` (matches the `<type name>:` prefix, so name-prefix siblings stay cached) |
 
 ### Optional capabilities
 

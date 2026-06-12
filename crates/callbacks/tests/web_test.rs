@@ -163,7 +163,8 @@ async fn attempts_listing_matches_go_wire_shape() {
     let store = Arc::new(MemoryStore::new());
 
     // Go parity: an event with no recorded attempts answers `null`
-    // (MemoryStore's nil slice through encoding/json), not `[]`.
+    // (MemoryStore's nil slice through encoding/json), not `[]`, and
+    // json.Encoder.Encode terminates the document with '\n'.
     let (status, body) = call(
         app(store.clone()),
         Method::GET,
@@ -172,7 +173,7 @@ async fn attempts_listing_matches_go_wire_shape() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, "null");
+    assert_eq!(body, "null\n");
 
     store
         .record_attempt(Attempt {
@@ -195,6 +196,67 @@ async fn attempts_listing_matches_go_wire_shape() {
     assert_eq!(rows[0]["targetId"], "t1");
     assert_eq!(rows[0]["status"], 200);
     assert_eq!(rows[0]["attempt"], 1);
+}
+
+// Regression (bug: trailing newline dropped from admin JSON bodies):
+// Go's writeJSON uses json.NewEncoder(w).Encode(v), which terminates
+// every document with '\n' — so the wire bytes are "[...]\n",
+// "{...}\n", and "null\n", never the bare document.
+#[tokio::test]
+async fn json_responses_end_with_newline_like_go_json_encoder() {
+    let store = Arc::new(MemoryStore::new());
+
+    // Empty targets listing: Go's MemoryStore returns a non-nil empty
+    // slice, so the body is "[]\n".
+    let (status, body) = call(app(store.clone()), Method::GET, "/callbacks/targets", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "[]\n");
+
+    let payload = serde_json::to_string(&Target {
+        id: "t1".into(),
+        url: "https://example.com/cb".into(),
+        active: true,
+        ..Target::default()
+    })
+    .unwrap();
+    let (status, body) = call(
+        app(store.clone()),
+        Method::POST,
+        "/callbacks/targets",
+        Some(&payload),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(body.ends_with("}\n"), "created target body: {body:?}");
+
+    let (status, body) = call(
+        app(store.clone()),
+        Method::GET,
+        "/callbacks/targets/t1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.ends_with("}\n"), "get target body: {body:?}");
+
+    let (status, body) = call(app(store.clone()), Method::GET, "/callbacks/targets", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.ends_with("]\n"), "targets listing body: {body:?}");
+
+    store
+        .record_attempt(Attempt {
+            id: "a1".into(),
+            event_id: "ev1".into(),
+            target_id: "t1".into(),
+            status: 200,
+            attempt: 1,
+            ..Attempt::default()
+        })
+        .await
+        .unwrap();
+    let (status, body) = call(app(store), Method::GET, "/callbacks/attempts/ev1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.ends_with("]\n"), "attempts listing body: {body:?}");
 }
 
 #[tokio::test]

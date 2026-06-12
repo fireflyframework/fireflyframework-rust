@@ -2,32 +2,39 @@
 //! itself a mirror of the Java `firefly-common-utils` SlugUtil and the
 //! .NET `FireflyFramework.Utils` `Slug.Make` helpers.
 
-/// Converts `s` into a URL-safe lower-case slug: accented Latin
-/// letters are folded to their ASCII base letter, combining diacritical
-/// marks are dropped, runs of any other character collapse to a single
-/// dash, and leading/trailing dashes are trimmed.
+use unicode_normalization::UnicodeNormalization;
+use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+
+/// Converts `s` into a URL-safe lower-case slug: the input is
+/// canonically decomposed (NFD), every non-spacing combining mark
+/// (Unicode category `Mn`) is dropped — folding any canonically
+/// decomposable letter to its base letter — runs of any other
+/// non-alphanumeric character collapse to a single dash, and
+/// leading/trailing dashes are trimmed.
 ///
-/// The Go port reaches the same result via NFD normalisation plus
-/// removal of Unicode combining marks (`Mn`); this port folds the
-/// canonically-decomposable Latin-1 Supplement and Latin Extended-A
-/// letters with an explicit table and strips the Combining Diacritical
-/// Marks block (U+0300..=U+036F), which yields identical output for
-/// both precomposed and decomposed input. Letters with no canonical
-/// decomposition (`æ`, `ø`, `ß`, `đ`, `ł`, …) become separators in
-/// both ports.
+/// This mirrors the Go port's transform chain
+/// (`norm.NFD` → `runes.Remove(runes.In(unicode.Mn))` → `norm.NFC`)
+/// exactly; the final NFC recomposition is omitted because canonical
+/// composition can neither create nor consume ASCII alphanumerics, so
+/// it cannot change the slug. As in Go, only *canonical* (NFD)
+/// decompositions apply — compatibility-only characters (`½`, `Ⅻ`,
+/// `ǅ`, …) and letters with no decomposition at all (`æ`, `ø`, `ß`,
+/// `đ`, `ł`, …) become separators, and spacing/enclosing marks
+/// (categories `Mc`/`Me`) are kept as separators rather than dropped.
 ///
 /// ```
 /// assert_eq!(firefly_utils::slugify("Cañón del Río"), "canon-del-rio");
+/// assert_eq!(firefly_utils::slugify("Việt Nam"), "viet-nam");
 /// ```
 pub fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_dash = true; // suppress leading dashes
-    for c in s.chars() {
-        // Drop combining diacritical marks entirely (decomposed input).
-        if ('\u{0300}'..='\u{036F}').contains(&c) {
+    for c in s.nfd() {
+        // Drop non-spacing combining marks (Mn), exactly like Go's
+        // runes.Remove(runes.In(unicode.Mn)).
+        if c.general_category() == GeneralCategory::NonspacingMark {
             continue;
         }
-        let c = fold_latin(c);
         match c {
             'A'..='Z' => {
                 out.push(c.to_ascii_lowercase());
@@ -49,73 +56,6 @@ pub fn slugify(s: &str) -> String {
         out.pop();
     }
     out
-}
-
-/// Folds a precomposed Latin letter with diacritics to its ASCII base
-/// letter, covering every Latin-1 Supplement and Latin Extended-A
-/// character with a *canonical* (NFD) decomposition. Characters
-/// without one — `Æ`, `Ð`, `Ø`, `Þ`, `ß`, `đ`, `ħ`, `ı`, `ł`, `ŋ`,
-/// `œ`, `ŧ`, … — are returned unchanged so they become separators,
-/// exactly as in the Go port.
-fn fold_latin(c: char) -> char {
-    match c {
-        'À'..='Å' => 'A',
-        'Ç' => 'C',
-        'È'..='Ë' => 'E',
-        'Ì'..='Ï' => 'I',
-        'Ñ' => 'N',
-        'Ò'..='Ö' => 'O',
-        'Ù'..='Ü' => 'U',
-        'Ý' => 'Y',
-        'à'..='å' => 'a',
-        'ç' => 'c',
-        'è'..='ë' => 'e',
-        'ì'..='ï' => 'i',
-        'ñ' => 'n',
-        'ò'..='ö' => 'o',
-        'ù'..='ü' => 'u',
-        'ý' | 'ÿ' => 'y',
-        'Ā' | 'Ă' | 'Ą' => 'A',
-        'ā' | 'ă' | 'ą' => 'a',
-        'Ć' | 'Ĉ' | 'Ċ' | 'Č' => 'C',
-        'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
-        'Ď' => 'D',
-        'ď' => 'd',
-        'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' => 'E',
-        'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
-        'Ĝ' | 'Ğ' | 'Ġ' | 'Ģ' => 'G',
-        'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
-        'Ĥ' => 'H',
-        'ĥ' => 'h',
-        'Ĩ' | 'Ī' | 'Ĭ' | 'Į' | 'İ' => 'I',
-        'ĩ' | 'ī' | 'ĭ' | 'į' => 'i',
-        'Ĵ' => 'J',
-        'ĵ' => 'j',
-        'Ķ' => 'K',
-        'ķ' => 'k',
-        'Ĺ' | 'Ļ' | 'Ľ' => 'L',
-        'ĺ' | 'ļ' | 'ľ' => 'l',
-        'Ń' | 'Ņ' | 'Ň' => 'N',
-        'ń' | 'ņ' | 'ň' => 'n',
-        'Ō' | 'Ŏ' | 'Ő' => 'O',
-        'ō' | 'ŏ' | 'ő' => 'o',
-        'Ŕ' | 'Ŗ' | 'Ř' => 'R',
-        'ŕ' | 'ŗ' | 'ř' => 'r',
-        'Ś' | 'Ŝ' | 'Ş' | 'Š' => 'S',
-        'ś' | 'ŝ' | 'ş' | 'š' => 's',
-        'Ţ' | 'Ť' => 'T',
-        'ţ' | 'ť' => 't',
-        'Ũ' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' => 'U',
-        'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
-        'Ŵ' => 'W',
-        'ŵ' => 'w',
-        'Ŷ' => 'Y',
-        'ŷ' => 'y',
-        'Ÿ' => 'Y',
-        'Ź' | 'Ż' | 'Ž' => 'Z',
-        'ź' | 'ż' | 'ž' => 'z',
-        other => other,
-    }
 }
 
 #[cfg(test)]
@@ -163,5 +103,52 @@ mod tests {
         // "Cañón" written as C a n ̃ o ́ n.
         assert_eq!(slugify("Can\u{0303}o\u{0301}n"), "canon");
         assert_eq!(slugify("Can\u{0303}o\u{0301}n"), slugify("Cañón"));
+    }
+
+    /// Regression test: decomposable letters outside Latin-1
+    /// Supplement / Latin Extended-A, and combining marks outside
+    /// U+0300..=U+036F, must fold exactly like Go's NFD + Mn-removal
+    /// chain. Expected values are the verified Go `Slugify` outputs.
+    #[test]
+    fn slugify_folds_all_canonical_decompositions_like_go() {
+        let cases = [
+            // Vietnamese — U+1EC7 (Latin Extended Additional).
+            ("Việt Nam", "viet-nam"),
+            // Pinyin — U+01CD / U+01DA (Latin Extended-B).
+            ("\u{01CD}n pinyin n\u{01DA}", "an-pinyin-nu"),
+            // Mn mark outside the U+0300..=U+036F block (U+1DC4,
+            // Combining Diacritical Marks Supplement) is dropped.
+            ("a\u{1DC4}b", "ab"),
+            // Canonical singleton decomposition to ASCII: U+212A
+            // KELVIN SIGN folds to 'K'.
+            ("\u{212A}elvin", "kelvin"),
+            // Canonical singleton to non-ASCII: U+2126 OHM SIGN
+            // becomes Greek omega, i.e. a separator.
+            ("\u{2126}hm", "hm"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(slugify(input), want, "slugify({input:?})");
+        }
+    }
+
+    /// Go-parity guard: only category-Mn marks are removed and only
+    /// *canonical* decompositions fold. Spacing (Mc) and enclosing
+    /// (Me) marks survive as separators, and compatibility-only
+    /// characters never fold. Expected values are the verified Go
+    /// `Slugify` outputs.
+    #[test]
+    fn slugify_keeps_non_mn_marks_and_compat_chars_like_go() {
+        let cases = [
+            // U+0903 DEVANAGARI SIGN VISARGA — Mc, kept as separator.
+            ("a\u{0903}b", "a-b"),
+            // U+20DD COMBINING ENCLOSING CIRCLE — Me, kept as separator.
+            ("a\u{20DD}b", "a-b"),
+            // Compatibility-only decompositions are not applied.
+            ("\u{2162} \u{00BD}", ""),  // Ⅲ ½
+            ("\u{01C5}ungla", "ungla"), // ǅ digraph
+        ];
+        for (input, want) in cases {
+            assert_eq!(slugify(input), want, "slugify({input:?})");
+        }
     }
 }

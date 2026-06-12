@@ -350,6 +350,65 @@ async fn retries_on_429() {
     assert_eq!(hits.load(Ordering::SeqCst), 2);
 }
 
+/// Regression test for the documented divergence from the Go port:
+/// retried attempts re-send the full encoded JSON body. Go creates the
+/// body's `bytes.Reader` once outside its retry loop, so its retries
+/// arrive bodyless (`ContentLength: 0`) and a bodied retry can never
+/// succeed; the Rust port deliberately re-sends the body — see the
+/// porting note on `RestClient` and in the crate README.
+#[tokio::test]
+async fn retried_attempts_resend_full_body() {
+    let bodies: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = bodies.clone();
+    let app = Router::new().route(
+        "/users",
+        post(move |body: axum::body::Bytes| {
+            let seen = seen.clone();
+            async move {
+                let mut seen = seen.lock().expect("lock");
+                seen.push(body.to_vec());
+                if seen.len() < 3 {
+                    (StatusCode::INTERNAL_SERVER_ERROR, String::new())
+                } else {
+                    (StatusCode::OK, r#"{"id":"u1","name":"alice"}"#.to_owned())
+                }
+            }
+        }),
+    );
+    let base = spawn_server(app).await;
+
+    let client = RestBuilder::new(&base)
+        .with_retries(3)
+        .with_backoff_base(FAST_BACKOFF)
+        .build();
+    let out: User = client
+        .request(
+            Method::POST,
+            "/users",
+            Some(&CreateUser {
+                name: "alice".into(),
+            }),
+        )
+        .await
+        .expect("third attempt succeeds");
+    assert_eq!(out.id, "u1");
+
+    let expected = serde_json::to_vec(&CreateUser {
+        name: "alice".into(),
+    })
+    .expect("encode");
+    let bodies = bodies.lock().expect("lock");
+    assert_eq!(bodies.len(), 3, "three attempts must reach the server");
+    for (i, body) in bodies.iter().enumerate() {
+        assert_eq!(
+            body,
+            &expected,
+            "attempt {} must carry the full JSON body (Go's retries go out empty)",
+            i + 1
+        );
+    }
+}
+
 #[tokio::test]
 async fn persistent_500_exhausts_attempts_and_returns_problem() {
     let hits = Arc::new(AtomicU32::new(0));

@@ -164,22 +164,103 @@ fn is_null(v: Option<&Value>) -> bool {
 }
 
 /// Deep equality between the looked-up fact value (absent ⇒ null) and
-/// the condition operand — Go's `reflect.DeepEqual`. As in Go, an
-/// integer never equals a float of the same magnitude (`30 != 30.0`).
+/// the condition operand — Go's `reflect.DeepEqual` as it behaves on
+/// the reference runtime's data. In Go the fact always arrives through
+/// `encoding/json`, which decodes **every** fact number as `float64`,
+/// while yaml.v3 keeps an integer rule operand (`value: 18`) as `int`.
+/// `reflect.DeepEqual(float64, int)` is `false` regardless of
+/// magnitude, so an integer operand never equals a fact number and a
+/// float operand (`value: 18.0`) equals any fact number of the same
+/// magnitude — see [`go_deep_eq`].
 fn deep_eq(v: Option<&Value>, operand: &Value) -> bool {
-    v.unwrap_or(&Value::Null) == operand
+    go_deep_eq(v.unwrap_or(&Value::Null), operand)
+}
+
+/// `reflect.DeepEqual` parity between a fact-side value (whose numbers
+/// Go's `encoding/json` decodes as `float64`) and an operand-side
+/// value (whose numbers keep yaml.v3's int/float split): two numbers
+/// are equal only when the operand is a float of the same magnitude;
+/// arrays and objects recurse with the same asymmetry; all other
+/// values compare structurally.
+fn go_deep_eq(fact: &Value, operand: &Value) -> bool {
+    match (fact, operand) {
+        (Value::Number(f), Value::Number(o)) => o.is_f64() && f.as_f64() == o.as_f64(),
+        (Value::Array(f), Value::Array(o)) => {
+            f.len() == o.len() && f.iter().zip(o).all(|(fv, ov)| go_deep_eq(fv, ov))
+        }
+        (Value::Object(f), Value::Object(o)) => {
+            f.len() == o.len()
+                && f.iter()
+                    .all(|(k, fv)| o.get(k).is_some_and(|ov| go_deep_eq(fv, ov)))
+        }
+        _ => fact == operand,
+    }
 }
 
 /// Coerces a value to text the way Go's `toString` does with
 /// `fmt.Sprintf("%v", …)`: null ⇒ empty string, strings verbatim,
-/// scalars via their display form, composites as compact JSON.
+/// scalars via their display form (floats via Go's `%v` float64
+/// rendering — see [`go_float_text`]), composites as compact JSON.
 fn to_text(v: Option<&Value>) -> String {
     match v {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(s)) => s.clone(),
         Some(Value::Bool(b)) => b.to_string(),
-        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::Number(n)) => match n.as_f64() {
+            Some(f) if n.is_f64() => go_float_text(f),
+            _ => n.to_string(),
+        },
         Some(other) => other.to_string(),
+    }
+}
+
+/// Renders an `f64` exactly the way Go's `fmt.Sprintf("%v", …)` prints
+/// a `float64` (`strconv.FormatFloat(f, 'g', -1, 64)`): the shortest
+/// round-trip digits in fixed notation when the decimal exponent is in
+/// `[-4, 6)` (`1500.0` ⇒ `"1500"`, `0.0001` ⇒ `"0.0001"`) and in
+/// scientific notation otherwise, with a signed, at-least-two-digit
+/// exponent (`1e6` ⇒ `"1e+06"`, `0.00001` ⇒ `"1e-05"`).
+fn go_float_text(f: f64) -> String {
+    if f.is_nan() {
+        return "NaN".to_owned();
+    }
+    if f.is_infinite() {
+        return (if f > 0.0 { "+Inf" } else { "-Inf" }).to_owned();
+    }
+    if f == 0.0 {
+        return (if f.is_sign_negative() { "-0" } else { "0" }).to_owned();
+    }
+    // `{:e}` yields the shortest round-trip digits as `d[.ddd…]e<exp>`,
+    // the same digit string Go's shortest 'g' conversion produces.
+    let sci = format!("{f:e}");
+    let (mantissa, exp) = sci.split_once('e').expect("{:e} always has an exponent");
+    let exp: i32 = exp.parse().expect("{:e} exponent is an integer");
+    let (sign, mantissa) = match mantissa.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", mantissa),
+    };
+    if !(-4..6).contains(&exp) {
+        let exp_sign = if exp < 0 { '-' } else { '+' };
+        return format!("{sign}{mantissa}e{exp_sign}{:02}", exp.abs());
+    }
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let point = exp + 1; // decimal-point position within `digits`
+    if point <= 0 {
+        format!(
+            "{sign}0.{}{digits}",
+            "0".repeat(point.unsigned_abs() as usize)
+        )
+    } else if point as usize >= digits.len() {
+        format!(
+            "{sign}{digits}{}",
+            "0".repeat(point as usize - digits.len())
+        )
+    } else {
+        format!(
+            "{sign}{}.{}",
+            &digits[..point as usize],
+            &digits[point as usize..]
+        )
     }
 }
 
@@ -228,23 +309,25 @@ fn compare_num(a: Option<&Value>, b: &Value, op: &Op) -> Result<bool, EvalError>
 }
 
 /// `in` / `notIn`: true when the condition operand is a list containing
-/// the looked-up value (absent ⇒ null), by deep equality.
+/// the looked-up value (absent ⇒ null), by [`go_deep_eq`] — the fact
+/// side is the needle, the operand side the list elements.
 fn in_list(operand: &Value, v: Option<&Value>) -> bool {
     match operand {
         Value::Array(items) => {
             let needle = v.unwrap_or(&Value::Null);
-            items.iter().any(|x| x == needle)
+            items.iter().any(|x| go_deep_eq(needle, x))
         }
         _ => false,
     }
 }
 
 /// `contains`: substring test when the fact value is a string,
-/// deep-equality element test when it is a list, false otherwise.
+/// [`go_deep_eq`] element test when it is a list (fact-side elements
+/// vs the operand needle), false otherwise.
 fn contains(haystack: Option<&Value>, needle: &Value) -> bool {
     match haystack {
         Some(Value::String(s)) => s.contains(&value_text(needle)),
-        Some(Value::Array(items)) => items.iter().any(|x| x == needle),
+        Some(Value::Array(items)) => items.iter().any(|x| go_deep_eq(x, needle)),
         _ => false,
     }
 }
@@ -398,13 +481,105 @@ mod tests {
             let rs = RuleSet::default().with_rule(Rule::new("r", Logic::cond(path, op, value)));
             eval.evaluate_sync(&rs, &f).unwrap().matched.len() == 1
         };
-        assert!(run(Op::Eq, "n", json!(30)));
-        // reflect.DeepEqual parity: int 30 != float 30.0
-        assert!(!run(Op::Eq, "n", json!(30.0)));
-        assert!(run(Op::Ne, "n", json!(30.0)));
+        // reflect.DeepEqual parity: Go decodes every JSON fact number
+        // as float64, so the integer operand a YAML `value: 30`
+        // produces never matches…
+        assert!(!run(Op::Eq, "n", json!(30)));
+        assert!(run(Op::Ne, "n", json!(30)));
+        // …while a float operand of the same magnitude does.
+        assert!(run(Op::Eq, "n", json!(30.0)));
+        assert!(!run(Op::Ne, "n", json!(30.0)));
         assert!(run(Op::Eq, "tags", json!(["a", "b"])));
         // absent path equals an absent (null) operand
         assert!(run(Op::Eq, "missing", Value::Null));
+    }
+
+    /// Regression: identical wire bytes must produce the Go verdict.
+    /// Go decodes every JSON fact number as `float64` while yaml.v3
+    /// keeps `value: 18` as `int`, and `reflect.DeepEqual(float64,
+    /// int)` is false — so an integer YAML operand never `eq`-matches
+    /// a JSON fact, `ne` always holds, and `in`/`notIn`/list-`contains`
+    /// behave accordingly. A float operand (`18.0`) bridges the gap.
+    #[test]
+    fn go_parity_yaml_int_operand_vs_json_fact() {
+        let eval = AstEvaluator::new();
+        let f: Fact = serde_json::from_str(r#"{"age": 18, "tags": [7, 8]}"#).unwrap();
+        let run = |cond: &str| {
+            let rs = RuleSet::from_yaml(&format!(
+                "name: x\nrules:\n  - id: r\n    when:\n      cond: {cond}\n"
+            ))
+            .unwrap();
+            eval.evaluate_sync(&rs, &f).unwrap().matched == ["r"]
+        };
+        // eq / ne with an integer YAML operand: Go never matches.
+        assert!(!run("{ path: age, op: eq, value: 18 }"));
+        assert!(run("{ path: age, op: ne, value: 18 }"));
+        // …but a float YAML operand of the same magnitude matches.
+        assert!(run("{ path: age, op: eq, value: 18.0 }"));
+        assert!(!run("{ path: age, op: ne, value: 18.0 }"));
+        // in / notIn follow the same DeepEqual asymmetry per element.
+        assert!(!run("{ path: age, op: in, value: [18, 21] }"));
+        assert!(run("{ path: age, op: in, value: [18.0, 21] }"));
+        assert!(run("{ path: age, op: notIn, value: [18, 21] }"));
+        // list-contains: fact-side elements are floats in Go too.
+        assert!(!run("{ path: tags, op: contains, value: 7 }"));
+        assert!(run("{ path: tags, op: contains, value: 7.0 }"));
+    }
+
+    /// Regression: a whole-number float fact must stringify as Go's
+    /// `%v` does (`1500.0` ⇒ `"1500"`), so the string-coercing ops
+    /// (`startsWith` / `endsWith` / `matches` / string-`contains`)
+    /// reach the same verdict on identical wire bytes.
+    #[test]
+    fn go_parity_whole_number_float_string_coercion() {
+        let eval = AstEvaluator::new();
+        let f: Fact = serde_json::from_str(r#"{"amount": 1500.0}"#).unwrap();
+        let run = |op: Op, value: serde_json::Value| {
+            let rs = RuleSet::default().with_rule(Rule::new("r", Logic::cond("amount", op, value)));
+            eval.evaluate_sync(&rs, &f).unwrap().matched.len() == 1
+        };
+        assert!(run(Op::EndsWith, json!("00")));
+        assert!(run(Op::StartsWith, json!("15")));
+        assert!(run(Op::Matches, json!(r"^\d+$")));
+        assert!(!run(Op::EndsWith, json!("00.0")));
+        // string haystack `contains` coerces the needle the same way
+        let f2 = fact(json!({"msg": "total 1500 EUR"}));
+        let rs = RuleSet::default().with_rule(Rule::new(
+            "r",
+            Logic::cond("msg", Op::Contains, json!(1500.0)),
+        ));
+        assert_eq!(eval.evaluate_sync(&rs, &f2).unwrap().matched, ["r"]);
+    }
+
+    /// [`go_float_text`] against outputs captured from a Go probe
+    /// running `fmt.Sprintf("%v", f)` on the same values.
+    #[test]
+    fn go_float_text_matches_go_sprintf_v() {
+        let cases: [(f64, &str); 20] = [
+            (1500.0, "1500"),
+            (18.5, "18.5"),
+            (0.5, "0.5"),
+            (100000.0, "100000"),
+            (999999.0, "999999"),
+            (1e6, "1e+06"),
+            (1234567.0, "1.234567e+06"),
+            (13.5e6, "1.35e+07"),
+            (1e20, "1e+20"),
+            (1e21, "1e+21"),
+            (0.0001, "0.0001"),
+            (0.00001, "1e-05"),
+            (123456789.0, "1.23456789e+08"),
+            (-1500.0, "-1500"),
+            (0.0, "0"),
+            (-0.0, "-0"),
+            (9007199254740992.0, "9.007199254740992e+15"),
+            (1e300, "1e+300"),
+            (2.5e-10, "2.5e-10"),
+            (12345.6789, "12345.6789"),
+        ];
+        for (f, want) in cases {
+            assert_eq!(go_float_text(f), want, "input: {f:?}");
+        }
     }
 
     #[test]

@@ -164,6 +164,43 @@ async fn place_order_invalid_json() {
     );
 }
 
+/// A body of `null` is a successful no-op decode in Go
+/// (`json.Decoder` leaves the zero-value struct untouched), so the
+/// request reaches domain validation and fails there — a 422
+/// validation problem (`customer is required`), not a 400 decode
+/// error.
+#[tokio::test]
+async fn place_order_null_body_fails_domain_validation_not_decoding() {
+    let app = build_router();
+
+    let res = app.oneshot(post_orders(b"null", None)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        content_type(&res).starts_with(PROBLEM_CONTENT_TYPE),
+        "content-type: {}",
+        content_type(&res)
+    );
+    let pd: ProblemDetail = serde_json::from_slice(&body_bytes(res).await).unwrap();
+    assert_eq!(pd.problem_type, TYPE_VALIDATION);
+    assert_eq!(pd.detail, "customer is required");
+}
+
+/// Bytes after the first JSON value are ignored, like Go's stream
+/// decoder (`json.Decoder` reads only the first value off the body),
+/// so the order is still placed — 201 Created.
+#[tokio::test]
+async fn place_order_ignores_trailing_data_after_first_json_value() {
+    let app = build_router();
+    let body = br#"{"customer":"a","sku":"s","quantity":1,"total":1} trailing"#;
+
+    let res = app.oneshot(post_orders(body, None)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let out: OrderDto = serde_json::from_slice(&body_bytes(res).await).unwrap();
+    assert_eq!(out.customer, "a", "dto: {out:?}");
+    assert_eq!(out.sku, "s", "dto: {out:?}");
+    assert_eq!(out.status, "placed", "dto: {out:?}");
+}
+
 /// Reusing an Idempotency-Key with a different payload is a 409
 /// idempotency-conflict problem — the framework contract the sample
 /// inherits from `firefly-web`.
@@ -178,6 +215,10 @@ async fn idempotency_key_reuse_with_different_payload_conflicts() {
         .await
         .unwrap();
     assert_eq!(first.status(), StatusCode::CREATED);
+    // Drain the first response: the idempotency record is persisted
+    // once the captured body finishes streaming (in a live server the
+    // connection task drives this; under `oneshot` the test must).
+    let _ = body_bytes(first).await;
 
     let other = serde_json::to_vec(&PlaceOrderRequest {
         customer: "bob".into(),

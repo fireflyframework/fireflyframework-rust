@@ -82,6 +82,58 @@ async fn memory_ttl_evicts_expired_entries() {
     assert_eq!(m.len().await, 0);
 }
 
+/// Regression test: a `get()` that observes an expired entry under the read
+/// lock must not blindly remove the key after re-acquiring the write lock —
+/// a concurrent `set()` may have landed a fresh entry in between, and lazy
+/// eviction must never delete that live write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn memory_lazy_eviction_does_not_delete_concurrent_set() {
+    let m = Arc::new(MemoryAdapter::new());
+    for i in 0..500 {
+        let key = format!("k{i}");
+
+        // Seed an already-expired entry so the racing get() takes the lazy
+        // eviction slow path (read guard drop -> write lock -> remove).
+        m.set(&key, b"stale", Some(Duration::from_nanos(1)))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+
+        // Race the expired-key get() against a fresh, non-expiring set().
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let getter = tokio::spawn({
+            let (m, key, barrier) = (m.clone(), key.clone(), barrier.clone());
+            async move {
+                barrier.wait().await;
+                m.get(&key).await
+            }
+        });
+        let setter = tokio::spawn({
+            let (m, key, barrier) = (m.clone(), key.clone(), barrier.clone());
+            async move {
+                barrier.wait().await;
+                m.set(&key, b"fresh", None).await
+            }
+        });
+
+        // The racing get() may miss (linearized before the set) or observe
+        // the fresh value (re-checked under the write lock) — never "stale".
+        match getter.await.unwrap() {
+            Ok(v) => assert_eq!(v, b"fresh", "iteration {i}: stale value served"),
+            Err(e) => assert!(e.is_not_found(), "iteration {i}: unexpected error {e}"),
+        }
+        setter.await.unwrap().unwrap();
+
+        // set() returned Ok with no TTL, so the write must never be lost to
+        // the concurrent lazy eviction.
+        assert_eq!(
+            m.get(&key).await.unwrap(),
+            b"fresh",
+            "iteration {i}: concurrent set() lost to lazy TTL eviction"
+        );
+    }
+}
+
 #[tokio::test]
 async fn memory_zero_ttl_means_no_expiry() {
     // Go: ttl <= 0 means no expiry; Some(0) maps onto the same contract.

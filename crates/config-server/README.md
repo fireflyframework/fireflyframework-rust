@@ -42,6 +42,12 @@ an empty `propertySources` array with the queried name and profile
 echoed back. This matches Spring Cloud Config's behaviour so SDKs
 don't break.
 
+The request path is percent-decoded **before** routing, exactly as
+Go's `net/http` hands the handler a decoded `r.URL.Path`: an encoded
+slash (`%2F`) separates segments, and a path containing an invalid
+percent-escape is rejected with `400 Bad Request` (Go's server rejects
+such request lines before the handler runs).
+
 ## Public surface
 
 | Symbol                                  | Purpose                                                          |

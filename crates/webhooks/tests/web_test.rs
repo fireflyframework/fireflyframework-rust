@@ -172,6 +172,37 @@ async fn ingest_endpoint_builds_a_complete_inbound_event() {
 }
 
 #[tokio::test]
+async fn ingest_endpoint_strips_host_from_inbound_headers() {
+    // Go's net/http server promotes Host out of Request.Header (into
+    // Request.Host) before the handler runs, so the Go port's
+    // Inbound.headers never carries a "Host" entry. The Rust handler
+    // must drop it too, or the persisted/dispatched event JSON
+    // diverges from the Go wire shape.
+    let secret = b"s3cret";
+    let (pipeline, _dlq, proc) = generic_pipeline(secret);
+    let app = web::router(pipeline);
+
+    let body: &[u8] = br#"{"x":1}"#;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/generic")
+        .header("Host", "hooks.example.com")
+        .header("X-Signature", sign_hmac(secret, body))
+        .body(Body::from(body))
+        .expect("request");
+    let (status, text) = status_and_body(app, req).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "body: {text}");
+
+    let ev = proc.last().expect("processor captured the event");
+    assert!(
+        !ev.headers.contains_key("Host"),
+        "Inbound.headers must not carry Host: {:?}",
+        ev.headers
+    );
+    assert!(ev.headers.contains_key("X-Signature"));
+}
+
+#[tokio::test]
 async fn ingest_endpoint_accepts_stripe_testkit_signature() {
     let ts: i64 = 1_700_000_000;
     let clock = Arc::new(FixedClock(DateTime::from_timestamp(ts, 0).expect("ts")));

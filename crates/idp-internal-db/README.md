@@ -47,7 +47,9 @@ exact order — byte-identical to the Go port's sorted-map encoding):
 `roles` is omitted when the user has none. Signatures are HMAC-SHA256
 over `base64url(header) + "." + base64url(claims)` with unpadded
 URL-safe base64 — tokens minted by the Go port verify here and vice
-versa (verification is independent of header key order).
+versa (verification is independent of header key order). Verification
+matches Go: only the signature and — when present — `exp` are checked;
+every other claim (`aud`, `iss`, `nbf`, …) is ignored.
 
 The refresh token is currently the same value as the access token —
 adequate for in-process testing; production deployments should use

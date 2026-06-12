@@ -222,6 +222,62 @@ async fn percent_encoded_segments_are_decoded() {
     assert_eq!(env.property_sources.len(), 1);
 }
 
+// Regression: an encoded slash must split segments, exactly like the
+// Go reference (configserver/server.go), where net/http hands the
+// handler a percent-decoded r.URL.Path and the *decoded* path is
+// split. GET /my%2Fapp/dev is (app="my", profile="app", label="dev"),
+// not ("my/app", "dev", "main") as the old raw-path split produced.
+#[tokio::test]
+async fn encoded_slash_splits_segments_like_go() {
+    let store = Arc::new(MemoryStore::new());
+    store.put(
+        "my",
+        "app",
+        "dev",
+        Environment {
+            name: "my".into(),
+            profiles: vec!["app".into()],
+            label: "dev".into(),
+            property_sources: vec![PropertySource::default()],
+            ..Environment::default()
+        },
+    );
+    // The tuple the buggy raw-path split used to resolve; must NOT be hit.
+    store.put(
+        "my/app",
+        "dev",
+        "main",
+        Environment {
+            name: "wrong".into(),
+            ..Environment::default()
+        },
+    );
+    let (status, _, body) = get(router(store), "/my%2Fapp/dev").await;
+    assert_eq!(status, StatusCode::OK);
+    let env: Environment = serde_json::from_str(&body).unwrap();
+    assert_eq!(env.name, "my");
+    assert_eq!(env.profiles, vec!["app".to_string()]);
+    assert_eq!(env.label, "dev");
+    assert_eq!(env.property_sources.len(), 1, "env: {env:?}");
+}
+
+// Regression: an invalid percent-escape in the path is a 400, like
+// Go's net/http rejecting the request line before the handler runs
+// (body "400 Bad Request", no trailing newline) — not a 200 soft miss.
+#[tokio::test]
+async fn invalid_percent_escape_returns_400() {
+    for path in ["/bad%zz/dev", "/trailing%2/dev", "/app/dev%"] {
+        let (status, content_type, body) = get(seeded_router(), path).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "path {path}: status {status}"
+        );
+        assert_eq!(body, "400 Bad Request", "path {path}");
+        assert_eq!(content_type, "text/plain; charset=utf-8", "path {path}");
+    }
+}
+
 #[tokio::test]
 async fn seeding_after_router_build_is_visible() {
     // The store stays shared through the Arc, like Go's *MemoryStore.

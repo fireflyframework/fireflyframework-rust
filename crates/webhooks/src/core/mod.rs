@@ -3,6 +3,7 @@
 //! in-memory [`MemoryDlq`], and the four canonical signature
 //! validators.
 
+mod mime;
 mod sha1;
 mod util;
 mod validators;

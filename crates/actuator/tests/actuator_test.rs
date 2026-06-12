@@ -281,6 +281,61 @@ async fn post_to_health_is_405() {
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
+// ----- Regression: JSON bodies carry the trailing newline Go emits -----
+//
+// Go renders every actuator JSON body with `json.NewEncoder(w).Encode(v)`,
+// which always appends a `\n`. The wire format must match byte-for-byte,
+// so every JSON endpoint here must end with exactly one newline too.
+
+#[tokio::test]
+async fn json_bodies_end_with_single_trailing_newline_like_go() {
+    for uri in [
+        "/actuator/health",
+        "/actuator/info",
+        "/actuator/env",
+        "/actuator/tasks",
+        "/actuator/version",
+    ] {
+        let app = mount(ActuatorConfig::default());
+        let (status, headers, body) = get(app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/json",
+            "{uri}"
+        );
+        let out = String::from_utf8(body).unwrap();
+        assert!(
+            out.ends_with('\n'),
+            "{uri} body must end with the newline Go's json.Encoder appends: {out:?}"
+        );
+        assert!(
+            !out.ends_with("\n\n"),
+            "{uri} body must end with exactly one newline: {out:?}"
+        );
+        // The newline is trailing whitespace only — the payload still parses.
+        serde_json::from_str::<Value>(&out).unwrap();
+    }
+}
+
+// Health DOWN takes a different write path (503); it must carry the same
+// trailing newline.
+#[tokio::test]
+async fn health_down_body_ends_with_trailing_newline() {
+    let health = Arc::new(HealthComposite::new());
+    health.add(IndicatorFn::new("broker", || async {
+        HealthResult::down("disconnected")
+    }));
+    let app = mount(ActuatorConfig {
+        health,
+        ..ActuatorConfig::default()
+    });
+
+    let (status, _, body) = get(app, "/actuator/health").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body.last(), Some(&b'\n'), "503 body must also end with \\n");
+}
+
 // ----- Rust extra: health responses carry application/json -----
 
 #[tokio::test]

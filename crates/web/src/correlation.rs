@@ -1,7 +1,9 @@
 //! Correlation-id propagation middleware — the Rust port of the Go
 //! module's `correlation.go` (`CorrelationMiddleware`).
 
+use std::any::Any;
 use std::convert::Infallible;
+use std::panic::{resume_unwind, AssertUnwindSafe};
 use std::sync::LazyLock;
 use std::task::{Context, Poll};
 
@@ -9,14 +11,29 @@ use axum::body::Body;
 use axum::response::Response;
 use firefly_kernel::{new_correlation_id, with_correlation_id, HEADER_CORRELATION_ID};
 use futures::future::BoxFuture;
+use futures::FutureExt;
 use http::{HeaderName, HeaderValue, Request};
 use tower::{Layer, Service};
 
 /// The `X-Correlation-Id` header as a typed [`HeaderName`], derived from
 /// the kernel constant so there is a single source of truth.
-static CORRELATION_HEADER: LazyLock<HeaderName> = LazyLock::new(|| {
+pub(crate) static CORRELATION_HEADER: LazyLock<HeaderName> = LazyLock::new(|| {
     HeaderName::from_bytes(HEADER_CORRELATION_ID.as_bytes()).expect("valid header name")
 });
+
+/// A panic payload that unwound through [`CorrelationService`], wrapped
+/// together with the request's correlation id. The Go middleware sets
+/// `X-Correlation-Id` on the shared response-header map *before*
+/// invoking next, so the recovered 500 written by the outer recover
+/// middleware still carries the id; Rust has no shared response while
+/// unwinding, so the id travels inside the panic payload instead and
+/// the outer [`crate::ProblemLayer`] attaches it to the recovered 500.
+pub(crate) struct CorrelationPanic {
+    /// The correlation id in effect for the panicking request.
+    pub(crate) id: String,
+    /// The original panic payload.
+    pub(crate) payload: Box<dyn Any + Send>,
+}
 
 /// The correlation id of the current request, stored in the request
 /// extensions by [`CorrelationLayer`] so handlers can extract it with
@@ -32,7 +49,10 @@ pub struct CorrelationId(pub String);
 /// [`firefly_kernel::with_correlation_id`] task-local scope, and echoes
 /// the id back on the response. The Rust analog of the Go port's
 /// `CorrelationMiddleware`; the header name and echo semantics are
-/// identical across runtimes.
+/// identical across runtimes. The echo also survives a panicking
+/// handler: the id rides along with the unwinding panic so the 500
+/// recovered by the outer [`crate::ProblemLayer`] still carries
+/// `X-Correlation-Id`, just as Go's recovered 500 does.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CorrelationLayer;
 
@@ -83,16 +103,33 @@ where
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
         Box::pin(async move {
-            let mut res = with_correlation_id(id.clone(), inner.call(req)).await?;
-            // Echo the id back; a header explicitly set by the handler
-            // wins, matching the Go middleware (which sets the header
-            // before invoking the next handler).
-            if let Ok(value) = HeaderValue::from_str(&id) {
-                res.headers_mut()
-                    .entry(&*CORRELATION_HEADER)
-                    .or_insert(value);
+            let scope_id = id.clone();
+            let result =
+                AssertUnwindSafe(
+                    async move { with_correlation_id(scope_id, inner.call(req)).await },
+                )
+                .catch_unwind()
+                .await;
+            match result {
+                Ok(res) => {
+                    let mut res = res?;
+                    // Echo the id back; a header explicitly set by the
+                    // handler wins, matching the Go middleware (which
+                    // sets the header before invoking the next handler).
+                    if let Ok(value) = HeaderValue::from_str(&id) {
+                        res.headers_mut()
+                            .entry(&*CORRELATION_HEADER)
+                            .or_insert(value);
+                    }
+                    Ok(res)
+                }
+                // A panicking handler must still produce a 500 that
+                // carries the correlation id (Go stages the header on
+                // the shared ResponseWriter before next runs, so the
+                // recovered 500 keeps it). Re-raise the panic wrapped
+                // with the id; the outer ProblemLayer unwraps it.
+                Err(payload) => resume_unwind(Box::new(CorrelationPanic { id, payload })),
             }
-            Ok(res)
         })
     }
 }

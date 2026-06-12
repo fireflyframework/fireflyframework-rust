@@ -210,19 +210,29 @@ fn key(app: &str, profile: &str, label: &str) -> String {
 
 /// Returns an axum [`Router`] serving `/{app}/{profile}[/{label}]`.
 ///
-/// The Rust counterpart of the Go `Handler(store)`. Routing is done by
-/// splitting the raw path — not by typed route parameters — so the
-/// semantics match the Go handler exactly: any HTTP method is served,
-/// fewer than two segments is a `400` with the same message, the label
-/// defaults to `main`, and segments beyond the third are ignored.
+/// The Rust counterpart of the Go `Handler(store)`. Go's `net/http`
+/// hands the handler a percent-decoded `r.URL.Path`, so routing here
+/// percent-decodes the raw path first and then splits the *decoded*
+/// path — an encoded slash (`%2F`) therefore separates segments,
+/// exactly as in Go. Any HTTP method is served, an invalid
+/// percent-escape is a `400 Bad Request` (Go's server rejects such
+/// request lines before the handler runs), fewer than two segments is
+/// a `400` with the same message as the Go handler, the label defaults
+/// to `main`, and segments beyond the third are ignored.
 pub fn router(store: Arc<dyn Store>) -> Router {
     Router::new().fallback(serve).with_state(store)
 }
 
-/// Serves one request: parse `(app, profile, label)` from the path,
-/// look it up, encode the [`Environment`] as JSON.
+/// Serves one request: decode the path, parse `(app, profile, label)`
+/// from it, look it up, encode the [`Environment`] as JSON.
 async fn serve(State(store): State<Arc<dyn Store>>, uri: Uri) -> Response {
-    let path = uri.path();
+    // hyper hands us the raw, still-encoded path; Go's net/http decodes
+    // it (and rejects invalid escapes) before the handler ever runs.
+    let Some(path) = percent_decode_path(uri.path()) else {
+        // Go's pre-handler rejection: the body is "400 Bad Request"
+        // with no trailing newline.
+        return (StatusCode::BAD_REQUEST, "400 Bad Request").into_response();
+    };
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     if parts.len() < 2 {
         // Same status + message as the Go handler's http.Error.
@@ -232,14 +242,9 @@ async fn serve(State(store): State<Arc<dyn Store>>, uri: Uri) -> Response {
         )
             .into_response();
     }
-    let app = percent_decode(parts[0]);
-    let profile = percent_decode(parts[1]);
-    let label = if parts.len() >= 3 {
-        percent_decode(parts[2])
-    } else {
-        "main".to_string()
-    };
-    match store.lookup(&app, &profile, &label).await {
+    let (app, profile) = (parts[0], parts[1]);
+    let label = if parts.len() >= 3 { parts[2] } else { "main" };
+    match store.lookup(app, profile, label).await {
         Ok(env) => match serde_json::to_vec(&env) {
             Ok(mut body) => {
                 // Go's json.Encoder terminates the document with '\n'.
@@ -252,24 +257,30 @@ async fn serve(State(store): State<Arc<dyn Store>>, uri: Uri) -> Response {
     }
 }
 
-/// Decodes `%XX` escapes in one path segment, mirroring Go's decoded
-/// `r.URL.Path`. Invalid escapes pass through literally.
-fn percent_decode(segment: &str) -> String {
-    let bytes = segment.as_bytes();
+/// Decodes `%XX` escapes in the raw request path, mirroring Go's
+/// `net/http`, which percent-decodes `r.URL.Path` before the handler
+/// runs — so `%2F` becomes a real `/` and splits path segments.
+///
+/// Returns `None` for an invalid escape: Go's server rejects such
+/// request lines with `400 Bad Request` before they reach the handler.
+/// Decoded bytes that aren't valid UTF-8 are replaced with U+FFFD
+/// (a Go `string` carries raw bytes; a Rust `String` cannot).
+fn percent_decode_path(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                out.push((hi << 4) | lo);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%' {
+            let hi = hex_val(*bytes.get(i + 1)?)?;
+            let lo = hex_val(*bytes.get(i + 2)?)?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
         }
-        out.push(bytes[i]);
-        i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    Some(String::from_utf8_lossy(&out).into_owned())
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -411,13 +422,30 @@ mod tests {
         assert!(env.state.is_empty());
     }
 
+    // Regression for the Go-parity bug: the whole raw path is decoded
+    // before splitting (so %2F yields a real '/'), and invalid escapes
+    // are rejected, like Go net/http's pre-handler 400.
     #[test]
-    fn percent_decode_segments() {
-        assert_eq!(percent_decode("my%20app"), "my app");
-        assert_eq!(percent_decode("plain"), "plain");
-        assert_eq!(percent_decode("bad%zz"), "bad%zz"); // invalid escape passes through
-        assert_eq!(percent_decode("trailing%2"), "trailing%2");
-        assert_eq!(percent_decode("%41%42"), "AB");
+    fn percent_decode_path_mirrors_go_net_http() {
+        assert_eq!(
+            percent_decode_path("/my%20app/dev").as_deref(),
+            Some("/my app/dev")
+        );
+        assert_eq!(percent_decode_path("/plain").as_deref(), Some("/plain"));
+        assert_eq!(
+            percent_decode_path("/my%2Fapp/dev").as_deref(),
+            Some("/my/app/dev")
+        );
+        assert_eq!(percent_decode_path("%41%42").as_deref(), Some("AB"));
+        // %25 decodes to a literal '%' and is not double-decoded.
+        assert_eq!(
+            percent_decode_path("/a%252Fb/dev").as_deref(),
+            Some("/a%2Fb/dev")
+        );
+        // Invalid escapes: Go's server never lets these reach the handler.
+        assert_eq!(percent_decode_path("/bad%zz/dev"), None);
+        assert_eq!(percent_decode_path("/trailing%2"), None);
+        assert_eq!(percent_decode_path("/trailing%"), None);
     }
 
     #[test]

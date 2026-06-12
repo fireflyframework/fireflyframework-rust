@@ -340,7 +340,9 @@ impl Rule {
 
 /// Accepts any YAML/JSON scalar where a string is expected, mirroring
 /// `gopkg.in/yaml.v3`, which decodes `version: 1` into a Go `string`
-/// field as `"1"`.
+/// field as `"1"`. An explicit null (`version: null`, a bare
+/// `version:`, JSON `"version": null`) decodes to the empty string,
+/// exactly as Go leaves the field at its zero value.
 fn de_stringish<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     struct StringishVisitor;
     impl Visitor<'_> for StringishVisitor {
@@ -365,6 +367,12 @@ fn de_stringish<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D:
         }
         fn visit_bool<E: de::Error>(self, v: bool) -> Result<String, E> {
             Ok(v.to_string())
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_none<E: de::Error>(self) -> Result<String, E> {
+            Ok(String::new())
         }
     }
     deserializer.deserialize_any(StringishVisitor)
@@ -574,6 +582,26 @@ rules:
         assert_eq!(op, Op::Other("fuzzy".into()));
         assert_eq!(op.to_string(), "fuzzy");
         assert_eq!(serde_json::to_string(&op).unwrap(), "\"fuzzy\"");
+    }
+
+    /// Regression: Go's plain `Version string` field accepts an
+    /// explicit null from both `encoding/json` and yaml.v3 and leaves
+    /// `Version == ""` — the Rust parser must not reject such
+    /// documents.
+    #[test]
+    fn version_null_is_accepted_as_empty_string() {
+        // JSON `"version": null`
+        let rs: RuleSet = serde_json::from_str(r#"{"name":"x","version":null,"rules":[]}"#)
+            .expect("JSON null version must parse");
+        assert_eq!(rs.version, "");
+        // YAML `version: null`
+        let rs = RuleSet::from_yaml("name: x\nversion: null\nrules: []\n")
+            .expect("YAML null version must parse");
+        assert_eq!(rs.version, "");
+        // bare `version:` (implicit YAML null)
+        let rs = RuleSet::from_yaml("name: x\nversion:\nrules: []\n")
+            .expect("bare version key must parse");
+        assert_eq!(rs.version, "");
     }
 
     #[test]

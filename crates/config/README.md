@@ -86,15 +86,26 @@ keeps the binder dependency-light, matching the Go port.
 
 ## YAML subset
 
-Files are parsed with `serde_yaml` and flattened to the same dot-keyed
-shape the Go port's embedded scanner produces: nested mappings become
-dot-joined lower-cased keys, sequences of scalars are comma-joined,
-empty values render as `""`. Sequences containing mappings or nested
-sequences are rejected — the configuration contract is "sequences of
-scalars only", exactly as documented for the Go module. (Being a full
-YAML 1.2 parser, `serde_yaml` additionally accepts flow sequences,
-anchors, and aliases that the Go scanner rejects; the flattened output
-shape is identical for every valid `application.yaml`.)
+Files are parsed by a line-by-line port of the Go module's embedded
+YAML-subset scanner — no general-purpose YAML dependency — so the
+flattened output is identical to the Go port for any given
+`application.yaml`:
+
+- nested mappings become dot-joined lower-cased keys (each parent
+  mapping key also yields an empty-string entry, as in Go);
+- **scalar lexemes are preserved verbatim**: `1.10`, `0x1A`, `1e3`, and
+  `2.50` bind onto `String` fields exactly as written — values are
+  never parsed into typed numbers and re-rendered (one pair of
+  surrounding quotes is stripped);
+- duplicate keys follow last-write-wins, and out-of-range numeric
+  literals are fine — every value stays a string until the binder
+  parses it against the target field's type;
+- sequences of scalars are comma-joined; sequence items are taken
+  verbatim (the configuration contract is "sequences of scalars only");
+- empty values render as `""`;
+- aliases / anchors / multi-doc / tags / flow sequences are not
+  interpreted (deliberate, matching the Go scanner — bring your own
+  parser if you need them).
 
 ## Quick start
 

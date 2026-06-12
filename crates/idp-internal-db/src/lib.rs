@@ -171,6 +171,8 @@ impl Adapter {
 
     /// Checks an HS256 JWT and returns its claims.
     ///
+    /// Mirrors Go's verify(): only the signature and — when present — `exp`
+    /// are checked; every other claim (`aud`, `iss`, `nbf`, …) is ignored.
     /// Error messages mirror the Go port byte-for-byte:
     /// `idp/internal-db: malformed jwt`, `idp/internal-db: bad signature`,
     /// `idp/internal-db: token expired`.
@@ -180,6 +182,11 @@ impl Adapter {
         validation.leeway = 0;
         validation.required_spec_claims.clear();
         validation.validate_exp = true;
+        // Go ignores every claim other than `exp`, including `aud`.
+        // jsonwebtoken's default (`validate_aud = true` with no expected
+        // audience) would otherwise reject any validly-signed token that
+        // happens to carry an `aud` claim.
+        validation.validate_aud = false;
         jsonwebtoken::decode::<Claims>(token, &self.decoding_key, &validation)
             .map(|data| data.claims)
             .map_err(|e| match e.kind() {
@@ -628,6 +635,30 @@ mod tests {
         assert_eq!(user.username, "alice");
         assert_eq!(user.email, "alice@example.com");
         a.refresh(&token).await.expect("go-minted refresh token");
+    }
+
+    #[tokio::test]
+    async fn validate_accepts_token_with_aud_claim() {
+        // Go's verify() checks only the signature and (when present) `exp`;
+        // every other claim — including `aud` — is ignored. Regression guard:
+        // jsonwebtoken's default `validate_aud = true` (with no expected
+        // audience configured) would otherwise reject this validly-signed
+        // token as `malformed jwt`.
+        let a = test_adapter();
+        a.create_user(alice(), "pw").await.unwrap();
+        let now = Utc::now().timestamp();
+        let token = go_style_token(
+            SECRET,
+            &format!(
+                r#"{{"aud":"orders","exp":{},"iat":{now},"iss":"test","sub":"alice","un":"alice"}}"#,
+                now + 3600
+            ),
+        );
+        let user = a.validate(&token).await.expect("aud claim must be ignored");
+        assert_eq!(user.username, "alice");
+        a.refresh(&token)
+            .await
+            .expect("refresh token with aud claim");
     }
 
     // -----------------------------------------------------------------

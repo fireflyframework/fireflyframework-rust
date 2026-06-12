@@ -61,6 +61,77 @@ fn problem_detail_wire_shape_matches_go() {
     );
 }
 
+// Rust-specific regression: Go marshals ProblemDetail through
+// json.Marshal, which HTML-escapes by default, so `<`, `>`, `&` must
+// serialize as the u003c/u003e/u0026 Unicode escapes for the wire
+// bytes to stay identical to the Go port. The expected strings below
+// are the verbatim output of the Go kernel module (go1.26).
+#[test]
+fn problem_detail_html_escaping_matches_go() {
+    let pd = ProblemDetail::bad_request("value <script> & \"quotes\"");
+    let data = serde_json::to_string(&pd).expect("marshal");
+    assert_eq!(
+        data,
+        concat!(
+            "{\"detail\":\"value \\u003cscript\\u003e \\u0026 \\\"quotes\\\"\",",
+            "\"status\":400,\"title\":\"Bad Request\",",
+            "\"type\":\"https://fireflyframework.org/problems/bad-request\"}"
+        )
+    );
+
+    // The escapes decode back to the original characters.
+    let rt: ProblemDetail = serde_json::from_str(&data).expect("unmarshal back");
+    assert_eq!(rt, pd, "escaped wire form must roundtrip");
+}
+
+// Go escapes every string in the document — extension keys and nested
+// extension values included.
+#[test]
+fn problem_detail_html_escaping_covers_keys_and_nested_extensions() {
+    let pd = ProblemDetail::new("t<&>", "T<>", 422, "d")
+        .with_instance("/p?a=1&b=2")
+        .with("err<s>", json!(["a&b", {"k<": "v>"}]))
+        .with("plain", 7);
+    assert_eq!(
+        serde_json::to_string(&pd).expect("marshal"),
+        concat!(
+            "{\"detail\":\"d\",",
+            "\"err\\u003cs\\u003e\":[\"a\\u0026b\",{\"k\\u003c\":\"v\\u003e\"}],",
+            "\"instance\":\"/p?a=1\\u0026b=2\",\"plain\":7,\"status\":422,",
+            "\"title\":\"T\\u003c\\u003e\",\"type\":\"t\\u003c\\u0026\\u003e\"}"
+        )
+    );
+}
+
+// Control characters use Go's shorthand escapes where they exist and
+// lowercase u00xx escapes otherwise; DEL passes through raw; the JS
+// line/paragraph separators U+2028/U+2029 escape to u2028/u2029.
+#[test]
+fn problem_detail_control_and_separator_escaping_matches_go() {
+    let pd = ProblemDetail::new("", "", 0, "a\nb\rc\td\u{8}e\u{c}f\u{1}g\u{7f}h");
+    assert_eq!(
+        serde_json::to_string(&pd).expect("marshal"),
+        "{\"detail\":\"a\\nb\\rc\\td\\be\\ff\\u0001g\u{7f}h\"}"
+    );
+
+    let pd = ProblemDetail::new("", "", 0, "x\u{2028}y\u{2029}z");
+    assert_eq!(
+        serde_json::to_string(&pd).expect("marshal"),
+        "{\"detail\":\"x\\u2028y\\u2029z\"}"
+    );
+}
+
+// serde_json::to_value must keep producing the semantic (unescaped)
+// document even though Serialize pre-renders escaped JSON text.
+#[test]
+fn problem_detail_to_value_decodes_escapes() {
+    let pd = ProblemDetail::bad_request("a & b <c>").with("k<", "v>");
+    let got: Value = serde_json::to_value(&pd).expect("to_value");
+    assert_eq!(got["detail"], json!("a & b <c>"));
+    assert_eq!(got["k<"], json!("v>"));
+    assert_eq!(got["status"], json!(400));
+}
+
 #[test]
 fn problem_detail_omits_empty_members() {
     let data = serde_json::to_string(&ProblemDetail::default()).expect("marshal");

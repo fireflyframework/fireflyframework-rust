@@ -149,9 +149,11 @@ pub fn handler(store: Arc<dyn Store>) -> axum::Router;
 
 Error responses reproduce Go's `http.Error` wire format
 (`text/plain; charset=utf-8`, `X-Content-Type-Options: nosniff`,
-message + `\n`), and `/callbacks/attempts/{eventId}` answers JSON
-`null` when the event has no recorded attempts — byte parity with the
-Go port's nil slice through `encoding/json`.
+message + `\n`). JSON responses reproduce Go's `writeJSON`
+(`json.Encoder.Encode`), terminating every document with `\n`, and
+`/callbacks/attempts/{eventId}` answers JSON `null` (so `null\n` on
+the wire) when the event has no recorded attempts — byte parity with
+the Go port's nil slice through `encoding/json`.
 
 ### `sdk`
 

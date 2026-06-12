@@ -144,7 +144,17 @@ impl ProblemDetail {
 impl Serialize for ProblemDetail {
     /// Flattens [`ProblemDetail::extensions`] alongside the standard
     /// members, omitting empty standard members — byte-for-byte the
-    /// shape the Go port emits (keys serialize in lexicographic order).
+    /// shape the Go port emits: keys serialize in lexicographic order
+    /// and strings are escaped exactly as Go's `encoding/json` does
+    /// with its default HTML escaping — `<`, `>`, `&`, U+2028 and
+    /// U+2029 are emitted as the lowercase `\u`-style JSON escapes
+    /// u003c, u003e, u0026, u2028 and u2029.
+    ///
+    /// The JSON text is pre-rendered and handed to the serializer as a
+    /// [`serde_json::value::RawValue`], so `serde_json` emits it
+    /// verbatim (and `serde_json::to_value` parses it back into a
+    /// plain map). This impl is therefore JSON-specific — exactly like
+    /// the wire type it models (`application/problem+json`).
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut out: BTreeMap<String, Value> = BTreeMap::new();
         if !self.problem_type.is_empty() {
@@ -168,8 +178,89 @@ impl Serialize for ProblemDetail {
                 out.insert(k.clone(), v.clone());
             }
         }
-        out.serialize(serializer)
+        let mut json = String::new();
+        write_go_value(&Value::Object(out.into_iter().collect()), &mut json);
+        match serde_json::value::RawValue::from_string(json) {
+            Ok(raw) => raw.serialize(serializer),
+            Err(err) => Err(serde::ser::Error::custom(err)),
+        }
     }
+}
+
+/// Writes `value` as compact JSON with object keys in lexicographic
+/// order and Go `encoding/json` string escaping — the exact bytes
+/// `json.Marshal` produces for the equivalent `map[string]any`.
+fn write_go_value(value: &Value, out: &mut String) {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        // `Number`'s `Display` writes the same bytes its `Serialize`
+        // impl does (itoa for integers, the shortest-float formatter
+        // for floats), so number output is unchanged.
+        Value::Number(n) => out.push_str(&n.to_string()),
+        Value::String(s) => write_go_string(s, out),
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_go_value(item, out);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            // Go sorts map keys when marshaling; sort explicitly so
+            // parity holds even when serde_json's `preserve_order`
+            // feature is enabled by a downstream crate.
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_unstable_by_key(|(k, _)| *k);
+            out.push('{');
+            for (i, (key, val)) in entries.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_go_string(key, out);
+                out.push(':');
+                write_go_value(val, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+/// Writes `s` as a JSON string escaped exactly as Go's `encoding/json`
+/// does with its default `escapeHTML=true`: `"` and `\` get a
+/// backslash, control characters use `\b`, `\f`, `\n`, `\r`, `\t` or
+/// lowercase `\u00`-prefixed escape, HTML-special `<`, `>`, `&`
+/// escape to u003c/u003e/u0026, and the line/paragraph separators
+/// U+2028/U+2029 escape to u2028/u2029. Everything else (including
+/// DEL and non-ASCII) passes through as raw UTF-8, as Go emits it.
+fn write_go_string(s: &str, out: &mut String) {
+    use std::fmt::Write as _;
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c if (c as u32) < 0x20 => {
+                // Infallible: fmt::Write for String never errors.
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 impl<'de> Deserialize<'de> for ProblemDetail {

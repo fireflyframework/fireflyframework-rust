@@ -36,6 +36,13 @@ wire formats are byte-identical to the Go port: every validator is
 tested against header values produced by the `firefly-testkit` signers
 (`sign_hmac`, `sign_stripe`, `sign_github`, `sign_twilio`).
 
+`TwilioValidator` reproduces Go's `Request.ParseForm` dispatch: form
+parameters participate only when the request's `Content-Type` media
+type is `application/x-www-form-urlencoded`; for any other body (JSON,
+a missing `Content-Type`, multipart, …) the signed string is the URL
+alone, matching Go's empty `PostForm`. A malformed `Content-Type` or
+form body is a signature mismatch (Go's `ParseForm` error path).
+
 ## Pipeline
 
 ```text
@@ -121,8 +128,9 @@ The handler performs:
 
 Non-`POST` methods get **405**; a missing provider segment gets **400** —
 matching the Go handler. Header keys on `Inbound.headers` use Go's
-canonical MIME casing (`X-Event-Type`), so the JSON wire shape is
-identical across ports.
+canonical MIME casing (`X-Event-Type`), and `Host` is omitted — Go's
+`net/http` server promotes it out of `Request.Header` before the
+handler runs — so the JSON wire shape is identical across ports.
 
 ### `sdk`
 

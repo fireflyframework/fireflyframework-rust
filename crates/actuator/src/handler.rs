@@ -8,9 +8,10 @@ use std::sync::Arc;
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use chrono::{SecondsFormat, Utc};
 use http::{header, StatusCode};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::health::{HealthComposite, HealthStatus};
@@ -107,6 +108,20 @@ pub fn mount(cfg: ActuatorConfig) -> Router {
         .with_state(state)
 }
 
+/// Renders `value` as a JSON response body terminated by a single `\n` —
+/// the counterpart of Go's `writeJSON`, whose `json.NewEncoder(w).Encode(v)`
+/// always appends a trailing newline. Emitting the same final byte keeps
+/// the wire format identical across the ports.
+fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response {
+    match serde_json::to_vec(value) {
+        Ok(mut body) => {
+            body.push(b'\n');
+            (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 /// `GET /actuator/health` — runs every registered indicator and answers
 /// `{"status": overall, "details": {name: result}}`; 503 when DOWN,
 /// 200 otherwise.
@@ -117,7 +132,7 @@ async fn health_handler(State(st): State<SharedState>) -> Response {
     } else {
         StatusCode::OK
     };
-    (code, Json(json!({ "status": overall, "details": details }))).into_response()
+    json_response(code, &json!({ "status": overall, "details": details }))
 }
 
 /// `GET /actuator/info` — build info + app metadata, with every
@@ -149,7 +164,7 @@ async fn info_handler(State(st): State<SharedState>) -> Response {
             info.insert(k, v);
         }
     }
-    Json(Value::Object(info)).into_response()
+    json_response(StatusCode::OK, &Value::Object(info))
 }
 
 /// `GET /actuator/metrics` — Prometheus exposition format.
@@ -171,7 +186,7 @@ async fn env_handler(State(st): State<SharedState>) -> Response {
         let redacted = redact(&key, value, &st.env_allow_prefixes);
         out.insert(key, redacted);
     }
-    Json(out).into_response()
+    json_response(StatusCode::OK, &out)
 }
 
 /// Returns `value` when `key` matches an allow prefix (case-insensitive),
@@ -201,21 +216,26 @@ async fn tasks_handler(Query(params): Query<HashMap<String, String>>) -> Respons
         let _ = writeln!(dump, "alive_tasks: {}", metrics.num_alive_tasks());
         return ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], dump).into_response();
     }
-    Json(json!({ "count": metrics.num_alive_tasks() })).into_response()
+    json_response(
+        StatusCode::OK,
+        &json!({ "count": metrics.num_alive_tasks() }),
+    )
 }
 
 /// `GET /actuator/version` — framework, app, and language version stamp.
 /// The Go port reports its toolchain under `"go"`; this port reports the
 /// minimum supported Rust version under `"rust"`.
 async fn version_handler(State(st): State<SharedState>) -> Response {
-    Json(json!({
-        "firefly": VERSION,
-        "app": st.app_name,
-        "appVersion": st.app_version,
-        "rust": env!("CARGO_PKG_RUST_VERSION"),
-        "buildTime": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
-    }))
-    .into_response()
+    json_response(
+        StatusCode::OK,
+        &json!({
+            "firefly": VERSION,
+            "app": st.app_name,
+            "appVersion": st.app_version,
+            "rust": env!("CARGO_PKG_RUST_VERSION"),
+            "buildTime": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        }),
+    )
 }
 
 #[cfg(test)]

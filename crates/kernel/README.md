@@ -43,7 +43,11 @@ The canonical `application/problem+json` envelope.
 | `extensions`   | RFC 7807 §3.2 extension members; flattened on `Serialize`      |
 
 Empty standard members are omitted on the wire and standard members win
-on key collision with extensions, exactly as in the Go port.
+on key collision with extensions, exactly as in the Go port. Serialized
+bytes match Go's `json.Marshal` exactly: keys are lexicographically
+ordered and strings carry Go's default HTML escaping — `<`, `>`, `&`
+and U+2028/U+2029 are written as the u003c, u003e, u0026, u2028 and
+u2029 Unicode escapes.
 Constructors emit the canonical type URIs
 (`https://fireflyframework.org/problems/<kind>`):
 `ProblemDetail::bad_request`, `unauthorized`, `forbidden`, `not_found`,

@@ -17,6 +17,8 @@ use futures::FutureExt;
 use http::{header, HeaderValue, Request, StatusCode};
 use tower::{Layer, Service};
 
+use crate::correlation::{CorrelationPanic, CORRELATION_HEADER};
+
 /// Renders `pd` as an `application/problem+json` response carrying the
 /// problem's status code (`500` when unset) — the Rust analog of the Go
 /// port's `WriteProblem(w, pd)`.
@@ -159,7 +161,22 @@ where
 /// port's `recoverMiddleware`: where Go uses the panic value's message
 /// when it is an `error`, Rust uses the payload string of
 /// `panic!("...")`; any other payload becomes the literal `"panic"`.
+///
+/// A panic that unwound through [`crate::CorrelationLayer`] arrives
+/// wrapped in a [`CorrelationPanic`]; the recovered 500 then echoes
+/// `X-Correlation-Id`, matching Go where the correlation middleware
+/// stages the header on the shared response map before invoking next so
+/// the recovered 500 keeps it.
 fn panic_response(payload: &(dyn Any + Send)) -> Response {
+    if let Some(wrapped) = payload.downcast_ref::<CorrelationPanic>() {
+        let mut res = panic_response(wrapped.payload.as_ref());
+        if let Ok(value) = HeaderValue::from_str(&wrapped.id) {
+            res.headers_mut()
+                .entry(&*CORRELATION_HEADER)
+                .or_insert(value);
+        }
+        return res;
+    }
     let msg = if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
     } else if let Some(s) = payload.downcast_ref::<String>() {

@@ -33,8 +33,8 @@ pub enum ConfigError {
         source: std::io::Error,
     },
 
-    /// The YAML document is malformed or uses a construct the flattener
-    /// does not support (non-scalar sequence items, non-mapping root, …).
+    /// The YAML document is malformed (a non-sequence line without a
+    /// `key:` separator, or an orphan sequence item).
     #[error("firefly/config: {0}")]
     Yaml(String),
 

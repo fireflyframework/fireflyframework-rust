@@ -64,7 +64,7 @@ This is the chain composed by `firefly-starter-core`.
 
 | Symbol                | Behaviour                                                                                       |
 |-----------------------|-------------------------------------------------------------------------------------------------|
-| `CorrelationLayer`    | Reads / generates `X-Correlation-Id`, scopes it via `firefly_kernel::with_correlation_id`, stores `CorrelationId` in request extensions, echoes back |
+| `CorrelationLayer`    | Reads / generates `X-Correlation-Id`, scopes it via `firefly_kernel::with_correlation_id`, stores `CorrelationId` in request extensions, echoes back — including on the panic→500 path recovered by `ProblemLayer`, as in Go |
 | `CorrelationId(String)` | Extractable in handlers with `axum::Extension<CorrelationId>`                                 |
 
 ### Idempotency
@@ -73,7 +73,7 @@ This is the chain composed by `firefly-starter-core`.
 |------------------------------------------|-------------------------------------------------------------------------|
 | `IdempotencyConfig { store, ttl, methods }` | Tunes the middleware                                                 |
 | `IdempotencyConfig::default()`           | 24 h TTL, memory store, POST/PUT/PATCH                                  |
-| `IdempotencyLayer`                       | Replays cached 2xx responses (`Idempotent-Replay: true`); returns 409 on key reuse with a different body |
+| `IdempotencyLayer`                       | Replays cached 2xx responses (`Idempotent-Replay: true`); returns 409 on key reuse with a different body; first-pass responses stream through unbuffered while being captured (Go `captureWriter` parity) |
 | `MemoryIdempotencyStore`                 | Default in-process store                                                |
 | `IdempotencyStore` trait                 | Plug your own (Redis / Postgres / etc.)                                 |
 | `IdempotencyRecord`                      | Stored response; JSON shape matches the Go port for cross-runtime stores |
@@ -82,7 +82,7 @@ This is the chain composed by `firefly-starter-core`.
 
 | Symbol                  | Behaviour                                                                |
 |-------------------------|---------------------------------------------------------------------------|
-| `mask_pii(&str) -> String` | Redacts emails, IBANs, cards, E.164 phones as `[REDACTED:<kind>]`      |
+| `mask_pii(&str) -> String` | Redacts emails, IBANs, cards, E.164 phones as `[REDACTED:<kind>]`; matches Go RE2's ASCII `\b`/`\d` semantics, so numbers adjacent to non-ASCII text are still masked |
 | `mask_map(&Map) -> Map` | Recursive redaction over a JSON object; sensitive keys (`password`, `token`, `secret`, `authorization`, `cookie`, `api_key`, `apikey`, `private_key`) replaced wholesale |
 
 ## Quick start
@@ -119,7 +119,10 @@ cargo test -p firefly-web
 ```
 
 Suite covers panic→500, the typed `WebResult` handler, correlation id
-generation + echo-back + extension extraction, idempotency replay
-(replay header, body, captured headers), conflict on key reuse, store
-TTL expiry, Go-compatible record JSON, and PII redaction across emails /
-IBANs / cards / phones plus map-key sensitive-name scrubbing.
+generation + echo-back + extension extraction (including the echo on
+the panic→500 path), idempotency replay (replay header, body, captured
+headers), streaming passthrough of first-pass keyed responses, conflict
+on key reuse, store TTL expiry, Go-compatible record JSON, and PII
+redaction across emails / IBANs / cards / phones — with Go-parity ASCII
+`\b`/`\d` semantics next to non-ASCII text — plus map-key
+sensitive-name scrubbing.

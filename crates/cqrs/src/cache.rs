@@ -65,8 +65,12 @@ impl QueryCache {
     /// convenience over [`QueryCache::invalidate`], sparing callers from
     /// spelling out [`std::any::type_name`] (Go callers pass the
     /// `reflect.Type` string by hand).
+    ///
+    /// The prefix includes the trailing `:` key separator so only `Q`'s
+    /// entries are evicted — sibling types whose names merely share a
+    /// prefix (e.g. `GetUser` vs `GetUserById`) stay cached.
     pub fn invalidate_type<Q: 'static>(&self) {
-        self.invalidate(std::any::type_name::<Q>());
+        self.invalidate(&format!("{}:", std::any::type_name::<Q>()));
     }
 
     fn get(&self, key: &str) -> Option<AnyResult> {

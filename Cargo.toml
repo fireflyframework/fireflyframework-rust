@@ -124,6 +124,7 @@ async-trait = "0.1"
 axum = "0.7"
 tower = { version = "0.5", features = ["util"] }
 http = "1"
+http-body = "1"
 http-body-util = "0.1"
 bytes = "1"
 reqwest = { version = "0.12", features = ["json"] }
@@ -150,6 +151,8 @@ rand = "0.8"
 
 # ---- misc ----
 regex = "1"
+unicode-normalization = "0.1"
+unicode-properties = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

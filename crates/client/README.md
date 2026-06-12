@@ -72,10 +72,19 @@ Every request automatically:
 * Forwards the correlation id from the kernel task-local scope
   (`firefly_kernel::with_correlation_id`) as `X-Correlation-Id`.
 * Retries on network errors and 429 / 5xx status codes (exponential
-  backoff: 100 ms doubling per attempt, capped at 2 s).
+  backoff: 100 ms doubling per attempt, capped at 2 s), re-sending the
+  full JSON body on every attempt.
 * Decodes RFC 7807 `application/problem+json` bodies into a typed
   `FireflyError` populated with `code`, `title`, `status`, `detail`,
   and `fields`.
+
+> **Porting note (retry body):** the Go port creates the body's
+> `bytes.Reader` once, outside its retry loop, so the first attempt
+> exhausts it and every retried request is sent with an **empty body**
+> (`ContentLength: 0`) — a bodied retry can never succeed, and no Go
+> test exercises one. The Rust port deliberately diverges and re-sends
+> the encoded body on every attempt, implementing the documented
+> contract rather than the accidental behavior.
 
 ## Quick start
 

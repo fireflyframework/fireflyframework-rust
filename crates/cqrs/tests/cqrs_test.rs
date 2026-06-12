@@ -155,6 +155,59 @@ async fn query_cache() {
 
 // ---- Rust-specific coverage --------------------------------------------
 
+#[derive(Clone, Serialize)]
+struct GetUserById {
+    id: String,
+}
+
+impl Message for GetUserById {
+    fn cache_ttl(&self) -> Option<Duration> {
+        Some(Duration::from_secs(60))
+    }
+}
+
+/// Regression: `invalidate_type::<Q>()` must only evict `Q`'s entries —
+/// a sibling type whose name shares a prefix (`GetUser` vs
+/// `GetUserById`) must stay cached. Guards the `:` key-separator in the
+/// typed prefix.
+#[tokio::test]
+async fn query_cache_invalidate_type_spares_prefix_sibling_types() {
+    let bus = Bus::new();
+    let cache = QueryCache::new();
+    bus.use_middleware(cache.middleware());
+    let get_user_calls = register_counting_get_user(&bus);
+    let sibling_calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&sibling_calls);
+    bus.register(move |q: GetUserById| {
+        let counter = Arc::clone(&counter);
+        async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, CqrsError>(UserCreated {
+                id: q.id,
+                name: "bob".into(),
+            })
+        }
+    });
+
+    let _: UserCreated = bus.query(GetUser { id: "u1".into() }).await.unwrap();
+    let _: UserCreated = bus.query(GetUserById { id: "u1".into() }).await.unwrap();
+
+    cache.invalidate_type::<GetUser>();
+
+    let _: UserCreated = bus.query(GetUser { id: "u1".into() }).await.unwrap();
+    let _: UserCreated = bus.query(GetUserById { id: "u1".into() }).await.unwrap();
+    assert_eq!(
+        get_user_calls.load(Ordering::SeqCst),
+        2,
+        "GetUser entries must be evicted"
+    );
+    assert_eq!(
+        sibling_calls.load(Ordering::SeqCst),
+        1,
+        "GetUserById entries must survive invalidate_type::<GetUser>()"
+    );
+}
+
 /// `invalidate` with the raw type-name prefix (Go callers pass the
 /// `reflect.Type` string, e.g. `"cqrs.GetUser"`).
 #[tokio::test]

@@ -60,6 +60,21 @@ Like Go's open `type Op string`, an unrecognised operator survives
 parsing (`Op::Other`) and is rejected at **evaluation** time with
 `ruleengine: unknown op: …`.
 
+### Number semantics (Go parity)
+
+The Go reference runtime ingests facts through `encoding/json`, which
+decodes **every** fact number as `float64`, while yaml.v3 keeps an
+integer rule operand (`value: 18`) as `int`. `eq` / `ne` / `in` /
+`notIn` and list-`contains` use `reflect.DeepEqual`, so an *integer*
+operand never equals a fact number — write a float operand
+(`value: 18.0`) for magnitude equality. The range operators
+(`lt`/`lte`/`gt`/`gte`) coerce both sides numerically and are
+unaffected. The string-coercing operators (`startsWith` / `endsWith` /
+`matches` / string-`contains`) render floats the way Go's `%v` does —
+whole-number floats print without a fractional part (`1500.0` ⇒
+`"1500"`, `1e6` ⇒ `"1e+06"`). The Rust port reproduces all of this
+verbatim so identical wire bytes yield identical verdicts.
+
 ## Public surface
 
 ```rust,ignore

@@ -36,7 +36,7 @@ use firefly_starter_core::{Core, CoreConfig};
 use firefly_web::{WebError, WebResult};
 use http::header::{CONTENT_TYPE, LOCATION};
 use http::{HeaderValue, StatusCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::register;
 use crate::models::MemoryRepository;
@@ -98,11 +98,20 @@ pub fn build_router() -> Router {
 }
 
 /// `POST /api/v1/orders` — Go's `placeOrderHandler`. Decodes the JSON
-/// body (a 400 problem on malformed JSON, message `invalid json: …`),
-/// dispatches the command, and answers `201 Created` with a `Location`
-/// header and the DTO body.
+/// body with Go's lenient `json.Decoder` semantics (a 400 problem on
+/// malformed JSON, message `invalid json: …`), dispatches the command,
+/// and answers `201 Created` with a `Location` header and the DTO body.
 async fn place_order(State(bus): State<Arc<Bus>>, body: Bytes) -> WebResult<Response> {
-    let req: crate::interfaces::PlaceOrderRequest = serde_json::from_slice(&body)
+    // Go's `json.NewDecoder(r.Body).Decode(&req)` reads only the first
+    // JSON value off the stream (bytes after it are never read, so
+    // trailing data is ignored) and treats a top-level `null` as a
+    // successful no-op decode that leaves the zero-value struct for
+    // domain validation to reject (422, not 400). A streaming
+    // `serde_json::Deserializer` — without `end()` — reproduces the
+    // first-value-only read, and `Option<T>` maps `null` to the default.
+    let mut decoder = serde_json::Deserializer::from_slice(&body);
+    let req: crate::interfaces::PlaceOrderRequest = Option::deserialize(&mut decoder)
+        .map(Option::unwrap_or_default)
         .map_err(|e| WebError::from(FireflyError::bad_request(format!("invalid json: {e}"))))?;
     let out: crate::interfaces::OrderDto = bus
         .send(req)

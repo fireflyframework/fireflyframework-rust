@@ -107,10 +107,16 @@ async fn ingest(
 
 /// Flattens the header map to first-value-per-key with Go's canonical
 /// MIME header casing, so the `Inbound.headers` JSON matches the Go
-/// port byte-for-byte.
+/// port byte-for-byte. `Host` is skipped: Go's `net/http` server
+/// promotes it out of `Request.Header` (into `Request.Host`) before
+/// the handler runs, so the Go port's map never carries a "Host"
+/// entry — hyper keeps it in the map, hence the explicit exclusion.
 fn flatten_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for key in headers.keys() {
+        if key == http::header::HOST {
+            continue;
+        }
         if let Some(value) = headers.get(key).and_then(|v| v.to_str().ok()) {
             out.insert(canonical_header_key(key.as_str()), value.to_owned());
         }
@@ -166,6 +172,25 @@ mod tests {
         // Non-token bytes leave the key untouched.
         assert_eq!(canonical_header_key("bad key"), "bad key");
         assert_eq!(canonical_header_key("weird:key"), "weird:key");
+    }
+
+    #[test]
+    fn flatten_headers_strips_host_like_go_net_http() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::HOST,
+            "hooks.example.com".parse().expect("host"),
+        );
+        headers.insert("x-event-type", "charge.succeeded".parse().expect("value"));
+        let flat = flatten_headers(&headers);
+        // Go's server moves Host into Request.Host before the handler
+        // runs, so the flattened map must never contain it.
+        assert!(!flat.contains_key("Host"), "headers: {flat:?}");
+        assert_eq!(
+            flat.get("X-Event-Type").map(String::as_str),
+            Some("charge.succeeded")
+        );
+        assert_eq!(flat.len(), 1);
     }
 
     #[test]
