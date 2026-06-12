@@ -1,0 +1,17 @@
+[package]
+name = "firefly-container"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — Opt-in TypeId-keyed DI container: registrations, scopes, providers, trait-object bindings"
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }

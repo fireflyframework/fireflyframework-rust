@@ -51,6 +51,19 @@ members = [
     "crates/starter-domain",
     "crates/starter-data",
     "crates/backoffice",
+    "crates/admin",
+    "crates/aop",
+    "crates/cli",
+    "crates/container",
+    "crates/session",
+    "crates/shell",
+    "crates/websocket",
+    "crates/notifications-smtp",
+    "crates/cache-redis",
+    "crates/eda-kafka",
+    "crates/eda-rabbitmq",
+    "crates/eda-postgres",
+    "crates/eda-redis",
     "tests/integration",
     "samples/orders",
 ]
@@ -115,13 +128,26 @@ firefly-starter-application = { path = "crates/starter-application", version = "
 firefly-starter-domain = { path = "crates/starter-domain", version = "26.6.1" }
 firefly-starter-data = { path = "crates/starter-data", version = "26.6.1" }
 firefly-backoffice = { path = "crates/backoffice", version = "26.6.1" }
+firefly-admin = { path = "crates/admin", version = "26.6.1" }
+firefly-aop = { path = "crates/aop", version = "26.6.1" }
+firefly-cli = { path = "crates/cli", version = "26.6.1" }
+firefly-container = { path = "crates/container", version = "26.6.1" }
+firefly-session = { path = "crates/session", version = "26.6.1" }
+firefly-shell = { path = "crates/shell", version = "26.6.1" }
+firefly-websocket = { path = "crates/websocket", version = "26.6.1" }
+firefly-notifications-smtp = { path = "crates/notifications-smtp", version = "26.6.1" }
+firefly-cache-redis = { path = "crates/cache-redis", version = "26.6.1" }
+firefly-eda-kafka = { path = "crates/eda-kafka", version = "26.6.1" }
+firefly-eda-rabbitmq = { path = "crates/eda-rabbitmq", version = "26.6.1" }
+firefly-eda-postgres = { path = "crates/eda-postgres", version = "26.6.1" }
+firefly-eda-redis = { path = "crates/eda-redis", version = "26.6.1" }
 
 # ---- async runtime + web ----
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "net", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 async-trait = "0.1"
-axum = "0.7"
+axum = { version = "0.7", features = ["ws", "multipart"] }
 tower = { version = "0.5", features = ["util"] }
 http = "1"
 http-body = "1"
@@ -148,6 +174,27 @@ hex = "0.4"
 bcrypt = "0.15"
 jsonwebtoken = "9"
 rand = "0.8"
+
+# ---- transports & infrastructure adapters ----
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "streams", "aio"] }
+lapin = "2"
+tokio-postgres = "0.7"
+rdkafka = { version = "0.36", features = ["cmake-build", "tokio"] }
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
+tonic = "0.12"
+tokio-tungstenite = "0.24"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+socket2 = "0.5"
+
+# ---- cli / templating / misc parity ----
+clap = { version = "4", features = ["derive"] }
+minijinja = "2"
+quick-xml = { version = "0.36", features = ["serialize"] }
+globset = "0.4"
+chrono-tz = "0.10"
+include_dir = "0.7"
+sysinfo = "0.32"
+humantime = "2"
 
 # ---- misc ----
 regex = "1"

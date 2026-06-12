@@ -1,0 +1,25 @@
+[package]
+name = "firefly-eda-kafka"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — Kafka broker adapter over rdkafka: producer + consumer-group dispatch loop"
+
+[dependencies]
+firefly-eda = { workspace = true }
+firefly-kernel = { workspace = true }
+rdkafka = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
