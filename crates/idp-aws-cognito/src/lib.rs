@@ -15,8 +15,10 @@
 //! carry the [`SECRET_HASH`](Adapter::secret_hash) (`Base64(HMAC-SHA256(secret,
 //! username + client_id))`) when the app client is configured with a secret.
 //!
-//! Covered operations: USER_PASSWORD_AUTH login, REFRESH_TOKEN_AUTH refresh,
-//! global sign-out, user CRUD (admin), token introspection / userinfo via
+//! Covered operations: USER_PASSWORD_AUTH login, REFRESH_TOKEN_AUTH refresh
+//! (with [`refresh_full`](Adapter::refresh_full) attaching the `SECRET_HASH` a
+//! confidential client requires), global sign-out, user CRUD (admin), token
+//! introspection / userinfo via
 //! `GetUser`, password change/reset, Cognito-group role management, and TOTP
 //! MFA enrollment/verification (`AssociateSoftwareToken` /
 //! `VerifySoftwareToken` / `AdminSetUserMFAPreference`).
@@ -280,6 +282,61 @@ impl Adapter {
         Ok(AuthResult { user, token })
     }
 
+    /// Exchanges a refresh token for a fresh [`Token`], optionally attaching the
+    /// `SECRET_HASH` a **confidential** (client-secret) app client requires.
+    ///
+    /// Cognito's `REFRESH_TOKEN_AUTH` flow rejects requests from an app client
+    /// configured with a secret unless they carry a `SECRET_HASH`, which is
+    /// `Base64(HMAC-SHA256(client_secret, username + client_id))` — and the
+    /// `username` is the one bound to the refresh token at sign-in. A bare
+    /// refresh token does not surface that username, so the port-trait
+    /// [`refresh`](idp::Adapter::refresh) (which only receives the token) cannot
+    /// compute it for a confidential client; this richer entry point takes the
+    /// `username` explicitly so such deployers have a working refresh path.
+    ///
+    /// `username` is only consulted when a [`client_secret`](Config::client_secret)
+    /// is configured (it feeds the `SECRET_HASH`); for a public client it is
+    /// ignored and the call is identical to [`refresh`](idp::Adapter::refresh),
+    /// so passing `""` is fine there. This is an unsigned client-flow call.
+    pub async fn refresh_full(&self, refresh_token: &str, username: &str) -> Result<Token> {
+        let mut auth_params = json!({ "REFRESH_TOKEN": refresh_token });
+        if let Some(hash) = self.secret_hash(username) {
+            auth_params["SECRET_HASH"] = json!(hash);
+        }
+        let resp = self
+            .call(
+                "InitiateAuth",
+                Auth::Unsigned,
+                json!({
+                    "ClientId": self.cfg.client_id,
+                    "AuthFlow": "REFRESH_TOKEN_AUTH",
+                    "AuthParameters": auth_params,
+                }),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Err(Error::provider(format!(
+                "idp/aws-cognito: refresh failed: HTTP {}",
+                resp.status
+            )));
+        }
+        let result = match resp.json.get("AuthenticationResult") {
+            Some(r) if !r.is_null() => r.clone(),
+            _ => {
+                return Err(Error::provider(
+                    "idp/aws-cognito: refresh did not return a new token",
+                ))
+            }
+        };
+        let mut token = token_from_result(&result);
+        // Cognito rotates the refresh token only for some flows; keep the
+        // supplied one when absent.
+        if token.refresh_token.is_empty() {
+            token.refresh_token = refresh_token.to_string();
+        }
+        Ok(token)
+    }
+
     /// Enables (or disables) TOTP as a user's preferred MFA factor via Cognito's
     /// admin
     /// [`AdminSetUserMFAPreference`](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminSetUserMFAPreference.html)
@@ -415,39 +472,19 @@ impl idp::Adapter for Adapter {
         Ok(self.login_full(username, password).await?.token)
     }
 
+    /// Exchanges a refresh token for a fresh [`Token`] via Cognito's
+    /// `REFRESH_TOKEN_AUTH` flow.
+    ///
+    /// The port-trait signature carries only the refresh token, which is all a
+    /// **public** app client needs. A **confidential** client (one with a
+    /// [`client_secret`](Config::client_secret)) additionally requires a
+    /// `SECRET_HASH` computed from the *username* bound to the token at sign-in
+    /// — a value a bare refresh token does not surface — so such deployers
+    /// should call [`refresh_full`](Adapter::refresh_full), which takes the
+    /// username explicitly. This method passes an empty username and so emits no
+    /// `SECRET_HASH`; against a confidential client Cognito rejects it.
     async fn refresh(&self, refresh_token: &str) -> Result<Token> {
-        let resp = self
-            .call(
-                "InitiateAuth",
-                Auth::Unsigned,
-                json!({
-                    "ClientId": self.cfg.client_id,
-                    "AuthFlow": "REFRESH_TOKEN_AUTH",
-                    "AuthParameters": {"REFRESH_TOKEN": refresh_token},
-                }),
-            )
-            .await?;
-        if resp.status != 200 {
-            return Err(Error::provider(format!(
-                "idp/aws-cognito: refresh failed: HTTP {}",
-                resp.status
-            )));
-        }
-        let result = match resp.json.get("AuthenticationResult") {
-            Some(r) if !r.is_null() => r.clone(),
-            _ => {
-                return Err(Error::provider(
-                    "idp/aws-cognito: refresh did not return a new token",
-                ))
-            }
-        };
-        let mut token = token_from_result(&result);
-        // Cognito rotates the refresh token only for some flows; keep the
-        // supplied one when absent.
-        if token.refresh_token.is_empty() {
-            token.refresh_token = refresh_token.to_string();
-        }
-        Ok(token)
+        self.refresh_full(refresh_token, "").await
     }
 
     async fn validate(&self, access_token: &str) -> Result<User> {

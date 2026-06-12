@@ -142,18 +142,34 @@ where
     }
 
     /// Drives a [`Flux`] imperatively through a [`FluxSink`]. Reactor's
-    /// `Flux.create`. The callback pushes items via the sink; emissions
-    /// are buffered through a bounded channel (default capacity 256),
-    /// giving natural backpressure.
+    /// `Flux.create`. The callback pushes items via the sink.
+    ///
+    /// Emissions are buffered through an **unbounded** channel, matching
+    /// Reactor's default `OverflowStrategy.BUFFER`: a synchronous burst
+    /// producer that emits every item (and any terminal `error`) before
+    /// the stream is first polled never drops an item or loses the
+    /// terminal signal. For bounded backpressure (where
+    /// [`FluxSink::send`] awaits a free slot) use
+    /// [`create_with_buffer`](Flux::create_with_buffer).
     pub fn create<F>(producer: F) -> Self
     where
         F: FnOnce(FluxSink<T>) + Send + 'static,
     {
-        Self::create_with_buffer(256, producer)
+        let (sink, mut rx) = FluxSink::unbounded();
+        producer(sink);
+        Self::from_stream(async_stream::try_stream! {
+            while let Some(item) = rx.recv().await {
+                yield item?;
+            }
+        })
     }
 
-    /// [`create`](Flux::create) with an explicit backpressure buffer
-    /// capacity.
+    /// [`create`](Flux::create) with an explicit *bounded* backpressure
+    /// buffer of `buffer` slots. Unlike [`create`](Flux::create)'s
+    /// unbounded default, a producer using [`FluxSink::next`] here may be
+    /// told (via a `false` return) that the buffer is full; use
+    /// [`FluxSink::send`] to await a free slot and apply real
+    /// backpressure.
     pub fn create_with_buffer<F>(buffer: usize, producer: F) -> Self
     where
         F: FnOnce(FluxSink<T>) + Send + 'static,
@@ -492,6 +508,12 @@ where
 
     /// Pairs items positionally with `other`, completing when either
     /// completes. Reactor's `Flux.zipWith`.
+    ///
+    /// Short-circuits like Reactor: the first `onError` from either
+    /// source is propagated immediately and the first `onComplete`
+    /// terminates the pairing — neither waits on the other side to make
+    /// progress. This matters when one source errors or completes while
+    /// the other is slow or never-ending (e.g. `Flux::never()`).
     pub fn zip_with<U>(self, other: Flux<U>) -> Flux<(T, U)>
     where
         U: Send + 'static,
@@ -502,10 +524,40 @@ where
             futures::pin_mut!(a);
             futures::pin_mut!(b);
             loop {
-                let (na, nb) = futures::join!(a.next(), b.next());
-                match (na, nb) {
-                    (Some(x), Some(y)) => yield (x?, y?),
-                    _ => break,
+                // Poll both sides concurrently but resolve the iteration
+                // as soon as either side errors or completes — a value is
+                // only yielded once BOTH sides have produced one. Using
+                // `select` (rather than `join!`) means a terminal signal
+                // on one side is not blocked behind a pending/never-ending
+                // other side, matching Reactor's `zip` cancellation.
+                let na = a.next();
+                let nb = b.next();
+                futures::pin_mut!(na);
+                futures::pin_mut!(nb);
+                // Each arm yields `Option<Result<(T, U), _>>`: `None`
+                // means a source completed (terminate the zip); `Some`
+                // carries the paired result (or the first error). The
+                // first side resolved to a value still needs the other
+                // side's next item, but a completion/error on the side
+                // that resolves first short-circuits without awaiting the
+                // other — that is the cancellation behavior.
+                let paired = match futures::future::select(na, nb).await {
+                    // `a.next()` resolved first.
+                    futures::future::Either::Left((na_res, nb_fut)) => match na_res {
+                        None => None,
+                        Some(Err(e)) => Some(Err(e)),
+                        Some(Ok(x)) => nb_fut.await.map(|y| y.map(|y| (x, y))),
+                    },
+                    // `b.next()` resolved first — symmetric.
+                    futures::future::Either::Right((nb_res, na_fut)) => match nb_res {
+                        None => None,
+                        Some(Err(e)) => Some(Err(e)),
+                        Some(Ok(y)) => na_fut.await.map(|x| x.map(|x| (x, y))),
+                    },
+                };
+                match paired {
+                    Some(pair) => yield pair?,
+                    None => break,
                 }
             }
         })

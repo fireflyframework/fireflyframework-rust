@@ -19,6 +19,11 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
+# Constant-time equality for secret-derived comparisons (TOTP code verify).
+# Pinned to the version already resolved in the workspace lockfile so the
+# dependency graph is unchanged; `subtle::ConstantTimeEq` gives a compare that
+# does not short-circuit on the first differing byte.
+subtle = "2.6"
 
 [dev-dependencies]
 # `web` enables firefly-idp's axum REST router (`idp::web`) for the

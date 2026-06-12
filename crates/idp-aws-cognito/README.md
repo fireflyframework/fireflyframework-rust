@@ -35,9 +35,13 @@ let token = idp.login("alice", "pw").await?;
 ## What it does
 
 * **Client flows (unsigned)** — `InitiateAuth` with `USER_PASSWORD_AUTH`
-  (`login`) and `REFRESH_TOKEN_AUTH` (`refresh`), `GetUser` (`introspect` /
-  `get_user_info` / `validate`), and `GlobalSignOut` (`logout`). When the app
-  client has a secret, the computed `SECRET_HASH` is included.
+  (`login`) and `REFRESH_TOKEN_AUTH` (`refresh` / `refresh_full`), `GetUser`
+  (`introspect` / `get_user_info` / `validate`), and `GlobalSignOut` (`logout`).
+  When the app client has a secret, the computed `SECRET_HASH` is included.
+  Because a bare refresh token does not surface the username `SECRET_HASH` is
+  keyed on, confidential (client-secret) clients must refresh via
+  `refresh_full(refresh_token, username)`; the port-trait `refresh()` only fits
+  public clients.
 * **Admin calls (SigV4-signed)** — `AdminCreateUser` + `AdminSetUserPassword`
   (`create_user`), `AdminGetUser` (`get_user` / `find_by_username`),
   `AdminUpdateUserAttributes` (`update_user`), `AdminDeleteUser`,

@@ -160,6 +160,42 @@ async fn zip_with_pairs_positionally() {
     assert_eq!(out, vec![(1, "a"), (2, "b")]);
 }
 
+// --- regression: zip_with must short-circuit on error / completion of
+// one side even if the other never makes progress (bugs 1/5) ---
+// Reactor's `Flux.zip` propagates the first `onError` immediately and
+// completes on the first `onComplete`, cancelling the other source.
+// Under `start_paused`, a hang advances the virtual clock to the 1h
+// timeout; a correct short-circuit resolves instantly.
+#[tokio::test(start_paused = true)]
+async fn zip_with_short_circuits_on_error_against_never() {
+    let erroring = Flux::<i32>::error(FireflyError::internal("boom"));
+    let never = Flux::<i32>::never();
+    let res = tokio::time::timeout(
+        Duration::from_secs(3600),
+        erroring.zip_with(never).collect_list().block(),
+    )
+    .await
+    .expect("zip_with hung instead of short-circuiting on error");
+    assert_eq!(res.unwrap_err().status, 500);
+}
+
+#[tokio::test(start_paused = true)]
+async fn zip_with_completes_when_one_side_completes_against_never() {
+    // The left side completes immediately (empty); the right never
+    // completes. Reactor's zip completes as soon as either source
+    // completes, cancelling the other — so this terminates with an empty
+    // list rather than hanging on `never`.
+    let empty = Flux::<i32>::empty();
+    let never = Flux::<i32>::never();
+    let res = tokio::time::timeout(
+        Duration::from_secs(3600),
+        empty.zip_with(never).collect_list().block(),
+    )
+    .await
+    .expect("zip_with hung instead of completing on early completion");
+    assert_eq!(res.unwrap(), Some(vec![]));
+}
+
 #[tokio::test]
 async fn combine_latest_emits_latest_pairs() {
     let a = Flux::from_iter(vec![1, 2]);
@@ -575,6 +611,40 @@ async fn create_sink_pushes() {
 async fn create_sink_error() {
     let f = Flux::<i32>::create(|sink| {
         sink.next(1);
+        sink.error(FireflyError::internal("boom"));
+    });
+    let e = f.collect_list().block().await.unwrap_err();
+    assert_eq!(e.status, 500);
+}
+
+// --- regression: create() must not drop items on a synchronous burst
+// that exceeds any internal buffer (bug 9) ---
+// The producer runs inline (before the stream is polled) and pushes far
+// more than the old 256-slot default; Reactor's default `BUFFER` never
+// drops, so every item must arrive.
+#[tokio::test]
+async fn create_sync_burst_does_not_drop_items() {
+    const N: i32 = 10_000;
+    let f = Flux::create(move |sink| {
+        for i in 0..N {
+            assert!(sink.next(i), "unbounded sink must always accept");
+        }
+        sink.complete();
+    });
+    let out = drain(f).await;
+    assert_eq!(out.len(), N as usize);
+    assert_eq!(out.first(), Some(&0));
+    assert_eq!(out.last(), Some(&(N - 1)));
+}
+
+// The terminal error issued after a synchronous burst must not be
+// swallowed — the stream must error, not complete normally.
+#[tokio::test]
+async fn create_sync_burst_then_error_is_not_swallowed() {
+    let f = Flux::<i32>::create(|sink| {
+        for i in 0..10_000 {
+            sink.next(i);
+        }
         sink.error(FireflyError::internal("boom"));
     });
     let e = f.collect_list().block().await.unwrap_err();

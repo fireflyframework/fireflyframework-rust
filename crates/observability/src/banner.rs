@@ -436,22 +436,31 @@ impl BannerPrinter {
 /// `${AnsiColor.GREEN}` foundation/license markers.
 fn colourise(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 64);
-    let mut in_art = false;
+    // The ASCII art is the leading block before the first blank line; we are
+    // inside it until that blank line ends the run. Tracking the region this
+    // way paints the whole block red — including the top row, whose glyphs
+    // (`  _____.__ …`) match none of the per-line art markers below.
+    let mut in_art = true;
     for (i, line) in text.lines().enumerate() {
         if i > 0 {
             out.push('\n');
         }
-        // The ASCII art is the leading block before the first blank line.
+        // Per-line art markers — kept as a belt-and-braces fallback in case
+        // the art ever drifts past a blank line.
         let is_art_line = line.contains('\\') || line.contains("_/") || line.contains("|__|");
         if line.contains("Firefly Software Foundation") || line.contains("Licensed under Apache") {
+            in_art = false;
             out.push_str(&format!("{ANSI_GREEN}{ANSI_BOLD}{line}{ANSI_RESET}"));
         } else if line.starts_with(":: Firefly Framework") {
+            in_art = false;
             out.push_str(&format!("{ANSI_BOLD}{line}{ANSI_RESET}"));
-        } else if is_art_line || (in_art && !line.trim().is_empty()) {
-            in_art = true;
+        } else if line.trim().is_empty() {
+            // A blank line closes the leading art block.
+            in_art = false;
+            out.push_str(line);
+        } else if is_art_line || in_art {
             out.push_str(&format!("{ANSI_RED}{line}{ANSI_RESET}"));
         } else {
-            in_art = false;
             out.push_str(line);
         }
     }

@@ -492,6 +492,70 @@ async fn refresh_keeps_supplied_token_when_not_rotated() {
     let call = state.find("InitiateAuth");
     assert_eq!(call.body["AuthFlow"], "REFRESH_TOKEN_AUTH");
     assert_eq!(call.body["AuthParameters"]["REFRESH_TOKEN"], "OLD-REFRESH");
+    // Public client (no secret): REFRESH_TOKEN_AUTH carries no SECRET_HASH.
+    assert!(call.body["AuthParameters"].get("SECRET_HASH").is_none());
+}
+
+// Regression: a confidential app client (one configured with a client secret)
+// must attach SECRET_HASH on REFRESH_TOKEN_AUTH, or Cognito rejects the refresh.
+// The bare port-trait `refresh()` cannot (it lacks the username), so the richer
+// `refresh_full(refresh_token, username)` entry point supplies it.
+#[tokio::test]
+async fn refresh_full_includes_secret_hash_for_confidential_client() {
+    let (base, state) = spawn().await;
+    state.register(
+        "InitiateAuth",
+        200,
+        serde_json::json!({"AuthenticationResult": {"AccessToken": "NEW-ACCESS", "ExpiresIn": 900}}),
+    );
+
+    let a = Adapter::new(Config {
+        base_url: base.clone(),
+        client_id: CLIENT_ID.into(),
+        client_secret: "test-secret".into(),
+        region: REGION.into(),
+        user_pool_id: USER_POOL_ID.into(),
+        ..Config::default()
+    });
+
+    let token = a.refresh_full("OLD-REFRESH", "alice").await.unwrap();
+    assert_eq!(token.access_token, "NEW-ACCESS");
+    // Refresh token not rotated by Cognito here → the supplied one is kept.
+    assert_eq!(token.refresh_token, "OLD-REFRESH");
+
+    let call = state.find("InitiateAuth");
+    assert_eq!(call.body["AuthFlow"], "REFRESH_TOKEN_AUTH");
+    assert_eq!(call.body["AuthParameters"]["REFRESH_TOKEN"], "OLD-REFRESH");
+    // SECRET_HASH is computed from the username bound to the token at sign-in,
+    // matching the same KAT-checked HMAC used by login_full.
+    let expected = a.secret_hash("alice").expect("secret configured");
+    assert_eq!(call.body["AuthParameters"]["SECRET_HASH"], expected);
+    // Still an unsigned client-flow call.
+    assert!(call.authorization.is_empty());
+}
+
+// A confidential client with no username available (the port-trait `refresh()`,
+// which delegates to refresh_full with an empty username) still computes a hash
+// — but over the empty username, which is the documented limitation. The public
+// path (no secret) must continue to emit no SECRET_HASH at all.
+#[tokio::test]
+async fn refresh_full_without_secret_omits_secret_hash() {
+    let (base, state) = spawn().await;
+    state.register(
+        "InitiateAuth",
+        200,
+        serde_json::json!({"AuthenticationResult": {"AccessToken": "NEW-ACCESS", "ExpiresIn": 900}}),
+    );
+
+    // Public client: even a non-empty username must not produce a SECRET_HASH.
+    let token = adapter(&base)
+        .refresh_full("OLD-REFRESH", "alice")
+        .await
+        .unwrap();
+    assert_eq!(token.access_token, "NEW-ACCESS");
+
+    let call = state.find("InitiateAuth");
+    assert!(call.body["AuthParameters"].get("SECRET_HASH").is_none());
 }
 
 // --------------------------------------------------------------------------- //

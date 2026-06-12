@@ -20,7 +20,6 @@ use std::time::Duration;
 use firefly_kernel::FireflyError;
 use futures::future::BoxFuture;
 use futures::FutureExt;
-use tokio::sync::Mutex;
 
 use crate::backoff::Backoff;
 use crate::flux::Flux;
@@ -258,13 +257,20 @@ where
 
     /// Combines this value with another `Mono`'s value into a tuple. If
     /// either is empty, the result is empty. Reactor's `Mono.zipWith`.
+    ///
+    /// Short-circuits on the first error like Reactor's `Mono.zip`: the
+    /// error is surfaced immediately and the other source is cancelled
+    /// rather than awaited to completion. This matters when one side
+    /// errors while the other is slow or never resolves.
     pub fn zip_with<U>(self, other: Mono<U>) -> Mono<(T, U)>
     where
         U: Send + 'static,
     {
         Mono::from_raw(async move {
-            let (a, b) = futures::join!(self.future, other.future);
-            match (a?, b?) {
+            // `try_join!` polls both futures concurrently and resolves
+            // with the first `Err` (dropping/cancelling the other), so an
+            // error short-circuits instead of waiting on a pending peer.
+            match futures::try_join!(self.future, other.future)? {
                 (Some(x), Some(y)) => Ok(Some((x, y))),
                 _ => Ok(None),
             }
@@ -475,9 +481,20 @@ where
     where
         T: Clone,
     {
-        CachedMono {
-            state: Arc::new(Mutex::new(CacheState::Pending(Some(self.future)))),
+        // The source runs exactly once. We wrap its terminal result in an
+        // `Arc` (so the `Output` is `Clone`, as `Shared` requires —
+        // `FireflyError` itself is not `Clone`) and share it. Every clone
+        // of the resulting `Shared` future drives the *same* underlying
+        // computation concurrently: no async lock is held across the
+        // await, so subscribers are not serialized, a cached future may
+        // re-enter `block()` on the same cache without deadlocking, and
+        // cancelling one waiter does not poison the cache.
+        fn wrap<T>(r: Result<Option<T>, FireflyError>) -> Arc<Result<Option<T>, FireflyError>> {
+            Arc::new(r)
         }
+        let wrap: fn(_) -> _ = wrap::<T>;
+        let shared = self.future.map(wrap).shared();
+        CachedMono { shared }
     }
 
     // ----------------------------------------------------------------
@@ -551,13 +568,17 @@ where
 
 impl Mono<()> {
     /// Completes once *all* the given monos complete, discarding their
-    /// values. Reactor's `Mono.when`. Errors short-circuit.
+    /// values. Reactor's `Mono.when`. Errors short-circuit: the first
+    /// `onError` from any source is surfaced immediately and the
+    /// remaining sources are cancelled rather than awaited to
+    /// completion (so a sibling that is slow or never completes cannot
+    /// stall the fast-failing error).
     pub fn when(monos: Vec<Mono<()>>) -> Mono<()> {
         Mono::from_raw(async move {
             let futures: Vec<_> = monos.into_iter().map(Mono::into_future).collect();
-            for r in futures::future::join_all(futures).await {
-                r?;
-            }
+            // `try_join_all` resolves with the first `Err` and drops the
+            // outstanding futures, instead of `join_all`'s wait-for-all.
+            futures::future::try_join_all(futures).await?;
             Ok(Some(()))
         })
     }
@@ -587,36 +608,45 @@ pub(crate) fn timeout_error(duration: Duration) -> FireflyError {
 // cache()
 // --------------------------------------------------------------------
 
-enum CacheState<T> {
-    Pending(Option<MonoFuture<T>>),
-    Ready(Result<Option<T>, FireflyError>),
-}
+/// The shared, run-once future a [`CachedMono`] memoizes. The terminal
+/// result is held behind an `Arc` so the `Output` is `Clone` (a
+/// requirement of [`Shared`](futures::future::Shared)); the underlying
+/// source future still runs exactly once.
+type SharedCache<T> = futures::future::Shared<
+    futures::future::Map<
+        MonoFuture<T>,
+        fn(Result<Option<T>, FireflyError>) -> Arc<Result<Option<T>, FireflyError>>,
+    >,
+>;
 
 /// A [`Mono`] whose terminal signal is computed once and replayed. The
 /// product of [`Mono::cache`]. Clone it freely; every clone shares the
 /// same memoized outcome.
+///
+/// Subscribers share a single in-flight computation without serializing:
+/// awaiting from many tasks (or re-entering `block()` from within the
+/// cached future itself) polls the same shared future rather than
+/// contending on a lock, so the cache never deadlocks or stalls
+/// unrelated subscribers behind one slow computation. Cancelling one
+/// subscriber's await (e.g. via `tokio::time::timeout`) leaves the cache
+/// intact for the next caller.
 #[derive(Clone)]
 pub struct CachedMono<T> {
-    state: Arc<Mutex<CacheState<T>>>,
+    shared: SharedCache<T>,
 }
 
 impl<T> CachedMono<T>
 where
-    T: Clone + Send + 'static,
+    T: Clone + Send + Sync + 'static,
 {
     /// Resolves the cached outcome, computing it on first access.
     pub async fn block(&self) -> Result<Option<T>, FireflyError> {
-        let mut guard = self.state.lock().await;
-        match &mut *guard {
-            CacheState::Ready(r) => clone_result(r),
-            CacheState::Pending(slot) => {
-                let fut = slot.take().expect("pending future present exactly once");
-                let result = fut.await;
-                let cloned = clone_result(&result);
-                *guard = CacheState::Ready(result);
-                cloned
-            }
-        }
+        // Poll a clone of the shared future: this neither holds a lock
+        // across the await nor mutates shared state from this task, so it
+        // is re-entrant- and cancellation-safe. The underlying source
+        // runs once; we just clone its terminal result out of the `Arc`.
+        let result = self.shared.clone().await;
+        clone_result(result.as_ref())
     }
 
     /// Returns a fresh [`Mono`] backed by the cached outcome — usable
@@ -1012,6 +1042,122 @@ mod tests {
     async fn zip_free_fn() {
         let out = zip(Mono::just(1), Mono::just(2)).block().await.unwrap();
         assert_eq!(out, Some((1, 2)));
+    }
+
+    // --- regression: zip_with must short-circuit on error (bugs 2/6) ---
+    // Reactor's `Mono.zip` surfaces the first `onError` and cancels the
+    // other source. With `start_paused`, a hang would advance the virtual
+    // clock to the 1h timeout; a correct short-circuit resolves instantly.
+    #[tokio::test(start_paused = true)]
+    async fn zip_with_short_circuits_on_error_against_pending_side() {
+        let left: Mono<i32> = Mono::error(FireflyError::internal("boom"));
+        let right: Mono<i32> = Mono::from_future(async { std::future::pending::<i32>().await });
+        let res = tokio::time::timeout(Duration::from_secs(3600), left.zip_with(right).block())
+            .await
+            .expect("zip_with hung instead of short-circuiting on error");
+        assert_eq!(res.unwrap_err().status, 500);
+    }
+
+    // Same defect via the free `zip` fn, with the error on the right side.
+    #[tokio::test(start_paused = true)]
+    async fn zip_free_fn_short_circuits_on_error() {
+        let left: Mono<i32> = Mono::from_future(async { std::future::pending::<i32>().await });
+        let right: Mono<i32> = Mono::error(FireflyError::internal("boom"));
+        let res = tokio::time::timeout(Duration::from_secs(3600), zip(left, right).block())
+            .await
+            .expect("zip hung instead of short-circuiting on error");
+        assert!(res.is_err());
+    }
+
+    // --- regression: when must fail fast on error (bugs 3/7) ---
+    // The rustdoc promises "Errors short-circuit"; a sibling that never
+    // completes must not stall the error.
+    #[tokio::test(start_paused = true)]
+    async fn when_short_circuits_against_never_completing_sibling() {
+        let erroring: Mono<()> = Mono::error(FireflyError::internal("boom"));
+        let never: Mono<()> = Mono::from_future(async { std::future::pending::<()>().await });
+        let res = tokio::time::timeout(
+            Duration::from_secs(3600),
+            Mono::when(vec![erroring, never]).block(),
+        )
+        .await
+        .expect("when hung instead of short-circuiting on error");
+        assert_eq!(res.unwrap_err().status, 500);
+    }
+
+    // --- regression: cache() must not deadlock when a cached computation
+    // re-enters block() on ANOTHER cache (bug 4) ---
+    // The old implementation held a `tokio::sync::Mutex` guard across the
+    // inner `.await`. Nesting a `block()` on a second cache inside the
+    // first cache's computation, while a concurrent caller is parked on
+    // that same outer cache, used to deadlock on the held guard (the
+    // async Mutex is not reentrant and serializes across the await). The
+    // shared-future cache holds no lock across the await, so it resolves.
+    #[tokio::test(start_paused = true)]
+    async fn cache_nested_block_does_not_deadlock() {
+        let inner = Mono::just(3).cache();
+        let inner_for_outer = inner.clone();
+        let outer = Mono::from_future(async move {
+            // Re-enter `block()` on a *different* cache from within this
+            // cache's computation. Under the old lock-across-await this is
+            // a held-guard hazard; with a shared future it just polls.
+            let v = inner_for_outer.block().await.unwrap().unwrap();
+            v + 4
+        })
+        .cache();
+
+        // Drive the outer cache from two concurrent subscribers: with the
+        // old code the second subscriber parked on the held outer guard
+        // while the first was suspended inside the nested await.
+        let a = outer.clone();
+        let b = outer.clone();
+        let res = tokio::time::timeout(Duration::from_secs(2), async move {
+            tokio::join!(a.block(), b.block())
+        })
+        .await
+        .expect("nested cache block deadlocked on held lock");
+        assert_eq!(res.0.unwrap(), Some(7));
+        assert_eq!(res.1.unwrap(), Some(7));
+    }
+
+    // --- regression: cache() survives a cancelled first await (bug 8) ---
+    // Cancelling the first `block()` mid-flight (timeout) must not poison
+    // the cache; the next `block()` must still resolve (previously it
+    // panicked: "pending future present exactly once").
+    #[tokio::test(start_paused = true)]
+    async fn cache_survives_cancelled_first_block() {
+        let cached = Mono::from_future(async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            42
+        })
+        .cache();
+        // First call is cancelled (50ms timeout < 200ms work).
+        let first = tokio::time::timeout(Duration::from_millis(50), cached.block()).await;
+        assert!(first.is_err(), "first block should time out");
+        // Second call must resolve, not panic.
+        let second = cached.block().await.unwrap();
+        assert_eq!(second, Some(42));
+    }
+
+    // --- regression: cache() does not serialize concurrent subscribers
+    // behind one in-flight computation (bug 10) ---
+    #[tokio::test(start_paused = true)]
+    async fn cache_concurrent_blocks_share_one_run() {
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = counter.clone();
+        let cached = Mono::from_future(async move {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            5
+        })
+        .cache();
+        let a = cached.clone();
+        let b = cached.clone();
+        // Both started concurrently; they share the single in-flight run.
+        let (ra, rb) = tokio::join!(a.block(), b.block());
+        assert_eq!(ra.unwrap(), Some(5));
+        assert_eq!(rb.unwrap(), Some(5));
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

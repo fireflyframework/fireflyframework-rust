@@ -288,13 +288,27 @@ struct StreamParams {
 /// The `Flux` is lazy and never buffers the whole stream, so a slow client
 /// throttles the producer through axum's body backpressure — genuine
 /// reactive server push.
+///
+/// The stream's *first* item is resolved here, **before** the response head
+/// is committed, so a not-found (or any other) failure on the opening signal
+/// becomes the correct RFC 7807 problem (`404` for a missing account, matching
+/// the non-streaming `GET /api/v1/accounts/:id`) rather than a `200` with an
+/// empty NDJSON/SSE body. Once the first event has been peeked successfully,
+/// it is pushed back ahead of the remaining stream so the body still flushes
+/// incrementally with full backpressure — only the opening signal is eager.
 async fn stream_events(
     State(state): State<HandlerState>,
     Path(id): Path<String>,
     Query(params): Query<StreamParams>,
     headers: http::HeaderMap,
 ) -> Response {
-    let flux = account_event_flux(state.bank, id);
+    let flux = match peek_event_flux(state.bank, id).await {
+        Ok(flux) => flux,
+        // A terminal error on the opening signal (e.g. the account does not
+        // exist → 404) is rendered as a problem response, not masked as a
+        // successful empty stream.
+        Err(err) => return WebError::from(err).into_response(),
+    };
     let wants_sse = params.format.as_deref() == Some("sse")
         || headers
             .get(ACCEPT)
@@ -305,6 +319,30 @@ async fn stream_events(
         Sse(flux).into_response()
     } else {
         NdJson(flux).into_response()
+    }
+}
+
+/// Resolves the streaming [`Flux`]'s opening signal so a first-poll error can
+/// be turned into an HTTP problem before the streaming response head is
+/// committed.
+///
+/// - The stream errors on its first item → `Err(FireflyError)` (the caller
+///   renders it as the matching problem, e.g. `404` for a missing account).
+/// - The stream is empty → an empty [`Flux`] (a `200` empty stream — an
+///   existing account always has at least its `AccountOpened` event, so this
+///   is only the benign empty case).
+/// - The stream yields a first event → a [`Flux`] that re-emits that event and
+///   then continues lazily with the remainder, preserving backpressure for
+///   every subsequent event.
+async fn peek_event_flux(bank: Bank, id: String) -> Result<Flux<AccountEvent>, FireflyError> {
+    use futures::StreamExt;
+    let mut stream = account_event_flux(bank, id).into_stream();
+    match stream.next().await {
+        Some(Ok(first)) => Ok(Flux::from_stream(
+            futures::stream::once(async move { Ok(first) }).chain(stream),
+        )),
+        Some(Err(err)) => Err(err),
+        None => Ok(Flux::empty()),
     }
 }
 

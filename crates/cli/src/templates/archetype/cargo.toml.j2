@@ -11,7 +11,7 @@ firefly-config = { {{ deps["firefly-config"] }} }
 firefly-cqrs = { {{ deps["firefly-cqrs"] }} }
 firefly-lifecycle = { {{ deps["firefly-lifecycle"] }} }
 axum = "0.7"
-{% endif %}{% if has_web %}firefly-starter-core = { {{ deps["firefly-starter-core"] }} }
+{% endif %}{% if has_web and archetype != "core" %}firefly-starter-core = { {{ deps["firefly-starter-core"] }} }
 firefly-starter-web = { {{ deps["firefly-starter-web"] }} }
 firefly-web = { {{ deps["firefly-web"] }} }
 firefly-cqrs = { {{ deps["firefly-cqrs"] }} }

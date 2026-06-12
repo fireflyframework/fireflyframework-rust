@@ -291,3 +291,34 @@ async fn events_endpoint_streams_sse_when_requested() {
     assert!(text.contains("data: "), "sse: {text:?}");
     assert!(text.contains("AccountOpened"), "sse: {text:?}");
 }
+
+/// Regression: streaming a missing account must surface a `404`
+/// `application/problem+json` (the same not-found signal the non-streaming
+/// `GET /api/v1/accounts/:id` returns), not a `200 OK` with an empty NDJSON
+/// body. The not-found is a terminal error on the stream's opening signal, so
+/// it has to be resolved before the response head is committed.
+#[tokio::test]
+async fn events_endpoint_missing_account_is_404_problem() {
+    let app = build_router().await;
+    let res = app
+        .oneshot(get("/api/v1/accounts/acc_ghost/events"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(content_type(&res).starts_with(PROBLEM_CONTENT_TYPE));
+    let pd: ProblemDetail = serde_json::from_slice(&body_bytes(res).await).unwrap();
+    assert_eq!(pd.status, 404);
+}
+
+/// Regression: the SSE variant (`?format=sse`) of the missing-account stream
+/// is likewise a `404` problem, not a `200` empty `text/event-stream`.
+#[tokio::test]
+async fn events_endpoint_missing_account_is_404_problem_sse() {
+    let app = build_router().await;
+    let res = app
+        .oneshot(get("/api/v1/accounts/acc_ghost/events?format=sse"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(content_type(&res).starts_with(PROBLEM_CONTENT_TYPE));
+}

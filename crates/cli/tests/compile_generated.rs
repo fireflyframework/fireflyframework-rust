@@ -34,6 +34,12 @@ fn archetype_matrix() -> Vec<(Archetype, Vec<&'static str>)> {
     vec![
         (Archetype::Core, vec![]),
         (Archetype::Core, vec!["data", "cqrs"]),
+        // `core` + `web` is a reachable public-CLI path (`firefly new x --archetype
+        // core --features web`): scaffold validates only that `web` is a known
+        // feature, with no archetype/feature compatibility guard. It must still
+        // emit a Cargo.toml Cargo can parse (regression: duplicate dependency
+        // keys when both the core block and the web block fired).
+        (Archetype::Core, vec!["web"]),
         (Archetype::WebApi, vec!["web"]),
         (Archetype::Web, vec!["web"]),
         (Archetype::Hexagonal, vec!["web"]),
@@ -97,6 +103,81 @@ fn generated_projects_use_real_api_markers() {
             }
             _ => {}
         }
+    }
+}
+
+/// Collect the `key = ...` left-hand sides of a `[<section>]` table in a
+/// generated `Cargo.toml`, in order. Used to assert Cargo would not reject the
+/// manifest for a duplicate key. Only top-level `key = ...` lines are read; the
+/// section ends at the next `[...]` table header.
+fn table_keys(manifest: &str, section: &str) -> Vec<String> {
+    let header = format!("[{section}]");
+    let mut in_section = false;
+    let mut keys = Vec::new();
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_section = trimmed == header;
+            continue;
+        }
+        if in_section {
+            if let Some((lhs, _)) = trimmed.split_once('=') {
+                let key = lhs.trim();
+                if !key.is_empty() {
+                    keys.push(key.to_string());
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Always-on regression: no generated `Cargo.toml` carries a duplicate
+/// dependency key, which Cargo rejects outright (`error: duplicate key`) so the
+/// project would not even parse.
+///
+/// Guards the `core` + `web` path specifically: before the fix, the `[% if
+/// archetype == "core" %]` and `[% if has_web %]` blocks in `cargo.toml.j2`
+/// both fired, emitting `firefly-starter-core`, `firefly-cqrs`,
+/// `firefly-lifecycle`, and `axum` twice. The `has_web` block is now gated on
+/// `archetype != "core"`.
+#[test]
+fn generated_cargo_toml_has_no_duplicate_dependency_keys() {
+    for (archetype, features) in archetype_matrix() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let proj = scaffold_at(tmp.path(), "svc", archetype, &features);
+        let manifest = std::fs::read_to_string(proj.join("Cargo.toml")).unwrap();
+
+        for section in ["dependencies", "dev-dependencies"] {
+            let keys = table_keys(&manifest, section);
+            let mut seen = std::collections::HashSet::new();
+            for key in &keys {
+                assert!(
+                    seen.insert(key.clone()),
+                    "{archetype:?} (features {features:?}) emits duplicate key \
+                     `{key}` in [{section}] — Cargo would reject this manifest:\n{manifest}"
+                );
+            }
+        }
+    }
+
+    // Belt-and-braces for the specific reproduction: `core` + `web` emits each
+    // of the previously-doubled keys exactly once in [dependencies].
+    let tmp = tempfile::TempDir::new().unwrap();
+    let proj = scaffold_at(tmp.path(), "svc", Archetype::Core, &["web"]);
+    let manifest = std::fs::read_to_string(proj.join("Cargo.toml")).unwrap();
+    let deps = table_keys(&manifest, "dependencies");
+    for key in [
+        "firefly-starter-core",
+        "firefly-cqrs",
+        "firefly-lifecycle",
+        "axum",
+    ] {
+        let count = deps.iter().filter(|k| k.as_str() == key).count();
+        assert_eq!(
+            count, 1,
+            "core + web must emit `{key}` exactly once, found {count}:\n{manifest}"
+        );
     }
 }
 

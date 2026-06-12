@@ -15,6 +15,7 @@
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::Sha256;
+use subtle::ConstantTimeEq;
 
 /// The standard 30-second TOTP time step (RFC 6238 §4, the default `X`).
 pub const STEP_SECS: u64 = 30;
@@ -136,15 +137,21 @@ pub fn verify(secret: &str, code: &str, valid_window: i64) -> bool {
         .expect("system clock before unix epoch")
         .as_secs();
     let counter = (now / STEP_SECS) as i64;
+    // Accumulate the result without short-circuiting: every step in the window is
+    // generated and compared against `code` in constant time, and the per-step
+    // results are OR-ed via a `Choice` (no data-dependent branch). This avoids
+    // both the per-byte early-exit of `str`/`String` `==` and a per-step early
+    // `return`, either of which could leak how close a guess was via timing.
+    let mut matched = subtle::Choice::from(0u8);
     for delta in -valid_window..=valid_window {
         let c = (counter + delta).max(0) as u64;
         let candidate = format!("{:0width$}", hotp(&key, c, DIGITS), width = DIGITS as usize);
-        // Constant-time-ish length+byte compare; codes are short and public.
-        if candidate == code {
-            return true;
-        }
+        // `ConstantTimeEq` on equal-length byte slices does not return on the
+        // first differing byte. Slices of differing length compare unequal
+        // (length is not secret here — the candidate is always `DIGITS` long).
+        matched |= candidate.as_bytes().ct_eq(code.as_bytes());
     }
-    false
+    matched.into()
 }
 
 #[cfg(test)]
@@ -248,6 +255,70 @@ mod tests {
         }
         // Invalid base32 secret never verifies.
         assert!(!verify("0!notbase32", &real, 1));
+    }
+
+    // -----------------------------------------------------------------
+    // Regression (Bug 1): `verify` must compare the candidate against the
+    // attacker-supplied `code` in constant time (`subtle::ConstantTimeEq`),
+    // not via short-circuiting `String`/`&str` `==`. We cannot directly
+    // measure timing in a unit test, but we pin the *behavioral* contract of
+    // the non-short-circuiting path: correct codes accept; wrong codes of any
+    // length (shorter, longer, or differing only in the final byte) reject,
+    // and the result is independent of how early the mismatch occurs.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn verify_constant_time_compare_behavior() {
+        let secret = generate_secret();
+        let real = totp_now(&secret).unwrap();
+        assert_eq!(real.len(), DIGITS as usize);
+
+        // The genuine code accepts.
+        assert!(verify(&secret, &real, 0), "real code must verify");
+
+        // A wrong code differing only in the LAST byte must reject. Under a
+        // short-circuiting `==` this is the slowest-to-reject case; under the
+        // constant-time compare it is rejected like any other mismatch.
+        let mut last_diff: Vec<u8> = real.as_bytes().to_vec();
+        last_diff[DIGITS as usize - 1] = if last_diff[DIGITS as usize - 1] == b'9' {
+            b'0'
+        } else {
+            last_diff[DIGITS as usize - 1] + 1
+        };
+        let last_diff = String::from_utf8(last_diff).unwrap();
+        assert_ne!(last_diff, real);
+        assert!(
+            !verify(&secret, &last_diff, 0),
+            "code differing only in the final byte must reject"
+        );
+
+        // A wrong code differing in the FIRST byte must also reject.
+        let mut first_diff: Vec<u8> = real.as_bytes().to_vec();
+        first_diff[0] = if first_diff[0] == b'9' {
+            b'0'
+        } else {
+            first_diff[0] + 1
+        };
+        let first_diff = String::from_utf8(first_diff).unwrap();
+        assert_ne!(first_diff, real);
+        assert!(
+            !verify(&secret, &first_diff, 0),
+            "code differing only in the first byte must reject"
+        );
+
+        // Length-mismatched guesses (a prefix and a suffixed value) must reject
+        // without panicking — `ConstantTimeEq` on slices of differing length
+        // returns "not equal" rather than indexing out of bounds.
+        assert!(
+            !verify(&secret, &real[..DIGITS as usize - 1], 0),
+            "a too-short prefix of the real code must reject"
+        );
+        let too_long = format!("{real}0");
+        assert!(
+            !verify(&secret, &too_long, 0),
+            "a too-long extension of the real code must reject"
+        );
+        assert!(!verify(&secret, "", 0), "the empty code must reject");
     }
 
     #[test]

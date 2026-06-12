@@ -379,3 +379,40 @@ fn forced_color_off_overrides_detection() {
     let out = String::from_utf8(buf).unwrap();
     assert!(!out.contains('\u{1b}'), "forced-off must be plain: {out}");
 }
+
+/// Regression: the FIRST ASCII-art row (`  _____.__ …`) lacks any of the
+/// per-line art markers (`\`, `_/`, `|__|`), so the original art-detection
+/// heuristic dropped it to the plain branch and left it uncoloured while
+/// rows 2-6 were red. Every non-blank art line must now be wrapped in red.
+#[test]
+fn forced_color_paints_first_art_row_red() {
+    let mut buf: Vec<u8> = Vec::new();
+    BannerPrinter::new()
+        .with_color(true)
+        .with_app("orders")
+        .write_to(&mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    // The top art row is identified by its glyphs, not by markers.
+    let first_art = out
+        .lines()
+        .find(|l| l.contains("_____.__"))
+        .unwrap_or_else(|| panic!("top art row missing entirely: {out}"));
+    assert!(
+        first_art.starts_with("\u{1b}[31m") && first_art.ends_with("\u{1b}[0m"),
+        "first art row must be wrapped in red: {first_art:?}"
+    );
+
+    // Every line of the leading art block (up to the first blank line) must
+    // be red — guards against a partially-coloured block re-appearing.
+    for line in out.lines() {
+        if line.trim().is_empty() {
+            break;
+        }
+        assert!(
+            line.starts_with("\u{1b}[31m"),
+            "art line not painted red: {line:?}"
+        );
+    }
+}
