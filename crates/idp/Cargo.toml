@@ -8,12 +8,26 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Firefly Framework for Rust — Identity provider Adapter port"
 
+[features]
+# Mounts the IdP `Adapter` over an axum REST router (`idp::web`). Off by
+# default so the base port crate stays dependency-light; enable it in the
+# service / starter that actually serves HTTP.
+web = ["dep:axum", "dep:http"]
+
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Optional — only pulled in by the `web` feature.
+axum = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

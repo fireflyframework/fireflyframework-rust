@@ -9,31 +9,31 @@
 
 | Crate | What it provides |
 |-------|------------------|
-| [`firefly-kernel`](crates/kernel/README.md) | RFC 7807 `ProblemDetail`, `FireflyResult<T>`, `Clock`, `FireflyError` hierarchy, task-local correlation |
+| [`firefly-kernel`](crates/kernel/README.md) | RFC 7807 `ProblemDetail`, `FireflyResult<T>`, `Clock`, `FireflyError` hierarchy, task-local correlation/request/tenant scopes, `ddd` module (`Entity`/`Specification`/domain events), typed `ErrorResponse` |
 | [`firefly-utils`](crates/utils/README.md) | Try helpers, retry with exponential backoff, slug, AES-256-GCM, templates |
-| [`firefly-validators`](crates/validators/README.md) | IBAN, BIC, Luhn, currency, phone, password, sort code, VAT, Spanish IDs |
-| [`firefly-web`](crates/web/README.md) | Problem renderer, correlation, idempotency, PII masking — composable `tower` layers |
-| [`firefly-config`](crates/config/README.md) | Typed YAML+env+flag binding with profile selection |
+| [`firefly-validators`](crates/validators/README.md) | IBAN, BIC, Luhn, currency, phone, password, sort code, VAT, Spanish IDs, `national_id`/`tax_id` |
+| [`firefly-web`](crates/web/README.md) | Problem renderer, correlation, idempotency, PII masking, CORS, CSRF (double-submit cookie), security headers, server metrics, content negotiation, `ServerProperties`/TLS bootstrap — composable `tower` layers |
+| [`firefly-config`](crates/config/README.md) | Typed YAML+env+flag binding with profile selection, `${key:default}` placeholders, runtime reload/refresh, masked property sources, `accepts_profiles`, `ApplicationEventBus`, config-server client |
 | [`firefly-i18n`](crates/i18n/README.md) | Locale-aware message `Bundle` + Accept-Language picker |
 
 ## 02 — Platform
 
 | Crate | What it provides |
 |-------|------------------|
-| [`firefly-cache`](crates/cache/README.md) | `Adapter` trait port + Memory / NoOp / Fallback + typed `Typed<T>` |
-| [`firefly-observability`](crates/observability/README.md) | `tracing` + correlation enrichment, health composite, startup banner |
-| [`firefly-data`](crates/data/README.md) | Filter DSL, `Page<T>`, `Repository<T, K>` |
+| [`firefly-cache`](crates/cache/README.md) | `Adapter` trait port + Memory (LRU + stats) / NoOp / Fallback + typed `Typed<T>` (Redis/Postgres adapters in `cache-*`) |
+| [`firefly-observability`](crates/observability/README.md) | `tracing` + correlation enrichment, health composite, startup banner, W3C trace-context propagation, log redaction, rolling file appender, console renderer, labeled metrics |
+| [`firefly-data`](crates/data/README.md) | Filter DSL, `Page<T>`, `Repository<T, K>`, `Mapper`/`Projection` object mapper, `QueryMethodParser` derived queries, `Pageable`/`Sort`/`Order` |
 | [`firefly-cqrs`](crates/cqrs/README.md) | Command + query `Bus` with validation + caching middleware |
-| [`firefly-eda`](crates/eda/README.md) | `Event` envelope, `Publisher`/`Subscriber`/`Broker` ports, `InMemoryBroker`, glob topics, consumer groups, `wrap_listener` retry/DLQ (transports in `eda-*`) |
-| [`firefly-eventsourcing`](crates/eventsourcing/README.md) | Aggregate roots + event store + snapshots + projections |
-| [`firefly-orchestration`](crates/orchestration/README.md) | `Saga`, `Workflow` (DAG), `Tcc` engines |
-| [`firefly-rule-engine`](crates/rule-engine/README.md) | YAML DSL → AST → evaluator (sub-modules: interfaces, models, core, web, sdk) |
+| [`firefly-eda`](crates/eda/README.md) | `Event` envelope, `Publisher`/`Subscriber`/`Broker` ports, `InMemoryBroker`, glob topics, consumer groups, `EventFilter` chain, queryable `EdaDeadLetterStore`, `EventPublisherHealthIndicator`, `wrap_listener` retry/DLQ (transports in `eda-*`) |
+| [`firefly-eventsourcing`](crates/eventsourcing/README.md) | Aggregate roots + event store + snapshots + projections, global `stream_all` + cross-aggregate projections, multi-tenancy, `EventSourcedRepository` |
+| [`firefly-orchestration`](crates/orchestration/README.md) | `Saga` (compensation), `Workflow` (DAG) with step compensation / `wait_all`·`wait_any` / `ChildWorkflowService` / `ContinueAsNew` / conditional + async steps / per-step retry·backoff·timeout · `StepContext` data passing, `Tcc` |
+| [`firefly-rule-engine`](crates/rule-engine/README.md) | YAML DSL → AST → evaluator with `between`/null/`regex` operators, `Rule.otherwise`, `EvaluationMode`, ruleset validator + `ActionHandler` (sub-modules: interfaces, models, core, web, sdk) |
 | [`firefly-plugins`](crates/plugins/README.md) | Lifecycle SPI + composite registry |
 | [`firefly-lifecycle`](crates/lifecycle/README.md) | `Application::run()` orchestrator with signal trap + drain |
-| [`firefly-actuator`](crates/actuator/README.md) | `/actuator/{health,info,metrics,env,tasks,version}` |
+| [`firefly-actuator`](crates/actuator/README.md) | `/actuator/{health,info,metrics,env,tasks,version}` + liveness/readiness probes, runtime loggers, `httpexchanges`, `threaddump`, labeled Micrometer metrics, `refresh`, `management.endpoints.web` exposure |
 | [`firefly-scheduling`](crates/scheduling/README.md) | Cron + FixedRate + FixedDelay `Scheduler` |
 | [`firefly-resilience`](crates/resilience/README.md) | `CircuitBreaker`, `RateLimiter`, `Bulkhead`, `Timeout`, composable `Chain` |
-| [`firefly-security`](crates/security/README.md) | `Authentication` extension, `BearerLayer`, RBAC `FilterChain` |
+| [`firefly-security`](crates/security/README.md) | `Authentication` extension, `BearerLayer`, RBAC `FilterChain`, JWKS `JwksVerifier`, `oauth2` (client registrations + PKCE/OIDC login + authorization server), `RoleHierarchy`, `CsrfLayer`, `PasswordEncoder` (bcrypt) |
 | [`firefly-migrations`](crates/migrations/README.md) | Versioned SQL migrations (`V001__init.sql`) over a `Database` port |
 | [`firefly-openapi`](crates/openapi/README.md) | OpenAPI 3.1 generator + Swagger-UI shim |
 | [`firefly-sse`](crates/sse/README.md) | Server-Sent Events writer w/ heartbeat + Last-Event-Id |
@@ -98,6 +98,7 @@ in only by services that select that backend.
 | Crate | Port → backend |
 |-------|----------------|
 | [`firefly-cache-redis`](crates/cache-redis/README.md) | `cache::Adapter` → Redis (`RedisAdapter`, RESP via `redis`) — **Full** |
+| [`firefly-cache-postgres`](crates/cache-postgres) | `cache::Adapter` → Postgres key/value table with TTL (`tokio-postgres`) — **Stub** (port pending) |
 | [`firefly-eda-kafka`](crates/eda-kafka/README.md) | `eda::Broker` → Apache Kafka (`KafkaBroker`, `new_kafka_broker`, `rdkafka`) — **Full** |
 | [`firefly-eda-rabbitmq`](crates/eda-rabbitmq/README.md) | `eda::Broker` → RabbitMQ (`RabbitMqBroker`, durable direct exchange, publisher confirms, `lapin`) — **Full** |
 | [`firefly-eda-postgres`](crates/eda-postgres/README.md) | `eda::Broker` → Postgres transactional outbox + `LISTEN`/`NOTIFY` (`PostgresBroker`, advisory-lock drain) — **Full** |
@@ -113,6 +114,7 @@ in only by services that select that backend.
 | [`firefly-starter-application`](crates/starter-application/README.md) | starter-core + plugins registry |
 | [`firefly-starter-domain`](crates/starter-domain/README.md) | starter-core + in-memory event-sourcing stores |
 | [`firefly-starter-data`](crates/starter-data/README.md) | starter-core (consumer supplies their own DB) |
+| [`firefly-starter-web`](crates/starter-web) | starter-core + web middleware + security + actuator wiring — **Stub** (port pending) |
 | [`firefly-backoffice`](crates/backoffice/README.md) | starter-application + back-office context middleware |
 
 ## 05 — DI / AOP / Shell / Sessions / WebSockets

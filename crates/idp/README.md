@@ -166,3 +166,44 @@ those semantics where they convey real information (`logout`/`change_password`/
 `assign_role`/`revoke_role` return `Result<bool>`) and uses
 `Error::UserNotFound` where pyfly returns `None`/raises for a missing entity
 (`find_by_username`, `get_user_info`, `reset_password`).
+
+### REST controller (`web` feature)
+
+Enabling the `web` feature compiles `firefly_idp::web`, an axum `Router`
+that mounts any `Arc<dyn Adapter>` over the `/idp` REST surface — the Rust
+port of pyfly's `IdpController` (`@request_mapping("/idp")`). The router is
+generic over the **port**, so the internal-db adapter, a vendor adapter, or
+a test fake all drop straight in:
+
+```rust,ignore
+use std::sync::Arc;
+use firefly_idp::{web, Adapter};
+
+fn mount(idp: Arc<dyn Adapter>) -> axum::Router {
+    axum::Router::new().merge(web::router(idp))
+}
+```
+
+| Method & path                                    | Port call                  |
+|--------------------------------------------------|----------------------------|
+| `POST /idp/login`                                | `login` (+ `mfa_verify` when `mfa_code` supplied) |
+| `POST /idp/refresh`                              | `refresh`                  |
+| `POST /idp/logout`                               | `logout` → `{"success": bool}` |
+| `POST /idp/introspect`                           | `introspect`               |
+| `POST /idp/validate`                             | `validate`                 |
+| `GET  /idp/userinfo` (Bearer)                    | `get_user_info`            |
+| `POST /idp/register`                             | `register_user` → `201`    |
+| `POST /idp/admin/users`                          | `create_user` → `201`      |
+| `GET  /idp/admin/users?limit=N`                  | `list_users`               |
+| `GET  /idp/admin/users/{user_id}`                | `get_user`                 |
+| `DELETE /idp/admin/users/{user_id}`              | `delete_user`              |
+| `GET  /idp/admin/users/{user_id}/roles`          | `get_roles`                |
+| `POST /idp/admin/users/{user_id}/roles/{role}`   | `assign_role`              |
+| `DELETE /idp/admin/users/{user_id}/roles/{role}` | `revoke_role`              |
+| `GET  /idp/admin/roles`                          | `list_roles`               |
+
+Error mapping: `InvalidCredentials`/`MfaRequired` → `401`, `UserNotFound`
+→ `404`, `NotSupported` → `501`, `Provider` → `500`; each error body is
+`{"error": "<message>"}`. The controller is tested end-to-end (no sockets,
+`tower::ServiceExt::oneshot`) against the internal-db adapter in
+`firefly-idp-internal-db`'s `web_controller_test`.

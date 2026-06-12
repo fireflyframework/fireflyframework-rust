@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Router};
 use base64::engine::general_purpose::STANDARD;
@@ -301,14 +301,17 @@ async fn idempotency_ignores_unconfigured_methods() {
     assert_eq!(calls.load(Ordering::SeqCst), 2, "GET must not be replayed");
 }
 
-// Regression (Go parity): the first keyed response must stream through
-// to the client as the handler produces it — Go's captureWriter
-// forwards every Write immediately while copying it — rather than being
-// fully buffered before the first byte is sent. The fully streamed body
-// must still be captured and replayed.
+// Regression (Go parity): a multi-chunk streamed handler body is buffered
+// in full, the replay record is persisted before the response is returned
+// (Go's `Put` before `ServeHTTP` returns), and the complete body replays.
+// The middleware buffers rather than teeing the body: a transport that
+// frames the response by its `Content-Length` header reads exactly that many
+// bytes and never polls the body for an end-of-stream signal, so any
+// EOS-triggered persist would silently never run (see
+// `idempotency_persists_response_with_content_length`).
 
 #[tokio::test]
-async fn idempotency_streams_response_body_through() {
+async fn idempotency_captures_and_replays_streamed_body() {
     let (tx, rx) = futures::channel::mpsc::unbounded::<Result<Vec<u8>, std::io::Error>>();
     let rx_slot = Arc::new(Mutex::new(Some(rx)));
     let rx_clone = Arc::clone(&rx_slot);
@@ -328,37 +331,64 @@ async fn idempotency_streams_response_body_through() {
         )
         .layer(IdempotencyLayer::default());
 
+    // The whole multi-chunk body is available before the request is driven.
     tx.unbounded_send(Ok(b"hello ".to_vec())).unwrap();
-
-    // With a buffered implementation, the response head would not
-    // resolve until the stream closes — so guard with timeouts.
-    let res = tokio::time::timeout(
-        Duration::from_secs(2),
-        app.clone().oneshot(keyed_post(r#"{"x":1}"#)),
-    )
-    .await
-    .expect("response head must arrive while the body stream is still open")
-    .unwrap();
-    assert_eq!(res.status(), StatusCode::CREATED);
-
-    let mut body = res.into_body();
-    let first = tokio::time::timeout(Duration::from_secs(2), body.frame())
-        .await
-        .expect("first chunk must arrive while the body stream is still open")
-        .unwrap()
-        .unwrap();
-    assert_eq!(first.data_ref().unwrap().as_ref(), b"hello ");
-
     tx.unbounded_send(Ok(b"world".to_vec())).unwrap();
     drop(tx);
-    let rest = body.collect().await.unwrap().to_bytes();
-    assert_eq!(rest.as_ref(), b"world");
 
-    // The streamed response was captured in full and now replays.
+    let (status, _headers, body) = send(app.clone(), keyed_post(r#"{"x":1}"#)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body, b"hello world");
+
+    // The streamed response was captured in full and now replays — proving
+    // the record was persisted before the first response returned.
     let (status, headers, body) = send(app, keyed_post(r#"{"x":1}"#)).await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(headers.get("Idempotent-Replay").unwrap(), "true");
     assert_eq!(body, b"hello world");
+}
+
+// Regression: a 2xx response carrying an explicit `Content-Length` header
+// (the common case — `axum::Json` and most handlers set it) must still be
+// persisted and replayed. A transport frames such a body by Content-Length
+// and never polls it to end-of-stream, so the previous EOS-triggered persist
+// silently dropped the record on the live HTTP path while in-process
+// `oneshot` tests (which drain the body) passed.
+
+#[tokio::test]
+async fn idempotency_persists_response_with_content_length() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_clone = Arc::clone(&calls);
+    let app = Router::new()
+        .route(
+            "/orders",
+            post(move || {
+                let calls = Arc::clone(&calls_clone);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    // Explicit Content-Length, like a real JSON handler.
+                    let body = b"{\"id\":1}".to_vec();
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .header("content-type", "application/json")
+                        .header("content-length", body.len())
+                        .body(Body::from(body))
+                        .unwrap()
+                }
+            }),
+        )
+        .layer(IdempotencyLayer::default());
+
+    let (s1, _h1, b1) = send(app.clone(), keyed_post(r#"{"x":1}"#)).await;
+    assert_eq!(s1, StatusCode::CREATED);
+    assert_eq!(b1, b"{\"id\":1}");
+
+    let (s2, h2, b2) = send(app, keyed_post(r#"{"x":1}"#)).await;
+    assert_eq!(s2, StatusCode::CREATED);
+    assert_eq!(h2.get("Idempotent-Replay").unwrap(), "true");
+    assert_eq!(b2, b"{\"id\":1}");
+    // The handler ran exactly once; the second request replayed from the store.
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 // Rust-specific: non-2xx responses are not persisted, so the inner

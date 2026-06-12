@@ -128,7 +128,10 @@ bypasses it. The infrastructure adapters (`cache-redis`,
 *optional* leaf crates: they implement the platform ports
 (`cache::Adapter`, `eda::Broker`, the notifications `Channel`) so a
 service pulls in `rdkafka` / `lapin` / `redis` / `lettre` only when it
-actually selects that backend.
+actually selects that backend. Two further adapter/starter crates —
+`firefly-cache-postgres` (a Postgres `cache::Adapter`) and
+`firefly-starter-web` (a web-stack starter) — are reserved as
+port-pending placeholders for the next wave.
 
 See [`MODULES.md`](MODULES.md) for the full per-crate catalogue and
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design rationale.
@@ -137,12 +140,12 @@ See [`MODULES.md`](MODULES.md) for the full per-crate catalogue and
 
 ## Workspace layout
 
-One Cargo workspace, 65 members — the Go-parity core (foundational,
+One Cargo workspace, 67 members — the Go-parity core (foundational,
 platform, adapter, starter tiers) plus the PyFly-parity layer:
 
 ```
 fireflyframework-rust/
-├── crates/                       # 63 framework crates (firefly-<name>)
+├── crates/                       # 65 framework crates (firefly-<name>)
 │   ├── kernel/                   #   each with its own README.md + test suite
 │   ├── web/  cqrs/  eda/  …       #   Go-parity core
 │   │
@@ -152,10 +155,12 @@ fireflyframework-rust/
 │   ├── admin/                     #   PyFly: Spring-Boot-Admin-style dashboard
 │   │
 │   ├── cache-redis/               #   adapter: Redis cache
+│   ├── cache-postgres/            #   adapter: Postgres cache (port pending)
 │   ├── eda-kafka/  eda-rabbitmq/  #   adapter: event transports
 │   ├── eda-postgres/  eda-redis/  #     (Kafka / RabbitMQ / Postgres outbox / Redis Streams)
 │   ├── notifications-smtp/        #   adapter: SMTP e-mail
 │   ├── idp-*/  ecm-*/             #   adapters: identity + content vendors
+│   ├── starter-web/              #   starter: web stack bundle (port pending)
 │   └── backoffice/
 ├── tests/integration/            # cross-crate integration suite
 ├── samples/orders/               # reference service (firefly-sample-orders)
@@ -259,8 +264,8 @@ Requires Rust 1.85+ (edition 2021).
 
 ## Status
 
-The framework ships **65 workspace members** across the four tiers
-(63 crates under `crates/` plus the integration suite and the Orders
+The framework ships **67 workspace members** across the four tiers
+(65 crates under `crates/` plus the integration suite and the Orders
 sample). The workspace quality gate is `make ci`: `cargo fmt --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo build --workspace`, `cargo test --workspace`.
@@ -282,6 +287,13 @@ Keycloak (OIDC + admin REST), Azure AD (Microsoft Graph), AWS Cognito
 Azure Blob (real object stores), and Twilio / Firebase (real providers).
 The remaining SaaS channels (SendGrid, Resend) carry their locked ports
 and fail loud with typed not-implemented errors until wired.
+
+Two crates ship as **port-pending placeholders** reserved on the
+workspace graph for the next wave — `firefly-cache-postgres` (a
+Postgres-backed `cache::Adapter`) and `firefly-starter-web` (a
+web-stack starter bundling `starter-core` + web middleware + security +
+actuator). Each compiles and carries its locked dependency set; the
+implementation lands without disturbing the established wire contract.
 
 See [`MODULES.md`](MODULES.md) for the per-crate Full / Stub status.
 

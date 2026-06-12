@@ -10,8 +10,8 @@ All notable changes to the Rust port of Firefly Framework.
 Fourth sibling port of the Java/Spring Boot Firefly Framework, joining
 the .NET, Go, and Python (PyFly) ports. Ported with full module parity
 against the Go port (the canonical compiled-language reference) **plus a
-purely additive PyFly-parity layer**: one Cargo workspace with 65
-members — 63 `firefly-*` crates under `crates/`, the cross-crate
+purely additive PyFly-parity layer**: one Cargo workspace with 67
+members — 65 `firefly-*` crates under `crates/`, the cross-crate
 integration suite, and the Orders reference sample. Targets Rust 1.85+
 (edition 2021) on the tokio + axum + serde stack, with `thiserror`
 errors, `async-trait` ports, RustCrypto primitives, and `tracing`
@@ -124,6 +124,15 @@ platform ports; pull their backing SDK only when selected):
 - `firefly-notifications-smtp` — SMTP email channel over `lettre`
   (real MIME, STARTTLS, BCC-not-leaked)
 
+Reserved as port-pending placeholders for the next wave (compile and
+carry their locked dependency set; implementation lands without
+disturbing the wire contract):
+
+- `firefly-cache-postgres` — Postgres-backed `cache::Adapter` (key/value
+  table with TTL over `tokio-postgres`)
+- `firefly-starter-web` — web-stack starter bundling `starter-core` +
+  web middleware + security + actuator wiring
+
 Additive extensions to existing crates (every Go-parity wire format
 unchanged):
 
@@ -146,12 +155,37 @@ unchanged):
   resolution, runtime reload (`ReloadableConfig` / `Refresher` →
   `/actuator/refresh`), masked property-source introspection,
   multi-profile overlays, and a Spring-Cloud-Config client
-- `firefly-orchestration` — durable execution state, stuck-run
-  recovery, a dead-letter queue, signal/timer workflow nodes,
-  broker-driven and scheduled saga starts, and a REST admin surface
-  (`MemoryPersistence` / `SqlitePersistence` adapters)
+- `firefly-orchestration` — workflow step compensation
+  (`Node::with_compensation`, reverse-order rollback), `wait_all` /
+  `wait_any` join points (`WaitTarget`), child workflows
+  (`ChildWorkflowService`), continue-as-new (`ContinueAsNew`),
+  conditional + async steps, per-step retry / backoff / timeout
+  (`invoke_with_policy`), inter-step data passing (`StepContext`),
+  durable execution state, stuck-run recovery, a dead-letter queue,
+  signal / timer workflow nodes, an `EventGateway` for broker-driven and
+  scheduled saga starts, a ruleset-style `validator`, and a REST admin
+  surface (`MemoryPersistence` / `SqlitePersistence` adapters)
+- `firefly-eventsourcing` — global cross-aggregate `EventStore::stream_all`
+  + cross-aggregate projections, multi-tenancy (tenant-scoped append /
+  load / stream), and an `EventSourcedRepository`
+- `firefly-rule-engine` — `between` / null / `regex` operators,
+  `Rule.otherwise`, `EvaluationMode` (All / FirstMatch), a ruleset
+  validator, and pluggable `ActionHandler`s
+- `firefly-data` — `Mapper` / `Mapping` / `Projection` object mapper,
+  a derived-query parser (`QueryMethodParser` / `ParsedQuery`), and
+  `Pageable` / `Sort` / `Order` paging requests
+- `firefly-validators` — `national_id` and `tax_id` validators
+- `firefly-kernel` — a `ddd` module (`Entity`, `Specification`
+  combinators, domain events / `PendingEvents`), task-local request and
+  tenant scopes alongside correlation, and a typed `ErrorResponse`
+  (`ErrorCategory` / `ErrorSeverity` / `FieldError`)
 - `firefly-eda` — `Event.key` routing key, glob topic subscriptions,
-  round-robin consumer groups, and a `wrap_listener` retry/DLQ wrapper
+  round-robin consumer groups, `EventFilter` chains
+  (`HeaderEventFilter` / `PredicateEventFilter`), a queryable
+  `EdaDeadLetterStore`, an `EventPublisherHealthIndicator`, and a
+  `wrap_listener` retry/DLQ wrapper
+- `firefly-cache` — LRU eviction + hit/miss statistics on the in-process
+  `MemoryAdapter`
 
 **Tests + samples**
 

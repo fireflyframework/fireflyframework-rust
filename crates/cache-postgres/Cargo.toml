@@ -1,0 +1,20 @@
+[package]
+name = "firefly-cache-postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — Postgres-backed cache adapter (key/value table with TTL)"
+
+[dependencies]
+firefly-cache = { workspace = true }
+tokio-postgres = { workspace = true, features = ["with-chrono-0_4"] }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }

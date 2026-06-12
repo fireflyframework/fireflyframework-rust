@@ -21,5 +21,12 @@ base64 = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]
+# `web` enables firefly-idp's axum REST router (`idp::web`) for the
+# controller oneshot tests; axum/tower/http-body-util drive in-process
+# requests with no sockets.
+firefly-idp = { workspace = true, features = ["web"] }
 tokio = { workspace = true }
 serde_json = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }

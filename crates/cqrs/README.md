@@ -158,6 +158,50 @@ A denial short-circuits dispatch before the handler runs; a disabled
 middleware authorizes everything. The hook receives the dispatch's
 `ExecutionContext` when one is attached, and `None` otherwise.
 
+### Structured validation
+
+On top of the terse `Message::validate` hook (`Result<(), CqrsError>`),
+the crate ports pyfly's `pyfly.cqrs.validation` result types for messages
+that need to accumulate **multiple** field errors:
+
+| Symbol                                   | pyfly equivalent                                  |
+|------------------------------------------|---------------------------------------------------|
+| `ValidationResult` (`success` / `failure` / `failure_with` / `from_errors` / `combine` / `error_messages` / `into_cqrs_error`) | frozen `ValidationResult` dataclass |
+| `ValidationError` (`new` + `with_error_code` / `with_severity` / `with_rejected_value`) | frozen `ValidationError` dataclass |
+| `ValidationSeverity` (`WARNING` / `ERROR` / `CRITICAL`) + `VALIDATION_ERROR_CODE` | `ValidationSeverity` `StrEnum` + default `"VALIDATION_ERROR"` code |
+| `StructuredValidate::validate_structured()` | the `obj.validate()` returning a `ValidationResult` that `AutoValidationProcessor` discovers |
+
+This surface is **additive and entirely opt-in** — it does not change the
+`Bus`, the `Message` trait's required shape, or the `ValidationMiddleware`.
+A message opts in by implementing `StructuredValidate` and folding the
+result back into the existing channel:
+
+```rust,ignore
+impl StructuredValidate for CreateUser {
+    fn validate_structured(&self) -> ValidationResult {
+        let mut r = ValidationResult::success();
+        if self.name.is_empty() {
+            r = r.combine(ValidationResult::failure("name", "name is required"));
+        }
+        r
+    }
+}
+
+impl Message for CreateUser {
+    // Bridge the structured result into the unchanged ValidationMiddleware.
+    fn validate(&self) -> Result<(), CqrsError> {
+        self.validate_structured().into_cqrs_error()
+    }
+}
+```
+
+`ValidationResult::into_cqrs_error()` renders the failure summary exactly
+like pyfly's `CqrsValidationException` (explicit summary → joined
+`"<field>: <message>"` messages → `"Validation failed"`), so the existing
+`CqrsError::Validation` short-circuit and wire string are preserved. The
+`ValidationSeverity` and `ValidationError` JSON shapes match pyfly's
+`StrEnum` / dataclass field names byte-for-byte.
+
 ### ExecutionContext
 
 `ExecutionContext` (user / tenant / organization / session / request /

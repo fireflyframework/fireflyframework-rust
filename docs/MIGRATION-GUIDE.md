@@ -55,7 +55,9 @@ spring AMQP / RabbitMQ               → firefly-eda-rabbitmq
 (transactional outbox over Postgres) → firefly-eda-postgres
 (Redis Streams listener)             → firefly-eda-redis
 spring-data-redis cache              → firefly-cache-redis
+(Postgres-backed cache, port pending)→ firefly-cache-postgres
 spring JavaMailSender (SMTP)         → firefly-notifications-smtp
+spring-boot-starter-web (port pending)→ firefly-starter-web
 ```
 
 ## Spring concept mapping
@@ -84,6 +86,12 @@ composition, `async`/`await`).
 | `@CircuitBreaker @RateLimiter @Bulkhead` | `firefly_resilience::Chain` composing `Timeout`, `CircuitBreaker`, `Bulkhead`, `RateLimiter` |
 | `@PreAuthorize("hasRole('ADMIN')")`      | `FilterChain::new().require("/admin/", "ADMIN")` + `BearerLayer`                     |
 | R2DBC repositories                       | `firefly_data::Repository<T, K>` trait + `Filter` DSL + `Page<T>`                    |
+| Spring Data derived query methods (`findByNameAndAgeGreaterThan`) | `firefly_data::QueryMethodParser` → `ParsedQuery` (`FieldPredicate` / `QueryOperator`) |
+| `Pageable` / `Sort` / `PageRequest`      | `firefly_data::{Pageable, Sort, Order, RequestSort}`                                 |
+| MapStruct / bean mapping                 | `firefly_data::{Mapper, Mapping, Projection}` object mapper                          |
+| Axon / event-sourced aggregates          | `firefly_eventsourcing` — aggregate roots + `EventStore` (incl. global `stream_all` + cross-aggregate projections + multi-tenancy) + `EventSourcedRepository` |
+| Drools-style rules                       | `firefly_rule_engine` — YAML DSL with `between`/null/`regex` operators, `Rule.otherwise`, `EvaluationMode`, ruleset validator + `ActionHandler`s |
+| Temporal / Camunda workflows             | `firefly_orchestration::Workflow` — step compensation, `wait_all`/`wait_any`, `ChildWorkflowService`, `ContinueAsNew`, conditional + async steps, per-step retry/backoff/timeout, `StepContext` data passing |
 | `@Transactional`                         | `with_tx(&TxContext::root(), &db, \|ctx\| { .. })` (`firefly-transactional`)         |
 | Flyway `V001__init.sql`                  | `firefly_migrations::run` over a `Database` port with a `DirSource` / `EmbeddedSource` |
 | `@RestController` + springdoc            | `firefly_openapi::Builder` + `RouteDef` descriptors → `/openapi.json` + Swagger-UI shim |

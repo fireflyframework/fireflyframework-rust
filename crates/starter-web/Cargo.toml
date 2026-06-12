@@ -1,0 +1,21 @@
+[package]
+name = "firefly-starter-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — web stack starter (starter-core + web middleware bundle + optional security filter chain + actuator wiring)"
+
+[dependencies]
+firefly-starter-core = { workspace = true }
+firefly-security = { workspace = true }
+axum = { workspace = true }
+
+[dev-dependencies]
+firefly-kernel = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }

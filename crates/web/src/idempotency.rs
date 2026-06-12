@@ -4,19 +4,17 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
-use std::pin::Pin;
 use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{to_bytes, Body};
 use axum::response::Response;
 use chrono::{DateTime, Utc};
 use firefly_kernel::{FireflyError, FireflyResult, ProblemDetail, HEADER_IDEMPOTENCY_KEY};
 use futures::future::BoxFuture;
 use http::{HeaderName, HeaderValue, Method, Request, StatusCode};
-use http_body::{Body as HttpBody, Frame, SizeHint};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tower::{Layer, Service};
@@ -276,14 +274,20 @@ where
                 return Ok(res);
             }
 
-            // Capture status and headers now (Go captures them at
-            // `WriteHeader` time), then tee the body through
-            // [`CaptureBody`]: every frame is forwarded downstream as
-            // the handler produces it — first bytes reach the client
-            // before the handler finishes, exactly like Go's
-            // `captureWriter` writing through to the live
-            // `ResponseWriter` — while a copy accumulates for the
-            // replay record, which is persisted when the body ends.
+            // Capture status and headers (Go captures them at
+            // `WriteHeader` time), buffer the full body, persist the
+            // replay record, then return the complete response. This
+            // mirrors the Go middleware's `captureWriter` + `Put`-before-
+            // return ordering exactly: a retry arriving after the
+            // response is guaranteed to observe the stored record.
+            //
+            // Buffering (rather than a streaming tee) is deliberate and
+            // required for correctness: a transport that frames the body
+            // by the handler's `Content-Length` header reads exactly that
+            // many bytes and never polls the response body for its
+            // end-of-stream signal, so an EOS-triggered persist would
+            // silently never run. Idempotent (replayable) responses are
+            // small, complete documents, so buffering costs nothing here.
             let (res_parts, res_body) = res.into_parts();
             let mut headers = BTreeMap::new();
             for (name, value) in &res_parts.headers {
@@ -293,129 +297,29 @@ where
                         .or_insert_with(|| v.to_owned());
                 }
             }
-            let capture = CaptureBody {
-                state: CaptureState::Streaming(res_body),
-                collected: Vec::new(),
-                finish: Some(FinishCapture {
-                    store: Arc::clone(&config.store),
-                    key,
-                    ttl: config.ttl,
-                    status_code: res_parts.status.as_u16(),
-                    headers,
-                    request_hash: req_hash,
-                }),
+            let body_bytes = match to_bytes(res_body, usize::MAX).await {
+                Ok(b) => b,
+                // A body that errors mid-collection must not be replayed;
+                // surface a problem rather than persisting a truncated record.
+                Err(e) => {
+                    return Ok(problem_response(&ProblemDetail::bad_request(format!(
+                        "capture response body: {e}"
+                    ))));
+                }
             };
-            Ok(Response::from_parts(res_parts, Body::new(capture)))
+            let rec = IdempotencyRecord {
+                status_code: res_parts.status.as_u16(),
+                headers,
+                body_hash: hash_bytes(&body_bytes),
+                body: body_bytes.to_vec(),
+                stored_at: Utc::now(),
+                request_hash: req_hash,
+            };
+            // Store before returning (Go's `Put` before `ServeHTTP`
+            // returns); a store error is swallowed like the Go middleware.
+            let _ = config.store.put(&key, rec, config.ttl).await;
+            Ok(Response::from_parts(res_parts, Body::from(body_bytes)))
         })
-    }
-}
-
-/// Everything [`CaptureBody`] needs to persist the finished
-/// [`IdempotencyRecord`] once the last byte has been forwarded.
-struct FinishCapture {
-    store: Arc<dyn IdempotencyStore>,
-    key: String,
-    ttl: Duration,
-    status_code: u16,
-    headers: BTreeMap<String, String>,
-    request_hash: String,
-}
-
-/// Streaming state of [`CaptureBody`].
-enum CaptureState {
-    /// Forwarding (and copying) frames from the inner body.
-    Streaming(Body),
-    /// Inner body finished; persisting the record before reporting
-    /// end-of-stream, so a retry arriving after the response completed
-    /// is guaranteed to observe the stored record — the ordering the Go
-    /// middleware gets by calling `Put` before `ServeHTTP` returns.
-    Storing(BoxFuture<'static, ()>),
-    /// Finished (or failed mid-stream); nothing more to yield.
-    Done,
-}
-
-/// Tees the downstream response body for the idempotency record — the
-/// Rust analog of the Go port's `captureWriter`. Frames pass through
-/// unbuffered, so streaming handlers (chunked progress, SSE-style
-/// bodies) keep streaming under the idempotency layer. A body that
-/// errors mid-stream forwards the error and is never persisted.
-struct CaptureBody {
-    state: CaptureState,
-    collected: Vec<u8>,
-    finish: Option<FinishCapture>,
-}
-
-impl HttpBody for CaptureBody {
-    type Data = Bytes;
-    type Error = axum::Error;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let this = self.get_mut();
-        loop {
-            match &mut this.state {
-                CaptureState::Streaming(body) => match Pin::new(body).poll_frame(cx) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Some(Ok(frame))) => {
-                        if let Some(data) = frame.data_ref() {
-                            this.collected.extend_from_slice(data);
-                        }
-                        return Poll::Ready(Some(Ok(frame)));
-                    }
-                    Poll::Ready(Some(Err(e))) => {
-                        // A truncated body must not be replayed.
-                        this.state = CaptureState::Done;
-                        return Poll::Ready(Some(Err(e)));
-                    }
-                    Poll::Ready(None) => match this.finish.take() {
-                        Some(ctx) => {
-                            let body = std::mem::take(&mut this.collected);
-                            let rec = IdempotencyRecord {
-                                status_code: ctx.status_code,
-                                headers: ctx.headers,
-                                body_hash: hash_bytes(&body),
-                                body,
-                                stored_at: Utc::now(),
-                                request_hash: ctx.request_hash,
-                            };
-                            let (store, key, ttl) = (ctx.store, ctx.key, ctx.ttl);
-                            this.state = CaptureState::Storing(Box::pin(async move {
-                                // A store error is swallowed, exactly
-                                // like the Go middleware's `_ = Put`.
-                                let _ = store.put(&key, rec, ttl).await;
-                            }));
-                        }
-                        None => {
-                            this.state = CaptureState::Done;
-                            return Poll::Ready(None);
-                        }
-                    },
-                },
-                CaptureState::Storing(fut) => match fut.as_mut().poll(cx) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(()) => {
-                        this.state = CaptureState::Done;
-                        return Poll::Ready(None);
-                    }
-                },
-                CaptureState::Done => return Poll::Ready(None),
-            }
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        // `false` until the record is persisted so the connection keeps
-        // polling through the Storing state to our end-of-stream.
-        matches!(self.state, CaptureState::Done)
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        match &self.state {
-            CaptureState::Streaming(body) => body.size_hint(),
-            CaptureState::Storing(_) | CaptureState::Done => SizeHint::with_exact(0),
-        }
     }
 }
 

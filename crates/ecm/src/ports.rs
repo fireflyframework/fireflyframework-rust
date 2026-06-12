@@ -307,6 +307,179 @@ impl std::fmt::Display for SignatureStatus {
     }
 }
 
+/// The state of one signer within an [`ESignatureEnvelope`].
+///
+/// pyfly's `ESignatureEnvelope` dataclass tracks the envelope-level status
+/// and timestamps only; this additive per-recipient view lets adapters that
+/// resolve individual signer progress (DocuSign's recipient `status`,
+/// Adobe Sign's participant state) surface it without changing the
+/// envelope-level shape. It is omitted from the envelope JSON when empty,
+/// so an envelope carrying no per-signer detail stays byte-compatible with
+/// pyfly's core `ESignatureEnvelope` wire form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignerState {
+    /// Signer email address.
+    pub email: String,
+    /// This signer's individual status; defaults to
+    /// [`SignatureStatus::Pending`].
+    pub status: SignatureStatus,
+    /// When this signer signed (UTC); `None` until they do — serialized
+    /// under `signedAt`, omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_at: Option<DateTime<Utc>>,
+}
+
+impl SignerState {
+    /// Builds a pending signer state for `email` (no signature timestamp).
+    pub fn pending(email: impl Into<String>) -> Self {
+        Self {
+            email: email.into(),
+            status: SignatureStatus::Pending,
+            signed_at: None,
+        }
+    }
+
+    /// Sets this signer's status — chainable.
+    #[must_use]
+    pub fn with_status(mut self, status: SignatureStatus) -> Self {
+        self.status = status;
+        self
+    }
+
+    /// Records when this signer signed — chainable.
+    #[must_use]
+    pub fn with_signed_at(mut self, signed_at: DateTime<Utc>) -> Self {
+        self.signed_at = Some(signed_at);
+        self
+    }
+}
+
+/// Envelope metadata returned by [`ESignatureProvider::get`] — the Rust
+/// port of pyfly's `ESignatureEnvelope` dataclass.
+///
+/// Where [`ESignatureProvider::status`] returns only the bare
+/// [`SignatureStatus`], `get` returns the full envelope: its identifier and
+/// provider, the document it covers, the provider-side envelope id, the
+/// `sent_at` / `signed_at` lifecycle timestamps, and (additively) the
+/// per-[`SignerState`] breakdown. The core fields mirror pyfly's dataclass
+/// field-for-field (`id`, `provider`, `document_id`, `status`,
+/// `provider_envelope_id`, `sent_at`, `signed_at`); `signers` is the
+/// additive enrichment, omitted from JSON when empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ESignatureEnvelope {
+    /// Framework-side envelope identifier (the id returned by
+    /// [`ESignatureProvider::create`]).
+    #[serde(default)]
+    pub id: String,
+    /// Provider that owns the envelope (e.g. `docusign`, `noop`); omitted
+    /// from JSON when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    /// Identifier of the document under signature; omitted when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub document_id: String,
+    /// Current envelope-level status.
+    #[serde(default = "default_envelope_status")]
+    pub status: SignatureStatus,
+    /// The provider's own envelope id (DocuSign `envelopeId`, Adobe Sign
+    /// `agreementId`); omitted from JSON when absent — pyfly's
+    /// `provider_envelope_id: str | None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_envelope_id: Option<String>,
+    /// When the envelope was sent for signature (UTC); `None` until sent —
+    /// pyfly's `sent_at: datetime | None`. Omitted from JSON when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<DateTime<Utc>>,
+    /// When the envelope completed signing (UTC); `None` until complete —
+    /// pyfly's `signed_at: datetime | None`. Omitted from JSON when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_at: Option<DateTime<Utc>>,
+    /// Per-signer state breakdown (additive over pyfly's dataclass);
+    /// omitted from JSON when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signers: Vec<SignerState>,
+}
+
+/// The default envelope status is [`SignatureStatus::Pending`] — the Rust
+/// analog of pyfly's `status: ESignatureStatus = ESignatureStatus.DRAFT`
+/// (the framework `SignatureStatus` has no separate draft/sent split; a
+/// freshly-built envelope is `Pending`).
+fn default_envelope_status() -> SignatureStatus {
+    SignatureStatus::Pending
+}
+
+impl Default for ESignatureEnvelope {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            provider: String::new(),
+            document_id: String::new(),
+            status: SignatureStatus::Pending,
+            provider_envelope_id: None,
+            sent_at: None,
+            signed_at: None,
+            signers: Vec::new(),
+        }
+    }
+}
+
+impl ESignatureEnvelope {
+    /// Builds an envelope with the given `id` and `status`, all other
+    /// fields at their defaults — the minimal shape an adapter that tracks
+    /// only the envelope-level status can return.
+    pub fn new(id: impl Into<String>, status: SignatureStatus) -> Self {
+        Self {
+            id: id.into(),
+            status,
+            ..Self::default()
+        }
+    }
+
+    /// Sets the owning provider name — chainable.
+    #[must_use]
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = provider.into();
+        self
+    }
+
+    /// Sets the document id under signature — chainable.
+    #[must_use]
+    pub fn with_document_id(mut self, document_id: impl Into<String>) -> Self {
+        self.document_id = document_id.into();
+        self
+    }
+
+    /// Sets the provider-side envelope id — chainable.
+    #[must_use]
+    pub fn with_provider_envelope_id(mut self, id: impl Into<String>) -> Self {
+        self.provider_envelope_id = Some(id.into());
+        self
+    }
+
+    /// Sets the `sent_at` timestamp — chainable.
+    #[must_use]
+    pub fn with_sent_at(mut self, sent_at: DateTime<Utc>) -> Self {
+        self.sent_at = Some(sent_at);
+        self
+    }
+
+    /// Sets the `signed_at` timestamp — chainable.
+    #[must_use]
+    pub fn with_signed_at(mut self, signed_at: DateTime<Utc>) -> Self {
+        self.signed_at = Some(signed_at);
+        self
+    }
+
+    /// Replaces the per-signer state list — chainable.
+    #[must_use]
+    pub fn with_signers(mut self, signers: Vec<SignerState>) -> Self {
+        self.signers = signers;
+        self
+    }
+}
+
 /// ESignatureProvider is the e-signature port.
 #[async_trait]
 pub trait ESignatureProvider: Send + Sync {
@@ -318,6 +491,29 @@ pub trait ESignatureProvider: Send + Sync {
     async fn cancel(&self, id: &str) -> Result<(), EcmError>;
     /// Human-readable provider identifier (e.g. `docusign`).
     fn name(&self) -> &str;
+
+    /// Returns the full [`ESignatureEnvelope`] metadata for flow `id`, or
+    /// `None` when no such envelope exists — the Rust port of pyfly's
+    /// `ESignatureAdapter.get(envelope_id) -> ESignatureEnvelope | None`.
+    ///
+    /// Where [`ESignatureProvider::status`] returns only the bare
+    /// [`SignatureStatus`], this surfaces the envelope's provider,
+    /// document, provider-side id, lifecycle timestamps, and per-signer
+    /// breakdown. The default body bridges to [`ESignatureProvider::status`]
+    /// (mapping its [`EcmError::NotFound`] to `Ok(None)`, every other error
+    /// through) and synthesizes a minimal envelope carrying the status and
+    /// this provider's [`name`](ESignatureProvider::name) — so adapters
+    /// predating this method keep compiling and still answer `get`. Adapters
+    /// that track richer metadata override it to populate the full shape.
+    async fn get(&self, id: &str) -> Result<Option<ESignatureEnvelope>, EcmError> {
+        match self.status(id).await {
+            Ok(status) => Ok(Some(
+                ESignatureEnvelope::new(id, status).with_provider(self.name()),
+            )),
+            Err(err) if err.is_not_found() => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -531,6 +727,91 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
+    // ESignatureEnvelope / SignerState (pyfly ESignatureEnvelope dataclass +
+    // the additive signer breakdown) wire shape and builders.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn envelope_default_minimal_wire_shape() {
+        // A bare envelope: only the non-omitted core fields stay on the wire
+        // (id + status). All pyfly-optional fields (provider/document/ids/
+        // timestamps) and the additive signers list are omitted when empty.
+        let env = ESignatureEnvelope::default();
+        assert_eq!(env.status, SignatureStatus::Pending);
+        let got = serde_json::to_string(&env).unwrap();
+        assert_eq!(got, r#"{"id":"","status":"pending"}"#);
+        let back: ESignatureEnvelope = serde_json::from_str("{}").unwrap();
+        assert_eq!(back, ESignatureEnvelope::default());
+    }
+
+    #[test]
+    fn envelope_full_wire_shape_and_round_trip() {
+        let ts = Utc.with_ymd_and_hms(2025, 1, 2, 3, 4, 5).unwrap();
+        let env = ESignatureEnvelope::new("env-1", SignatureStatus::Signed)
+            .with_provider("docusign")
+            .with_document_id("d1")
+            .with_provider_envelope_id("dsx-99")
+            .with_sent_at(ts)
+            .with_signed_at(ts)
+            .with_signers(vec![SignerState::pending("a@example.com")
+                .with_status(SignatureStatus::Signed)
+                .with_signed_at(ts)]);
+        let got = serde_json::to_string(&env).unwrap();
+        let want = r#"{"id":"env-1","provider":"docusign","documentId":"d1","status":"signed","providerEnvelopeId":"dsx-99","sentAt":"2025-01-02T03:04:05Z","signedAt":"2025-01-02T03:04:05Z","signers":[{"email":"a@example.com","status":"signed","signedAt":"2025-01-02T03:04:05Z"}]}"#;
+        assert_eq!(got, want);
+        let back: ESignatureEnvelope = serde_json::from_str(&got).unwrap();
+        assert_eq!(back, env);
+    }
+
+    #[test]
+    fn signer_state_pending_omits_signed_at() {
+        let s = SignerState::pending("a@example.com");
+        assert_eq!(s.status, SignatureStatus::Pending);
+        assert!(s.signed_at.is_none());
+        assert_eq!(
+            serde_json::to_string(&s).unwrap(),
+            r#"{"email":"a@example.com","status":"pending"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn default_get_bridges_status_and_maps_not_found_to_none() {
+        // StaticSigner does not override `get`, so the default body bridges to
+        // `status`: a known envelope yields a minimal metadata shape carrying
+        // the status + provider; an unknown id maps NotFound → Ok(None).
+        let signer: Arc<dyn ESignatureProvider> = Arc::new(StaticSigner);
+        let env = signer.get("env-1").await.unwrap().unwrap();
+        assert_eq!(env.id, "env-1");
+        assert_eq!(env.status, SignatureStatus::Pending);
+        assert_eq!(env.provider, "static");
+        assert!(signer.get("nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn default_get_propagates_non_not_found_errors() {
+        // A provider error that is *not* NotFound must surface, not become None.
+        struct FailingSigner;
+        #[async_trait]
+        impl ESignatureProvider for FailingSigner {
+            async fn create(&self, _req: SignatureRequest) -> Result<String, EcmError> {
+                Ok("e".into())
+            }
+            async fn status(&self, _id: &str) -> Result<SignatureStatus, EcmError> {
+                Err(EcmError::provider("static: backend down"))
+            }
+            async fn cancel(&self, _id: &str) -> Result<(), EcmError> {
+                Ok(())
+            }
+            fn name(&self) -> &str {
+                "failing"
+            }
+        }
+        let signer = FailingSigner;
+        let err = signer.get("e").await.unwrap_err();
+        assert_eq!(err.to_string(), "static: backend down");
+    }
+
+    // ---------------------------------------------------------------------
     // Checksum and reader helpers.
     // ---------------------------------------------------------------------
 
@@ -627,6 +908,8 @@ mod tests {
         assert_send_sync::<Folder>();
         assert_send_sync::<SignatureRequest>();
         assert_send_sync::<SignatureStatus>();
+        assert_send_sync::<ESignatureEnvelope>();
+        assert_send_sync::<SignerState>();
         assert_send_sync::<EcmError>();
         // Content streams only need Send: they cross await points but are
         // owned by a single reader at a time, like Go's io.ReadCloser.

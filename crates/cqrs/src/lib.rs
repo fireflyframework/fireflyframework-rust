@@ -104,6 +104,16 @@
 //! [`EdaCacheInvalidationBridge`] evicting [`QueryCache`] entries when
 //! events arrive on a [`firefly_eda`] broker, and a
 //! [`Bus::handler_names`] listing for the admin actuator.
+//!
+//! It also ports pyfly's structured validation result types
+//! ([`ValidationResult`] / [`ValidationError`] / [`ValidationSeverity`])
+//! and the opt-in [`StructuredValidate`] hook. These run *alongside* the
+//! terse [`Message::validate`] path: a message can override
+//! [`StructuredValidate::validate_structured`] to accumulate multiple
+//! field errors and fold them back into the existing
+//! [`CqrsError::Validation`] channel via
+//! [`ValidationResult::into_cqrs_error`] — so the unchanged
+//! [`ValidationMiddleware`] keeps working untouched.
 
 #![warn(missing_docs)]
 
@@ -114,6 +124,7 @@ mod context;
 mod eda_bridge;
 mod error;
 mod fluent;
+mod validation;
 
 pub use authorization::{
     AuthorizationError, AuthorizationMiddleware, AuthorizationResult, AuthorizationSeverity,
@@ -129,6 +140,10 @@ pub use eda_bridge::{
 };
 pub use error::CqrsError;
 pub use fluent::{CommandBuilder, MessageMetadata, QueryBuilder};
+pub use validation::{
+    StructuredValidate, ValidationError, ValidationResult, ValidationSeverity,
+    VALIDATION_ERROR_CODE,
+};
 
 /// The released framework version. Calendar-versioned (`YY.M.PATCH`)
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to

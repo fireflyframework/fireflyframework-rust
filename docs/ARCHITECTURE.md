@@ -53,7 +53,7 @@ that bypasses the layering.
 
 ## Workspace of crates
 
-The Rust port is a single Cargo workspace of 65 members: 63 crates
+The Rust port is a single Cargo workspace of 67 members: 65 crates
 under `crates/` (named `firefly-<dir>`, hyphenation following the Java
 repo names), plus `tests/integration` and `samples/orders`. The
 Go-parity core matches the Go port's module set one-for-one; the
@@ -136,7 +136,7 @@ traits, injected as `Arc<dyn Trait>` at wiring time.
 | `firefly-idp`            | `firefly-idp-internal-db` (bcrypt + HS256 JWT)       | **real:** `idp-keycloak`, `idp-azure-ad`, `idp-aws-cognito` |
 | `firefly-ecm`            | local-fs `ContentStore` + in-memory document service | **real:** `ecm-storage-aws` (S3), `ecm-storage-azure` (Blob), `ecm-esignature-docusign`, `ecm-esignature-adobe-sign`, `ecm-esignature-logalty` |
 | `firefly-notifications`  | Memory channel + dispatcher                          | **real:** `notifications-smtp`, `notifications-twilio`, `notifications-firebase`; **stub:** `notifications-sendgrid`, `notifications-resend` |
-| `firefly-cache`          | `MemoryAdapter` / `NoOpAdapter` / `FallbackAdapter`  | **real:** `cache-redis` (`RedisAdapter`)                |
+| `firefly-cache`          | `MemoryAdapter` / `NoOpAdapter` / `FallbackAdapter`  | **real:** `cache-redis` (`RedisAdapter`); **stub:** `cache-postgres` (port pending) |
 | `firefly-eda`            | `InMemoryBroker`                                     | **real:** `eda-kafka`, `eda-rabbitmq`, `eda-postgres` (outbox), `eda-redis` (Streams) |
 | `firefly-callbacks`      | Full impl (HMAC-signing dispatcher + audit + REST admin + SDK) | —                                             |
 | `firefly-webhooks`       | Full impl (HMAC / Stripe / GitHub / Twilio validators + pipeline + DLQ + ingest endpoint + SDK) | —            |
@@ -208,6 +208,7 @@ One-call composition.
 | `firefly-starter-application`| starter-core + plugins registry                                    |
 | `firefly-starter-domain`     | starter-core + in-memory event-sourcing stores                     |
 | `firefly-starter-data`       | starter-core (consumer supplies its own DB)                        |
+| `firefly-starter-web`        | starter-core + web middleware + security + actuator wiring (**stub**, port pending) |
 | `firefly-backoffice`         | starter-application + back-office context middleware               |
 
 Each starter ships an embedded banner printed at startup (via
@@ -321,7 +322,7 @@ the translation rules are:
 
 ## Dependency waves (build order)
 
-The 65 members build in four waves; each wave depends only on the
+The 67 members build in four waves; each wave depends only on the
 waves before it:
 
 ```
@@ -342,14 +343,15 @@ Wave 3 ── adapters + aggregate:
   ecm-storage-*, ecm-esignature-* (→ ecm)
   notifications-smtp,
   notifications-*                (→ notifications)
-  cache-redis                    (→ cache)
+  cache-redis, cache-postgres    (→ cache)
   eda-kafka, eda-rabbitmq,
   eda-postgres, eda-redis        (→ eda)
   cli                            (→ openapi/templates)
   starter-core                   (→ wave-2 set)
         │
 Wave 4 ── composition:
-  starter-application, starter-domain, starter-data, backoffice,
+  starter-application, starter-domain, starter-data, starter-web,
+  backoffice,
   admin                          (→ actuator + cqrs + orchestration + sse + security),
   tests/integration, samples/orders
 ```

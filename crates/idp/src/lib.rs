@@ -18,12 +18,25 @@
 //! serialize with exactly the same JSON field names and empty-field omission
 //! rules as the Go port (`encoding/json` `omitempty` semantics), so SDKs can
 //! transparently swap providers and runtimes.
+//!
+//! # Optional REST controller (`web` feature)
+//!
+//! Enabling the `web` feature compiles the [`web`] module, an axum
+//! [`Router`](axum::Router) that mounts any `Arc<dyn Adapter>` over the
+//! `/idp` REST surface (`login` / `refresh` / `logout` / `introspect` /
+//! `validate` / `userinfo` / `register` plus admin user & role management)
+//! — the Rust port of pyfly's `IdpController`. The router is generic over
+//! the port, so the internal-db adapter, a vendor adapter, or a test fake
+//! all drop straight in.
 
 use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "web")]
+pub mod web;
 
 /// Crate-local result alias: every fallible port operation returns [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;

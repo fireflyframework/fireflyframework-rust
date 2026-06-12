@@ -21,9 +21,12 @@
 //! [`InMemoryFolderRepository`] adapters, document listing
 //! ([`Service::list`]), folder management ([`Service::create_folder`]), a
 //! public [`NoOpESignature`] provider (signs immediately — ideal for tests),
-//! and a [`from_config`] factory that selects storage / e-signature providers
-//! from an [`EcmConfig`] — the DI-free analog of pyfly's
-//! `EcmAutoConfiguration`.
+//! the [`ESignatureEnvelope`] / [`SignerState`] metadata returned by
+//! [`ESignatureProvider::get`] (status + lifecycle timestamps + per-signer
+//! breakdown — pyfly's `ESignatureEnvelope` dataclass and
+//! `ESignatureAdapter.get`), and a [`from_config`] factory that selects
+//! storage / e-signature providers from an [`EcmConfig`] — the DI-free
+//! analog of pyfly's `EcmAutoConfiguration`.
 //!
 //! Faithful port of the Go module `fireflyframework-go/ecm`: the JSON wire
 //! format of [`Document`], [`Folder`], [`SignatureRequest`], and
@@ -68,8 +71,8 @@ pub use local::LocalStore;
 pub use noop::NoOpESignature;
 pub use ports::{
     bytes_reader, sha256_hex, version_key, ContentReader, ContentStore, Document, DocumentService,
-    DocumentVersion, ESignatureProvider, EcmError, Folder, FolderRepository, MetadataStore,
-    SignatureRequest, SignatureStatus,
+    DocumentVersion, ESignatureEnvelope, ESignatureProvider, EcmError, Folder, FolderRepository,
+    MetadataStore, SignatureRequest, SignatureStatus, SignerState,
 };
 pub use service::Service;
 

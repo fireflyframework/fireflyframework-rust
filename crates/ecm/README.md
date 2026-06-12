@@ -55,12 +55,35 @@ pub trait DocumentService: Send + Sync {
 pub struct SignatureRequest { pub document_id: String, pub signers: Vec<String>, pub title: String, pub provider: String }
 pub enum SignatureStatus { Pending, Signed, Declined, Expired } // "pending" | "signed" | "declined" | "expired"
 
+// Envelope metadata returned by `get` (pyfly's ESignatureEnvelope dataclass +
+// the additive per-signer breakdown). Core fields mirror pyfly field-for-field;
+// `signers` is additive and omitted from JSON when empty.
+pub struct ESignatureEnvelope {
+    pub id: String,
+    pub provider: String,                       // omitted when empty
+    pub document_id: String,                    // omitted when empty
+    pub status: SignatureStatus,
+    pub provider_envelope_id: Option<String>,   // "providerEnvelopeId", omitted when None
+    pub sent_at: Option<DateTime<Utc>>,         // "sentAt", omitted when None
+    pub signed_at: Option<DateTime<Utc>>,       // "signedAt", omitted when None
+    pub signers: Vec<SignerState>,              // omitted when empty (additive)
+}
+pub struct SignerState { pub email: String, pub status: SignatureStatus, pub signed_at: Option<DateTime<Utc>> }
+
 #[async_trait]
 pub trait ESignatureProvider: Send + Sync {
     async fn create(&self, req: SignatureRequest) -> Result<String, EcmError>;
     async fn status(&self, id: &str) -> Result<SignatureStatus, EcmError>;
     async fn cancel(&self, id: &str) -> Result<(), EcmError>;
     fn name(&self) -> &str;
+
+    // pyfly's `ESignatureAdapter.get(envelope_id) -> ESignatureEnvelope | None`:
+    // the full envelope metadata, not just the bare status. The default body
+    // bridges to `status` (NotFound → Ok(None); other errors surface) and
+    // synthesizes a minimal envelope, so adapters predating it keep compiling
+    // and still answer `get`. Richer adapters (NoOpESignature, the DocuSign /
+    // Adobe Sign / Logalty crates) override it to populate timestamps + signers.
+    async fn get(&self, id: &str) -> Result<Option<ESignatureEnvelope>, EcmError>;
 }
 
 pub enum EcmError { NotFound, Io(std::io::Error), Provider(String) }
@@ -155,9 +178,25 @@ pub trait FolderRepository: Send + Sync {
 pub struct InMemoryMetadataStore;     // pyfly InMemoryMetadataStorage
 pub struct InMemoryFolderRepository;  // pyfly InMemoryFolderRepository
 
-// Public no-op signer (pyfly NoOpESignatureAdapter) — signs immediately.
+// Public no-op signer (pyfly NoOpESignatureAdapter) — signs immediately and
+// stores full ESignatureEnvelope metadata, so `get` returns the same
+// status + sent_at/signed_at + per-signer breakdown pyfly's no-op adapter does.
 pub struct NoOpESignature; // name() == "noop"
+
+// E-signature envelope metadata (pyfly ESignatureEnvelope dataclass) returned
+// by ESignatureProvider::get, alongside the additive per-SignerState breakdown.
+pub struct ESignatureEnvelope { /* id, provider, document_id, status, provider_envelope_id, sent_at, signed_at, signers */ }
+pub struct SignerState { /* email, status, signed_at */ }
 ```
+
+`ESignatureProvider::get` returns the full [`ESignatureEnvelope`] (pyfly's
+`ESignatureAdapter.get`) rather than the bare `SignatureStatus` that
+`status` returns — surfacing the envelope's provider, document, provider-side
+id, `sent_at` / `signed_at` lifecycle timestamps, and per-signer breakdown.
+It is a **default trait method** (bridging to `status`, mapping `NotFound`
+to `Ok(None)`), so adapters predating it keep compiling and still answer
+`get`; `NoOpESignature` and the DocuSign / Adobe Sign / Logalty crates can
+override it to populate the rich shape.
 
 The in-memory `Service` gains pyfly-parity inherent methods:
 

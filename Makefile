@@ -19,7 +19,7 @@ help:
 	@echo "  cli        run the firefly developer CLI (make cli ARGS='info')"
 	@echo "  cli-install install the firefly binary into ~/.cargo/bin"
 	@echo "  clean      cargo clean"
-	@echo "  ci         fmt-check + clippy + build + test (whole 65-member workspace)"
+	@echo "  ci         fmt-check + clippy + build + test (whole 67-member workspace)"
 
 build:
 	cargo build --workspace

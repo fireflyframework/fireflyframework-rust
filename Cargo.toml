@@ -64,6 +64,8 @@ members = [
     "crates/eda-rabbitmq",
     "crates/eda-postgres",
     "crates/eda-redis",
+    "crates/cache-postgres",
+    "crates/starter-web",
     "tests/integration",
     "samples/orders",
 ]
@@ -141,6 +143,8 @@ firefly-eda-kafka = { path = "crates/eda-kafka", version = "26.6.1" }
 firefly-eda-rabbitmq = { path = "crates/eda-rabbitmq", version = "26.6.1" }
 firefly-eda-postgres = { path = "crates/eda-postgres", version = "26.6.1" }
 firefly-eda-redis = { path = "crates/eda-redis", version = "26.6.1" }
+firefly-cache-postgres = { path = "crates/cache-postgres", version = "26.6.1" }
+firefly-starter-web = { path = "crates/starter-web", version = "26.6.1" }
 
 # ---- async runtime + web ----
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "net", "fs"] }

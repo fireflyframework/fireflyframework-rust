@@ -175,6 +175,7 @@ let core = Core::new(CoreConfig {
 | `firefly.cache.adapter=memory`          | `MemoryAdapter::new()` (default)             |
 | `firefly.cache.adapter=noop`            | `NoOpAdapter`                                |
 | `firefly.cache.adapter=redis`           | `firefly_cache_redis::RedisAdapter::connect(url)` (real adapter — see the **Redis** section below) |
+| `firefly.cache.adapter=postgres`        | `firefly-cache-postgres` (Postgres key/value table with TTL — **port pending**) |
 | `firefly.cache.fallback.adapter=memory` | `FallbackAdapter::new(primary, secondary)`   |
 | `firefly.cache.ttl`                     | Per-call TTL on `set` / `Typed::get_or_set`  |
 

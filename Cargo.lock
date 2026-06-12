@@ -1225,6 +1225,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "firefly-cache-postgres"
+version = "26.6.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "firefly-cache",
+ "serde",
+ "tokio",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "firefly-cache-redis"
 version = "26.6.1"
 dependencies = [
@@ -1595,11 +1607,15 @@ name = "firefly-idp"
 version = "26.6.1"
 dependencies = [
  "async-trait",
+ "axum",
  "chrono",
+ "http",
+ "http-body-util",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tower 0.5.3",
 ]
 
 [[package]]
@@ -1645,17 +1661,20 @@ name = "firefly-idp-internal-db"
 version = "26.6.1"
 dependencies = [
  "async-trait",
+ "axum",
  "base64",
  "bcrypt",
  "chrono",
  "firefly-idp",
  "hmac 0.12.1",
+ "http-body-util",
  "jsonwebtoken",
  "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "tower 0.5.3",
 ]
 
 [[package]]
@@ -2121,6 +2140,20 @@ dependencies = [
  "futures",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "firefly-starter-web"
+version = "26.6.1"
+dependencies = [
+ "axum",
+ "firefly-kernel",
+ "firefly-security",
+ "firefly-starter-core",
+ "http-body-util",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
 ]
 
 [[package]]
@@ -3731,6 +3764,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8dc729a129e682e8d24170cd30ae1aa01b336b096cbb56df6d534ffec133d186"
 dependencies = [
  "bytes",
+ "chrono",
  "fallible-iterator 0.2.0",
  "postgres-protocol",
 ]
