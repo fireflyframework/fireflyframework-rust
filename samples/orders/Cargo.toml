@@ -15,6 +15,7 @@ firefly-cqrs = { workspace = true }
 firefly-client = { workspace = true }
 firefly-starter-core = { workspace = true }
 firefly-web = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

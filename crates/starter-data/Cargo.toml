@@ -13,6 +13,9 @@ firefly-starter-core = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
+firefly-cqrs = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }

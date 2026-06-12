@@ -733,6 +733,7 @@ dependencies = [
 name = "firefly-integration-tests"
 version = "26.6.1"
 dependencies = [
+ "async-trait",
  "axum",
  "chrono",
  "firefly-callbacks",
@@ -747,6 +748,7 @@ dependencies = [
  "hmac",
  "http",
  "http-body-util",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",
@@ -934,6 +936,7 @@ dependencies = [
 name = "firefly-sample-orders"
 version = "26.6.1"
 dependencies = [
+ "async-trait",
  "axum",
  "chrono",
  "firefly-client",
@@ -998,9 +1001,12 @@ dependencies = [
 name = "firefly-starter-application"
 version = "26.6.1"
 dependencies = [
+ "async-trait",
+ "firefly-cqrs",
  "firefly-plugins",
  "firefly-starter-core",
  "futures",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1034,8 +1040,11 @@ dependencies = [
 name = "firefly-starter-data"
 version = "26.6.1"
 dependencies = [
+ "axum",
+ "firefly-cqrs",
  "firefly-starter-core",
  "futures",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1044,6 +1053,7 @@ dependencies = [
 name = "firefly-starter-domain"
 version = "26.6.1"
 dependencies = [
+ "async-trait",
  "firefly-eventsourcing",
  "firefly-starter-core",
  "futures",
