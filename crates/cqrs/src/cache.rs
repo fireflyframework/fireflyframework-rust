@@ -142,7 +142,15 @@ impl Middleware for QueryCacheMiddleware {
 /// the same construction as Go's `keyOf` (`reflect.Type.String() + ":" +
 /// hex(sha256(json.Marshal(msg)))`), with [`std::any::type_name`]
 /// standing in for the `reflect.Type` string.
+///
+/// An explicit key set on the envelope (pyfly's
+/// `QueryBuilder.with_cache_key`, Rust's
+/// [`Envelope::with_cache_key`](crate::Envelope::with_cache_key)) is
+/// used verbatim instead — pyfly's `get_cache_key()` override.
 fn key_of(envelope: &Envelope) -> Result<String, CqrsError> {
+    if let Some(key) = envelope.cache_key() {
+        return Ok(key.to_string());
+    }
     let json = envelope.cache_json()?;
     let digest = Sha256::digest(&json);
     Ok(format!("{}:{}", envelope.type_name(), hex::encode(digest)))

@@ -108,6 +108,85 @@ impl firefly_config_server::Store for GitStore {
 }
 ```
 
+## pyfly parity
+
+In addition to the Go-parity `Store`/`MemoryStore`/`router` surface
+above, the crate ships the **pyfly `config_server` backends** — the
+filesystem and Git stores pyfly exposes via `ConfigBackend`. Where
+`Store` answers a fully composed `Environment` lookup, a
+`ConfigBackend` works one tier lower: it reads, writes, and lists
+individual `ConfigSource` bundles keyed by
+`(application, profile, label)`, and `ConfigServer` composes those
+bundles into the Spring-Cloud-Config overlay set.
+
+| Symbol                                          | Purpose                                                                 |
+|-------------------------------------------------|-------------------------------------------------------------------------|
+| `ConfigSource { application, profile, label, properties }` | One config bundle (the `Properties = serde_json::Map` payload) |
+| `ConfigBackend` (async trait)                   | `fetch` / `save` / `list`; `save` defaults to `BackendError::Unsupported` |
+| `BackendError`                                  | Typed `Io` / `Parse` / `Git` / `Unsupported` failure                    |
+| `MemoryBackend::new()`                          | Map-backed backend for tests (pyfly `InMemoryConfigBackend`)            |
+| `FsStore::new(root)`                            | Reads `<root>/<app>-<profile>.{yaml,yml,json}` (label = sub-directory)  |
+| `FsStore::with_search_locations(root, [dirs…])` | **Tiered search**: domain overrides core overrides common (fill-in keys) |
+| `GitStore::new(uri).label(..).clone_dir(..)`    | Clones/reuses a Git working tree, delegates to `FsStore`; `refresh()` pulls |
+| `ConfigServer::new(backend)`                    | Composes the `(app,profile)` → `(app,default)` → `(application,profile)` → `(application,default)` overlay |
+
+### Tiered filesystem store
+
+```rust,no_run
+# async fn run() -> Result<(), firefly_config_server::BackendError> {
+use firefly_config_server::{ConfigBackend, FsStore};
+
+// Highest precedence first: domain overrides core overrides common.
+let store = FsStore::with_search_locations(
+    "/etc/firefly/domain",
+    [
+        "/etc/firefly/domain".into(),
+        "/etc/firefly/core".into(),
+        "/etc/firefly/common".into(),
+    ],
+)?;
+let source = store.fetch("orders", "prod", "main").await?;
+# let _ = source;
+# Ok(())
+# }
+```
+
+Keys present only in a lower-precedence location are inherited
+(fill-in semantics); `save()` and `list()` operate on the primary
+(first / highest-precedence) location.
+
+### Git-backed store
+
+```rust,no_run
+# async fn run() -> Result<(), firefly_config_server::BackendError> {
+use firefly_config_server::{ConfigBackend, ConfigSource, GitStore, Properties};
+
+let store = GitStore::new("https://github.com/acme/config.git")
+    .label("main")
+    .clone_dir("/var/lib/firefly/config-clone");
+
+let source = store.fetch("orders", "prod", "main").await?;       // clones lazily
+store.save(ConfigSource::with_label(                              // writes + local commit
+    "payments", "prod", "main", Properties::new(),
+)).await?;
+store.refresh().await?;                                          // git pull origin
+# let _ = source;
+# Ok(())
+# }
+```
+
+`GitStore` shells out to the system `git` binary (no extra crate); it
+clones (or reuses an existing clone in a persistent `clone_dir`) and
+delegates all file-search and merge logic to an `FsStore`. Writes are
+committed locally — pushing to the remote is out of scope.
+
+### Optional write path on `Store`
+
+The Go-parity `Store` trait now carries a default `save` method that
+returns `ConfigServerError::Unsupported`. Read-only stores (including
+`MemoryStore`) need not implement it and keep compiling unchanged; a
+writable store overrides `save`.
+
 ## Testing
 
 ```bash
@@ -117,4 +196,8 @@ cargo test -p firefly-config-server
 Covers seeded `Environment` lookup, soft-miss behaviour for unknown
 applications, and JSON wire-shape compatibility — byte-for-byte
 against the Go encoder's output, including sorted `source` keys,
-`version`/`state` omission, and the trailing newline.
+`version`/`state` omission, and the trailing newline. The pyfly-parity
+suite (`tests/backend.rs`) ports pyfly's `test_config_server`,
+`test_tiered_overlay`, and `test_git_backend` cases — the Git tests
+build a **local** repository in a tempdir via the system `git` binary,
+so no network access is required.

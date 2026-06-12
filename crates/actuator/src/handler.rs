@@ -1,29 +1,56 @@
 //! The `/actuator/*` HTTP surface: [`ActuatorConfig`] plus [`mount`],
-//! which returns an axum [`Router`] exposing health, info, metrics, env,
-//! tasks, and version endpoints.
+//! which returns an axum [`Router`] exposing health (with probe groups
+//! and drill-down), info, metrics (Prometheus text + Micrometer JSON),
+//! prometheus, env, tasks, version, loggers, scheduledtasks, caches,
+//! refresh, httpexchanges, and custom [`Endpoint`]s — honoring the
+//! Spring-style [`ExposureConfig`] include/exclude/base-path model.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::body::Bytes;
+use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use chrono::{SecondsFormat, Utc};
-use http::{header, StatusCode};
+use http::{header, HeaderMap, StatusCode};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::health::{HealthComposite, HealthStatus};
+use crate::caches::{CacheOps, CACHE_MANAGER};
+use crate::endpoint::EndpointRegistry;
+use crate::exposure::ExposureConfig;
+use crate::health::{HealthComposite, HealthResult, HealthStatus};
+use crate::http_exchanges::HttpExchangeRecorder;
+use crate::loggers::{LoggersError, LoggersState};
 use crate::metrics::MetricRegistry;
+use crate::refresh::Refresher;
+use crate::scheduledtasks::{render_tasks, ScheduledTasksSource};
 use crate::VERSION;
 
 /// A function contributing extra top-level entries to `/actuator/info` —
 /// the counterpart of Go's `func() map[string]any` contributors.
 pub type InfoContributor = Box<dyn Fn() -> serde_json::Map<String, Value> + Send + Sync>;
 
+/// Endpoint ids handled by [`mount`] itself; custom endpoints with these
+/// ids are skipped to avoid route collisions.
+const BUILTIN_IDS: [&str; 12] = [
+    "health",
+    "info",
+    "metrics",
+    "prometheus",
+    "env",
+    "tasks",
+    "version",
+    "loggers",
+    "scheduledtasks",
+    "caches",
+    "refresh",
+    "httpexchanges",
+];
+
 /// Tunes [`mount`].
-#[derive(Default)]
 pub struct ActuatorConfig {
     /// Reflected on `/actuator/info` and `/actuator/version`.
     pub app_name: String,
@@ -45,9 +72,70 @@ pub struct ActuatorConfig {
     /// Defaults to `["FIREFLY_"]`. Matching is case-insensitive.
     pub env_allow_prefixes: Vec<String>,
 
-    /// Registry consulted by `/actuator/metrics`; defaults to an empty
-    /// registry.
+    /// Registry consulted by `/actuator/metrics`, `/actuator/metrics/{name}`,
+    /// and `/actuator/prometheus`; defaults to an empty registry.
     pub metric_registry: Arc<MetricRegistry>,
+
+    /// Spring-style web exposure: include/exclude id sets, base path,
+    /// per-endpoint enabled overrides. The default exposes everything
+    /// under `/actuator` (Go-parity backward compatibility); use
+    /// [`ExposureConfig::spring_default`] for Spring's `health,info`.
+    pub exposure: ExposureConfig,
+
+    /// Custom [`Endpoint`](crate::Endpoint)s mounted at
+    /// `{base_path}/{id}` — pyfly's `ActuatorRegistry`.
+    pub endpoints: Arc<EndpointRegistry>,
+
+    /// When set, mounts `GET/POST {base_path}/loggers[/{name}]` over the
+    /// wrapped `tracing_subscriber` reload handle.
+    pub loggers: Option<Arc<LoggersState>>,
+
+    /// When set, mounts `GET {base_path}/scheduledtasks`.
+    pub scheduled_tasks: Option<Arc<dyn ScheduledTasksSource>>,
+
+    /// When set, mounts `GET {base_path}/caches[/{name}]` and
+    /// `POST {base_path}/caches/{name}/evict`.
+    pub cache_ops: Option<Arc<dyn CacheOps>>,
+
+    /// When set, mounts `POST {base_path}/refresh`.
+    pub refresher: Option<Arc<dyn Refresher>>,
+
+    /// When set, mounts `GET {base_path}/httpexchanges` over the shared
+    /// recorder (populate it by applying
+    /// [`HttpExchangesLayer`](crate::HttpExchangesLayer) to the
+    /// application router).
+    pub http_exchanges: Option<Arc<HttpExchangeRecorder>>,
+
+    /// Spring's `management.endpoint.health.show-details`: when false,
+    /// per-component entries carry only `{"status": …}`. Default true.
+    pub show_details: bool,
+
+    /// Spring's `management.endpoint.health.show-components`: when
+    /// false, health bodies omit the per-component `details` map
+    /// entirely. Default true.
+    pub show_components: bool,
+}
+
+impl Default for ActuatorConfig {
+    fn default() -> Self {
+        Self {
+            app_name: String::new(),
+            app_version: String::new(),
+            health: Arc::default(),
+            info_contributors: Vec::new(),
+            env_allow_prefixes: Vec::new(),
+            metric_registry: Arc::default(),
+            exposure: ExposureConfig::default(),
+            endpoints: Arc::default(),
+            loggers: None,
+            scheduled_tasks: None,
+            cache_ops: None,
+            refresher: None,
+            http_exchanges: None,
+            show_details: true,
+            show_components: true,
+        }
+    }
 }
 
 /// Shared per-router state.
@@ -58,25 +146,48 @@ struct ActuatorState {
     info_contributors: Vec<InfoContributor>,
     env_allow_prefixes: Vec<String>,
     metric_registry: Arc<MetricRegistry>,
+    loggers: Option<Arc<LoggersState>>,
+    scheduled_tasks: Option<Arc<dyn ScheduledTasksSource>>,
+    cache_ops: Option<Arc<dyn CacheOps>>,
+    refresher: Option<Arc<dyn Refresher>>,
+    http_exchanges: Option<Arc<HttpExchangeRecorder>>,
+    show_details: bool,
+    show_components: bool,
 }
 
 type SharedState = Arc<ActuatorState>;
 
-/// Returns an axum [`Router`] exposing `/actuator/*` under the given
-/// config. Merge it into the router used for the application's public
-/// traffic, or — preferred — serve it from a dedicated admin port so the
-/// management surface never leaks onto the public network.
+/// Returns an axum [`Router`] exposing the actuator surface under the
+/// given config. Merge it into the router used for the application's
+/// public traffic, or — preferred — serve it from a dedicated admin port
+/// so the management surface never leaks onto the public network.
 ///
-/// Routes:
+/// Routes (under `exposure.base_path`, default `/actuator`; each
+/// endpoint id is mounted only when exposed by [`ExposureConfig`] and
+/// not disabled via `endpoint_enabled`):
 ///
-/// - `GET /actuator/health` — composite status; 200 UP/DEGRADED, 503 DOWN
-/// - `GET /actuator/info` — app + runtime + build info, merged contributors
-/// - `GET /actuator/metrics` — Prometheus exposition format
-/// - `GET /actuator/env` — redacted environment view
-/// - `GET /actuator/tasks` — `{"count": N}` alive tokio tasks; `?dump=true`
+/// - `GET {bp}` — `_links` index of the exposed endpoints
+/// - `GET {bp}/health` — composite status; 200 UP/DEGRADED, 503 DOWN
+/// - `GET {bp}/health/{liveness|readiness|group|component}` — drill-down
+/// - `GET {bp}/info` — app + runtime + build info, merged contributors
+/// - `GET {bp}/metrics` — Prometheus exposition format (with
+///   `Accept: application/json`: the Micrometer `{"names": […]}` list)
+/// - `GET {bp}/metrics/{name}?tag=k:v` — Micrometer JSON meter detail
+/// - `GET {bp}/prometheus` — Prometheus exposition format (labeled)
+/// - `GET {bp}/env` — redacted environment view
+/// - `GET {bp}/tasks` — `{"count": N}` alive tokio tasks; `?dump=true`
 ///   returns a plain-text runtime report (the async analog of Go's
 ///   `/actuator/goroutines`)
-/// - `GET /actuator/version` — framework / app / language version stamp
+/// - `GET {bp}/version` — framework / app / language version stamp
+/// - `GET {bp}/loggers`, `GET/POST {bp}/loggers/{name}` — runtime log
+///   levels (when `loggers` is wired)
+/// - `GET {bp}/scheduledtasks` (when `scheduled_tasks` is wired)
+/// - `GET {bp}/caches`, `GET {bp}/caches/{name}`,
+///   `POST {bp}/caches/{name}/evict` (when `cache_ops` is wired)
+/// - `POST {bp}/refresh` (when `refresher` is wired)
+/// - `GET {bp}/httpexchanges` (when `http_exchanges` is wired)
+/// - `GET {bp}/{id}[/{selector}]` for each custom registered
+///   [`Endpoint`](crate::Endpoint)
 pub fn mount(cfg: ActuatorConfig) -> Router {
     let app_version = if cfg.app_version.is_empty() {
         VERSION.to_string()
@@ -89,6 +200,12 @@ pub fn mount(cfg: ActuatorConfig) -> Router {
         cfg.env_allow_prefixes
     };
 
+    let exposure = cfg.exposure;
+    let bp = exposure.normalized_base_path();
+    let expose = |id: &str, default_enabled: bool| {
+        exposure.is_exposed(id) && exposure.is_enabled(id, default_enabled)
+    };
+
     let state: SharedState = Arc::new(ActuatorState {
         app_name: cfg.app_name,
         app_version,
@@ -96,16 +213,177 @@ pub fn mount(cfg: ActuatorConfig) -> Router {
         info_contributors: cfg.info_contributors,
         env_allow_prefixes,
         metric_registry: cfg.metric_registry,
+        loggers: cfg.loggers,
+        scheduled_tasks: cfg.scheduled_tasks,
+        cache_ops: cfg.cache_ops,
+        refresher: cfg.refresher,
+        http_exchanges: cfg.http_exchanges,
+        show_details: cfg.show_details,
+        show_components: cfg.show_components,
     });
 
-    Router::new()
-        .route("/actuator/health", get(health_handler))
-        .route("/actuator/info", get(info_handler))
-        .route("/actuator/metrics", get(metrics_handler))
-        .route("/actuator/env", get(env_handler))
-        .route("/actuator/tasks", get(tasks_handler))
-        .route("/actuator/version", get(version_handler))
-        .with_state(state)
+    let mut exposed_ids: Vec<String> = Vec::new();
+    let mut router = Router::new();
+
+    if expose("health", true) {
+        exposed_ids.push("health".into());
+        router = router
+            .route(&format!("{bp}/health"), get(health_handler))
+            .route(
+                &format!("{bp}/health/:selector"),
+                get(health_selector_handler),
+            );
+    }
+    if expose("info", true) {
+        exposed_ids.push("info".into());
+        router = router.route(&format!("{bp}/info"), get(info_handler));
+    }
+    if expose("metrics", true) {
+        exposed_ids.push("metrics".into());
+        router = router
+            .route(&format!("{bp}/metrics"), get(metrics_handler))
+            .route(&format!("{bp}/metrics/:name"), get(metric_detail_handler));
+    }
+    if expose("prometheus", true) {
+        exposed_ids.push("prometheus".into());
+        router = router.route(&format!("{bp}/prometheus"), get(prometheus_handler));
+    }
+    if expose("env", true) {
+        exposed_ids.push("env".into());
+        router = router.route(&format!("{bp}/env"), get(env_handler));
+    }
+    if expose("tasks", true) {
+        exposed_ids.push("tasks".into());
+        router = router.route(&format!("{bp}/tasks"), get(tasks_handler));
+    }
+    if expose("version", true) {
+        exposed_ids.push("version".into());
+        router = router.route(&format!("{bp}/version"), get(version_handler));
+    }
+    if state.loggers.is_some() && expose("loggers", true) {
+        exposed_ids.push("loggers".into());
+        router = router
+            .route(&format!("{bp}/loggers"), get(loggers_handler))
+            .route(
+                &format!("{bp}/loggers/:name"),
+                get(logger_get_handler).post(logger_post_handler),
+            );
+    }
+    if state.scheduled_tasks.is_some() && expose("scheduledtasks", true) {
+        exposed_ids.push("scheduledtasks".into());
+        router = router.route(&format!("{bp}/scheduledtasks"), get(scheduledtasks_handler));
+    }
+    if state.cache_ops.is_some() && expose("caches", true) {
+        exposed_ids.push("caches".into());
+        router = router
+            .route(&format!("{bp}/caches"), get(caches_handler))
+            .route(&format!("{bp}/caches/:name"), get(cache_detail_handler))
+            .route(
+                &format!("{bp}/caches/:name/evict"),
+                post(cache_evict_handler),
+            );
+    }
+    if state.refresher.is_some() && expose("refresh", true) {
+        exposed_ids.push("refresh".into());
+        router = router.route(&format!("{bp}/refresh"), post(refresh_handler));
+    }
+    if state.http_exchanges.is_some() && expose("httpexchanges", true) {
+        exposed_ids.push("httpexchanges".into());
+        router = router.route(&format!("{bp}/httpexchanges"), get(httpexchanges_handler));
+    }
+
+    // Custom endpoints (pyfly's ActuatorRegistry surface).
+    for ep in cfg.endpoints.all() {
+        let id = ep.id().to_string();
+        if BUILTIN_IDS.contains(&id.as_str()) {
+            continue; // built-ins own these routes
+        }
+        if !exposure.is_exposed(&id) || !exposure.is_enabled(&id, ep.enabled()) {
+            continue;
+        }
+        exposed_ids.push(id.clone());
+        let base = format!("{bp}/{id}");
+
+        let ep_base = Arc::clone(&ep);
+        let id_base = id.clone();
+        router = router.route(
+            &base,
+            get(move |Query(query): Query<HashMap<String, String>>| {
+                let ep = Arc::clone(&ep_base);
+                let id = id_base.clone();
+                async move {
+                    match ep.handle(None, &query).await {
+                        Some(body) => json_response(StatusCode::OK, &body),
+                        None => json_response(
+                            StatusCode::NOT_FOUND,
+                            &json!({ "error": format!("No content for {id}") }),
+                        ),
+                    }
+                }
+            }),
+        );
+
+        if ep.supports_selector() {
+            let ep_sel = Arc::clone(&ep);
+            let id_sel = id.clone();
+            router = router.route(
+                &format!("{base}/:selector"),
+                get(
+                    move |Path(selector): Path<String>,
+                          Query(query): Query<HashMap<String, String>>| {
+                        let ep = Arc::clone(&ep_sel);
+                        let id = id_sel.clone();
+                        async move {
+                            match ep.handle(Some(&selector), &query).await {
+                                Some(body) => json_response(StatusCode::OK, &body),
+                                None => json_response(
+                                    StatusCode::NOT_FOUND,
+                                    &json!({ "error": format!("No such {id}: {selector}") }),
+                                ),
+                            }
+                        }
+                    },
+                ),
+            );
+        }
+    }
+
+    // Index: `GET {bp}` — `_links` of everything exposed (pyfly parity).
+    let mut links = serde_json::Map::new();
+    let self_href = if bp.is_empty() {
+        "/".to_string()
+    } else {
+        bp.clone()
+    };
+    links.insert("self".into(), json!({ "href": self_href }));
+    for id in &exposed_ids {
+        links.insert(id.clone(), json!({ "href": format!("{bp}/{id}") }));
+    }
+    if exposed_ids.iter().any(|id| id == "health") {
+        links.insert(
+            "health/liveness".into(),
+            json!({ "href": format!("{bp}/health/liveness") }),
+        );
+        links.insert(
+            "health/readiness".into(),
+            json!({ "href": format!("{bp}/health/readiness") }),
+        );
+    }
+    let index_body = json!({ "_links": links });
+    let index_path = if bp.is_empty() {
+        "/".to_string()
+    } else {
+        bp.clone()
+    };
+    router = router.route(
+        &index_path,
+        get(move || {
+            let body = index_body.clone();
+            async move { json_response(StatusCode::OK, &body) }
+        }),
+    );
+
+    router.with_state(state)
 }
 
 /// Renders `value` as a JSON response body terminated by a single `\n` —
@@ -122,17 +400,79 @@ fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response {
     }
 }
 
+/// 503 only for DOWN — DEGRADED stays 200, matching every Firefly port.
+fn health_status_code(status: HealthStatus) -> StatusCode {
+    if status == HealthStatus::Down {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    }
+}
+
+/// Builds the health body — `{"status": …, "details": {…}}` — honoring
+/// Spring's `show-components` / `show-details` switches.
+fn render_health_body(
+    overall: HealthStatus,
+    results: &BTreeMap<String, HealthResult>,
+    show_components: bool,
+    show_details: bool,
+) -> Value {
+    let mut body = serde_json::Map::new();
+    body.insert("status".into(), json!(overall));
+    if show_components {
+        let mut details = serde_json::Map::new();
+        for (name, result) in results {
+            details.insert(name.clone(), render_component(result, show_details));
+        }
+        body.insert("details".into(), Value::Object(details));
+    }
+    Value::Object(body)
+}
+
+/// One component's entry: the full [`HealthResult`] when `show_details`,
+/// otherwise just `{"status": …}`.
+fn render_component(result: &HealthResult, show_details: bool) -> Value {
+    if show_details {
+        serde_json::to_value(result).unwrap_or_else(|_| json!({ "status": result.status }))
+    } else {
+        json!({ "status": result.status })
+    }
+}
+
 /// `GET /actuator/health` — runs every registered indicator and answers
 /// `{"status": overall, "details": {name: result}}`; 503 when DOWN,
 /// 200 otherwise.
 async fn health_handler(State(st): State<SharedState>) -> Response {
     let (overall, details) = st.health.check_all().await;
-    let code = if overall == HealthStatus::Down {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::OK
-    };
-    json_response(code, &json!({ "status": overall, "details": details }))
+    json_response(
+        health_status_code(overall),
+        &render_health_body(overall, &details, st.show_components, st.show_details),
+    )
+}
+
+/// `GET /actuator/health/{selector}` — the `liveness` / `readiness`
+/// probes, a named health group, or a single component drill-down;
+/// 404 with an error body when the selector matches neither.
+async fn health_selector_handler(
+    State(st): State<SharedState>,
+    Path(selector): Path<String>,
+) -> Response {
+    if let Some((overall, details)) = st.health.check_group(&selector).await {
+        return json_response(
+            health_status_code(overall),
+            &render_health_body(overall, &details, st.show_components, st.show_details),
+        );
+    }
+    if let Some(result) = st.health.check_component(&selector).await {
+        return json_response(
+            health_status_code(result.status),
+            &render_component(&result, st.show_details),
+        );
+    }
+    json_response(
+        StatusCode::NOT_FOUND,
+        &json!({ "error": format!("No such health component or group: {selector}") }),
+    )
 }
 
 /// `GET /actuator/info` — build info + app metadata, with every
@@ -167,10 +507,53 @@ async fn info_handler(State(st): State<SharedState>) -> Response {
     json_response(StatusCode::OK, &Value::Object(info))
 }
 
-/// `GET /actuator/metrics` — Prometheus exposition format.
-async fn metrics_handler(State(st): State<SharedState>) -> Response {
+/// `GET /actuator/metrics` — Prometheus exposition format by default;
+/// with `Accept: application/json`, the Micrometer `{"names": […]}`
+/// meter list (pyfly's `MetricsEndpoint._list`).
+async fn metrics_handler(State(st): State<SharedState>, headers: HeaderMap) -> Response {
+    let wants_json = headers.get_all(header::ACCEPT).iter().any(|v| {
+        v.to_str()
+            .map(|s| s.contains("application/json"))
+            .unwrap_or(false)
+    });
+    if wants_json {
+        return json_response(
+            StatusCode::OK,
+            &json!({ "names": st.metric_registry.meter_names() }),
+        );
+    }
     (
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        st.metric_registry.render(),
+    )
+        .into_response()
+}
+
+/// `GET /actuator/metrics/{name}?tag=k:v` — Micrometer JSON meter
+/// detail with `measurements` + `availableTags`; 404 for unknown meters.
+async fn metric_detail_handler(
+    State(st): State<SharedState>,
+    Path(name): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let tag = params.get("tag").and_then(|raw| raw.split_once(':'));
+    match st.metric_registry.meter_json(&name, tag) {
+        Some(body) => json_response(StatusCode::OK, &body),
+        None => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({ "error": format!("No such metric: {name}") }),
+        ),
+    }
+}
+
+/// `GET /actuator/prometheus` — the Prometheus scrape target, classic
+/// text exposition format (`version=0.0.4`), labels included.
+async fn prometheus_handler(State(st): State<SharedState>) -> Response {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         st.metric_registry.render(),
     )
         .into_response()
@@ -238,6 +621,150 @@ async fn version_handler(State(st): State<SharedState>) -> Response {
     )
 }
 
+/// `GET /actuator/loggers` — Spring's levels vocabulary + every
+/// configured logger + groups.
+async fn loggers_handler(State(st): State<SharedState>) -> Response {
+    match &st.loggers {
+        Some(loggers) => json_response(StatusCode::OK, &loggers.levels_json()),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// `GET /actuator/loggers/{name}` — one logger's configured + effective
+/// level.
+async fn logger_get_handler(State(st): State<SharedState>, Path(name): Path<String>) -> Response {
+    match &st.loggers {
+        Some(loggers) => json_response(StatusCode::OK, &loggers.logger_json(&name)),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// `POST /actuator/loggers/{name}` — body `{"configuredLevel": "DEBUG"}`
+/// (or `null` / empty to reset). 204 on success, 400 on a bad level.
+async fn logger_post_handler(
+    State(st): State<SharedState>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Some(loggers) = &st.loggers else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let level: Option<String> = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(payload) => match payload.get("configuredLevel") {
+                Some(Value::String(level)) => Some(level.clone()),
+                Some(Value::Null) | None => None,
+                Some(_) => {
+                    return json_response(
+                        StatusCode::BAD_REQUEST,
+                        &json!({ "error": "configuredLevel must be a string or null" }),
+                    )
+                }
+            },
+            Err(_) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({ "error": "invalid JSON body" }),
+                )
+            }
+        }
+    };
+    match loggers.set_level(&name, level.as_deref()) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(LoggersError::UnknownLevel(msg)) => {
+            json_response(StatusCode::BAD_REQUEST, &json!({ "error": msg }))
+        }
+        Err(LoggersError::Reload(msg)) => {
+            json_response(StatusCode::INTERNAL_SERVER_ERROR, &json!({ "error": msg }))
+        }
+    }
+}
+
+/// `GET /actuator/scheduledtasks` — tasks grouped by trigger type
+/// (cron / fixedDelay / fixedRate), intervals in milliseconds.
+async fn scheduledtasks_handler(State(st): State<SharedState>) -> Response {
+    match &st.scheduled_tasks {
+        Some(source) => json_response(StatusCode::OK, &render_tasks(&source.scheduled_tasks())),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// `GET /actuator/caches` — Spring's
+/// `{"cacheManagers": {"cacheManager": {"caches": {…}}}}` shape.
+async fn caches_handler(State(st): State<SharedState>) -> Response {
+    let Some(ops) = &st.cache_ops else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut caches = serde_json::Map::new();
+    for descriptor in ops.caches() {
+        caches.insert(descriptor.name, json!({ "target": descriptor.target }));
+    }
+    json_response(
+        StatusCode::OK,
+        &json!({ "cacheManagers": { CACHE_MANAGER: { "caches": caches } } }),
+    )
+}
+
+/// `GET /actuator/caches/{name}` — a single cache's descriptor; 404 for
+/// unknown names.
+async fn cache_detail_handler(State(st): State<SharedState>, Path(name): Path<String>) -> Response {
+    let Some(ops) = &st.cache_ops else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match ops.caches().into_iter().find(|c| c.name == name) {
+        Some(descriptor) => json_response(
+            StatusCode::OK,
+            &json!({
+                "name": descriptor.name,
+                "cacheManager": CACHE_MANAGER,
+                "target": descriptor.target,
+            }),
+        ),
+        None => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({ "error": format!("No such cache: {name}") }),
+        ),
+    }
+}
+
+/// `POST /actuator/caches/{name}/evict` — clears the named cache; 204
+/// on success, 404 for unknown names.
+async fn cache_evict_handler(State(st): State<SharedState>, Path(name): Path<String>) -> Response {
+    let Some(ops) = &st.cache_ops else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if ops.evict(&name).await {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        json_response(
+            StatusCode::NOT_FOUND,
+            &json!({ "error": format!("No such cache: {name}") }),
+        )
+    }
+}
+
+/// `POST /actuator/refresh` — Spring Cloud's context refresh; answers
+/// `{"refreshed": [keys…]}`.
+async fn refresh_handler(State(st): State<SharedState>) -> Response {
+    match &st.refresher {
+        Some(refresher) => json_response(
+            StatusCode::OK,
+            &json!({ "refreshed": refresher.refresh().await }),
+        ),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// `GET /actuator/httpexchanges` — the recorded exchanges, newest first.
+async fn httpexchanges_handler(State(st): State<SharedState>) -> Response {
+    match &st.http_exchanges {
+        Some(recorder) => json_response(StatusCode::OK, &json!({ "exchanges": recorder.recent() })),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +785,13 @@ mod tests {
         assert_eq!(redact("FIREFLY_X", "1".into(), &allow), "1");
         assert_eq!(redact("firefly_y", "2".into(), &allow), "2");
         assert_eq!(redact("other", "3".into(), &allow), "***");
+    }
+
+    #[test]
+    fn config_defaults_show_flags_true() {
+        let cfg = ActuatorConfig::default();
+        assert!(cfg.show_details);
+        assert!(cfg.show_components);
+        assert!(cfg.exposure.is_exposed("metrics"));
     }
 }

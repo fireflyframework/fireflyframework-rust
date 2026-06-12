@@ -1,63 +1,78 @@
 # `firefly-idp-azure-ad`
 
-> **Tier:** Adapter · **Status:** Stub (port-asserting) · **Backing tech:** Azure AD / Entra ID — MSAL + Microsoft Graph · **Go module:** `idpazuread`
+> **Tier:** Adapter · **Status:** Full · **Backing tech:** Microsoft Graph `v1.0` + `login.microsoftonline.com` ROPC over `reqwest`
 
 ## Overview
 
-`firefly-idp-azure-ad` is the placeholder `firefly_idp::Adapter` for
-Azure AD / Entra ID — MSAL + Microsoft Graph. The crate and types are
-declared, the port implementation compiles, and sentinel-error smoke
-tests guard the wire shape — but the SaaS / cloud SDK integration is
-**not yet wired**. Every method returns the not-yet-implemented
-sentinel, bytes-equal to the Go port's `idpazuread.ErrNotImplemented`:
+`firefly-idp-azure-ad` is a real `firefly_idp::Adapter` for Azure AD / Microsoft
+Entra ID. It talks to the Microsoft Graph `v1.0` API and the
+`login.microsoftonline.com` token endpoint over `reqwest` — no MSAL or Azure SDK
+is pulled in — and is a behavior-for-behavior port of pyfly's
+`AzureAdIdpAdapter`.
 
 ```rust
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/idpazuread: not yet implemented";
+use firefly_idp::Adapter as _;
+use firefly_idp_azure_ad::{Adapter, Config};
 
-/// Builds the sentinel as a `firefly_idp::Error::Provider`.
-pub fn not_implemented() -> firefly_idp::Error;
+let idp = Adapter::new(Config {
+    tenant: "contoso-tenant-id".into(),
+    client_id: "app-client-id".into(),
+    client_secret: "app-client-secret".into(),
+    ..Config::default()
+});
+let token = idp.login("alice@contoso.com", "pw").await?;
 ```
 
-## Why ship a stub?
+## What it does
 
-* The framework's tier diagram stays correct (no missing module).
-* The port boundary stays locked — when the real implementation lands
-  in v26.06, no consuming code needs to change.
-* The wire contract is exercised end-to-end before the integration
-  ships, via the smoke tests that assert the sentinel return.
+* **App-token caching** — the `client_credentials` Graph app token is fetched
+  once and cached (mirroring pyfly).
+* **ROPC login** — the resource-owner password-credentials grant against
+  `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`, then a user
+  lookup; a non-200 token response maps to `Error::InvalidCredentials`.
+* **User CRUD** against `/users` (`create_user` POSTs the full profile +
+  `passwordProfile` and captures the returned id; `find_by_username` delegates
+  to `get_user` since Azure resolves the UPN as the id).
+* **`/me` introspection / userinfo** with a delegated access token.
+* **`passwordProfile` patch** for `change_password` / `reset_password`.
+* **Groups-as-roles** — `assign_role` / `revoke_role` via
+  `/groups/{id}/members/$ref`, `list_roles` via `/groups`, `get_roles` via
+  `/users/{id}/memberOf`.
+
+`mfa_challenge` / `mfa_verify` return the `ERR_NOT_IMPLEMENTED` sentinel because
+Azure AD manages MFA natively via Conditional Access policies.
 
 ## Configuration
 
 ```rust
 pub struct Config {
-    // Fields cover every wiring variable the production adapter needs.
-    pub base_url: String,
-    pub realm: String,
-    pub client_id: String,
-    pub client_secret: String,
-    pub tenant: String,
-    pub user_pool_id: String, // shared vendor-config field; unused here
-    pub region: String,       // shared vendor-config field; unused here
+    pub base_url: String,       // login authority host override (default public host)
+    pub graph_base_url: String, // Graph host override (default public host)
+    pub realm: String,          // shared vendor-config field (unused)
+    pub client_id: String,      // app (client) id
+    pub client_secret: String,  // app secret
+    pub tenant: String,         // directory (tenant) id
+    pub scope: String,          // token scope (default graph .default)
+    pub user_pool_id: String,   // shared vendor-config field (unused)
+    pub region: String,         // shared vendor-config field (unused)
 }
 ```
 
-## Quick start
+Empty `base_url` / `graph_base_url` / `scope` fall back to the public Microsoft
+hosts and the `https://graph.microsoft.com/.default` scope; the host overrides
+exist so the adapter can be exercised against an in-process mock.
 
-```rust
-use std::sync::Arc;
-use firefly_idp_azure_ad::{Adapter, Config, ERR_NOT_IMPLEMENTED};
+## pyfly parity
 
-let idp: Arc<dyn firefly_idp::Adapter> = Arc::new(Adapter::new(Config::default()));
-assert_eq!(idp.name(), "azuread-stub");
-
-// Every port method returns the sentinel until the adapter ships:
-// idp.login("u", "p").await == Err(Error::Provider(ERR_NOT_IMPLEMENTED.into()))
-```
-
-## Roadmap
-
-The real implementation is scheduled for **v26.06.x** — see the Go
-port's `docs/AUDIT.md` § Roadmap for sequencing.
+| pyfly `AzureAdIdpAdapter` | Rust |
+| --- | --- |
+| `create_user` / `get_user` / `find_by_username` / `update_user` / `delete_user` / `list_users` | Graph `/users` CRUD |
+| `login` → `AuthResult` | `login` → `Token` (port contract); `login_full` → `AuthResult` |
+| `logout` (always true) / `refresh` / `introspect` (`/me`) | same |
+| `change_password` / `reset_password` (`passwordProfile`) | same |
+| `assign_role` / `revoke_role` / `list_roles` / `get_roles` | groups-as-roles |
+| `get_user_info` (`/me`) / `register_user` | same |
+| `mfa_challenge` / `mfa_verify` | sentinel (`ERR_NOT_IMPLEMENTED`) |
 
 ## Testing
 
@@ -65,8 +80,7 @@ port's `docs/AUDIT.md` § Roadmap for sequencing.
 cargo test -p firefly-idp-azure-ad
 ```
 
-Smoke tests assert (a) port satisfaction (`Arc<dyn firefly_idp::Adapter>`
-from `Adapter::new(Config::default())`) and (b) every method returns the
-`ERR_NOT_IMPLEMENTED` sentinel. Once the production adapter ships, these
-tests are deleted in favour of integration tests against a real
-provider container / mock server.
+Behavior tests (`tests/azure_ad_behavior.rs`) drive the real `reqwest` path
+against an in-process `axum` mock server (port 0, no network), asserting both
+the outbound request shape and the parsed domain object — the Rust analog of
+pyfly's `tests/idp/test_azure_ad_behavior.py`.

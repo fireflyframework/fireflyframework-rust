@@ -1,0 +1,17 @@
+//! Page service for {{ name }}.
+
+/// Supplies view-model data to the page controllers.
+#[derive(Debug, Default, Clone)]
+pub struct PageService;
+
+impl PageService {
+    /// Construct a new page service.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// The site title shown in templates.
+    pub fn title(&self) -> &'static str {
+        "{{ name }}"
+    }
+}

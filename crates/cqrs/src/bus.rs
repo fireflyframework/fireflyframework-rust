@@ -9,6 +9,9 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use serde::Serialize;
 
+use crate::authorization::AuthorizationResult;
+use crate::context::ExecutionContext;
+use crate::fluent::MessageMetadata;
 use crate::CqrsError;
 
 /// A command or query that can be dispatched through the [`Bus`].
@@ -47,6 +50,21 @@ pub trait Message: Clone + Serialize + Send + Sync + 'static {
     fn cache_ttl(&self) -> Option<Duration> {
         None
     }
+
+    /// Pre-dispatch authorization hook honoured by
+    /// [`AuthorizationMiddleware`](crate::AuthorizationMiddleware) —
+    /// pyfly's `authorize()` / `authorize_with_context(ctx)` pair
+    /// collapsed into one method (same pattern as [`Message::validate`]).
+    ///
+    /// `ctx` is the [`ExecutionContext`] attached to the dispatch via
+    /// [`Bus::send_with_context`] or a fluent builder, and `None` for a
+    /// plain [`Bus::send`]. The default implementation authorizes
+    /// everything, mirroring pyfly messages without an `authorize`
+    /// method.
+    fn authorize(&self, ctx: Option<&ExecutionContext>) -> AuthorizationResult {
+        let _ = ctx;
+        AuthorizationResult::success()
+    }
 }
 
 type ErasedRef<'a> = &'a (dyn Any + Send + Sync);
@@ -65,6 +83,11 @@ pub struct Envelope {
     validate_fn: fn(ErasedRef<'_>) -> Result<(), CqrsError>,
     cache_ttl_fn: fn(ErasedRef<'_>) -> Option<Duration>,
     cache_json_fn: fn(ErasedRef<'_>) -> Result<Vec<u8>, CqrsError>,
+    authorize_fn: fn(ErasedRef<'_>, Option<&ExecutionContext>) -> AuthorizationResult,
+    context: Option<Arc<ExecutionContext>>,
+    metadata: Option<MessageMetadata>,
+    cache_ttl_override: Option<Option<Duration>>,
+    cache_key_override: Option<String>,
 }
 
 impl Envelope {
@@ -78,7 +101,70 @@ impl Envelope {
             validate_fn: |m: ErasedRef<'_>| erased::<C>(m).validate(),
             cache_ttl_fn: |m: ErasedRef<'_>| erased::<C>(m).cache_ttl(),
             cache_json_fn: |m: ErasedRef<'_>| Ok(serde_json::to_vec(erased::<C>(m))?),
+            authorize_fn: |m: ErasedRef<'_>, ctx| erased::<C>(m).authorize(ctx),
+            context: None,
+            metadata: None,
+            cache_ttl_override: None,
+            cache_key_override: None,
         }
+    }
+
+    /// Attaches an [`ExecutionContext`] to the dispatch — the Rust
+    /// spelling of pyfly threading the context through the bus.
+    /// Consulted by [`Envelope::authorize`] and handed to handlers
+    /// registered via [`Bus::register_with_context`].
+    #[must_use]
+    pub fn with_context(mut self, context: ExecutionContext) -> Self {
+        self.context = Some(Arc::new(context));
+        self
+    }
+
+    /// Attaches dispatch [`MessageMetadata`] (set by the fluent
+    /// builders) for middleware to read.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: MessageMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
+    /// Overrides the message's [`Message::cache_ttl`] for this dispatch
+    /// — `Some(ttl)` forces caching, `None` forces a bypass (pyfly's
+    /// `QueryBuilder.cached(...)`).
+    #[must_use]
+    pub fn with_cache_ttl(mut self, ttl: Option<Duration>) -> Self {
+        self.cache_ttl_override = Some(ttl);
+        self
+    }
+
+    /// Replaces the derived cache key with an explicit one for this
+    /// dispatch (pyfly's `QueryBuilder.with_cache_key`).
+    #[must_use]
+    pub fn with_cache_key(mut self, key: impl Into<String>) -> Self {
+        self.cache_key_override = Some(key.into());
+        self
+    }
+
+    /// The [`ExecutionContext`] attached to this dispatch, if any.
+    pub fn context(&self) -> Option<&ExecutionContext> {
+        self.context.as_deref()
+    }
+
+    /// The dispatch [`MessageMetadata`] attached by a fluent builder,
+    /// if any.
+    pub fn metadata(&self) -> Option<&MessageMetadata> {
+        self.metadata.as_ref()
+    }
+
+    /// The explicit cache key for this dispatch, if one was set via
+    /// [`Envelope::with_cache_key`].
+    pub fn cache_key(&self) -> Option<&str> {
+        self.cache_key_override.as_deref()
+    }
+
+    /// Runs the message's [`Message::authorize`] hook against the
+    /// attached [`ExecutionContext`] (if any).
+    pub fn authorize(&self) -> AuthorizationResult {
+        (self.authorize_fn)(self.message.as_ref(), self.context.as_deref())
     }
 
     /// Fully-qualified Rust type name of the wrapped message — the analog
@@ -104,9 +190,13 @@ impl Envelope {
         (self.validate_fn)(self.message.as_ref())
     }
 
-    /// Reads the message's [`Message::cache_ttl`] opt-in.
+    /// Reads the message's [`Message::cache_ttl`] opt-in, honouring a
+    /// per-dispatch override set via [`Envelope::with_cache_ttl`].
     pub fn cache_ttl(&self) -> Option<Duration> {
-        (self.cache_ttl_fn)(self.message.as_ref())
+        match self.cache_ttl_override {
+            Some(overridden) => overridden,
+            None => (self.cache_ttl_fn)(self.message.as_ref()),
+        }
     }
 
     /// JSON-encodes the message — the value half of the query-cache key,
@@ -180,9 +270,16 @@ pub trait Middleware: Send + Sync + 'static {
     fn wrap(&self, next: DynHandler) -> DynHandler;
 }
 
+/// A registered handler plus the message type name it serves (for
+/// [`Bus::handler_names`]).
+struct RegisteredHandler {
+    name: &'static str,
+    handler: DynHandler,
+}
+
 #[derive(Default)]
 struct Inner {
-    handlers: HashMap<TypeId, DynHandler>,
+    handlers: HashMap<TypeId, RegisteredHandler>,
     middlewares: Vec<Arc<dyn Middleware>>,
 }
 
@@ -227,6 +324,25 @@ impl Bus {
         H: Fn(C) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<R, CqrsError>> + Send + 'static,
     {
+        self.register_with_context(move |message: C, _ctx| handler(message));
+    }
+
+    /// Installs a **context-aware** handler for messages of type `C` —
+    /// the Rust spelling of pyfly's `ExecutionContext`-aware handlers
+    /// (`do_handle(self, command, context)`).
+    ///
+    /// The handler receives the [`ExecutionContext`] attached to the
+    /// dispatch via [`Bus::send_with_context`] /
+    /// [`Bus::query_with_context`] or a fluent builder, and `None` for a
+    /// plain [`Bus::send`]. Registering for the same `C` (through this
+    /// method or [`Bus::register`]) overwrites the previous handler.
+    pub fn register_with_context<C, R, H, Fut>(&self, handler: H)
+    where
+        C: Message,
+        R: Send + Sync + 'static,
+        H: Fn(C, Option<ExecutionContext>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<R, CqrsError>> + Send + 'static,
+    {
         let handler = Arc::new(handler);
         let erased: DynHandler = Arc::new(move |env: Arc<Envelope>| -> HandlerFuture {
             let handler = Arc::clone(&handler);
@@ -238,14 +354,39 @@ impl Bus {
                         got: env.type_name(),
                     })?
                     .clone();
-                handler(message).await.map(AnyResult::new)
+                let context = env.context().cloned();
+                handler(message, context).await.map(AnyResult::new)
             })
         });
         self.inner
             .write()
             .expect("firefly/cqrs: bus lock poisoned")
             .handlers
-            .insert(TypeId::of::<C>(), erased);
+            .insert(
+                TypeId::of::<C>(),
+                RegisteredHandler {
+                    name: type_name::<C>(),
+                    handler: erased,
+                },
+            );
+    }
+
+    /// Lists the fully-qualified type names of every registered message
+    /// handler, sorted alphabetically — pyfly's
+    /// `HandlerRegistry.get_registered_command_types()` /
+    /// `get_registered_query_types()` surface, consumed by the admin
+    /// actuator endpoint.
+    pub fn handler_names(&self) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = self
+            .inner
+            .read()
+            .expect("firefly/cqrs: bus lock poisoned")
+            .handlers
+            .values()
+            .map(|registered| registered.name)
+            .collect();
+        names.sort_unstable();
+        names
     }
 
     /// Dispatches a command and returns its typed result — Go's
@@ -260,13 +401,7 @@ impl Bus {
         C: Message,
         R: Clone + Send + Sync + 'static,
     {
-        let result = self.dispatch(Envelope::new(command)).await?;
-        result
-            .downcast_cloned::<R>()
-            .ok_or(CqrsError::ResultTypeMismatch {
-                want: type_name::<R>(),
-                got: result.type_name(),
-            })
+        self.dispatch_typed(Envelope::new(command)).await
     }
 
     /// A synonym for [`Bus::send`] — kept for readability, like Go's
@@ -279,17 +414,70 @@ impl Bus {
         self.send(query).await
     }
 
-    async fn dispatch(&self, envelope: Envelope) -> Result<AnyResult, CqrsError> {
-        let (handler, middlewares) =
-            {
-                let inner = self.inner.read().expect("firefly/cqrs: bus lock poisoned");
-                let handler = inner.handlers.get(&envelope.type_id()).cloned().ok_or(
-                    CqrsError::NoHandler {
-                        type_name: envelope.type_name(),
-                    },
-                )?;
-                (handler, inner.middlewares.clone())
-            };
+    /// [`Bus::send`] with an [`ExecutionContext`] attached — pyfly's
+    /// `command_bus.send(cmd, context=ctx)`. The context reaches
+    /// [`Message::authorize`], any middleware reading
+    /// [`Envelope::context`], and handlers registered via
+    /// [`Bus::register_with_context`].
+    pub async fn send_with_context<C, R>(
+        &self,
+        command: C,
+        context: ExecutionContext,
+    ) -> Result<R, CqrsError>
+    where
+        C: Message,
+        R: Clone + Send + Sync + 'static,
+    {
+        self.dispatch_typed(Envelope::new(command).with_context(context))
+            .await
+    }
+
+    /// [`Bus::query`] with an [`ExecutionContext`] attached — pyfly's
+    /// `query_bus.query(q, context=ctx)`.
+    pub async fn query_with_context<Q, R>(
+        &self,
+        query: Q,
+        context: ExecutionContext,
+    ) -> Result<R, CqrsError>
+    where
+        Q: Message,
+        R: Clone + Send + Sync + 'static,
+    {
+        self.send_with_context(query, context).await
+    }
+
+    /// Dispatches a pre-built [`Envelope`] and downcasts the result —
+    /// the typed tail shared by [`Bus::send`], the `*_with_context`
+    /// variants, and the fluent builders' `execute_with`.
+    pub async fn dispatch_typed<R>(&self, envelope: Envelope) -> Result<R, CqrsError>
+    where
+        R: Clone + Send + Sync + 'static,
+    {
+        let result = self.dispatch_envelope(envelope).await?;
+        result
+            .downcast_cloned::<R>()
+            .ok_or(CqrsError::ResultTypeMismatch {
+                want: type_name::<R>(),
+                got: result.type_name(),
+            })
+    }
+
+    /// Dispatches a pre-built [`Envelope`] through the middleware chain
+    /// and returns the type-erased result — exposed so custom dispatch
+    /// surfaces (builders, transports) can attach context, metadata, or
+    /// cache overrides before dispatching.
+    pub async fn dispatch_envelope(&self, envelope: Envelope) -> Result<AnyResult, CqrsError> {
+        let (handler, middlewares) = {
+            let inner = self.inner.read().expect("firefly/cqrs: bus lock poisoned");
+            let handler = inner
+                .handlers
+                .get(&envelope.type_id())
+                .map(|registered| Arc::clone(&registered.handler))
+                .ok_or(CqrsError::NoHandler {
+                    type_name: envelope.type_name(),
+                })?;
+            (handler, inner.middlewares.clone())
+        };
         let mut chain = handler;
         for middleware in middlewares.iter().rev() {
             chain = middleware.wrap(chain);

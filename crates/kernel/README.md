@@ -118,6 +118,74 @@ are exported for cross-crate agreement.
 expressed as valid semver) — embedded in the actuator `/version`
 payload and the startup banner.
 
+## pyfly parity
+
+The pyfly-parity layer adds three surfaces, all additive.
+
+### `ddd` module — the `pyfly.domain` kit
+
+`firefly_kernel::ddd` (every item also re-exported at the crate root)
+is the zero-dependency DDD building-block kit:
+
+| Item                            | pyfly original                                       |
+|---------------------------------|------------------------------------------------------|
+| `Specification<T>`              | `Specification[T]` (`is_satisfied_by`)               |
+| `.and()` / `.or()` / `.not()`   | the `&` / `\|` / `~` combinators (`AndSpec`/`OrSpec`/`NotSpec`) |
+| blanket impl for `Fn(&T) -> bool` | `Specification.of(callable)`                       |
+| `Entity` trait                  | `Entity[TID]` — `id()`, `is_transient()`, `same_identity()` |
+| `PendingEvents<E>`              | `AggregateRoot` — `raise` / `pending` / `drain`      |
+| `EventMeta`                     | `DomainEvent.event_id` (UUID v4) + `occurred_at` (UTC) |
+| `TransientDomainEvent`          | `DomainEvent` — `event_type()` defaults to the short type name |
+| `BoxedDomainEvent`              | the untyped `list[DomainEvent]` heterogeneous buffer |
+
+```rust,ignore
+use firefly_kernel::ddd::{PendingEvents, Specification};
+
+struct IsAdult;
+impl Specification<Customer> for IsAdult {
+    fn is_satisfied_by(&self, c: &Customer) -> bool { c.age >= 18 }
+}
+let premium_adult = IsAdult.and(|c: &Customer| c.premium);
+```
+
+This is the **non-event-sourced** aggregate primitive — state persists
+through repositories and events are merely collected for post-commit
+publication. The event-sourced variant (versioned, wire-formatted,
+`EventStore`-coupled) lives in `firefly-eventsourcing`. pyfly's
+`ValueObject` maps to native `Clone` + struct-update syntax;
+`DomainRepository` maps to `firefly_data::Repository<T, K>` (`save` ~
+`add`, `find_by_id` ~ `find`, `delete` ~ `remove`, `next_id` ~
+`Uuid::new_v4()`).
+
+### Domain error constructors
+
+`FireflyError::business_rule(rule, detail)` — pyfly's
+`BusinessRuleViolation`: code `DOMAIN_RULE_VIOLATION`, status 422, the
+rule name in the `rule` field, defaulting the detail to
+`Business rule violated: <rule>`. `FireflyError::aggregate_not_found(
+aggregate_type, id)` — pyfly's `AggregateNotFound`: code
+`DOMAIN_AGGREGATE_NOT_FOUND`, status 404, structured `aggregate_type` /
+`id` fields.
+
+### Request-id and tenant-id scopes
+
+Two new task-local scopes mirror the correlation id, porting pyfly's
+`pyfly.observability.correlation` context vars:
+
+```rust,ignore
+let out = with_request_id("req-1", async {
+    with_tenant_id("acme", async {
+        (request_id(), tenant_id()) // (Some("req-1"), Some("acme"))
+    }).await
+}).await;
+let fresh = new_request_id(); // 32-char hex, generated per HTTP call
+```
+
+`with_request_id_sync` / `with_tenant_id_sync` cover blocking code.
+Header constants: `HEADER_REQUEST_ID` (`X-Request-Id`, generated when
+absent) and `HEADER_TENANT_ID` (`X-Tenant-Id`, never generated
+server-side — `None` means "unscoped").
+
 ## Quick start
 
 ```rust
@@ -151,4 +219,9 @@ Suite covers JSON round-trip on `ProblemDetail` (with extension
 flattening and exact Go wire bytes), `FireflyResult` map / and-then,
 every `FireflyError` constructor, display formatting, source-chain
 traversal, the clock variants, correlation-id scoping (async, sync,
-nested), and Send + Sync bounds.
+nested), and Send + Sync bounds. The pyfly-parity suites port
+`tests/domain/` (specification combinators, entity identity,
+pending-events raise/snapshot/drain, event auto-id/timestamp, domain
+error codes and fields) and the kernel-scoped slice of
+`tests/context/` (request-id / tenant-id scoping, nesting, task
+isolation, header names).

@@ -43,7 +43,7 @@ mod memory;
 mod noop;
 mod typed;
 
-pub use adapter::{Adapter, CacheError};
+pub use adapter::{Adapter, CacheError, CacheStats};
 pub use fallback::FallbackAdapter;
 pub use memory::MemoryAdapter;
 pub use noop::NoOpAdapter;

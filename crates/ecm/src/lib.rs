@@ -7,10 +7,23 @@
 //! deployments.
 //!
 //! Cloud storage adapters (`firefly-ecm-storage-aws`,
-//! `firefly-ecm-storage-azure`) and e-signature provider adapters
-//! (`firefly-ecm-esignature-docusign`, `firefly-ecm-esignature-adobe-sign`,
-//! `firefly-ecm-esignature-logalty`) live in dedicated crates and ship as
-//! port-asserting stubs.
+//! `firefly-ecm-storage-azure`) live in dedicated crates as port-asserting
+//! stubs; e-signature provider adapters (`firefly-ecm-esignature-docusign`,
+//! `firefly-ecm-esignature-adobe-sign`, `firefly-ecm-esignature-logalty`)
+//! ship real REST integrations.
+//!
+//! # pyfly parity
+//!
+//! On top of the Go-parity core, this crate ports pyfly's ECM surface:
+//! the [`DocumentVersion`] model and version-aware blob keys
+//! ([`version_key`], [`Service::add_version`]), the [`MetadataStore`] and
+//! [`FolderRepository`] ports with their [`InMemoryMetadataStore`] /
+//! [`InMemoryFolderRepository`] adapters, document listing
+//! ([`Service::list`]), folder management ([`Service::create_folder`]), a
+//! public [`NoOpESignature`] provider (signs immediately — ideal for tests),
+//! and a [`from_config`] factory that selects storage / e-signature providers
+//! from an [`EcmConfig`] — the DI-free analog of pyfly's
+//! `EcmAutoConfiguration`.
 //!
 //! Faithful port of the Go module `fireflyframework-go/ecm`: the JSON wire
 //! format of [`Document`], [`Folder`], [`SignatureRequest`], and
@@ -42,14 +55,21 @@
 //! # }
 //! ```
 
+mod factory;
+mod in_memory;
 mod local;
+mod noop;
 mod ports;
 mod service;
 
+pub use factory::{from_config, EcmConfig, EsignatureConfig, StorageConfig};
+pub use in_memory::{InMemoryFolderRepository, InMemoryMetadataStore};
 pub use local::LocalStore;
+pub use noop::NoOpESignature;
 pub use ports::{
-    bytes_reader, sha256_hex, ContentReader, ContentStore, Document, DocumentService,
-    ESignatureProvider, EcmError, Folder, SignatureRequest, SignatureStatus,
+    bytes_reader, sha256_hex, version_key, ContentReader, ContentStore, Document, DocumentService,
+    DocumentVersion, ESignatureProvider, EcmError, Folder, FolderRepository, MetadataStore,
+    SignatureRequest, SignatureStatus,
 };
 pub use service::Service;
 

@@ -51,6 +51,27 @@ pub enum ConfigError {
     /// fields under `deny_unknown_fields`, custom `Deserialize` errors, …).
     #[error("firefly/config: {0}")]
     Message(String),
+
+    /// A `${...}` placeholder could not be resolved (unknown reference
+    /// without a default) or resolution recursed past the depth guard
+    /// (circular references such as `a: ${b}` / `b: ${a}`).
+    #[error("firefly/config: placeholder {placeholder:?}: {message}")]
+    Placeholder {
+        /// The placeholder (or value) that failed to resolve.
+        placeholder: String,
+        /// Human-readable resolution failure.
+        message: String,
+    },
+
+    /// Fetching remote configuration from a Spring-Cloud-Config-style
+    /// server failed (connection error, malformed JSON document, …).
+    #[error("firefly/config: remote config {url}: {message}")]
+    Remote {
+        /// The document URL that was queried (`{base}/{app}/{profile}/{label}`).
+        url: String,
+        /// Human-readable transport or decode failure.
+        message: String,
+    },
 }
 
 impl ConfigError {

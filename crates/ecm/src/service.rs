@@ -8,15 +8,27 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
 
 use crate::ports::{
-    sha256_hex, zero_time, ContentReader, ContentStore, Document, DocumentService, EcmError,
+    sha256_hex, version_key, zero_time, ContentReader, ContentStore, Document, DocumentService,
+    DocumentVersion, EcmError, Folder, FolderRepository,
 };
 
 /// Service is the default [`DocumentService`] composing a [`ContentStore`]
 /// with an in-memory document index. Production services typically wire
 /// in a database-backed index instead.
+///
+/// Beyond the [`DocumentService`] trait, `Service` adds pyfly-parity
+/// conveniences as inherent methods: [`list`](Service::list) (filter the
+/// index by folder, capped at a limit), multi-version blob support
+/// ([`add_version`](Service::add_version) / [`versions`](Service::versions) /
+/// [`read_version`](Service::read_version) /
+/// [`delete_version`](Service::delete_version)), and folder management
+/// ([`create_folder`](Service::create_folder)) when a [`FolderRepository`] is
+/// wired in via [`with_folders`](Service::with_folders).
 pub struct Service {
     content: Box<dyn ContentStore>,
     docs: RwLock<HashMap<String, Document>>,
+    versions: RwLock<HashMap<String, Vec<DocumentVersion>>>,
+    folders: Option<Box<dyn FolderRepository>>,
 }
 
 impl Service {
@@ -25,6 +37,23 @@ impl Service {
         Self {
             content: Box::new(content),
             docs: RwLock::new(HashMap::new()),
+            versions: RwLock::new(HashMap::new()),
+            folders: None,
+        }
+    }
+
+    /// Returns a Service backed by `content` with a [`FolderRepository`]
+    /// wired in, enabling [`create_folder`](Service::create_folder). The
+    /// analog of pyfly's `DocumentService(storage, metadata, folders=...)`.
+    pub fn with_folders(
+        content: impl ContentStore + 'static,
+        folders: impl FolderRepository + 'static,
+    ) -> Self {
+        Self {
+            content: Box::new(content),
+            docs: RwLock::new(HashMap::new()),
+            versions: RwLock::new(HashMap::new()),
+            folders: Some(Box::new(folders)),
         }
     }
 
@@ -42,6 +71,139 @@ impl Service {
     /// `true` on match.
     pub async fn verify_checksum(&self, id: &str, expected: &str) -> Result<bool, EcmError> {
         Ok(self.checksum(id).await?.eq_ignore_ascii_case(expected))
+    }
+
+    /// Lists indexed documents, optionally filtered to a `folder_id` (`None`
+    /// returns every folder), capped at `limit` records. The pyfly-parity
+    /// analog of `DocumentService.list(folder_id=...)` /
+    /// `MetadataStoragePort.list(folder_id, *, limit)`.
+    pub async fn list(
+        &self,
+        folder_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Document>, EcmError> {
+        let guard = self.docs.read().await;
+        let results = guard
+            .values()
+            .filter(|d| match folder_id {
+                Some(fid) => d.folder_id == fid,
+                None => true,
+            })
+            .take(limit)
+            .cloned()
+            .collect();
+        Ok(results)
+    }
+
+    /// Persists `folder` through the wired [`FolderRepository`], returning the
+    /// stored record. The analog of pyfly's `DocumentService.create_folder`;
+    /// returns [`EcmError::Provider`] (`"firefly/ecm: no FolderRepository configured"`)
+    /// when the Service was built with [`new`](Service::new) instead of
+    /// [`with_folders`](Service::with_folders).
+    pub async fn create_folder(&self, folder: Folder) -> Result<Folder, EcmError> {
+        match &self.folders {
+            Some(repo) => repo.save(folder).await,
+            None => Err(EcmError::provider(
+                "firefly/ecm: no FolderRepository configured",
+            )),
+        }
+    }
+
+    /// Appends a new revision of document `id`'s content and returns the
+    /// resulting [`DocumentVersion`]. The content is stored under the
+    /// version-aware key `<id>/v<n>` (see [`version_key`]), the document's
+    /// `version` counter and `size` are bumped, and the version is recorded
+    /// in the per-document version list. Mirrors pyfly's append-on-upload
+    /// `DocumentVersion` semantics. [`EcmError::NotFound`] when `id` is
+    /// unknown.
+    pub async fn add_version(
+        &self,
+        id: &str,
+        content: ContentReader,
+    ) -> Result<DocumentVersion, EcmError> {
+        let mut doc = self.get(id).await?;
+        let next = doc.version + 1;
+        let key = version_key(id, next);
+
+        // Buffer the content so we can both store it and hash it.
+        let mut buf = Vec::new();
+        let mut content = content;
+        content.read_to_end(&mut buf).await?;
+        let size = buf.len() as i64;
+        let content_hash = sha256_hex(&buf);
+        self.content
+            .put(&key, Box::pin(std::io::Cursor::new(buf)))
+            .await?;
+
+        let version = DocumentVersion {
+            version: next,
+            content_hash,
+            size_bytes: size,
+            storage_uri: key,
+            created_at: Utc::now(),
+        };
+
+        doc.version = next;
+        doc.size = size;
+        doc.updated_at = version.created_at;
+        self.docs.write().await.insert(doc.id.clone(), doc);
+        self.versions
+            .write()
+            .await
+            .entry(id.to_string())
+            .or_default()
+            .push(version.clone());
+        Ok(version)
+    }
+
+    /// Returns the recorded [`DocumentVersion`] list for document `id`
+    /// (oldest first), or [`EcmError::NotFound`] when `id` is unknown. A
+    /// document created with [`create`](DocumentService::create) but never
+    /// extended via [`add_version`](Service::add_version) has an empty list.
+    pub async fn versions(&self, id: &str) -> Result<Vec<DocumentVersion>, EcmError> {
+        self.get(id).await?;
+        Ok(self
+            .versions
+            .read()
+            .await
+            .get(id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Opens the binary content of a specific `version` of document `id`,
+    /// stored under the version-aware key `<id>/v<version>`.
+    /// [`EcmError::NotFound`] when the document or that version is absent.
+    pub async fn read_version(&self, id: &str, version: i64) -> Result<ContentReader, EcmError> {
+        self.require_version(id, version).await?;
+        self.content.get(&version_key(id, version)).await
+    }
+
+    /// Removes the stored content of a specific `version` of document `id`
+    /// and drops it from the recorded version list. [`EcmError::NotFound`]
+    /// when the document or that version is absent.
+    pub async fn delete_version(&self, id: &str, version: i64) -> Result<(), EcmError> {
+        self.require_version(id, version).await?;
+        self.content.delete(&version_key(id, version)).await?;
+        if let Some(list) = self.versions.write().await.get_mut(id) {
+            list.retain(|v| v.version != version);
+        }
+        Ok(())
+    }
+
+    /// Ensures document `id` exists and has recorded `version`.
+    async fn require_version(&self, id: &str, version: i64) -> Result<(), EcmError> {
+        self.get(id).await?;
+        let guard = self.versions.read().await;
+        let present = guard
+            .get(id)
+            .map(|list| list.iter().any(|v| v.version == version))
+            .unwrap_or(false);
+        if present {
+            Ok(())
+        } else {
+            Err(EcmError::NotFound)
+        }
     }
 }
 
@@ -270,6 +432,250 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svc = new_service(&dir);
         assert!(svc.checksum("missing").await.unwrap_err().is_not_found());
+    }
+
+    // ---------------------------------------------------------------------
+    // pyfly parity: list(folder_id, limit).
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn list_filters_by_folder() {
+        // Port of pyfly test_list_filters_by_folder.
+        let dir = tempfile::tempdir().unwrap();
+        let svc = new_service(&dir);
+        svc.create(
+            Document {
+                name: "a.txt".into(),
+                folder_id: "f-1".into(),
+                ..Default::default()
+            },
+            bytes_reader(b"a".to_vec()),
+        )
+        .await
+        .unwrap();
+        svc.create(
+            Document {
+                name: "b.txt".into(),
+                folder_id: "f-2".into(),
+                ..Default::default()
+            },
+            bytes_reader(b"b".to_vec()),
+        )
+        .await
+        .unwrap();
+
+        let in_f1 = svc.list(Some("f-1"), 100).await.unwrap();
+        assert_eq!(in_f1.len(), 1);
+        assert_eq!(in_f1[0].name, "a.txt");
+        // None returns every folder.
+        assert_eq!(svc.list(None, 100).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_honors_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = new_service(&dir);
+        for i in 0..4 {
+            svc.create(
+                Document {
+                    name: format!("d{i}"),
+                    ..Default::default()
+                },
+                bytes_reader(b"x".to_vec()),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(svc.list(None, 2).await.unwrap().len(), 2);
+        assert_eq!(svc.list(None, 100).await.unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn list_empty_index_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = new_service(&dir);
+        assert!(svc.list(None, 100).await.unwrap().is_empty());
+        assert!(svc.list(Some("f-1"), 100).await.unwrap().is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // pyfly parity: create_folder via a wired FolderRepository.
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn create_folder_requires_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = new_service(&dir);
+        // pyfly raises RuntimeError when no FolderRepositoryPort is configured.
+        let err = svc.create_folder(Folder::default()).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "firefly/ecm: no FolderRepository configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_folder_persists_through_repository() {
+        use crate::in_memory::InMemoryFolderRepository;
+        let dir = tempfile::tempdir().unwrap();
+        let svc =
+            Service::with_folders(LocalStore::new(dir.path()), InMemoryFolderRepository::new());
+        let folder = svc
+            .create_folder(Folder {
+                id: "f1".into(),
+                name: "contracts".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(folder.id, "f1");
+        assert_eq!(folder.name, "contracts");
+    }
+
+    // ---------------------------------------------------------------------
+    // pyfly parity: multi-version blobs.
+    // ---------------------------------------------------------------------
+
+    use crate::ports::version_key;
+    use crate::ports::DocumentVersion;
+
+    #[tokio::test]
+    async fn add_version_appends_and_stores_under_versioned_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = new_service(&dir);
+        let doc = svc
+            .create(Document::default(), bytes_reader(b"v1-body".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(doc.version, 1);
+        assert!(svc.versions(&doc.id).await.unwrap().is_empty());
+
+        let v2 = svc
+            .add_version(&doc.id, bytes_reader(b"v2-body-longer".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(v2.version, 2);
+        assert_eq!(v2.size_bytes, "v2-body-longer".len() as i64);
+        assert_eq!(v2.storage_uri, version_key(&doc.id, 2));
+        assert_eq!(v2.content_hash, sha256_hex(b"v2-body-longer"));
+
+        // Document counter and size were bumped.
+        let updated = svc.get(&doc.id).await.unwrap();
+        assert_eq!(updated.version, 2);
+        assert_eq!(updated.size, "v2-body-longer".len() as i64);
+
+        // The versioned blob is on disk and readable.
+        let body = read_all(svc.read_version(&doc.id, 2).await.unwrap()).await;
+        assert_eq!(body, b"v2-body-longer");
+        let on_disk = dir.path().join(version_key(&doc.id, 2));
+        assert!(on_disk.exists());
+
+        // The version list records the single appended revision.
+        let versions = svc.versions(&doc.id).await.unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0], v2);
+    }
+
+    #[tokio::test]
+    async fn add_version_increments_monotonically() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = new_service(&dir);
+        let doc = svc
+            .create(Document::default(), bytes_reader(b"1".to_vec()))
+            .await
+            .unwrap();
+        let a = svc
+            .add_version(&doc.id, bytes_reader(b"2".to_vec()))
+            .await
+            .unwrap();
+        let b = svc
+            .add_version(&doc.id, bytes_reader(b"3".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(a.version, 2);
+        assert_eq!(b.version, 3);
+        let versions: Vec<i64> = svc
+            .versions(&doc.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v: DocumentVersion| v.version)
+            .collect();
+        assert_eq!(versions, vec![2, 3]);
+    }
+
+    #[tokio::test]
+    async fn delete_version_removes_blob_and_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = new_service(&dir);
+        let doc = svc
+            .create(Document::default(), bytes_reader(b"1".to_vec()))
+            .await
+            .unwrap();
+        svc.add_version(&doc.id, bytes_reader(b"2".to_vec()))
+            .await
+            .unwrap();
+        svc.add_version(&doc.id, bytes_reader(b"3".to_vec()))
+            .await
+            .unwrap();
+
+        svc.delete_version(&doc.id, 2).await.unwrap();
+        assert!(!dir.path().join(version_key(&doc.id, 2)).exists());
+        let remaining: Vec<i64> = svc
+            .versions(&doc.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v| v.version)
+            .collect();
+        assert_eq!(remaining, vec![3]);
+        // Reading the deleted version is now NotFound.
+        assert!(svc
+            .read_version(&doc.id, 2)
+            .await
+            .err()
+            .unwrap()
+            .is_not_found());
+    }
+
+    #[tokio::test]
+    async fn version_ops_on_missing_document_or_version_are_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = new_service(&dir);
+        assert!(svc
+            .add_version("missing", bytes_reader(b"x".to_vec()))
+            .await
+            .unwrap_err()
+            .is_not_found());
+        assert!(svc.versions("missing").await.unwrap_err().is_not_found());
+        assert!(svc
+            .read_version("missing", 1)
+            .await
+            .err()
+            .unwrap()
+            .is_not_found());
+        assert!(svc
+            .delete_version("missing", 1)
+            .await
+            .unwrap_err()
+            .is_not_found());
+
+        let doc = svc
+            .create(Document::default(), bytes_reader(b"1".to_vec()))
+            .await
+            .unwrap();
+        // No version 2 has been appended yet.
+        assert!(svc
+            .read_version(&doc.id, 2)
+            .await
+            .err()
+            .unwrap()
+            .is_not_found());
+        assert!(svc
+            .delete_version(&doc.id, 2)
+            .await
+            .unwrap_err()
+            .is_not_found());
     }
 
     // ---------------------------------------------------------------------

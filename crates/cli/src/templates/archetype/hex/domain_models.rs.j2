@@ -1,0 +1,21 @@
+//! Domain models for {{ name }} (framework-free core).
+
+/// A domain entity at the heart of the {{ name }} system.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    /// Identity.
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+}
+
+impl Item {
+    /// Create a new item, enforcing the domain invariant that names are non-empty.
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Result<Self, String> {
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err("name must not be empty".into());
+        }
+        Ok(Self { id: id.into(), name })
+    }
+}

@@ -9,12 +9,17 @@
 //! credit cards, E.164 phone numbers, ISO 4217 currency codes, RFC 5322
 //! email addresses, configurable password policies, UK sort codes,
 //! Australian BSBs, US SSNs, EU-style VAT numbers, and Spanish
-//! DNI/NIE/NIF identifiers.
+//! DNI/NIE/NIF identifiers — plus the pyfly banking predicates: CVV,
+//! PIN, monetary amounts, account numbers, interest-rate bands, and
+//! ISO-8601 dates/datetimes (chrono-backed).
 //!
 //! This crate is the Rust port of the Go module
 //! `github.com/fireflyframework/fireflyframework-go/validators`; error
 //! message texts match the Go implementation so log lines and problem
-//! details stay comparable across ports.
+//! details stay comparable across ports. The banking predicates ported
+//! from `pyfly.validation.domain` keep pyfly's error messages instead
+//! (`invalid CVV`, `interest rate out of range`, ...) so the two ports
+//! emit identical reasons.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
@@ -554,6 +559,187 @@ static BSB_RE: LazyLock<Regex> =
 pub fn validate_bsb(s: &str) -> Result<(), ValidationError> {
     if !BSB_RE.is_match(s.trim()) {
         return Err(invalid("bsb: format"));
+    }
+    Ok(())
+}
+
+// ----- pyfly banking predicates -----
+//
+// Ports of `pyfly.validation.domain`'s `is_valid_*` predicates that the
+// Go lineage lacked. pyfly exposes each predicate twice: a boolean
+// `is_valid_x` and a pydantic factory `valid_x` raising
+// `ValueError(<message>)`. The Rust port collapses both into the
+// crate-canonical `Result<(), ValidationError>` shape and uses pyfly's
+// factory messages verbatim as the error reason. pyfly's keyword
+// arguments become explicit `_with_*` variants; the unsuffixed function
+// applies pyfly's defaults.
+//
+// Deliberate divergence: pyfly's `str.isdigit`/`str.isalnum` accept
+// non-ASCII Unicode digits and letters; banking CVVs, PINs, and account
+// numbers are ASCII in every real scheme, so the Rust port restricts
+// the alphabet to ASCII.
+
+/// Validates a card CVV/CVC: 3 or 4 ASCII digits — the port of pyfly's
+/// `is_valid_cvv`. Fails with reason `invalid CVV`.
+pub fn validate_cvv(s: &str) -> Result<(), ValidationError> {
+    if !(3..=4).contains(&s.len()) || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid("invalid CVV"));
+    }
+    Ok(())
+}
+
+/// Validates a card PIN with pyfly's default length of 4 digits — the
+/// port of `is_valid_pin(value)`. Fails with reason `invalid pin`.
+pub fn validate_pin(s: &str) -> Result<(), ValidationError> {
+    validate_pin_with_length(s, 4)
+}
+
+/// Validates a PIN of exactly `length` ASCII digits — the port of
+/// pyfly's `is_valid_pin(value, length=...)`. The empty string is
+/// always rejected (pyfly treats `""` as falsy even for `length=0`).
+/// Fails with reason `invalid pin`.
+pub fn validate_pin_with_length(s: &str, length: usize) -> Result<(), ValidationError> {
+    if s.is_empty() || s.len() != length || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid("invalid pin"));
+    }
+    Ok(())
+}
+
+/// Validates a monetary amount with pyfly's defaults (`allow_zero =
+/// false`, `max_digits = 18`) — the port of `is_valid_amount(value)`.
+/// Fails with reason `invalid amount`.
+pub fn validate_amount(value: f64) -> Result<(), ValidationError> {
+    validate_amount_with(value, false, 18)
+}
+
+/// Validates a monetary amount with bounded integer precision — the
+/// port of pyfly's `is_valid_amount(value, allow_zero=..., max_digits=...)`.
+///
+/// Rules, in pyfly order: non-finite values (`inf`, `-inf`, `NaN`) are
+/// rejected rather than crashing; negative amounts are rejected; zero
+/// is rejected unless `allow_zero`; and the decimal digit count of the
+/// truncated integer part must not exceed `max_digits` (pyfly's
+/// `len(str(int(value))) <= max_digits`). Fails with reason
+/// `invalid amount`.
+///
+/// pyfly accepts any `float()`-coercible object; the Rust port is typed
+/// — parse strings to `f64` before calling.
+pub fn validate_amount_with(
+    value: f64,
+    allow_zero: bool,
+    max_digits: usize,
+) -> Result<(), ValidationError> {
+    if !value.is_finite() || value < 0.0 || (value == 0.0 && !allow_zero) {
+        return Err(invalid("invalid amount"));
+    }
+    // Mirror Python's len(str(int(value))): truncate toward zero, then
+    // count the exact decimal digits. `.abs()` only normalises -0.0
+    // (negatives were rejected above); `{:.0}` prints the exact value
+    // since truncation already removed the fraction.
+    let integer_part = format!("{:.0}", value.trunc().abs());
+    if integer_part.len() > max_digits {
+        return Err(invalid("invalid amount"));
+    }
+    Ok(())
+}
+
+/// Validates a bank account number: 6..=34 ASCII alphanumerics — the
+/// port of pyfly's `is_valid_account_number`. Fails with reason
+/// `invalid account number`.
+pub fn validate_account_number(s: &str) -> Result<(), ValidationError> {
+    if !(6..=34).contains(&s.len()) || !s.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(invalid("invalid account number"));
+    }
+    Ok(())
+}
+
+/// Validates an interest rate against pyfly's default band of
+/// `0.0..=100.0` percent — the port of `is_valid_interest_rate(value)`.
+/// Fails with reason `interest rate out of range`.
+pub fn validate_interest_rate(value: f64) -> Result<(), ValidationError> {
+    validate_interest_rate_within(value, 0.0, 100.0)
+}
+
+/// Validates a percentage (e.g. `4.25` = 4.25 %) within an allowed band
+/// — the port of pyfly's `is_valid_interest_rate(value, min_pct=...,
+/// max_pct=...)`. `NaN` never satisfies the band, exactly like Python's
+/// chained comparison. Fails with reason `interest rate out of range`.
+pub fn validate_interest_rate_within(
+    value: f64,
+    min_pct: f64,
+    max_pct: f64,
+) -> Result<(), ValidationError> {
+    if !(min_pct..=max_pct).contains(&value) {
+        return Err(invalid("interest rate out of range"));
+    }
+    Ok(())
+}
+
+/// Validates an ISO-8601 calendar date (`%Y-%m-%d`, pyfly's default
+/// format) — the port of `is_valid_date(value)`. Fails with reason
+/// `invalid date`.
+pub fn validate_date(s: &str) -> Result<(), ValidationError> {
+    validate_date_with_format(s, "%Y-%m-%d")
+}
+
+/// Validates a calendar date against an explicit strftime-style format
+/// — the port of pyfly's `is_valid_date(value, fmt=...)`. The format
+/// string uses [`chrono::format::strftime`] specifiers, which match the
+/// `datetime.strptime` specifiers pyfly accepts (`%Y`, `%m`, `%d`,
+/// `%d/%m/%Y`, ...). The whole input must match, and impossible
+/// calendar dates (Feb 30) are rejected. Fails with reason
+/// `invalid date`.
+pub fn validate_date_with_format(s: &str, fmt: &str) -> Result<(), ValidationError> {
+    if chrono::NaiveDate::parse_from_str(s, fmt).is_err() {
+        return Err(invalid("invalid date"));
+    }
+    Ok(())
+}
+
+/// Datetime layouts with a UTC offset, mirroring what
+/// `datetime.fromisoformat` accepts after pyfly's `Z` substitution.
+const DATETIME_OFFSET_FORMATS: &[&str] = &[
+    "%Y-%m-%dT%H:%M:%S%.f%:z",
+    "%Y-%m-%d %H:%M:%S%.f%:z",
+    "%Y-%m-%dT%H:%M%:z",
+    "%Y-%m-%d %H:%M%:z",
+];
+
+/// Naive datetime layouts (no offset) accepted by
+/// `datetime.fromisoformat`.
+const DATETIME_NAIVE_FORMATS: &[&str] = &[
+    "%Y-%m-%dT%H:%M:%S%.f",
+    "%Y-%m-%d %H:%M:%S%.f",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d %H:%M",
+];
+
+/// Validates an ISO-8601 datetime — the port of pyfly's
+/// `is_valid_datetime`, which delegates to `datetime.fromisoformat`
+/// after rewriting a trailing `Z` to `+00:00`.
+///
+/// Accepts `2026-05-07T12:00:00`, a space instead of the `T`, optional
+/// fractional seconds, optional `±HH:MM`/`±HHMM` offsets, a trailing
+/// `Z`, minute precision (`2026-05-07T12:00`), and a bare date
+/// (`2026-05-07`) — all of which `fromisoformat` accepts. Compact
+/// "basic" forms (`20260507T120000`) and hour-only times, which Python
+/// 3.11+ also tolerates, are deliberately not accepted. Fails with
+/// reason `invalid datetime`.
+pub fn validate_datetime(s: &str) -> Result<(), ValidationError> {
+    // pyfly: a trailing "Z" is rewritten to "+00:00" before parsing.
+    let normalised: String = match s.strip_suffix('Z') {
+        Some(stripped) => format!("{stripped}+00:00"),
+        None => s.to_owned(),
+    };
+    let ok = DATETIME_OFFSET_FORMATS
+        .iter()
+        .any(|fmt| chrono::DateTime::parse_from_str(&normalised, fmt).is_ok())
+        || DATETIME_NAIVE_FORMATS
+            .iter()
+            .any(|fmt| chrono::NaiveDateTime::parse_from_str(&normalised, fmt).is_ok())
+        || chrono::NaiveDate::parse_from_str(&normalised, "%Y-%m-%d").is_ok();
+    if !ok {
+        return Err(invalid("invalid datetime"));
     }
     Ok(())
 }

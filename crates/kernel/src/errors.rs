@@ -135,6 +135,56 @@ impl FireflyError {
     pub fn idempotency_conflict(detail: impl Into<String>) -> Self {
         Self::new(TYPE_IDEMPOTENCY, "Idempotency Conflict", 409, detail)
     }
+
+    /// Returns a 422 `FireflyError` for a violated business invariant —
+    /// the Rust analog of pyfly's `BusinessRuleViolation(rule)`.
+    ///
+    /// The code is `DOMAIN_RULE_VIOLATION` and the rule name is carried
+    /// in the structured `rule` field. When `detail` is empty, pyfly's
+    /// default message `Business rule violated: <rule>` is used.
+    ///
+    /// Use this for rules *intrinsic* to the domain (e.g. "an order
+    /// cannot be cancelled after it has shipped"); for malformed input
+    /// use [`FireflyError::validation`].
+    pub fn business_rule(rule: impl Into<String>, detail: impl Into<String>) -> Self {
+        let rule = rule.into();
+        let detail = detail.into();
+        let detail = if detail.is_empty() {
+            format!("Business rule violated: {rule}")
+        } else {
+            detail
+        };
+        Self::new(
+            "DOMAIN_RULE_VIOLATION",
+            "Business Rule Violation",
+            422,
+            detail,
+        )
+        .with_field("rule", rule)
+    }
+
+    /// Returns a 404 `FireflyError` for a repository asked for an
+    /// aggregate that does not exist — the Rust analog of pyfly's
+    /// `AggregateNotFound(aggregate_type, id)`.
+    ///
+    /// The code is `DOMAIN_AGGREGATE_NOT_FOUND`; the aggregate type and
+    /// id are carried in the structured `aggregate_type` / `id` fields
+    /// and in the detail (`<type> with id=<id> not found`).
+    pub fn aggregate_not_found(
+        aggregate_type: impl Into<String>,
+        id: impl std::fmt::Display,
+    ) -> Self {
+        let aggregate_type = aggregate_type.into();
+        let id = id.to_string();
+        Self::new(
+            "DOMAIN_AGGREGATE_NOT_FOUND",
+            "Aggregate Not Found",
+            404,
+            format!("{aggregate_type} with id={id} not found"),
+        )
+        .with_field("aggregate_type", aggregate_type)
+        .with_field("id", id)
+    }
 }
 
 /// Walks the [`std::error::Error::source`] chain looking for a

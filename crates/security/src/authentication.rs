@@ -20,6 +20,13 @@ pub struct Authentication {
     pub username: String,
     /// Authorities; `"ROLE_XYZ"` or domain-specific strings.
     pub roles: Vec<String>,
+    /// Fine-grained authorities (pyfly: `permissions`) — e.g. OAuth2
+    /// scopes or explicit permission strings, distinct from [`roles`].
+    /// Populated by [`JwksVerifier`](crate::JwksVerifier) from the
+    /// `permissions` claim or the space-separated `scope` claim.
+    ///
+    /// [`roles`]: Authentication::roles
+    pub authorities: Vec<String>,
     /// Raw token claims, available to handlers.
     pub claims: HashMap<String, serde_json::Value>,
 }
@@ -33,6 +40,20 @@ impl Authentication {
     /// Returns true if any role matches.
     pub fn has_any_role(&self, roles: &[&str]) -> bool {
         roles.iter().any(|want| self.has_role(want))
+    }
+
+    /// Reports whether the authentication carries `authority` — true
+    /// when it appears in [`authorities`](Authentication::authorities)
+    /// **or** [`roles`](Authentication::roles) (pyfly's `hasAuthority`
+    /// accepts a role name or a permission).
+    pub fn has_authority(&self, authority: &str) -> bool {
+        self.authorities.iter().any(|a| a == authority) || self.has_role(authority)
+    }
+
+    /// Returns true if any authority matches (see
+    /// [`has_authority`](Authentication::has_authority)).
+    pub fn has_any_authority(&self, authorities: &[&str]) -> bool {
+        authorities.iter().any(|want| self.has_authority(want))
     }
 
     /// Returns the anonymous authentication — principal [`ANONYMOUS_ID`],
@@ -151,6 +172,7 @@ mod tests {
             principal: "u1".into(),
             username: "alice".into(),
             roles: roles.iter().map(|r| r.to_string()).collect(),
+            authorities: Vec::new(),
             claims: HashMap::new(),
         }
     }
@@ -178,7 +200,21 @@ mod tests {
         assert_eq!(a.principal, ANONYMOUS_ID);
         assert!(a.username.is_empty());
         assert!(a.roles.is_empty());
+        assert!(a.authorities.is_empty());
         assert!(a.claims.is_empty());
+    }
+
+    #[test]
+    fn has_authority_matches_authorities_and_roles() {
+        let mut a = auth(&["ADMIN"]);
+        a.authorities = vec!["read".into(), "write".into()];
+        assert!(a.has_authority("read"));
+        assert!(a.has_authority("write"));
+        assert!(a.has_authority("ADMIN")); // role names count as authorities
+        assert!(!a.has_authority("delete"));
+        assert!(a.has_any_authority(&["delete", "read"]));
+        assert!(!a.has_any_authority(&["delete", "erase"]));
+        assert!(!a.has_any_authority(&[]));
     }
 
     #[test]

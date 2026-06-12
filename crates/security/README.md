@@ -196,3 +196,75 @@ anonymous fallthrough mode, the filter-chain `permit / require /
 forbidden` matrix, byte-exact problem+json wire shapes, custom header
 and rejection-handler configuration, and `Send + Sync` bounds — all
 in-process via `tower::ServiceExt::oneshot`.
+
+## pyfly parity
+
+On top of the Go-parity surface above, `firefly-security` ports the
+full `pyfly.security` layer (Java: Spring Security OAuth2 resource
+server + authorization server). Behaviour and wire formats match
+pyfly; Python idioms are adapted to Rust (decorators → builders,
+DI → explicit construction, `contextvars` → request extensions, SpEL
+strings → typed predicates).
+
+* **`JwksVerifier`** — JWKS resource-server `Verifier` (RS256, kid
+  cache, `iss`/`aud` validation, `exp` required). Maps claims to
+  `Authentication`: `sub` → principal, `preferred_username | name`
+  → username, flat `roles` **or** Keycloak `realm_access.roles`
+  → roles, `permissions` **or** space-separated `scope` → authorities.
+  `claims_to_authentication` is reused for OIDC id-tokens.
+* **`Authentication::authorities`** — fine-grained permissions/scopes,
+  distinct from `roles`; `has_authority` accepts a role name or a
+  permission (pyfly semantics).
+* **`RoleHierarchy`** — parses `"ADMIN > USER"` specs (newline- or
+  `;`-separated, transitive `expand`), consulted by `FilterChain` role
+  and authority checks via `with_role_hierarchy`.
+* **`FilterChain` URL DSL** (pyfly `HttpSecurity`) — `permit_pattern`,
+  `require_pattern`, `require_authority`, `authenticated`, and `deny`
+  use fnmatch-style globs (`/api/admin/**`); first matching rule wins,
+  unmatched paths default-allow.
+* **`guards`** — typed `AuthorizationGuard` predicates
+  (`has_role` / `has_any_role` / `has_authority` / `has_any_authority`
+  / `authenticated` / `permit_all` / `deny_all` plus `require(|auth|
+  …)`) composed with `and` / `or` / `not`. The Rust replacement for
+  pyfly's `@pre_authorize("hasRole('ADMIN')")` SpEL strings; `authorize`
+  splits 401 (no/anonymous principal) from 403 (predicate false).
+* **CSRF** — `generate_csrf_token` (43-char URL-safe), constant-time
+  `validate_csrf_token`, and `CsrfLayer` (double-submit cookie:
+  safe-method cookie issuance, `X-XSRF-TOKEN`/`XSRF-TOKEN` comparison
+  on unsafe methods, `Authorization: Bearer` bypass, token rotation).
+* **`oauth2`** module:
+  * `ClientRegistration` + `google` / `github` / `keycloak` presets and
+    the `ClientRegistrationRepository` port
+    (`InMemoryClientRegistrationRepository`).
+  * `OAuth2LoginHandler::router()` — axum routes for the
+    authorization-code flow: `state` + `nonce` + PKCE S256, OIDC
+    id-token validation against the provider JWKS, userinfo fallback,
+    session-fixation-safe id rotation. Session state plugs in through
+    the local `LoginSession` / `LoginSessionStore` traits so
+    `firefly-session` (or any cookie store) can back it.
+  * `AuthorizationServer` — `client_credentials` + `refresh_token`
+    grants issuing HS256 JWTs with refresh-token rotation and
+    constant-time client authentication. RFC-6749 error codes match
+    pyfly exactly (`INVALID_CLIENT`, `UNAUTHORIZED_CLIENT`,
+    `INVALID_REQUEST`, `INVALID_GRANT`, `UNSUPPORTED_GRANT_TYPE`).
+  * `TokenStore` port + `InMemoryTokenStore`, `RedisTokenStore`
+    (`SET … EX` / `GET` / `DEL`, configurable key prefix + TTL), and
+    `PostgresTokenStore` (lazy table creation, SQL-identifier-validated
+    table name).
+
+### pyfly-parity tests
+
+* `jwks_test.rs` — `JwksVerifier` against an in-process axum JWKS
+  server (real HTTP fetch path, kid cache, iss/aud, disallowed-alg
+  rejection).
+* `oauth2_test.rs` — `ClientRegistration` presets, repository, and the
+  `AuthorizationServer` grant/error/rotation matrix.
+* `oauth2_login_test.rs` — the full login flow against an in-process
+  OAuth2 provider mock (token + userinfo + JWKS endpoints): PKCE, state
+  mismatch, provider errors, verified-id-token vs userinfo paths.
+* `persistent_token_store_test.rs` — `RedisTokenStore` round-trip with
+  TTL against an in-process fake RESP server; `PostgresTokenStore`
+  round-trip behind `#[ignore]` (true Postgres required).
+* `pyfly_parity_test.rs` — `CsrfLayer` (pyfly `TestCsrfFilter`) and the
+  `FilterChain` glob / `deny` / `authenticated` / `require_authority`
+  / role-hierarchy behaviours through the real tower stack.

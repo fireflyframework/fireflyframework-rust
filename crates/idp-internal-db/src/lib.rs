@@ -51,15 +51,20 @@
 //! # }
 //! ```
 
+mod totp;
+
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use chrono::{DateTime, NaiveDate, Utc};
-use firefly_idp::{Error, Result, Token, User};
+use firefly_idp::{Error, MfaChallenge, Result, Role, SessionIntrospection, Token, User};
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 /// bcrypt work factor used for stored password hashes — mirrors Go's
@@ -101,13 +106,29 @@ struct Record {
     hash: String,
 }
 
-/// Mutable state guarded by one lock: users by id plus the username index.
+/// Mutable state guarded by one lock: users by id plus the username index, the
+/// role catalogue, the opaque-token / refresh registries, and the MFA state.
+///
+/// The opaque-token registry is what makes server-side `logout` and
+/// `introspect` possible despite tokens being stateless JWTs: every minted
+/// access token is *also* recorded here (`token → user_id`), so it can be
+/// revoked or introspected by value — mirroring pyfly's `_tokens` dict.
 #[derive(Default)]
 struct Inner {
     /// Users keyed by id.
     users: HashMap<String, Record>,
     /// username → id index used by [`Adapter::login`].
     by_username: HashMap<String, String>,
+    /// Role catalogue: role name → [`Role`] (with description/scopes).
+    roles: HashMap<String, Role>,
+    /// Live access-token registry: access token → user id (pyfly `_tokens`).
+    tokens: HashMap<String, String>,
+    /// Live refresh-token registry: refresh token → user id (pyfly `_refresh`).
+    refresh: HashMap<String, String>,
+    /// TOTP secrets for MFA-enabled users: user id → base32 secret.
+    mfa_secrets: HashMap<String, String>,
+    /// Pending MFA challenges: challenge id → user id (single-use).
+    mfa_challenges: HashMap<String, String>,
 }
 
 /// The in-memory IdP implementation of the [`firefly_idp::Adapter`] port.
@@ -169,6 +190,122 @@ impl Adapter {
         })
     }
 
+    /// Mints a [`Token`] for `user` and records its access and refresh tokens
+    /// in the opaque-token registries so [`firefly_idp::Adapter::logout`] and
+    /// [`firefly_idp::Adapter::introspect`] can later resolve them by value.
+    ///
+    /// The JWT wire shape is unchanged (Go parity): the registry is an
+    /// additive, server-side index layered over the stateless token.
+    fn mint_and_register(&self, user: &User) -> Result<Token> {
+        let token = self.mint_token(user)?;
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        inner
+            .tokens
+            .insert(token.access_token.clone(), user.id.clone());
+        inner
+            .refresh
+            .insert(token.refresh_token.clone(), user.id.clone());
+        Ok(token)
+    }
+
+    /// Generates a fresh opaque, URL-safe token (256 bits of entropy), used as
+    /// the challenge identifier handed to MFA clients.
+    fn opaque_token() -> String {
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    /// Records a single-use MFA challenge for `user_id` and returns the
+    /// client-facing [`MfaChallenge`] (opaque `challenge_id`, empty `user_id`
+    /// to avoid enumeration). Fails with [`Error::UserNotFound`] if the user
+    /// does not exist.
+    fn new_challenge(&self, user_id: &str) -> Result<MfaChallenge> {
+        let challenge_id = Self::opaque_token();
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        if !inner.users.contains_key(user_id) {
+            return Err(Error::UserNotFound);
+        }
+        inner
+            .mfa_challenges
+            .insert(challenge_id.clone(), user_id.to_string());
+        Ok(MfaChallenge::new(challenge_id))
+    }
+
+    /// Enrolls TOTP MFA for `user_id`, returning the provisioning secret to be
+    /// shown to the user (e.g. as an `otpauth://` QR code).
+    ///
+    /// Adapter-specific (not part of the [`firefly_idp::Adapter`] port) —
+    /// mirrors pyfly's `InternalDbIdpAdapter.enable_mfa`. The secret is a
+    /// base32 string; codes are HMAC-SHA256 TOTP (see the `totp` module — this
+    /// differs from pyfly's HMAC-SHA1 because the workspace ships only `sha2`).
+    /// Fails with [`Error::UserNotFound`] when the user does not exist.
+    pub async fn enable_mfa(&self, user_id: &str) -> Result<String> {
+        let secret = totp::generate_secret();
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        if !inner.users.contains_key(user_id) {
+            return Err(Error::UserNotFound);
+        }
+        inner
+            .mfa_secrets
+            .insert(user_id.to_string(), secret.clone());
+        Ok(secret)
+    }
+
+    /// Generates the current TOTP code for an MFA-enrolled `user_id`.
+    ///
+    /// Adapter-specific test/automation helper: equivalent to
+    /// `pyotp.TOTP(secret).now()` for the user's enrolled secret (HMAC-SHA256).
+    /// Fails with [`Error::InvalidCredentials`] when the user has no enrolled
+    /// secret.
+    pub async fn current_totp(&self, user_id: &str) -> Result<String> {
+        let secret = {
+            let inner = self.inner.read().expect("user store lock poisoned");
+            inner
+                .mfa_secrets
+                .get(user_id)
+                .cloned()
+                .ok_or(Error::InvalidCredentials)?
+        };
+        totp::totp_now(&secret)
+            .ok_or_else(|| Error::provider("idp/internal-db: invalid TOTP secret"))
+    }
+
+    /// Creates named roles in the catalogue (idempotent), returning the
+    /// resulting [`Role`] entries in argument order.
+    ///
+    /// Adapter-specific (not part of the port) — mirrors pyfly's
+    /// `InternalDbIdpAdapter.create_roles`. Use [`Self::set_role_description`]
+    /// to enrich a catalogue entry afterwards.
+    pub async fn create_roles(&self, roles: &[&str]) -> Vec<Role> {
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        roles
+            .iter()
+            .map(|&name| {
+                inner
+                    .roles
+                    .entry(name.to_string())
+                    .or_insert_with(|| Role::new(name))
+                    .clone()
+            })
+            .collect()
+    }
+
+    /// Sets the `description` of a catalogue role, creating the entry if absent.
+    /// Returns `true` if the role existed (or was created) — always `true`.
+    ///
+    /// Adapter-specific helper mirroring pyfly's test mutating
+    /// `adapter._roles["superadmin"].description`. Lets callers enrich a role
+    /// without a public mutable handle into the catalogue.
+    pub async fn set_role_description(&self, role: &str, description: &str) {
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        inner
+            .roles
+            .entry(role.to_string())
+            .or_insert_with(|| Role::new(role))
+            .description = description.to_string();
+    }
+
     /// Checks an HS256 JWT and returns its claims.
     ///
     /// Mirrors Go's verify(): only the signature and — when present — `exp`
@@ -213,10 +350,26 @@ impl firefly_idp::Adapter for Adapter {
             let record = inner.users.get(id).ok_or(Error::InvalidCredentials)?;
             (record.user.clone(), record.hash.clone())
         };
+        if !user.enabled {
+            return Err(Error::InvalidCredentials);
+        }
         if !bcrypt::verify(password, &hash).unwrap_or(false) {
             return Err(Error::InvalidCredentials);
         }
-        self.mint_token(&user)
+        // MFA gate: when a TOTP secret is enrolled for this user, login cannot
+        // mint a token directly — it returns an [`Error::MfaRequired`] carrying
+        // a fresh challenge the caller completes with `mfa_verify`. (pyfly
+        // models this as `AuthResult.mfa_required=True`; Rust uses a fallible
+        // result so the stateless `Token` need not carry a "pending" flag.)
+        let mfa_secret = {
+            let inner = self.inner.read().expect("user store lock poisoned");
+            inner.mfa_secrets.get(&user.id).cloned()
+        };
+        if mfa_secret.is_some() {
+            let challenge = self.new_challenge(&user.id)?;
+            return Err(Error::MfaRequired(challenge));
+        }
+        self.mint_and_register(&user)
     }
 
     /// Exchanges a (still valid) refresh token for a fresh [`Token`].
@@ -230,7 +383,7 @@ impl firefly_idp::Adapter for Adapter {
                 .map(|r| r.user.clone())
                 .ok_or(Error::UserNotFound)?
         };
-        self.mint_token(&user)
+        self.mint_and_register(&user)
     }
 
     /// Verifies an access token and returns the authenticated [`User`].
@@ -299,17 +452,241 @@ impl firefly_idp::Adapter for Adapter {
         Ok(user)
     }
 
-    /// Removes a user by id, dropping the username index entry too.
+    /// Removes a user by id, dropping the username index and any enrolled MFA
+    /// secret. Live tokens for the user are left in the registry but become
+    /// inert — [`Self::introspect`] reports them inactive once the user is gone.
     async fn delete_user(&self, id: &str) -> Result<()> {
         let mut inner = self.inner.write().expect("user store lock poisoned");
         let record = inner.users.remove(id).ok_or(Error::UserNotFound)?;
         inner.by_username.remove(&record.user.username);
+        inner.mfa_secrets.remove(id);
         Ok(())
     }
 
     /// Returns `"internal-db"`.
     fn name(&self) -> &str {
         "internal-db"
+    }
+
+    // -----------------------------------------------------------------
+    // Extended surface (pyfly parity).
+    // -----------------------------------------------------------------
+
+    /// Revokes an access token from the registry. Returns `true` when a live
+    /// session existed and was removed, `false` when the token was unknown.
+    /// Mirrors pyfly's `logout` (which pops `_tokens`).
+    async fn logout(&self, access_token: &str) -> Result<bool> {
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        Ok(inner.tokens.remove(access_token).is_some())
+    }
+
+    /// Introspects an access token against the registry (RFC 7662). An unknown
+    /// or revoked token — or one whose user has since been deleted — yields
+    /// [`SessionIntrospection::inactive`]; an active token reports the user id,
+    /// username, and the user's roles as scopes (mirroring pyfly).
+    async fn introspect(&self, access_token: &str) -> Result<SessionIntrospection> {
+        let inner = self.inner.read().expect("user store lock poisoned");
+        let Some(user_id) = inner.tokens.get(access_token) else {
+            return Ok(SessionIntrospection::inactive());
+        };
+        match inner.users.get(user_id) {
+            Some(record) => Ok(SessionIntrospection {
+                active: true,
+                user_id: record.user.id.clone(),
+                username: record.user.username.clone(),
+                scopes: record.user.roles.clone(),
+            }),
+            None => Ok(SessionIntrospection::inactive()),
+        }
+    }
+
+    /// Looks up a user by login name; fails with [`Error::UserNotFound`] when
+    /// no user has that username.
+    async fn find_by_username(&self, username: &str) -> Result<User> {
+        let inner = self.inner.read().expect("user store lock poisoned");
+        inner
+            .by_username
+            .get(username)
+            .and_then(|id| inner.users.get(id))
+            .map(|r| r.user.clone())
+            .ok_or(Error::UserNotFound)
+    }
+
+    /// Returns up to `limit` users (insertion order is not guaranteed, matching
+    /// pyfly's dict-values slice on an unordered map).
+    async fn list_users(&self, limit: usize) -> Result<Vec<User>> {
+        let inner = self.inner.read().expect("user store lock poisoned");
+        Ok(inner
+            .users
+            .values()
+            .take(limit)
+            .map(|r| r.user.clone())
+            .collect())
+    }
+
+    /// Changes a user's password after verifying `old_password`. Returns `true`
+    /// on success, `false` when the user is unknown or `old_password` is wrong
+    /// — mirroring pyfly's `change_password` (no error on mismatch).
+    async fn change_password(
+        &self,
+        user_id: &str,
+        old_password: &str,
+        new_password: &str,
+    ) -> Result<bool> {
+        let current = {
+            let inner = self.inner.read().expect("user store lock poisoned");
+            match inner.users.get(user_id) {
+                Some(r) => r.hash.clone(),
+                None => return Ok(false),
+            }
+        };
+        if !bcrypt::verify(old_password, &current).unwrap_or(false) {
+            return Ok(false);
+        }
+        let hash =
+            bcrypt::hash(new_password, self.cost).map_err(|e| Error::provider(e.to_string()))?;
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        if let Some(record) = inner.users.get_mut(user_id) {
+            record.hash = hash;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Resets a user's password to a freshly generated opaque value and returns
+    /// it (the caller is responsible for delivering it out-of-band). Fails with
+    /// [`Error::UserNotFound`] when the user does not exist.
+    async fn reset_password(&self, user_id: &str) -> Result<String> {
+        let new_password = Self::opaque_token();
+        let hash =
+            bcrypt::hash(&new_password, self.cost).map_err(|e| Error::provider(e.to_string()))?;
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        let record = inner.users.get_mut(user_id).ok_or(Error::UserNotFound)?;
+        record.hash = hash;
+        Ok(new_password)
+    }
+
+    /// Public self-registration: forces the account enabled and strips the
+    /// privileged `admin` role, then provisions it via [`Self::create_user`].
+    /// Mirrors pyfly's `register_user`.
+    async fn register_user(&self, mut user: User, password: &str) -> Result<User> {
+        user.enabled = true;
+        user.roles.retain(|r| r != "admin");
+        self.create_user(user, password).await
+    }
+
+    /// Resolves an access token to its owning [`User`]; fails with
+    /// [`Error::UserNotFound`] when the token is unknown or revoked.
+    async fn get_user_info(&self, access_token: &str) -> Result<User> {
+        let inner = self.inner.read().expect("user store lock poisoned");
+        inner
+            .tokens
+            .get(access_token)
+            .and_then(|id| inner.users.get(id))
+            .map(|r| r.user.clone())
+            .ok_or(Error::UserNotFound)
+    }
+
+    /// Creates a single-use TOTP challenge for `user_id`. The returned
+    /// [`MfaChallenge`] carries only the opaque `challenge_id`.
+    async fn mfa_challenge(&self, user_id: &str) -> Result<MfaChallenge> {
+        self.new_challenge(user_id)
+    }
+
+    /// Verifies a TOTP `code` against the (single-use) `challenge_id` and, on
+    /// success, mints and registers a fresh [`Token`].
+    ///
+    /// The challenge is consumed (removed) regardless of whether the code is
+    /// valid, so a stolen challenge id cannot be brute-forced. Fails with
+    /// [`Error::InvalidCredentials`] on an unknown/consumed challenge, a user
+    /// without an enrolled secret, a wrong code, or a since-deleted user.
+    async fn mfa_verify(&self, challenge_id: &str, code: &str) -> Result<Token> {
+        let user_id = {
+            let mut inner = self.inner.write().expect("user store lock poisoned");
+            inner
+                .mfa_challenges
+                .remove(challenge_id)
+                .ok_or(Error::InvalidCredentials)?
+        };
+        let secret = {
+            let inner = self.inner.read().expect("user store lock poisoned");
+            inner
+                .mfa_secrets
+                .get(&user_id)
+                .cloned()
+                .ok_or(Error::InvalidCredentials)?
+        };
+        if !totp::verify(&secret, code, 1) {
+            return Err(Error::InvalidCredentials);
+        }
+        let user = {
+            let inner = self.inner.read().expect("user store lock poisoned");
+            inner
+                .users
+                .get(&user_id)
+                .map(|r| r.user.clone())
+                .ok_or(Error::InvalidCredentials)?
+        };
+        self.mint_and_register(&user)
+    }
+
+    /// Returns the [`Role`] objects assigned to `user_id`, enriched from the
+    /// role catalogue (a role created via [`Self::create_roles`] keeps its
+    /// description/scopes; an unenriched role is returned bare). An unknown user
+    /// yields an empty list, matching pyfly.
+    async fn get_roles(&self, user_id: &str) -> Result<Vec<Role>> {
+        let inner = self.inner.read().expect("user store lock poisoned");
+        let Some(record) = inner.users.get(user_id) else {
+            return Ok(Vec::new());
+        };
+        Ok(record
+            .user
+            .roles
+            .iter()
+            .map(|name| {
+                inner
+                    .roles
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| Role::new(name.clone()))
+            })
+            .collect())
+    }
+
+    /// Grants `role` to `user_id` (idempotent) and registers it in the
+    /// catalogue. Returns `true` on success, `false` when the user is unknown.
+    async fn assign_role(&self, user_id: &str, role: &str) -> Result<bool> {
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        let Some(record) = inner.users.get_mut(user_id) else {
+            return Ok(false);
+        };
+        if !record.user.roles.iter().any(|r| r == role) {
+            record.user.roles.push(role.to_string());
+        }
+        inner
+            .roles
+            .entry(role.to_string())
+            .or_insert_with(|| Role::new(role));
+        Ok(true)
+    }
+
+    /// Revokes `role` from `user_id`. Returns `true` on success, `false` when
+    /// the user is unknown or did not hold the role.
+    async fn revoke_role(&self, user_id: &str, role: &str) -> Result<bool> {
+        let mut inner = self.inner.write().expect("user store lock poisoned");
+        let Some(record) = inner.users.get_mut(user_id) else {
+            return Ok(false);
+        };
+        let before = record.user.roles.len();
+        record.user.roles.retain(|r| r != role);
+        Ok(record.user.roles.len() != before)
+    }
+
+    /// Lists every role in the catalogue (order is unspecified).
+    async fn list_roles(&self) -> Result<Vec<Role>> {
+        let inner = self.inner.read().expect("user store lock poisoned");
+        Ok(inner.roles.values().cloned().collect())
     }
 }
 
@@ -748,5 +1125,421 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Adapter>();
         assert_send_sync::<Config>();
+    }
+
+    // =================================================================
+    // pyfly parity — ported test cases from tests/idp/test_idp.py and
+    // tests/idp/test_idp_mfa_and_extensions.py (the internal-db subset;
+    // the vendor-adapter protocol/NotImplementedError cases live in the
+    // idp-keycloak/idp-azure-ad/idp-aws-cognito crates).
+    //
+    // Adaptation notes:
+    //  * pyfly raises PermissionError on bad credentials/MFA → Rust returns
+    //    Error::InvalidCredentials.
+    //  * pyfly's login() returns AuthResult(mfa_required=True) when MFA is
+    //    enabled and no code is supplied → Rust returns Err(MfaRequired(chal)).
+    //  * pyfly's TOTP is HMAC-SHA1 (pyotp); Rust is HMAC-SHA256 (workspace
+    //    ships sha2 only). The flow is self-consistent so behavior matches:
+    //    enable_mfa → current_totp / verify round-trips.
+    // =================================================================
+
+    /// Builds an enabled user whose id equals its username (the adapter
+    /// defaults an empty id to the username), mirroring pyfly fixtures.
+    fn named(username: &str) -> User {
+        User {
+            username: username.into(),
+            enabled: true,
+            ..User::default()
+        }
+    }
+
+    // ---- ported from test_idp.py::test_create_login_logout -------------
+
+    #[tokio::test]
+    async fn create_login_introspect_logout() {
+        let a = test_adapter();
+        let user = a
+            .create_user(
+                User {
+                    email: "a@x.com".into(),
+                    ..named("alice")
+                },
+                "secret123",
+            )
+            .await
+            .unwrap();
+        let tok = a.login("alice", "secret123").await.unwrap();
+        assert!(!tok.access_token.is_empty());
+
+        let intro = a.introspect(&tok.access_token).await.unwrap();
+        assert!(intro.active);
+        assert_eq!(intro.user_id, user.id);
+
+        assert!(a.logout(&tok.access_token).await.unwrap());
+        assert!(!a.introspect(&tok.access_token).await.unwrap().active);
+        // Logging out an already-revoked token reports no live session.
+        assert!(!a.logout(&tok.access_token).await.unwrap());
+    }
+
+    // ---- ported from test_idp.py::test_login_failure ------------------
+
+    #[tokio::test]
+    async fn login_failure_is_invalid_credentials() {
+        let a = test_adapter();
+        a.create_user(named("bob"), "rightpass").await.unwrap();
+        assert_eq!(
+            a.login("bob", "wrongpass").await.unwrap_err(),
+            Error::InvalidCredentials
+        );
+    }
+
+    // ---- ported from test_idp.py::test_change_password ----------------
+
+    #[tokio::test]
+    async fn change_password_then_login_with_new() {
+        let a = test_adapter();
+        let user = a
+            .create_user(named("charlie"), "old-pw-1234")
+            .await
+            .unwrap();
+        assert!(a
+            .change_password(&user.id, "old-pw-1234", "new-pw-5678")
+            .await
+            .unwrap());
+        // New password works, old one does not.
+        a.login("charlie", "new-pw-5678").await.unwrap();
+        assert_eq!(
+            a.login("charlie", "old-pw-1234").await.unwrap_err(),
+            Error::InvalidCredentials
+        );
+    }
+
+    #[tokio::test]
+    async fn change_password_wrong_old_or_unknown_user_returns_false() {
+        let a = test_adapter();
+        let user = a.create_user(named("dave"), "correct-pw-1").await.unwrap();
+        assert!(!a
+            .change_password(&user.id, "wrong-old", "whatever-99")
+            .await
+            .unwrap());
+        assert!(!a.change_password("ghost", "x", "y").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reset_password_issues_working_credential() {
+        let a = test_adapter();
+        let user = a.create_user(named("erin"), "initial-pw-1").await.unwrap();
+        let fresh = a.reset_password(&user.id).await.unwrap();
+        assert!(!fresh.is_empty());
+        // The returned password authenticates; the old one no longer does.
+        a.login("erin", &fresh).await.unwrap();
+        assert_eq!(
+            a.login("erin", "initial-pw-1").await.unwrap_err(),
+            Error::InvalidCredentials
+        );
+        assert_eq!(
+            a.reset_password("ghost").await.unwrap_err(),
+            Error::UserNotFound
+        );
+    }
+
+    // ---- ported from test_idp.py::test_role_management ----------------
+
+    #[tokio::test]
+    async fn role_management_assign_and_revoke() {
+        let a = test_adapter();
+        let user = a.create_user(named("dora"), "pw-1234567").await.unwrap();
+        assert!(a.assign_role(&user.id, "admin").await.unwrap());
+        assert!(a
+            .get_user(&user.id)
+            .await
+            .unwrap()
+            .roles
+            .contains(&"admin".to_string()));
+        assert!(a.revoke_role(&user.id, "admin").await.unwrap());
+        assert!(!a
+            .get_user(&user.id)
+            .await
+            .unwrap()
+            .roles
+            .contains(&"admin".to_string()));
+        // Revoking a role the user lacks, or for an unknown user, is false.
+        assert!(!a.revoke_role(&user.id, "admin").await.unwrap());
+        assert!(!a.assign_role("ghost", "admin").await.unwrap());
+    }
+
+    // ---- ported from test_idp_mfa_and_extensions.py (internal-db) -----
+
+    #[tokio::test]
+    async fn mfa_enable_and_challenge_flow() {
+        let a = test_adapter();
+        let user = a
+            .create_user(
+                User {
+                    email: "mfa@x.com".into(),
+                    ..named("mfa_user")
+                },
+                "pass1234!",
+            )
+            .await
+            .unwrap();
+
+        // 1. Enable MFA — returns the provisioning secret.
+        let secret = a.enable_mfa(&user.id).await.unwrap();
+        assert!(!secret.is_empty());
+
+        // 2. Login WITHOUT mfa code → MfaRequired with a challenge, no token.
+        let err = a.login("mfa_user", "pass1234!").await.unwrap_err();
+        let challenge = match err {
+            Error::MfaRequired(c) => c,
+            other => panic!("expected MfaRequired, got {other:?}"),
+        };
+        assert_eq!(challenge.method, "TOTP");
+        assert!(challenge.user_id.is_empty(), "no user id leaked to client");
+
+        // 3. Verify with a VALID TOTP code → issues real tokens.
+        let code = a.current_totp(&user.id).await.unwrap();
+        let auth = a.mfa_verify(&challenge.challenge_id, &code).await.unwrap();
+        assert!(!auth.access_token.is_empty());
+
+        // 4. The issued token resolves via introspect.
+        let intro = a.introspect(&auth.access_token).await.unwrap();
+        assert!(intro.active);
+        assert_eq!(intro.user_id, user.id);
+    }
+
+    #[tokio::test]
+    async fn mfa_verify_wrong_code_raises() {
+        let a = test_adapter();
+        let user = a.create_user(named("mfa_bad"), "pass1234!").await.unwrap();
+        a.enable_mfa(&user.id).await.unwrap();
+        let challenge = match a.login("mfa_bad", "pass1234!").await.unwrap_err() {
+            Error::MfaRequired(c) => c,
+            other => panic!("expected MfaRequired, got {other:?}"),
+        };
+        assert_eq!(
+            a.mfa_verify(&challenge.challenge_id, "000000")
+                .await
+                .unwrap_err(),
+            Error::InvalidCredentials
+        );
+    }
+
+    #[tokio::test]
+    async fn mfa_login_with_valid_inline_code() {
+        // pyfly: login() with mfa_code supplied inline bypasses the challenge
+        // redirect. The Rust port models the inline path as: complete a
+        // challenge in one shot via mfa_challenge + mfa_verify with a live code.
+        let a = test_adapter();
+        let user = a
+            .create_user(named("mfa_inline"), "pass1234!")
+            .await
+            .unwrap();
+        a.enable_mfa(&user.id).await.unwrap();
+        let challenge = a.mfa_challenge(&user.id).await.unwrap();
+        let code = a.current_totp(&user.id).await.unwrap();
+        let auth = a.mfa_verify(&challenge.challenge_id, &code).await.unwrap();
+        assert!(!auth.access_token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mfa_verify_consumed_challenge_raises() {
+        let a = test_adapter();
+        let user = a.create_user(named("mfa_exp"), "pass1234!").await.unwrap();
+        a.enable_mfa(&user.id).await.unwrap();
+        let challenge = match a.login("mfa_exp", "pass1234!").await.unwrap_err() {
+            Error::MfaRequired(c) => c,
+            other => panic!("expected MfaRequired, got {other:?}"),
+        };
+        let code = a.current_totp(&user.id).await.unwrap();
+        a.mfa_verify(&challenge.challenge_id, &code).await.unwrap(); // first use ok
+                                                                     // Second use — the challenge is consumed.
+        assert_eq!(
+            a.mfa_verify(&challenge.challenge_id, &code)
+                .await
+                .unwrap_err(),
+            Error::InvalidCredentials
+        );
+    }
+
+    #[tokio::test]
+    async fn enable_mfa_unknown_user_is_not_found() {
+        let a = test_adapter();
+        assert_eq!(
+            a.enable_mfa("ghost").await.unwrap_err(),
+            Error::UserNotFound
+        );
+    }
+
+    // ---- get_user_info ------------------------------------------------
+
+    #[tokio::test]
+    async fn get_user_info_resolves_token() {
+        let a = test_adapter();
+        let user = a
+            .create_user(named("info_user"), "pw123456!")
+            .await
+            .unwrap();
+        let tok = a.login("info_user", "pw123456!").await.unwrap();
+        let resolved = a.get_user_info(&tok.access_token).await.unwrap();
+        assert_eq!(resolved.id, user.id);
+        assert_eq!(resolved.username, "info_user");
+    }
+
+    #[tokio::test]
+    async fn get_user_info_unknown_token_returns_not_found() {
+        let a = test_adapter();
+        assert_eq!(
+            a.get_user_info("totally-bogus-token").await.unwrap_err(),
+            Error::UserNotFound
+        );
+    }
+
+    // ---- register_user ------------------------------------------------
+
+    #[tokio::test]
+    async fn register_user_always_enabled_and_admin_stripped() {
+        let a = test_adapter();
+        let new_user = User {
+            username: "reg_user".into(),
+            email: "reg@x.com".into(),
+            enabled: false,
+            roles: vec!["admin".into(), "user".into()],
+            ..User::default()
+        };
+        let registered = a.register_user(new_user, "reg-pass-1234!").await.unwrap();
+        assert!(registered.enabled);
+        assert!(!registered.roles.contains(&"admin".to_string()));
+        assert!(registered.roles.contains(&"user".to_string()));
+        // The user can log in immediately.
+        let auth = a.login("reg_user", "reg-pass-1234!").await.unwrap();
+        assert!(!auth.access_token.is_empty());
+    }
+
+    // ---- get_roles ----------------------------------------------------
+
+    #[tokio::test]
+    async fn get_roles_returns_assigned_roles() {
+        let a = test_adapter();
+        let user = a
+            .create_user(named("role_user"), "pw123456!")
+            .await
+            .unwrap();
+        a.assign_role(&user.id, "editor").await.unwrap();
+        a.assign_role(&user.id, "viewer").await.unwrap();
+        let names: std::collections::HashSet<String> = a
+            .get_roles(&user.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(
+            names,
+            std::collections::HashSet::from(["editor".to_string(), "viewer".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn get_roles_unknown_user_returns_empty() {
+        let a = test_adapter();
+        assert!(a.get_roles("nonexistent-id").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_roles_with_catalogue_enriched_role() {
+        // Roles created via create_roles + set_role_description carry their
+        // description through get_roles (pyfly's _roles enrichment).
+        let a = test_adapter();
+        a.create_roles(&["superadmin"]).await;
+        a.set_role_description("superadmin", "Full access").await;
+        let user = a
+            .create_user(named("super_user"), "pw123456!")
+            .await
+            .unwrap();
+        a.assign_role(&user.id, "superadmin").await.unwrap();
+        let roles = a.get_roles(&user.id).await.unwrap();
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].name, "superadmin");
+        assert_eq!(roles[0].description, "Full access");
+    }
+
+    // ---- list_users / find_by_username / list_roles -------------------
+
+    #[tokio::test]
+    async fn find_by_username_and_list_users() {
+        let a = test_adapter();
+        a.create_user(named("u1"), "pw-aaaaaaa").await.unwrap();
+        a.create_user(named("u2"), "pw-bbbbbbb").await.unwrap();
+        assert_eq!(a.find_by_username("u1").await.unwrap().username, "u1");
+        assert_eq!(
+            a.find_by_username("ghost").await.unwrap_err(),
+            Error::UserNotFound
+        );
+        assert_eq!(a.list_users(100).await.unwrap().len(), 2);
+        // limit is honored.
+        assert_eq!(a.list_users(1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_roles_and_list_roles() {
+        let a = test_adapter();
+        a.create_roles(&["alpha", "beta", "alpha"]).await; // idempotent
+        let names: std::collections::HashSet<String> = a
+            .list_roles()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(
+            names,
+            std::collections::HashSet::from(["alpha".to_string(), "beta".to_string()])
+        );
+    }
+
+    // ---- introspect of a deleted user -> inactive ---------------------
+
+    #[tokio::test]
+    async fn introspect_after_user_deleted_is_inactive() {
+        let a = test_adapter();
+        let user = a.create_user(named("temp"), "pw-1234567").await.unwrap();
+        let tok = a.login("temp", "pw-1234567").await.unwrap();
+        assert!(a.introspect(&tok.access_token).await.unwrap().active);
+        a.delete_user(&user.id).await.unwrap();
+        assert!(!a.introspect(&tok.access_token).await.unwrap().active);
+    }
+
+    // ---- disabled user cannot log in ----------------------------------
+
+    #[tokio::test]
+    async fn disabled_user_cannot_login() {
+        let a = test_adapter();
+        let u = User {
+            enabled: false,
+            ..named("frozen")
+        };
+        a.create_user(u, "pw-1234567").await.unwrap();
+        assert_eq!(
+            a.login("frozen", "pw-1234567").await.unwrap_err(),
+            Error::InvalidCredentials
+        );
+    }
+
+    // ---- extended surface usable behind Arc<dyn Adapter> --------------
+
+    #[tokio::test]
+    async fn extended_surface_via_trait_object() {
+        let a = Arc::new(test_adapter());
+        a.create_user(named("obj_user"), "pw-1234567")
+            .await
+            .unwrap();
+        let idp: Arc<dyn firefly_idp::Adapter> = a;
+        let tok = idp.login("obj_user", "pw-1234567").await.unwrap();
+        assert!(idp.introspect(&tok.access_token).await.unwrap().active);
+        assert!(idp.assign_role("obj_user", "viewer").await.unwrap());
+        let roles = idp.get_roles("obj_user").await.unwrap();
+        assert_eq!(roles.len(), 1);
+        assert!(idp.logout(&tok.access_token).await.unwrap());
     }
 }

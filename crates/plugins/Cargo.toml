@@ -12,6 +12,7 @@ description = "Firefly Framework for Rust — Plugin lifecycle SPI + composite R
 async-trait = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

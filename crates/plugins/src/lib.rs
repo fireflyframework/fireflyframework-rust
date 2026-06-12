@@ -67,6 +67,13 @@ use async_trait::async_trait;
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 
+mod extension;
+mod manager;
+mod resolve;
+
+pub use extension::{extension_point, ExtensionPoint, ExtensionRegistry};
+pub use manager::{PluginDescriptor, PluginManager};
+
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.1";
 
@@ -86,6 +93,21 @@ pub trait Plugin: Send + Sync {
     /// Returns the unique plugin name used for replace-by-name registration
     /// and error reporting.
     fn name(&self) -> &str;
+
+    /// Returns the names of plugins this plugin depends on.
+    ///
+    /// Defaults to an empty list (no dependencies), preserving full backward
+    /// compatibility — plugins written before this method existed behave
+    /// exactly as before. When a plugin declares dependencies,
+    /// [`Registry::start_all`] starts dependencies first via a Kahn
+    /// topological sort (mirroring pyfly's `PluginDependencyResolver`), and
+    /// [`Registry::stop_all`] stops dependents first (reverse topological
+    /// order). When no plugin declares any dependency, the topological sort
+    /// degrades to plain registration order, so existing behaviour is
+    /// untouched.
+    fn depends_on(&self) -> Vec<String> {
+        Vec::new()
+    }
 
     /// Starts the plugin. Runs once at application boot.
     async fn start(&self) -> Result<(), BoxError>;
@@ -120,9 +142,35 @@ pub enum PluginError {
         /// The underlying error returned by the plugin.
         source: BoxError,
     },
+    /// Dependency resolution failed: a declared dependency is missing or the
+    /// dependency graph contains a cycle.
+    ///
+    /// Mirrors pyfly's `PluginResolutionError`.
+    #[error("{0}")]
+    Resolution(#[from] ResolutionError),
     /// Multiple lifecycle errors joined together, in occurrence order.
     #[error("{}", join_messages(.0))]
     Aggregate(Vec<PluginError>),
+}
+
+/// Error raised when the plugin dependency graph cannot be ordered.
+///
+/// Mirrors pyfly's `PluginResolutionError`: either a plugin declares a
+/// dependency on a name that was never registered, or the declared
+/// dependencies form a cycle.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ResolutionError {
+    /// A plugin declared a dependency on a plugin that is not registered.
+    #[error("plugin {plugin:?} depends on missing plugin {missing:?}")]
+    MissingDependency {
+        /// Name of the plugin with the dangling dependency.
+        plugin: String,
+        /// Name of the missing dependency.
+        missing: String,
+    },
+    /// The declared dependencies form a cycle, so no start order exists.
+    #[error("plugin dependency cycle detected")]
+    Cycle,
 }
 
 /// Joins the display messages of `errors` with `\n`, mirroring `errors.Join`.
@@ -134,11 +182,55 @@ fn join_messages(errors: &[PluginError]) -> String {
         .join("\n")
 }
 
+/// Lifecycle state of a registered plugin.
+///
+/// Mirrors pyfly's `PluginState`. Tracked per plugin by [`Registry`] across
+/// the most recent start/stop sweep and queryable via [`Registry::state`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PluginState {
+    /// Registered but never started, or reset after a clean stop sweep.
+    Loaded,
+    /// Successfully started by the most recent [`Registry::start_all`].
+    Started,
+    /// Stopped by [`Registry::stop_all`] (or rolled back after a peer's
+    /// start failure).
+    Stopped,
+    /// The plugin's [`Plugin::start`] or [`Plugin::stop`] hook returned an
+    /// error during the most recent sweep.
+    Failed,
+}
+
+impl PluginState {
+    /// Returns the uppercase string form, matching pyfly's `StrEnum` values
+    /// (`"LOADED"`, `"STARTED"`, `"STOPPED"`, `"FAILED"`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PluginState::Loaded => "LOADED",
+            PluginState::Started => "STARTED",
+            PluginState::Stopped => "STOPPED",
+            PluginState::Failed => "FAILED",
+        }
+    }
+}
+
+impl fmt::Display for PluginState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Registry holds an ordered list of plugins.
 ///
 /// Cheap to share behind an [`Arc`]; all methods take `&self`. Start/stop
 /// sweeps are serialized against each other, so concurrent `start_all` /
 /// `stop_all` calls never interleave lifecycle hooks.
+///
+/// When no plugin declares [`Plugin::depends_on`], plugins start in
+/// registration order and stop in reverse — the original Go-parity behaviour.
+/// When dependencies are declared, [`start_all`](Registry::start_all) computes
+/// a Kahn topological order so dependencies start first, and
+/// [`stop_all`](Registry::stop_all) stops in reverse of that order so
+/// dependents stop first.
 #[derive(Default)]
 pub struct Registry {
     /// Registered plugins in registration order.
@@ -146,6 +238,9 @@ pub struct Registry {
     /// Plugins started by the most recent sweep, in start order. The async
     /// lock doubles as the lifecycle critical section.
     started: AsyncMutex<Vec<Arc<dyn Plugin>>>,
+    /// Per-plugin lifecycle state, keyed by plugin name. Updated during
+    /// start/stop sweeps.
+    states: StdMutex<std::collections::HashMap<String, PluginState>>,
 }
 
 impl Registry {
@@ -156,36 +251,58 @@ impl Registry {
 
     /// Adds `plugin` to the registry. Re-registering by name overwrites the
     /// existing entry in place, keeping its position in the start order.
+    ///
+    /// A freshly registered plugin starts in [`PluginState::Loaded`]; an
+    /// in-place replacement is reset to [`PluginState::Loaded`] as well.
     pub fn register(&self, plugin: Arc<dyn Plugin>) {
         let mut plugins = self.plugins.lock().expect("plugins lock poisoned");
-        if let Some(slot) = plugins
-            .iter_mut()
-            .find(|existing| existing.name() == plugin.name())
-        {
+        let name = plugin.name().to_owned();
+        if let Some(slot) = plugins.iter_mut().find(|existing| existing.name() == name) {
             *slot = plugin;
         } else {
             plugins.push(plugin);
         }
+        self.states
+            .lock()
+            .expect("states lock poisoned")
+            .insert(name, PluginState::Loaded);
     }
 
-    /// Starts every plugin in registration order. The first error
+    /// Starts every plugin in dependency (Kahn topological) order; with no
+    /// declared dependencies this is registration order. The first error
     /// short-circuits and triggers [`Plugin::stop`] on the plugins that
     /// already started; rollback errors are aggregated with the start error.
     ///
     /// Plugins registered after the sweep snapshot is taken are not started
     /// by an in-flight call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::Resolution`] without starting anything when a
+    /// declared dependency is missing or the dependency graph has a cycle.
+    /// Returns [`PluginError::Start`] (possibly aggregated with rollback
+    /// [`PluginError::Stop`] errors) when a plugin's start hook fails.
     pub async fn start_all(&self) -> Result<(), PluginError> {
         let mut started = self.started.lock().await;
         started.clear();
         let snapshot: Vec<Arc<dyn Plugin>> =
             self.plugins.lock().expect("plugins lock poisoned").clone();
-        for plugin in snapshot {
+
+        let nodes: Vec<(String, Vec<String>)> = snapshot
+            .iter()
+            .map(|p| (p.name().to_owned(), p.depends_on()))
+            .collect();
+        let order = resolve::topological_order(&nodes)?;
+
+        for idx in order {
+            let plugin = snapshot[idx].clone();
             if let Err(err) = plugin.start().await {
+                self.set_state(plugin.name(), PluginState::Failed);
                 let start_err = PluginError::Start {
                     name: plugin.name().to_owned(),
                     source: err,
                 };
-                return match stop_started(&mut started).await {
+                return match self.stop_started(&mut started).await {
                     None => Err(start_err),
                     Some(PluginError::Aggregate(stops)) => {
                         let mut joined = vec![start_err];
@@ -195,16 +312,18 @@ impl Registry {
                     Some(stop_err) => Err(PluginError::Aggregate(vec![start_err, stop_err])),
                 };
             }
+            self.set_state(plugin.name(), PluginState::Started);
             started.push(plugin);
         }
         Ok(())
     }
 
-    /// Stops started plugins in reverse order. Errors do not short-circuit;
-    /// they are joined into a single [`PluginError`].
+    /// Stops started plugins in reverse start order (so dependents stop before
+    /// their dependencies). Errors do not short-circuit; they are joined into a
+    /// single [`PluginError`].
     pub async fn stop_all(&self) -> Result<(), PluginError> {
         let mut started = self.started.lock().await;
-        match stop_started(&mut started).await {
+        match self.stop_started(&mut started).await {
             None => Ok(()),
             Some(err) => Err(err),
         }
@@ -219,6 +338,54 @@ impl Registry {
             .map(|p| p.name().to_owned())
             .collect()
     }
+
+    /// Returns the current [`PluginState`] of the named plugin, or `None` if no
+    /// plugin by that name has been registered.
+    ///
+    /// State transitions: a plugin is [`Loaded`](PluginState::Loaded) on
+    /// registration, [`Started`](PluginState::Started) after a successful
+    /// [`start_all`](Registry::start_all), [`Stopped`](PluginState::Stopped)
+    /// after [`stop_all`](Registry::stop_all), and
+    /// [`Failed`](PluginState::Failed) if a lifecycle hook errored during the
+    /// most recent sweep.
+    pub fn state(&self, name: &str) -> Option<PluginState> {
+        self.states
+            .lock()
+            .expect("states lock poisoned")
+            .get(name)
+            .copied()
+    }
+
+    /// Records `state` for the named plugin.
+    fn set_state(&self, name: &str, state: PluginState) {
+        self.states
+            .lock()
+            .expect("states lock poisoned")
+            .insert(name.to_owned(), state);
+    }
+
+    /// Stops `started` plugins in reverse order, draining the list and updating
+    /// per-plugin state. Returns the single stop error, the aggregate of
+    /// several, or `None` on a clean sweep.
+    async fn stop_started(&self, started: &mut Vec<Arc<dyn Plugin>>) -> Option<PluginError> {
+        let mut errors = Vec::new();
+        while let Some(plugin) = started.pop() {
+            if let Err(err) = plugin.stop().await {
+                self.set_state(plugin.name(), PluginState::Failed);
+                errors.push(PluginError::Stop {
+                    name: plugin.name().to_owned(),
+                    source: err,
+                });
+            } else {
+                self.set_state(plugin.name(), PluginState::Stopped);
+            }
+        }
+        if errors.len() > 1 {
+            Some(PluginError::Aggregate(errors))
+        } else {
+            errors.pop()
+        }
+    }
 }
 
 impl fmt::Debug for Registry {
@@ -226,25 +393,6 @@ impl fmt::Debug for Registry {
         f.debug_struct("Registry")
             .field("plugins", &self.names())
             .finish()
-    }
-}
-
-/// Stops `started` plugins in reverse order, draining the list. Returns the
-/// single stop error, the aggregate of several, or `None` on a clean sweep.
-async fn stop_started(started: &mut Vec<Arc<dyn Plugin>>) -> Option<PluginError> {
-    let mut errors = Vec::new();
-    while let Some(plugin) = started.pop() {
-        if let Err(err) = plugin.stop().await {
-            errors.push(PluginError::Stop {
-                name: plugin.name().to_owned(),
-                source: err,
-            });
-        }
-    }
-    if errors.len() > 1 {
-        Some(PluginError::Aggregate(errors))
-    } else {
-        errors.pop()
     }
 }
 
@@ -534,5 +682,149 @@ mod tests {
         assert_send_sync::<Registry>();
         assert_send_sync::<PluginError>();
         assert_send_sync::<Arc<dyn Plugin>>();
+        assert_send_sync::<PluginState>();
+        assert_send_sync::<ResolutionError>();
+    }
+
+    // ------------------------------------------------------------------
+    // pyfly-parity: dependency ordering + state tracking on Registry
+    // ------------------------------------------------------------------
+
+    /// A plugin with declared dependencies that logs its lifecycle events.
+    struct DepStub {
+        name: &'static str,
+        deps: Vec<String>,
+        log: Arc<StdMutex<Vec<String>>>,
+    }
+
+    impl DepStub {
+        fn new(name: &'static str, deps: &[&str], log: &Arc<StdMutex<Vec<String>>>) -> Arc<Self> {
+            Arc::new(Self {
+                name,
+                deps: deps.iter().map(|s| (*s).to_owned()).collect(),
+                log: Arc::clone(log),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Plugin for DepStub {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn depends_on(&self) -> Vec<String> {
+            self.deps.clone()
+        }
+        async fn start(&self) -> Result<(), BoxError> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("start:{}", self.name));
+            Ok(())
+        }
+        async fn stop(&self) -> Result<(), BoxError> {
+            self.log.lock().unwrap().push(format!("stop:{}", self.name));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn default_depends_on_is_empty() {
+        let stub = Stub::new("a");
+        assert!(stub.depends_on().is_empty());
+    }
+
+    #[tokio::test]
+    async fn start_all_orders_by_dependencies() {
+        // Registered out of order: c (<-b), a, b (<-a). Start order must be a,b,c.
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let registry = Registry::new();
+        registry.register(DepStub::new("c", &["b"], &log));
+        registry.register(DepStub::new("a", &[], &log));
+        registry.register(DepStub::new("b", &["a"], &log));
+
+        registry.start_all().await.expect("start_all");
+        registry.stop_all().await.expect("stop_all");
+
+        let events = log.lock().unwrap().clone();
+        assert_eq!(
+            events,
+            vec!["start:a", "start:b", "start:c", "stop:c", "stop:b", "stop:a"],
+        );
+    }
+
+    #[tokio::test]
+    async fn start_all_rejects_missing_dependency() {
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let registry = Registry::new();
+        registry.register(DepStub::new("b", &["a"], &log));
+
+        let err = registry.start_all().await.expect_err("missing dep");
+        assert!(matches!(
+            err,
+            PluginError::Resolution(ResolutionError::MissingDependency { .. })
+        ));
+        // Nothing started.
+        assert!(log.lock().unwrap().is_empty());
+        assert_eq!(
+            err.to_string(),
+            "plugin \"b\" depends on missing plugin \"a\"",
+        );
+    }
+
+    #[tokio::test]
+    async fn start_all_rejects_cycle() {
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let registry = Registry::new();
+        registry.register(DepStub::new("a", &["b"], &log));
+        registry.register(DepStub::new("b", &["a"], &log));
+
+        let err = registry.start_all().await.expect_err("cycle");
+        assert!(matches!(
+            err,
+            PluginError::Resolution(ResolutionError::Cycle)
+        ));
+        assert_eq!(err.to_string(), "plugin dependency cycle detected");
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn state_transitions_through_lifecycle() {
+        let registry = Registry::new();
+        registry.register(Stub::new("a"));
+        assert_eq!(registry.state("a"), Some(PluginState::Loaded));
+        assert_eq!(registry.state("missing"), None);
+
+        registry.start_all().await.expect("start_all");
+        assert_eq!(registry.state("a"), Some(PluginState::Started));
+
+        registry.stop_all().await.expect("stop_all");
+        assert_eq!(registry.state("a"), Some(PluginState::Stopped));
+    }
+
+    #[tokio::test]
+    async fn failed_start_marks_failed_state() {
+        let registry = Registry::new();
+        registry.register(Stub::failing_start("b", "boom"));
+        let _ = registry.start_all().await;
+        assert_eq!(registry.state("b"), Some(PluginState::Failed));
+    }
+
+    #[tokio::test]
+    async fn failed_stop_marks_failed_state() {
+        let registry = Registry::new();
+        registry.register(Stub::failing_stop("a", "ouch"));
+        registry.start_all().await.expect("start_all");
+        let _ = registry.stop_all().await;
+        assert_eq!(registry.state("a"), Some(PluginState::Failed));
+    }
+
+    #[test]
+    fn plugin_state_string_forms() {
+        assert_eq!(PluginState::Loaded.as_str(), "LOADED");
+        assert_eq!(PluginState::Started.as_str(), "STARTED");
+        assert_eq!(PluginState::Stopped.as_str(), "STOPPED");
+        assert_eq!(PluginState::Failed.as_str(), "FAILED");
+        assert_eq!(PluginState::Started.to_string(), "STARTED");
     }
 }

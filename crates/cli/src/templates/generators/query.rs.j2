@@ -1,0 +1,19 @@
+//! {{ names.human }} CQRS query.
+
+use firefly_cqrs::Query;
+use serde::{Deserialize, Serialize};
+
+/// The `{{ names.pascal }}` query. Produces an `Option<serde_json::Value>` result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct {{ names.pascal }} {
+    /// Identifier to look up.
+    pub id: String,
+}
+
+impl Query for {{ names.pascal }} {
+    type Result = Option<serde_json::Value>;
+
+    fn query_type(&self) -> &'static str {
+        "{{ names.pascal }}"
+    }
+}

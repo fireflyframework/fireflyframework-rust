@@ -14,6 +14,31 @@
 //! `firefly-notifications-resend`, `firefly-notifications-twilio`,
 //! `firefly-notifications-firebase`) live in dedicated crates.
 //!
+//! # pyfly parity layer
+//!
+//! Alongside the Go-parity envelope above, this crate ships the richer
+//! `pyfly.notifications` surface (kept fully separate — the
+//! [`Notification`]/[`Dispatcher`]/[`Channel`]/[`MemoryChannel`] types are
+//! unchanged):
+//!
+//! * **Models** ([`models`]): [`DeliveryStatus`], [`Attachment`],
+//!   [`EmailMessage`], [`SmsMessage`], [`PushMessage`], [`NotificationResult`].
+//! * **Ports** ([`ports`]): [`EmailProvider`]/[`SmsProvider`]/[`PushProvider`]
+//!   and [`EmailService`]/[`SmsService`]/[`PushService`].
+//! * **Services** ([`services`]): [`DefaultEmailService`],
+//!   [`DefaultSmsService`], [`DefaultPushService`] — opt-out pruning, template
+//!   precedence, metrics, and provider-error-to-`FAILED` conversion.
+//! * **Preferences** ([`preferences`]): [`PreferenceService`] +
+//!   [`InMemoryPreferenceService`].
+//! * **Templates** ([`template`]): [`TemplateEngine`], [`NoOpTemplateEngine`],
+//!   and (feature `minijinja`) [`MiniJinjaTemplateEngine`].
+//! * **Metrics** ([`metrics`]): the [`NotificationMetrics`] hook +
+//!   [`InMemoryNotificationMetrics`].
+//! * **Dummy providers** ([`dummy`]): [`DummyEmailProvider`],
+//!   [`DummySmsProvider`], [`DummyPushProvider`].
+//! * **Config selection** ([`config`]): `from_config` provider/engine/store
+//!   selection helpers.
+//!
 //! # Quick start
 //!
 //! ```
@@ -281,6 +306,35 @@ impl Channel for MemoryChannel {
         format!("memory-{}", self.kind)
     }
 }
+
+// ---------------------------------------------------------------------------
+// pyfly parity layer (rich channel-specific notifications).
+// ---------------------------------------------------------------------------
+
+pub mod config;
+pub mod dummy;
+pub mod metrics;
+pub mod models;
+pub mod ports;
+pub mod preferences;
+pub mod services;
+pub mod template;
+
+pub use config::{
+    EmailProviderSelection, PreferenceStoreSelection, PushProviderSelection, SmsProviderSelection,
+    TemplateEngineSelection,
+};
+pub use dummy::{DummyEmailProvider, DummyPushProvider, DummySmsProvider};
+pub use metrics::{InMemoryNotificationMetrics, NotificationMetrics};
+pub use models::{
+    Attachment, DeliveryStatus, EmailMessage, NotificationResult, PushMessage, SmsMessage,
+};
+pub use ports::{EmailProvider, EmailService, PushProvider, PushService, SmsProvider, SmsService};
+pub use preferences::{InMemoryPreferenceService, PreferenceService};
+pub use services::{DefaultEmailService, DefaultPushService, DefaultSmsService};
+#[cfg(feature = "minijinja")]
+pub use template::MiniJinjaTemplateEngine;
+pub use template::{NoOpTemplateEngine, TemplateEngine, TemplateError};
 
 #[cfg(test)]
 mod tests {

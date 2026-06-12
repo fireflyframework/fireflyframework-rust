@@ -108,3 +108,61 @@ Sentinel-error guards ensure the canonical error variants exist, have
 non-empty messages, and render bytes-equal to the Go port; wire-shape
 tests pin the `User`/`Token` JSON encodings. The substantive end-to-end
 tests live in `firefly-idp-internal-db`.
+
+## pyfly parity
+
+The port is widened to the full pyfly `IdpAdapter` surface. Every method
+below is a **default trait method** returning `Error::NotSupported("<op>")`,
+so adapters that predate this surface (the Keycloak / Azure AD / Cognito
+vendor crates, and any third-party adapter) keep compiling unchanged — they
+only override what they support. This mirrors pyfly's vendor adapters raising
+`NotImplementedError` for provider-side operations (e.g. MFA).
+
+```rust
+#[async_trait]
+pub trait Adapter: Send + Sync {
+    // ... Go-parity required methods (login/refresh/validate/CRUD/name) ...
+
+    // Extended surface (default body → Error::NotSupported):
+    async fn logout(&self, access_token: &str) -> Result<bool>;
+    async fn introspect(&self, access_token: &str) -> Result<SessionIntrospection>;
+    async fn find_by_username(&self, username: &str) -> Result<User>;
+    async fn list_users(&self, limit: usize) -> Result<Vec<User>>;
+    async fn change_password(&self, user_id: &str, old: &str, new: &str) -> Result<bool>;
+    async fn reset_password(&self, user_id: &str) -> Result<String>;
+    async fn register_user(&self, user: User, password: &str) -> Result<User>;
+    async fn get_user_info(&self, access_token: &str) -> Result<User>;
+    async fn mfa_challenge(&self, user_id: &str) -> Result<MfaChallenge>;
+    async fn mfa_verify(&self, challenge_id: &str, code: &str) -> Result<Token>;
+    async fn get_roles(&self, user_id: &str) -> Result<Vec<Role>>;
+    async fn assign_role(&self, user_id: &str, role: &str) -> Result<bool>;
+    async fn revoke_role(&self, user_id: &str, role: &str) -> Result<bool>;
+    async fn list_roles(&self) -> Result<Vec<Role>>;
+}
+```
+
+New DTOs (JSON field names match pyfly's `IdpRole` / `MfaChallenge` /
+`SessionIntrospection` dataclasses, empty optionals omitted):
+
+```rust
+pub struct Role { pub name: String, pub description: String, pub scopes: Vec<String> }
+pub struct MfaChallenge { pub challenge_id: String, pub user_id: String, pub method: String }
+pub struct SessionIntrospection {
+    pub active: bool, pub user_id: String, pub username: String, pub scopes: Vec<String>,
+}
+```
+
+New error variants:
+
+* `Error::MfaRequired(MfaChallenge)` — the Rust analogue of pyfly's
+  `AuthResult.mfa_required=True` login outcome. An MFA-enrolled `login`
+  returns `Err(MfaRequired(challenge))` instead of a token; the caller
+  completes the challenge with `mfa_verify`.
+* `Error::NotSupported(String)` — names the unsupported operation, returned
+  by the default method bodies.
+
+pyfly returns booleans / `Optional` for several methods; the Rust port keeps
+those semantics where they convey real information (`logout`/`change_password`/
+`assign_role`/`revoke_role` return `Result<bool>`) and uses
+`Error::UserNotFound` where pyfly returns `None`/raises for a missing entity
+(`find_by_username`, `get_user_info`, `reset_password`).

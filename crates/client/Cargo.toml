@@ -8,16 +8,37 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Firefly Framework for Rust — REST builder with retry, problem decode, correlation propagation; SOAP/gRPC/WS scaffolds"
 
+[features]
+# Real SOAP/gRPC/WebSocket protocol clients are feature-gated so the
+# core REST builder stays dependency-light. The default feature set
+# matches the Go-parity surface (REST + GraphQL only, no extra deps);
+# opt into the heavier transports as needed.
+default = []
+# Enables [`WsBuilder`] / [`WsClient`] over `tokio-tungstenite`.
+websocket = ["dep:tokio-tungstenite", "dep:futures"]
+# Enables [`GrpcBuilder`] over `tonic`'s `Channel` (insecure / plaintext).
+grpc = ["dep:tonic"]
+# Adds TLS support to [`GrpcBuilder::secured`] via tonic's `tls` feature.
+grpc-tls = ["grpc", "tonic?/tls", "tonic?/tls-roots"]
+
 [dependencies]
 firefly-kernel = { workspace = true }
+firefly-observability = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 http = { workspace = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
 
 [dev-dependencies]
 axum = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+futures = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

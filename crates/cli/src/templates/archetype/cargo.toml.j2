@@ -1,0 +1,30 @@
+[package]
+name = "{{ package_name }}"
+version = "0.1.0"
+edition = "2021"
+description = "{{ name }} — a Firefly Framework for Rust application"
+
+[dependencies]
+firefly-kernel = { {{ dep_source }} }
+{% if has_web %}firefly-web = { {{ dep_source }} }
+axum = "0.7"
+{% endif %}firefly-config = { {{ dep_source }} }
+firefly-lifecycle = { {{ dep_source }} }
+{% if has_data %}firefly-data = { {{ dep_source }} }
+firefly-migrations = { {{ dep_source }} }
+{% endif %}{% if has_cqrs %}firefly-cqrs = { {{ dep_source }} }
+{% endif %}{% if has_eda %}firefly-eda = { {{ dep_source }} }
+{% endif %}{% if has_cache %}firefly-cache = { {{ dep_source }} }
+{% endif %}{% if has_client %}firefly-client = { {{ dep_source }} }
+{% endif %}{% if has_security %}firefly-security = { {{ dep_source }} }
+{% endif %}{% if has_scheduling %}firefly-scheduling = { {{ dep_source }} }
+{% endif %}{% if has_observability %}firefly-observability = { {{ dep_source }} }
+{% endif %}{% if has_transactional %}firefly-transactional = { {{ dep_source }} }
+firefly-orchestration = { {{ dep_source }} }
+{% endif %}{% if has_shell %}firefly-shell = { {{ dep_source }} }
+{% endif %}tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

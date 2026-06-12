@@ -1,0 +1,26 @@
+//! {{ names.human }} data-transfer objects.
+
+use serde::{Deserialize, Serialize};
+
+/// Request payload to create a {{ names.human }}.
+#[derive(Debug, Clone, Deserialize)]
+pub struct {{ names.pascal }}CreateRequest {
+    /// Display name.
+    pub name: String,
+}
+
+/// Request payload to update a {{ names.human }}.
+#[derive(Debug, Clone, Deserialize)]
+pub struct {{ names.pascal }}UpdateRequest {
+    /// Display name.
+    pub name: Option<String>,
+}
+
+/// Response representation of a {{ names.human }}.
+#[derive(Debug, Clone, Serialize)]
+pub struct {{ names.pascal }}Response {
+    /// Identifier.
+    pub id: i64,
+    /// Display name.
+    pub name: String,
+}

@@ -10,6 +10,7 @@ use serde::Serialize;
 use firefly_kernel::{
     correlation_id, FireflyError, ProblemDetail, HEADER_CORRELATION_ID, PROBLEM_CONTENT_TYPE,
 };
+use firefly_observability::inject_headers;
 
 use crate::error::ClientError;
 
@@ -148,7 +149,8 @@ impl RestBuilder {
 ///   `Content-Type: application/json`;
 /// * sets `Accept: application/json`;
 /// * forwards the correlation id from the kernel task-local scope as
-///   `X-Correlation-Id`;
+///   `X-Correlation-Id`, plus the W3C `traceparent` / `tracestate` from
+///   the observability scope when present (pyfly's httpx adapter);
 /// * retries on network errors and 429 / 5xx statuses with exponential
 ///   backoff (100 ms doubling, capped at 2 s), re-sending the full
 ///   JSON body on every attempt;
@@ -267,6 +269,11 @@ impl RestClient {
                     headers.insert(name, value);
                 }
             }
+            // pyfly's httpx adapter injects W3C `traceparent` (and
+            // `tracestate`) on every outbound request when a trace
+            // context is in scope; a no-op otherwise. Set alongside the
+            // correlation id so the distributed trace stays unbroken.
+            inject_headers(&mut headers);
 
             let mut req = self
                 .http

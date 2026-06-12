@@ -16,8 +16,8 @@ use axum::Router;
 use http::StatusCode;
 
 use firefly_callbacks::{
-    CallbackEvent, Dispatcher, DispatcherConfig, HmacDispatcher, MemoryStore, Store, Target,
-    HEADER_EVENT, HEADER_EVENT_ID, HEADER_SIGNATURE, HEADER_TIMESTAMP,
+    AuthorizedDomain, CallbackEvent, Dispatcher, DispatcherConfig, HmacDispatcher, MemoryStore,
+    Store, Target, HEADER_EVENT, HEADER_EVENT_ID, HEADER_SIGNATURE, HEADER_TIMESTAMP,
 };
 
 /// Binds an axum router on a random localhost port and returns the base
@@ -494,6 +494,200 @@ async fn response_body_is_captured_in_the_audit_row() {
     assert_eq!(attempts.len(), 1);
     assert_eq!(attempts[0].body, "ack");
     assert!(attempts[0].error.is_empty());
+}
+
+// --- pyfly parity: AuthorizedDomain allowlist (#190) -------------------------
+
+// --- pyfly: test_unauthorized_domain_is_blocked ------------------------------
+
+#[tokio::test]
+async fn unauthorized_domain_is_blocked_and_audited() {
+    // The receiver must NEVER be hit: the host is not on the allowlist.
+    let hits = Arc::new(AtomicU32::new(0));
+    let app = {
+        let hits = hits.clone();
+        Router::new().route(
+            "/x",
+            post(move || {
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        )
+    };
+    let url = spawn_receiver(app).await;
+    // The receiver listens on 127.0.0.1, which is NOT the allowlisted host.
+    let target_url = format!("{url}/x");
+
+    let store = Arc::new(MemoryStore::new());
+    store
+        .upsert_target(Target {
+            id: "evil".into(),
+            url: target_url,
+            active: true,
+            ..Target::default()
+        })
+        .await
+        .unwrap();
+
+    let dispatcher = HmacDispatcher::new(
+        store.clone(),
+        DispatcherConfig {
+            initial_delay: FAST_DELAY,
+            max_attempts: 3,
+            authorized_domains: vec![AuthorizedDomain::new("trusted.example.com")],
+            ..DispatcherConfig::default()
+        },
+    );
+    dispatcher
+        .dispatch(CallbackEvent {
+            id: "e1".into(),
+            event_type: "E".into(),
+            payload: br#"{"a":1}"#.to_vec(),
+            ..CallbackEvent::default()
+        })
+        .await
+        .expect("dispatch is best-effort");
+
+    // No HTTP request was made.
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "blocked target must not be hit"
+    );
+
+    // The rejection was audited (pyfly #190): one row, status 0, attempt 0,
+    // with the explanatory error.
+    let attempts = store.list_attempts("e1").await.unwrap();
+    assert_eq!(attempts.len(), 1, "exactly one rejection audit row");
+    assert_eq!(attempts[0].status, 0);
+    assert_eq!(attempts[0].attempt, 0, "no delivery attempt was made");
+    assert!(
+        attempts[0].error.to_lowercase().contains("authorized"),
+        "error: {:?}",
+        attempts[0].error
+    );
+    assert_eq!(attempts[0].target_id, "evil");
+}
+
+#[tokio::test]
+async fn authorized_domain_is_delivered_when_allowlisted() {
+    let hits = Arc::new(AtomicU32::new(0));
+    let app = {
+        let hits = hits.clone();
+        Router::new().route(
+            "/",
+            post(move || {
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        )
+    };
+    let url = spawn_receiver(app).await;
+    // Derive the receiver's host (127.0.0.1) and allowlist it exactly.
+    let host = url
+        .strip_prefix("http://")
+        .and_then(|hp| hp.split(':').next())
+        .expect("host")
+        .to_string();
+
+    let store = Arc::new(MemoryStore::new());
+    store
+        .upsert_target(Target {
+            id: "ok".into(),
+            url,
+            active: true,
+            ..Target::default()
+        })
+        .await
+        .unwrap();
+
+    let dispatcher = HmacDispatcher::new(
+        store.clone(),
+        DispatcherConfig {
+            initial_delay: FAST_DELAY,
+            max_attempts: 1,
+            authorized_domains: vec![AuthorizedDomain::new(host)],
+            ..DispatcherConfig::default()
+        },
+    );
+    dispatcher
+        .dispatch(CallbackEvent {
+            id: "e1".into(),
+            event_type: "E".into(),
+            payload: b"{}".to_vec(),
+            ..CallbackEvent::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "allowlisted target delivered"
+    );
+    let attempts = store.list_attempts("e1").await.unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].status, 200);
+    assert_eq!(attempts[0].attempt, 1);
+}
+
+#[tokio::test]
+async fn empty_allowlist_preserves_unrestricted_delivery() {
+    // Backward compatibility: an empty allowlist (the default) reaches
+    // any host, exactly as before this feature existed.
+    let hits = Arc::new(AtomicU32::new(0));
+    let app = {
+        let hits = hits.clone();
+        Router::new().route(
+            "/",
+            post(move || {
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        )
+    };
+    let url = spawn_receiver(app).await;
+
+    let store = Arc::new(MemoryStore::new());
+    store
+        .upsert_target(Target {
+            id: "any".into(),
+            url,
+            active: true,
+            ..Target::default()
+        })
+        .await
+        .unwrap();
+
+    // No authorized_domains configured.
+    let dispatcher = HmacDispatcher::new(
+        store,
+        DispatcherConfig {
+            initial_delay: FAST_DELAY,
+            max_attempts: 1,
+            ..DispatcherConfig::default()
+        },
+    );
+    dispatcher
+        .dispatch(CallbackEvent {
+            id: "e1".into(),
+            event_type: "E".into(),
+            payload: b"{}".to_vec(),
+            ..CallbackEvent::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "unrestricted by default");
 }
 
 /// The dispatcher is usable through the object-safe [`Dispatcher`] port.

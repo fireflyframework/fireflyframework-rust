@@ -1,271 +1,773 @@
-//! firefly-idp-aws-cognito — the placeholder [`firefly_idp::Adapter`] for
-//! AWS Cognito (AWS SDK `CognitoIdentityProvider`).
+//! firefly-idp-aws-cognito — a real [`firefly_idp::Adapter`] for AWS Cognito.
 //!
-//! Direct port of the Go `idpawscognito` module (itself a port of the Java
-//! `firefly-idp-awscognito` module and the .NET `FireflyFramework.Idp.*`
-//! project). The integration surface (token endpoints, admin REST APIs,
-//! AWS SDK calls) is in scope for a later milestone — this crate ships the
-//! contract-only stub today:
+//! Talks directly to the **Cognito Identity Provider JSON API** over
+//! [`reqwest`] — **no AWS SDK is pulled in**. Requests are `POST`s to
+//! `https://cognito-idp.{region}.amazonaws.com/` carrying an
+//! `X-Amz-Target: AWSCognitoIdentityProviderService.{Action}` header and a JSON
+//! body, exactly as the wire protocol the AWS SDK speaks underneath.
 //!
-//! * [`Config`] — typed wiring for the production adapter.
-//! * [`Adapter`] — the placeholder port implementation; every method fails
-//!   with the [`not_implemented`] sentinel.
-//! * [`ERR_NOT_IMPLEMENTED`] — the wire-stable sentinel message, bytes-equal
-//!   to the Go module's `ErrNotImplemented` error value.
+//! This is a behavior port of pyfly's `AwsCognitoIdpAdapter` (which wraps
+//! boto3) with a deliberate, brief-mandated divergence: instead of an SDK we
+//! drive the raw JSON API and sign the **admin** calls (`AdminCreateUser`,
+//! `AdminGetUser`, `AdminSetUserPassword`, `ListUsers`, …) with a
+//! self-contained, KAT-tested [`sigv4`] signer. Client-flow calls
+//! (`InitiateAuth`, `GetUser`, `GlobalSignOut`) are unauthenticated and instead
+//! carry the [`SECRET_HASH`](Adapter::secret_hash) (`Base64(HMAC-SHA256(secret,
+//! username + client_id))`) when the app client is configured with a secret.
 //!
-//! Shipping the stub keeps the framework's tier diagram correct (no missing
-//! module) and locks the port boundary: when the real implementation lands,
-//! no consuming code needs to change.
+//! Covered operations: USER_PASSWORD_AUTH login, REFRESH_TOKEN_AUTH refresh,
+//! global sign-out, user CRUD (admin), token introspection / userinfo via
+//! `GetUser`, password change/reset, and Cognito-group role management.
 //!
-//! # Example
-//!
-//! ```
-//! use firefly_idp_aws_cognito::{not_implemented, Adapter, Config, ERR_NOT_IMPLEMENTED};
-//!
-//! let idp = Adapter::new(Config {
-//!     user_pool_id: "eu-west-1_AbCdEfGhI".into(),
-//!     region: "eu-west-1".into(),
-//!     ..Config::default()
-//! });
-//! assert_eq!(firefly_idp::Adapter::name(&idp), "awscognito-stub");
-//! assert_eq!(not_implemented().to_string(), ERR_NOT_IMPLEMENTED);
-//! ```
+//! Per pyfly, [`mfa_challenge`](Adapter::mfa_challenge) /
+//! [`mfa_verify`](Adapter::mfa_verify) stay sentinel returns
+//! ([`ERR_NOT_IMPLEMENTED`]) because Cognito manages MFA via its native auth
+//! challenge flow.
+
+mod sigv4;
+
+pub use sigv4::{sha256_hex, sign as sigv4_sign, Credentials, Header, Request, Signed};
 
 use async_trait::async_trait;
-use firefly_idp::{Error, Result, Token, User};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
+use chrono::Utc;
+use firefly_idp as idp;
+use firefly_idp::{Error, MfaChallenge, Result, Role, SessionIntrospection, Token, User};
+use hmac::{Hmac, Mac};
+use serde_json::{json, Value};
+use sha2::Sha256;
 
-/// The wire-stable message carried by the [`not_implemented`] sentinel.
+/// Wire-stable sentinel returned by the operations Cognito performs natively
+/// ([`Adapter::mfa_challenge`] / [`Adapter::mfa_verify`]).
 ///
-/// Bytes-equal to the Go module's `ErrNotImplemented` error value:
-/// `errors.New("firefly/idpawscognito: not yet implemented")`.
+/// Retained verbatim from the contract-only stub this crate replaced.
 pub const ERR_NOT_IMPLEMENTED: &str = "firefly/idpawscognito: not yet implemented";
 
-/// Builds the sentinel error returned by every method until the adapter ships.
+/// Builds the [`ERR_NOT_IMPLEMENTED`] sentinel as an [`Error::Provider`].
 ///
-/// The sentinel travels as [`firefly_idp::Error::Provider`] with the
-/// [`ERR_NOT_IMPLEMENTED`] message, so callers can match it with a plain
-/// equality check:
-///
-/// ```
-/// use firefly_idp_aws_cognito::{not_implemented, ERR_NOT_IMPLEMENTED};
-///
-/// let err = not_implemented();
-/// assert_eq!(err, not_implemented());
-/// assert_eq!(err.to_string(), ERR_NOT_IMPLEMENTED);
-/// ```
+/// Mirrors pyfly's `AwsCognitoIdpAdapter.mfa_challenge`/`mfa_verify` raising
+/// `NotImplementedError` because Cognito runs MFA via its challenge flow.
 pub fn not_implemented() -> Error {
     Error::provider(ERR_NOT_IMPLEMENTED)
 }
 
-/// Carries the wiring needed by the production adapter.
+const TARGET_PREFIX: &str = "AWSCognitoIdentityProviderService";
+
+/// Typed configuration carrying the wiring the adapter authenticates with.
 ///
-/// The fields cover every wiring variable the real AWS Cognito integration
-/// needs; they are accepted (and retained) today so consuming configuration
-/// code stays stable when the implementation lands.
+/// Field-for-field compatible with the configuration shape this crate shipped
+/// as a stub. The Cognito adapter uses `user_pool_id`, `client_id`, `region`,
+/// `client_secret` (optional — enables [`SECRET_HASH`](Adapter::secret_hash)),
+/// and the AWS credentials (`access_key` / `secret_key`) used to sign admin
+/// calls. `base_url` overrides the endpoint host (for testing); empty falls
+/// back to the regional Cognito host. The remaining vendor fields are retained.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Config {
-    /// Base URL of the provider endpoint.
+    /// Endpoint host override, e.g. a mock URL. Empty falls back to
+    /// `https://cognito-idp.{region}.amazonaws.com`. A trailing `/` is trimmed.
     pub base_url: String,
-    /// Authentication realm.
+    /// Authentication realm (shared vendor-config field; unused by Cognito).
     pub realm: String,
-    /// OAuth2 client identifier.
+    /// Cognito app-client id.
     pub client_id: String,
-    /// OAuth2 client secret.
+    /// App-client secret (optional). When set, client flows include the
+    /// computed `SECRET_HASH`.
     pub client_secret: String,
-    /// Tenant identifier.
+    /// Tenant identifier (shared vendor-config field; unused by Cognito).
     pub tenant: String,
-    /// Cognito user-pool identifier.
+    /// Cognito user-pool id, e.g. `us-east-1_AbcDef`.
     pub user_pool_id: String,
     /// AWS region hosting the user pool.
     pub region: String,
+    /// AWS access key id used to sign admin calls.
+    pub access_key: String,
+    /// AWS secret access key used to sign admin calls.
+    pub secret_key: String,
 }
 
-/// The placeholder [`firefly_idp::Adapter`] for AWS Cognito.
+/// The login outcome — the resolved [`User`] plus the minted [`Token`].
 ///
-/// Every port method returns the [`not_implemented`] sentinel; the typed
-/// [`Config`] is retained so wiring code compiles against the final surface
-/// today.
+/// The Rust analogue of pyfly's `AuthResult`. The port's [`Adapter::login`]
+/// returns only the [`Token`]; callers wanting the resolved user call
+/// [`Adapter::login_full`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthResult {
+    /// The user resolved via `AdminGetUser` after a successful grant.
+    pub user: User,
+    /// The minted access/refresh token envelope.
+    pub token: Token,
+}
+
+/// A real [`firefly_idp::Adapter`] backed by the Cognito IdP JSON API.
 #[derive(Debug, Clone)]
 pub struct Adapter {
     cfg: Config,
+    endpoint: String,
+    host: String,
+    http: reqwest::Client,
+}
+
+/// Whether a Cognito action is an admin (credential-signed) call or an
+/// unauthenticated client-flow call.
+#[derive(Clone, Copy)]
+enum Auth {
+    /// SigV4-signed with AWS credentials.
+    Signed,
+    /// Unauthenticated (token / SECRET_HASH carried in the JSON body).
+    Unsigned,
 }
 
 impl Adapter {
-    /// Returns a placeholder [`Adapter`] wired with `cfg`.
+    /// Returns an [`Adapter`] wired with `cfg`. An empty
+    /// [`base_url`](Config::base_url) falls back to the regional Cognito host.
     pub fn new(cfg: Config) -> Self {
-        Self { cfg }
+        let endpoint = {
+            let b = cfg.base_url.trim_end_matches('/');
+            if b.is_empty() {
+                format!("https://cognito-idp.{}.amazonaws.com", cfg.region)
+            } else {
+                b.to_string()
+            }
+        };
+        // Host header used in the canonical request: the endpoint authority.
+        let host = endpoint
+            .split("://")
+            .nth(1)
+            .unwrap_or(&endpoint)
+            .to_string();
+        Self {
+            cfg,
+            endpoint,
+            host,
+            http: reqwest::Client::new(),
+        }
     }
 
-    /// Returns the wiring configuration the adapter was constructed with.
+    /// Returns the configuration the adapter was constructed with.
     pub fn config(&self) -> &Config {
         &self.cfg
     }
+
+    /// Computes the Cognito `SECRET_HASH` for `username`, or `None` when no app
+    /// client secret is configured.
+    ///
+    /// `SECRET_HASH = Base64(HMAC-SHA256(client_secret, username + client_id))`,
+    /// required for any app client configured with a secret.
+    pub fn secret_hash(&self, username: &str) -> Option<String> {
+        if self.cfg.client_secret.is_empty() {
+            return None;
+        }
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.cfg.client_secret.as_bytes())
+            .expect("HMAC accepts any key length");
+        mac.update(username.as_bytes());
+        mac.update(self.cfg.client_id.as_bytes());
+        Some(BASE64.encode(mac.finalize().into_bytes()))
+    }
+
+    fn provider_err(context: &str, e: impl std::fmt::Display) -> Error {
+        Error::provider(format!("idp/aws-cognito: {context}: {e}"))
+    }
+
+    /// Issues one Cognito JSON-API call (`X-Amz-Target` + JSON body), signing
+    /// admin calls with SigV4. Returns the parsed JSON body on a 2xx, or the
+    /// HTTP status on a non-2xx (so callers can map errors like boto3 does).
+    async fn call(&self, action: &str, auth: Auth, body: Value) -> Result<CognitoResponse> {
+        let payload =
+            serde_json::to_vec(&body).map_err(|e| Self::provider_err("encode body", e))?;
+        let target = format!("{TARGET_PREFIX}.{action}");
+        let now = Utc::now();
+        let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+        let date_stamp = now.format("%Y%m%d").to_string();
+
+        let mut builder = self
+            .http
+            .post(&self.endpoint)
+            .header("content-type", "application/x-amz-json-1.1")
+            .header("x-amz-target", &target)
+            .header("x-amz-date", &amz_date);
+
+        if let Auth::Signed = auth {
+            let payload_hash = sha256_hex(&payload);
+            let headers = vec![
+                Header::new("content-type", "application/x-amz-json-1.1"),
+                Header::new("host", &self.host),
+                Header::new("x-amz-date", &amz_date),
+                Header::new("x-amz-target", &target),
+            ];
+            let signed = sigv4_sign(
+                &Request {
+                    method: "POST",
+                    canonical_uri: "/",
+                    canonical_query: "",
+                    headers,
+                    payload_hash: &payload_hash,
+                },
+                &Credentials {
+                    access_key: &self.cfg.access_key,
+                    secret_key: &self.cfg.secret_key,
+                    region: &self.cfg.region,
+                    service: "cognito-idp",
+                },
+                &amz_date,
+                &date_stamp,
+            );
+            builder = builder
+                .header("x-amz-content-sha256", &payload_hash)
+                .header("authorization", &signed.authorization);
+        }
+
+        let resp = builder
+            .body(payload)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err(&format!("{action} request failed"), e))?;
+        let status = resp.status().as_u16();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| Self::provider_err(&format!("{action} read body"), e))?;
+        let json: Value = if text.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        };
+        Ok(CognitoResponse { status, json })
+    }
+
+    /// USER_PASSWORD_AUTH login returning the resolved user + minted token.
+    ///
+    /// Behavior-equal to pyfly: a transport/API error or a response missing
+    /// `AuthenticationResult` (e.g. a challenge) maps to
+    /// [`Error::InvalidCredentials`]; on success the user is resolved via
+    /// `AdminGetUser`, falling back to a minimal user when absent.
+    pub async fn login_full(&self, username: &str, password: &str) -> Result<AuthResult> {
+        let mut auth_params = json!({"USERNAME": username, "PASSWORD": password});
+        if let Some(hash) = self.secret_hash(username) {
+            auth_params["SECRET_HASH"] = json!(hash);
+        }
+        let resp = self
+            .call(
+                "InitiateAuth",
+                Auth::Unsigned,
+                json!({
+                    "ClientId": self.cfg.client_id,
+                    "AuthFlow": "USER_PASSWORD_AUTH",
+                    "AuthParameters": auth_params,
+                }),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Err(Error::InvalidCredentials);
+        }
+        let result = match resp.json.get("AuthenticationResult") {
+            Some(r) if !r.is_null() => r.clone(),
+            _ => return Err(Error::InvalidCredentials),
+        };
+        let token = token_from_result(&result);
+        let user = match idp::Adapter::get_user(self, username).await {
+            Ok(u) => u,
+            Err(_) => User {
+                username: username.to_string(),
+                ..User::default()
+            },
+        };
+        Ok(AuthResult { user, token })
+    }
+}
+
+struct CognitoResponse {
+    status: u16,
+    json: Value,
+}
+
+fn token_from_result(result: &Value) -> Token {
+    Token {
+        access_token: result
+            .get("AccessToken")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        token_type: result
+            .get("TokenType")
+            .and_then(Value::as_str)
+            .unwrap_or("Bearer")
+            .to_string(),
+        expires_in: result
+            .get("ExpiresIn")
+            .and_then(Value::as_i64)
+            .unwrap_or(3600),
+        refresh_token: result
+            .get("RefreshToken")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        id_token: result
+            .get("IdToken")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        ..Token::default()
+    }
+}
+
+/// Maps a Cognito user representation (`AdminGetUser` / `GetUser` / a
+/// `ListUsers` entry) into the port's [`User`]. Reads either the
+/// `UserAttributes` or `Attributes` array.
+fn from_cognito(data: &Value) -> User {
+    let mut attrs = std::collections::HashMap::new();
+    let arr = data
+        .get("UserAttributes")
+        .and_then(Value::as_array)
+        .or_else(|| data.get("Attributes").and_then(Value::as_array));
+    if let Some(arr) = arr {
+        for a in arr {
+            if let (Some(n), Some(v)) = (
+                a.get("Name").and_then(Value::as_str),
+                a.get("Value").and_then(Value::as_str),
+            ) {
+                attrs.insert(n.to_string(), v.to_string());
+            }
+        }
+    }
+    let username = data
+        .get("Username")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut attributes = std::collections::HashMap::new();
+    for (k, v) in &attrs {
+        attributes.insert(k.clone(), json!(v));
+    }
+    User {
+        id: username.to_string(),
+        username: username.to_string(),
+        email: attrs.get("email").cloned().unwrap_or_default(),
+        roles: Vec::new(),
+        attributes,
+        enabled: data.get("Enabled").and_then(Value::as_bool).unwrap_or(true),
+        ..User::default()
+    }
+}
+
+fn role_from_group(g: &Value) -> Role {
+    Role {
+        name: g
+            .get("GroupName")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        description: g
+            .get("Description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        scopes: Vec::new(),
+    }
+}
+
+fn random_password() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seed = uuid::Uuid::new_v4().simple().to_string();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{seed}{nanos:x}")
 }
 
 #[async_trait]
-impl firefly_idp::Adapter for Adapter {
-    /// Not yet implemented — always fails with the [`not_implemented`] sentinel.
-    async fn login(&self, _username: &str, _password: &str) -> Result<Token> {
-        Err(not_implemented())
+impl idp::Adapter for Adapter {
+    async fn login(&self, username: &str, password: &str) -> Result<Token> {
+        Ok(self.login_full(username, password).await?.token)
     }
 
-    /// Not yet implemented — always fails with the [`not_implemented`] sentinel.
-    async fn refresh(&self, _refresh_token: &str) -> Result<Token> {
-        Err(not_implemented())
+    async fn refresh(&self, refresh_token: &str) -> Result<Token> {
+        let resp = self
+            .call(
+                "InitiateAuth",
+                Auth::Unsigned,
+                json!({
+                    "ClientId": self.cfg.client_id,
+                    "AuthFlow": "REFRESH_TOKEN_AUTH",
+                    "AuthParameters": {"REFRESH_TOKEN": refresh_token},
+                }),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Err(Error::provider(format!(
+                "idp/aws-cognito: refresh failed: HTTP {}",
+                resp.status
+            )));
+        }
+        let result = match resp.json.get("AuthenticationResult") {
+            Some(r) if !r.is_null() => r.clone(),
+            _ => {
+                return Err(Error::provider(
+                    "idp/aws-cognito: refresh did not return a new token",
+                ))
+            }
+        };
+        let mut token = token_from_result(&result);
+        // Cognito rotates the refresh token only for some flows; keep the
+        // supplied one when absent.
+        if token.refresh_token.is_empty() {
+            token.refresh_token = refresh_token.to_string();
+        }
+        Ok(token)
     }
 
-    /// Not yet implemented — always fails with the [`not_implemented`] sentinel.
-    async fn validate(&self, _access_token: &str) -> Result<User> {
-        Err(not_implemented())
+    async fn validate(&self, access_token: &str) -> Result<User> {
+        self.get_user_info(access_token).await
     }
 
-    /// Not yet implemented — always fails with the [`not_implemented`] sentinel.
-    async fn get_user(&self, _id: &str) -> Result<User> {
-        Err(not_implemented())
+    async fn get_user(&self, id: &str) -> Result<User> {
+        let resp = self
+            .call(
+                "AdminGetUser",
+                Auth::Signed,
+                json!({"UserPoolId": self.cfg.user_pool_id, "Username": id}),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Err(Error::UserNotFound);
+        }
+        Ok(from_cognito(&resp.json))
     }
 
-    /// Not yet implemented — always fails with the [`not_implemented`] sentinel.
-    async fn create_user(&self, _user: User, _password: &str) -> Result<User> {
-        Err(not_implemented())
+    async fn create_user(&self, user: User, password: &str) -> Result<User> {
+        let mut attributes = Vec::new();
+        if !user.email.is_empty() {
+            attributes.push(json!({"Name": "email", "Value": user.email}));
+        }
+        if let Some(first) = user.attributes.get("firstName").and_then(Value::as_str) {
+            attributes.push(json!({"Name": "given_name", "Value": first}));
+        }
+        if let Some(last) = user.attributes.get("lastName").and_then(Value::as_str) {
+            attributes.push(json!({"Name": "family_name", "Value": last}));
+        }
+        let create = self
+            .call(
+                "AdminCreateUser",
+                Auth::Signed,
+                json!({
+                    "UserPoolId": self.cfg.user_pool_id,
+                    "Username": user.username,
+                    "UserAttributes": attributes,
+                    "TemporaryPassword": password,
+                    "MessageAction": "SUPPRESS",
+                }),
+            )
+            .await?;
+        if create.status != 200 {
+            return Err(Error::provider(format!(
+                "idp/aws-cognito: create_user failed: HTTP {}",
+                create.status
+            )));
+        }
+        let set_pw = self
+            .call(
+                "AdminSetUserPassword",
+                Auth::Signed,
+                json!({
+                    "UserPoolId": self.cfg.user_pool_id,
+                    "Username": user.username,
+                    "Password": password,
+                    "Permanent": true,
+                }),
+            )
+            .await?;
+        if set_pw.status != 200 {
+            return Err(Error::provider(format!(
+                "idp/aws-cognito: set_user_password failed: HTTP {}",
+                set_pw.status
+            )));
+        }
+        let mut created = user;
+        created.id = created.username.clone();
+        Ok(created)
     }
 
-    /// Not yet implemented — always fails with the [`not_implemented`] sentinel.
-    async fn update_user(&self, _user: User) -> Result<User> {
-        Err(not_implemented())
+    async fn update_user(&self, user: User) -> Result<User> {
+        let mut attrs = Vec::new();
+        if !user.email.is_empty() {
+            attrs.push(json!({"Name": "email", "Value": user.email}));
+        }
+        if let Some(first) = user.attributes.get("firstName").and_then(Value::as_str) {
+            attrs.push(json!({"Name": "given_name", "Value": first}));
+        }
+        if let Some(last) = user.attributes.get("lastName").and_then(Value::as_str) {
+            attrs.push(json!({"Name": "family_name", "Value": last}));
+        }
+        if !attrs.is_empty() {
+            let username = if user.id.is_empty() {
+                &user.username
+            } else {
+                &user.id
+            };
+            self.call(
+                "AdminUpdateUserAttributes",
+                Auth::Signed,
+                json!({
+                    "UserPoolId": self.cfg.user_pool_id,
+                    "Username": username,
+                    "UserAttributes": attrs,
+                }),
+            )
+            .await?;
+        }
+        Ok(user)
     }
 
-    /// Not yet implemented — always fails with the [`not_implemented`] sentinel.
-    async fn delete_user(&self, _id: &str) -> Result<()> {
-        Err(not_implemented())
+    async fn delete_user(&self, id: &str) -> Result<()> {
+        let resp = self
+            .call(
+                "AdminDeleteUser",
+                Auth::Signed,
+                json!({"UserPoolId": self.cfg.user_pool_id, "Username": id}),
+            )
+            .await?;
+        if resp.status == 200 {
+            Ok(())
+        } else {
+            Err(Error::UserNotFound)
+        }
     }
 
-    /// Returns the adapter's stable identifier: `"awscognito-stub"`.
     fn name(&self) -> &str {
-        "awscognito-stub"
+        "aws-cognito"
+    }
+
+    // -- extended surface (pyfly parity) ----------------------------------
+
+    async fn logout(&self, access_token: &str) -> Result<bool> {
+        let resp = self
+            .call(
+                "GlobalSignOut",
+                Auth::Unsigned,
+                json!({"AccessToken": access_token}),
+            )
+            .await?;
+        Ok(resp.status == 200)
+    }
+
+    async fn introspect(&self, access_token: &str) -> Result<SessionIntrospection> {
+        let resp = self
+            .call(
+                "GetUser",
+                Auth::Unsigned,
+                json!({"AccessToken": access_token}),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Ok(SessionIntrospection::inactive());
+        }
+        let username = resp
+            .json
+            .get("Username")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        Ok(SessionIntrospection {
+            active: true,
+            user_id: username.to_string(),
+            username: username.to_string(),
+            scopes: Vec::new(),
+        })
+    }
+
+    async fn find_by_username(&self, username: &str) -> Result<User> {
+        idp::Adapter::get_user(self, username).await
+    }
+
+    async fn list_users(&self, limit: usize) -> Result<Vec<User>> {
+        let resp = self
+            .call(
+                "ListUsers",
+                Auth::Signed,
+                json!({"UserPoolId": self.cfg.user_pool_id, "Limit": limit}),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Err(Error::provider(format!(
+                "idp/aws-cognito: list_users failed: HTTP {}",
+                resp.status
+            )));
+        }
+        Ok(resp
+            .json
+            .get("Users")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(from_cognito).collect())
+            .unwrap_or_default())
+    }
+
+    async fn change_password(
+        &self,
+        user_id: &str,
+        _old_password: &str,
+        new_password: &str,
+    ) -> Result<bool> {
+        let resp = self
+            .call(
+                "AdminSetUserPassword",
+                Auth::Signed,
+                json!({
+                    "UserPoolId": self.cfg.user_pool_id,
+                    "Username": user_id,
+                    "Password": new_password,
+                    "Permanent": true,
+                }),
+            )
+            .await?;
+        Ok(resp.status == 200)
+    }
+
+    async fn reset_password(&self, user_id: &str) -> Result<String> {
+        let new_password = random_password();
+        self.change_password(user_id, "", &new_password).await?;
+        Ok(new_password)
+    }
+
+    async fn register_user(&self, mut user: User, password: &str) -> Result<User> {
+        user.enabled = true;
+        self.create_user(user, password).await
+    }
+
+    async fn get_user_info(&self, access_token: &str) -> Result<User> {
+        let resp = self
+            .call(
+                "GetUser",
+                Auth::Unsigned,
+                json!({"AccessToken": access_token}),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Err(Error::UserNotFound);
+        }
+        Ok(from_cognito(&resp.json))
+    }
+
+    async fn mfa_challenge(&self, _user_id: &str) -> Result<MfaChallenge> {
+        Err(not_implemented())
+    }
+
+    async fn mfa_verify(&self, _challenge_id: &str, _code: &str) -> Result<Token> {
+        Err(not_implemented())
+    }
+
+    async fn get_roles(&self, user_id: &str) -> Result<Vec<Role>> {
+        let resp = self
+            .call(
+                "AdminListGroupsForUser",
+                Auth::Signed,
+                json!({"UserPoolId": self.cfg.user_pool_id, "Username": user_id}),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Ok(Vec::new());
+        }
+        Ok(resp
+            .json
+            .get("Groups")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(role_from_group).collect())
+            .unwrap_or_default())
+    }
+
+    async fn assign_role(&self, user_id: &str, role: &str) -> Result<bool> {
+        let resp = self
+            .call(
+                "AdminAddUserToGroup",
+                Auth::Signed,
+                json!({
+                    "UserPoolId": self.cfg.user_pool_id,
+                    "Username": user_id,
+                    "GroupName": role,
+                }),
+            )
+            .await?;
+        Ok(resp.status == 200)
+    }
+
+    async fn revoke_role(&self, user_id: &str, role: &str) -> Result<bool> {
+        let resp = self
+            .call(
+                "AdminRemoveUserFromGroup",
+                Auth::Signed,
+                json!({
+                    "UserPoolId": self.cfg.user_pool_id,
+                    "Username": user_id,
+                    "GroupName": role,
+                }),
+            )
+            .await?;
+        Ok(resp.status == 200)
+    }
+
+    async fn list_roles(&self) -> Result<Vec<Role>> {
+        let resp = self
+            .call(
+                "ListGroups",
+                Auth::Signed,
+                json!({"UserPoolId": self.cfg.user_pool_id}),
+            )
+            .await?;
+        if resp.status != 200 {
+            return Err(Error::provider(format!(
+                "idp/aws-cognito: list_roles failed: HTTP {}",
+                resp.status
+            )));
+        }
+        Ok(resp
+            .json
+            .get("Groups")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(role_from_group).collect())
+            .unwrap_or_default())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    // ---------------------------------------------------------------------
-    // Port of Go TestImplementsPort: compile-time port satisfaction
-    // (`var _ idp.Adapter = New(Config{})`).
-    // ---------------------------------------------------------------------
-
+    // SECRET_HASH KAT: Base64(HMAC-SHA256(secret, username + client_id)).
     #[test]
-    fn implements_port() {
-        fn assert_is_port<T: firefly_idp::Adapter>() {}
-        assert_is_port::<Adapter>();
-        let _: Arc<dyn firefly_idp::Adapter> = Arc::new(Adapter::new(Config::default()));
-    }
-
-    // ---------------------------------------------------------------------
-    // Port of Go TestStubReturnsSentinel: every method returns the sentinel
-    // and the adapter name is non-empty.
-    // ---------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn stub_returns_sentinel() {
-        use firefly_idp::Adapter as _;
-
-        let a = Adapter::new(Config::default());
-        assert_eq!(
-            a.login("u", "p").await.unwrap_err(),
-            not_implemented(),
-            "login: want ErrNotImplemented"
-        );
-        assert_eq!(a.refresh("tok").await.unwrap_err(), not_implemented());
-        assert_eq!(a.validate("tok").await.unwrap_err(), not_implemented());
-        assert_eq!(a.get_user("u").await.unwrap_err(), not_implemented());
-        assert_eq!(
-            a.create_user(User::default(), "p").await.unwrap_err(),
-            not_implemented()
-        );
-        assert_eq!(
-            a.update_user(User::default()).await.unwrap_err(),
-            not_implemented()
-        );
-        assert_eq!(a.delete_user("u").await.unwrap_err(), not_implemented());
-        assert!(!a.name().is_empty(), "name should be non-empty");
-    }
-
-    // ---------------------------------------------------------------------
-    // Rust-specific: wire-stable sentinel message and adapter name.
-    // ---------------------------------------------------------------------
-
-    #[test]
-    fn sentinel_message_matches_go() {
-        let err = not_implemented();
-        assert_eq!(
-            err.to_string(),
-            "firefly/idpawscognito: not yet implemented"
-        );
-        assert_eq!(err, Error::Provider(ERR_NOT_IMPLEMENTED.to_string()));
+    fn secret_hash_known_answer() {
+        let a = Adapter::new(Config {
+            client_id: "test-client-id".into(),
+            client_secret: "test-secret".into(),
+            region: "us-east-1".into(),
+            ..Config::default()
+        });
+        // Cross-checked against an independent HMAC-SHA256 reference
+        // (`openssl dgst -sha256 -hmac test-secret`) for
+        // key="test-secret", msg="alice" + "test-client-id".
+        let hash = a.secret_hash("alice").expect("secret configured");
+        assert_eq!(hash, "rr7RPnVZNnG1c6+8uikMeMZbpU0pRUBXm/O7dO02nKo=");
     }
 
     #[test]
-    fn sentinel_is_distinct_from_canonical_port_errors() {
-        let err = not_implemented();
-        assert_ne!(err, Error::InvalidCredentials);
-        assert_ne!(err, Error::UserNotFound);
-    }
-
-    #[test]
-    fn name_is_stable() {
-        let a = Adapter::new(Config::default());
-        assert_eq!(firefly_idp::Adapter::name(&a), "awscognito-stub");
-    }
-
-    // ---------------------------------------------------------------------
-    // Rust-specific: the typed Config is retained verbatim.
-    // ---------------------------------------------------------------------
-
-    #[test]
-    fn config_is_retained() {
-        let cfg = Config {
-            base_url: "https://cognito-idp.eu-west-1.amazonaws.com".into(),
-            realm: "main".into(),
+    fn secret_hash_none_without_secret() {
+        let a = Adapter::new(Config {
             client_id: "cid".into(),
-            client_secret: "secret".into(),
-            tenant: "acme".into(),
-            user_pool_id: "eu-west-1_AbCdEfGhI".into(),
+            ..Config::default()
+        });
+        assert!(a.secret_hash("alice").is_none());
+    }
+
+    #[test]
+    fn endpoint_defaults_to_regional_host() {
+        let a = Adapter::new(Config {
             region: "eu-west-1".into(),
-        };
-        let a = Adapter::new(cfg.clone());
-        assert_eq!(a.config(), &cfg);
+            ..Config::default()
+        });
+        assert_eq!(a.endpoint, "https://cognito-idp.eu-west-1.amazonaws.com");
+        assert_eq!(a.host, "cognito-idp.eu-west-1.amazonaws.com");
     }
 
     #[test]
-    fn default_config_mirrors_go_zero_values() {
-        let cfg = Config::default();
-        assert!(cfg.base_url.is_empty());
-        assert!(cfg.realm.is_empty());
-        assert!(cfg.client_id.is_empty());
-        assert!(cfg.client_secret.is_empty());
-        assert!(cfg.tenant.is_empty());
-        assert!(cfg.user_pool_id.is_empty());
-        assert!(cfg.region.is_empty());
-    }
-
-    // ---------------------------------------------------------------------
-    // Rust-specific: usable behind Arc<dyn Adapter> and Send + Sync.
-    // ---------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn usable_as_trait_object() {
-        let idp: Arc<dyn firefly_idp::Adapter> = Arc::new(Adapter::new(Config::default()));
-        assert_eq!(idp.name(), "awscognito-stub");
-        assert_eq!(idp.login("u", "p").await.unwrap_err(), not_implemented());
-        assert_eq!(idp.delete_user("u").await.unwrap_err(), not_implemented());
-    }
-
-    #[test]
-    fn adapter_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<Adapter>();
-        assert_send_sync::<Config>();
+    fn name_is_aws_cognito() {
+        let a = Adapter::new(Config::default());
+        assert_eq!(idp::Adapter::name(&a), "aws-cognito");
     }
 }

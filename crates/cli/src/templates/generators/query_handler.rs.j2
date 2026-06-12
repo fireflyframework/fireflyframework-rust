@@ -1,0 +1,18 @@
+//! {{ names.human }} CQRS query handler.
+
+use firefly_cqrs::{query_handler, QueryHandler};
+
+use super::{{ names.snake }}_query::{{ names.pascal }};
+
+/// Handles [`{{ names.pascal }}`] queries.
+#[derive(Debug, Default, Clone)]
+pub struct {{ names.pascal }}QueryHandler;
+
+#[query_handler]
+impl QueryHandler<{{ names.pascal }}, Option<serde_json::Value>> for {{ names.pascal }}QueryHandler {
+    async fn do_handle(&self, query: {{ names.pascal }}) -> Option<serde_json::Value> {
+        // TODO: implement {{ names.human }} query handling.
+        let _ = query;
+        None
+    }
+}

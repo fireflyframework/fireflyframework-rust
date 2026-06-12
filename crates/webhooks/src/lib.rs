@@ -12,7 +12,7 @@
 //! | Module                | What it provides                                                  |
 //! |-----------------------|-------------------------------------------------------------------|
 //! | [`interfaces`]        | [`Inbound`] DTO + [`Validator`], [`Processor`] ports              |
-//! | [`core`](self::core)  | [`Pipeline`], in-memory [`MemoryDlq`], four canonical validators  |
+//! | [`core`](self::core)  | [`Pipeline`], in-memory [`MemoryDlq`], idempotency [`EventStore`], four validators |
 //! | [`processor`]         | SPI surface for service-supplied per-provider processors          |
 //! | [`web`]               | `POST /api/webhooks/{provider}` ingestion [`axum::Router`]        |
 //! | [`sdk`]               | Typed forwarder (replay DLQ entries; cross-service composition)   |
@@ -70,8 +70,8 @@ pub mod sdk;
 pub mod web;
 
 pub use self::core::{
-    Dlq, DlqEntry, GitHubValidator, HmacValidator, MemoryDlq, Pipeline, StripeValidator,
-    TwilioValidator,
+    Dlq, DlqEntry, EventStore, GitHubValidator, HmacValidator, MemoryDlq, MemoryEventStore,
+    Pipeline, StripeValidator, TwilioValidator, DEFAULT_IDEMPOTENCY_HEADER,
 };
 pub use error::WebhookError;
 pub use interfaces::{Inbound, Processor, Validator};

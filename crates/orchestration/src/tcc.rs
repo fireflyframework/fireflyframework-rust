@@ -132,6 +132,17 @@ impl Tcc {
         &self.name
     }
 
+    /// The configured participants, in try order — the definition-listing
+    /// accessor used by the validator, registry, and admin surfaces.
+    pub fn participants(&self) -> &[TccParticipant] {
+        &self.participants
+    }
+
+    /// Participant names in try order.
+    pub fn participant_names(&self) -> Vec<&str> {
+        self.participants.iter().map(|p| p.name.as_str()).collect()
+    }
+
     /// Executes try across every participant. On any try failure, cancel
     /// is invoked on the participants that succeeded their try
     /// (best-effort, reverse order). On success, confirm is invoked on

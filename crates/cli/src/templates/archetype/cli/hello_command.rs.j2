@@ -1,0 +1,8 @@
+//! The sample `hello` command for {{ name }}.
+
+use crate::services::greeting_service::GreetingService;
+
+/// Execute the `hello` command.
+pub fn run(name: &str) -> String {
+    GreetingService::new().greet(name)
+}

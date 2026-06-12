@@ -85,6 +85,74 @@ This is the chain composed by `firefly-starter-core`.
 | `mask_pii(&str) -> String` | Redacts emails, IBANs, cards, E.164 phones as `[REDACTED:<kind>]`; matches Go RE2's ASCII `\b`/`\d` semantics, so numbers adjacent to non-ASCII text are still masked |
 | `mask_map(&Map) -> Map` | Recursive redaction over a JSON object; sensitive keys (`password`, `token`, `secret`, `authorization`, `cookie`, `api_key`, `apikey`, `private_key`) replaced wholesale |
 
+## pyfly parity
+
+Beyond the Go-parity chain above, the crate ships the full pyfly
+`web` + `server` middleware surface. Every layer follows the same
+hand-rolled `tower::Layer` style (the workspace deliberately avoids
+`tower-http`) and keeps wire formats byte-identical to the Java, .NET,
+Go, and Python ports.
+
+### CORS — `cors.rs`
+
+| Symbol | Behaviour |
+|--------|-----------|
+| `CorsConfig { allowed_origins, allowed_methods, allowed_headers, allow_credentials, exposed_headers, max_age }` | Config struct (serde kebab-case); `default()` permits `*` origin/header with `GET`, `max_age` 600 |
+| `CorsConfig::permit_defaults()` | Spring's permit set: `GET`/`HEAD`/`POST` (`PERMIT_DEFAULT_METHODS`) |
+| `CorsLayer` | Short-circuits preflight `OPTIONS` (400 on disallowed origin/method, echoes requested headers for `*`), decorates simple responses with `Access-Control-Allow-*`, reflects origin under credentials |
+
+### Security headers — `headers.rs`
+
+| Symbol | Behaviour |
+|--------|-----------|
+| `SecurityHeadersConfig` | Same 7 fields/defaults as pyfly: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, HSTS, `X-XSS-Protection: 0`, `Referrer-Policy`, optional CSP + Permissions-Policy |
+| `SecurityHeadersLayer` | Pre-encodes the static header pairs once and appends them to every response |
+
+### CSRF — `csrf.rs`
+
+| Symbol | Behaviour |
+|--------|-----------|
+| `CsrfLayer` | Double-submit cookie: `XSRF-TOKEN` cookie vs `X-XSRF-TOKEN` header, safe-method pass-through with cookie refresh, **Bearer bypass**, timing-safe SHA-256 digest compare (no `subtle` dep), 403 `problem+json` on mismatch |
+| `generate_csrf_token()` / `validate_csrf_token(cookie, header)` | Token mint + constant-time validation helpers |
+
+### Request access log — `request_log.rs`
+
+| Symbol | Behaviour |
+|--------|-----------|
+| `RequestLogLayer` | One `tracing` event per request (`http_request` INFO with `method`/`path`/`status_code`/`duration_ms`/`transaction_id`/`correlation_id`; `http_request_failed` ERROR on panic, re-raised so `ProblemLayer` still renders the recovered 500) on target `REQUEST_LOG_TARGET` |
+
+### HTTP server metrics — `metrics.rs`
+
+| Symbol | Behaviour |
+|--------|-----------|
+| `MetricsLayer` | Records `method` / templated `uri` (axum `MatchedPath`, not raw path) / `status` / `Outcome` / `exception` + duration per request, plus the two-window rolling `_max` (`HTTP_SERVER_REQUESTS_MAX_METRIC`) |
+| `RequestObserver` trait | Local sink (no `firefly-actuator` dep — starter-core bridges to the `MetricRegistry` later); `RequestMetric` carries the Micrometer-parity tags |
+
+### Extended correlation — `correlation.rs`
+
+`CorrelationLayer` keeps `X-Correlation-Id` behaviour identical and
+additionally mints/echoes `X-Request-Id`, propagates `X-Tenant-Id` and
+`X-Transaction-Id` into the kernel task-locals, and echoes
+`traceparent`/`tracestate`. The full snapshot is stored as a
+`CorrelationContext` request extension.
+
+### Content negotiation — `content_negotiation.rs`
+
+| Symbol | Behaviour |
+|--------|-----------|
+| `MessageConverterRegistry`, `parse_accept` | `Accept` q-value parsing + converter selection |
+| `JsonMessageConverter`, `XmlMessageConverter` (quick-xml) | Read/write JSON and XML; `value_to_xml`/`xml_to_value` for dict↔XML |
+| `Negotiate<T>` | Responder that serialises `T` to the negotiated media type |
+
+### Server bootstrap — `server.rs`
+
+| Symbol | Behaviour |
+|--------|-----------|
+| `ServerProperties { host, port, graceful_timeout, keep_alive_timeout, backlog, max_concurrent_connections, tls }` | serde-bound under `server.*` |
+| `TlsConfig { cert_file, key_file }` | TLS termination (axum-server `tls-rustls`) |
+| `ServerInfo { name, version, host, port, http_protocol, tls }` | Runtime snapshot for `/actuator/info` |
+| `Server::bind(props)` / `serve(router, props, shutdown)` | Builds the listener (socket2 backlog/`SO_REUSEADDR`, `ConcurrencyLimitLayer`), serves plain-HTTP or TLS, honours the lifecycle drain — drops straight into `Application::on_server` |
+
 ## Quick start
 
 ```rust

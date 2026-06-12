@@ -80,3 +80,52 @@ not-implemented sentinel — including end-to-end through the
 `firefly_notifications::Dispatcher`. Once the production adapter ships, these
 tests are deleted in favour of integration tests against a real provider
 container / mock server.
+
+## pyfly parity — real Resend provider
+
+Alongside the Go-parity stub above, this crate now ships a **working** Resend
+adapter that POSTs to the `/emails` HTTP API — the Rust port of pyfly
+`pyfly.notifications.providers.resend.ResendEmailProvider`.
+
+```rust
+use firefly_notifications_resend::{EmailMessage, EmailProvider, ResendEmailProvider};
+
+let provider = ResendEmailProvider::new("re_test_key").with_default_from("noreply@example.com");
+let msg = EmailMessage {
+    to: vec!["dest@example.com".into()],
+    subject: "Hello".into(),
+    body_text: Some("plain body".into()),
+    ..EmailMessage::default()
+};
+let result = provider.send(msg).await; // NotificationResult { status: SENT, provider_id: Some(id), .. }
+```
+
+### Behavior (matches pyfly)
+
+* POSTs `{api_base}/emails` (default `https://api.resend.com`) with
+  `Authorization: Bearer <key>` and `Content-Type: application/json`.
+* `from` is `message.sender` or the configured `default_from` fallback.
+* `cc`/`bcc` are added only when non-empty; `text`/`html` only when present.
+* Attachments carry `{ filename, content }` (base64) — Resend takes no `type`
+  field, unlike SendGrid.
+* A 2xx response → `EmailStatus::SENT` with the response JSON's `id` as
+  `provider_id`. Any other status (or a transport error) →
+  `EmailStatus::FAILED` carrying `http {status}: {body}`; `send` never returns
+  an `Err`.
+
+### Rich public surface
+
+| Item | Description |
+| --- | --- |
+| `ResendEmailProvider` | The provider: `new(api_key)`, `with_default_from(addr)`, `with_api_base(base)`, `from_config(get)`. Implements `EmailProvider` and a thin `firefly_notifications::Channel` (`name()` = `"notificationsresend"`). |
+| `EmailMessage` / `Attachment` | Rich e-mail message model (to/cc/bcc, text + html, attachments, custom headers, `template_id` + `template_data`). |
+| `EmailStatus` | `QUEUED` / `SENT` / `DELIVERED` / `BOUNCED` / `FAILED` / `SUPPRESSED`. |
+| `NotificationResult` | `{ id, provider, status, provider_id?, error? }`. |
+| `EmailProvider` | The async delivery port. |
+
+### Testing
+
+`tests/mock_send.rs` runs the provider against an **in-process axum mock** on
+`127.0.0.1:0` (no network, no Docker) that captures the outbound request and
+asserts the exact JSON payload, headers, and response parsing — the Rust port
+of `tests/notifications/test_resend_behavior.py`.

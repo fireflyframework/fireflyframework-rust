@@ -11,10 +11,26 @@
 //! 2. [`BearerLayer`] — a tower layer that extracts
 //!    `Authorization: Bearer <token>`, calls the [`Verifier`], and
 //!    stores the resulting [`Authentication`] on the request.
-//! 3. [`FilterChain`] — a path-prefix-keyed RBAC matcher composable
-//!    with the bearer layer.
+//! 3. [`FilterChain`] — a path-prefix- and glob-pattern-keyed RBAC
+//!    matcher composable with the bearer layer.
 //! 4. [`Authentication`] — the principal + authorities tuple persisted
 //!    on the request for downstream handlers and CQRS handlers alike.
+//!
+//! plus the **pyfly-parity layer** (Python original:
+//! `pyfly.security`):
+//!
+//! 5. [`JwksVerifier`] — JWKS resource-server verifier (RS256, kid
+//!    cache, iss/aud validation, Keycloak `realm_access.roles` and
+//!    `scope` mapping).
+//! 6. [`RoleHierarchy`] — `"ADMIN > USER"` implication graph consulted
+//!    by the filter chain.
+//! 7. CSRF double-submit helpers + [`CsrfLayer`].
+//! 8. [`guards`] — typed authorization guards replacing pyfly's SpEL
+//!    expressions.
+//! 9. [`oauth2`] — client registrations (+ Google/GitHub/Keycloak
+//!    presets), the browser login flow (auth-code + state/nonce +
+//!    PKCE S256), and an authorization server (client_credentials +
+//!    refresh_token) with pluggable token stores.
 //!
 //! ## Mental model
 //!
@@ -100,15 +116,27 @@
 
 mod authentication;
 mod bearer;
+mod csrf;
 mod filter_chain;
+pub mod guards;
+mod jwks;
+pub mod oauth2;
 mod problem;
+mod role_hierarchy;
 
 pub use authentication::{
     authentication_from, must_auth_from, with_authentication, Authentication, SecurityError,
     Verifier, VerifierFn, ANONYMOUS_ID,
 };
 pub use bearer::{BearerConfig, BearerLayer, BearerService, UnauthorizedHandler};
+pub use csrf::{
+    generate_csrf_token, is_safe_method, validate_csrf_token, CsrfLayer, CsrfService,
+    CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SAFE_METHODS,
+};
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
+pub use guards::{require, AuthorizationGuard};
+pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier};
+pub use role_hierarchy::RoleHierarchy;
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.1";

@@ -38,6 +38,16 @@ impl RateLimiter {
         }
     }
 
+    /// The refill rate in tokens per second — pyfly's `refill_rate`.
+    pub fn rate(&self) -> f64 {
+        self.rate
+    }
+
+    /// The bucket capacity (burst size) — pyfly's `max_tokens`.
+    pub fn burst(&self) -> usize {
+        self.burst as usize
+    }
+
     /// Returns `true` if a token is available, consuming it. Non-blocking.
     pub fn allow(&self) -> bool {
         let mut bucket = self.bucket.lock().expect("rate limiter mutex poisoned");

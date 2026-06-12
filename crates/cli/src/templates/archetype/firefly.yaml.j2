@@ -1,0 +1,23 @@
+firefly:
+  app:
+    name: {{ name }}
+    module: {{ package_name }}
+    archetype: {{ archetype }}
+{% if has_web %}  web:
+    enabled: true
+    port: 8080
+{% endif %}{% if has_data %}  data:
+    relational:
+      enabled: true
+      url: "sqlite::memory:"
+{% endif %}{% if has_mongodb %}  data:
+    document:
+      enabled: true
+      uri: "mongodb://localhost:27017"
+{% endif %}{% if has_security %}  security:
+    jwt:
+      secret: "change-me-before-deploying"
+{% endif %}{% if has_transactional %}  transactional:
+    enabled: true
+{% endif %}  actuator:
+    enabled: true

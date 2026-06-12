@@ -250,7 +250,7 @@ mod tests {
             failure_threshold: 1,
             window: Duration::ZERO,
             open_duration: Duration::from_secs(30),
-            now: None,
+            ..CircuitConfig::default()
         }));
         let chain = Chain::new().with_shared(breaker.clone());
 
@@ -296,7 +296,7 @@ mod tests {
             failure_threshold: 1,
             window: Duration::ZERO,
             open_duration: Duration::from_secs(30),
-            now: None,
+            ..CircuitConfig::default()
         }));
         let rl = RateLimiter::new(0.001, 0); // always empty
         let chain = Chain::new().with_shared(breaker.clone()).with(rl);

@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::authorization::AuthorizationResult;
+
 /// Errors produced by the CQRS [`Bus`](crate::Bus), its middleware, and
 /// the handlers it dispatches to.
 ///
@@ -59,6 +61,19 @@ pub enum CqrsError {
     #[error("{0}")]
     Validation(String),
 
+    /// Pre-dispatch authorization denial raised by
+    /// [`Message::authorize`](crate::Message::authorize) and surfaced by
+    /// the [`AuthorizationMiddleware`](crate::AuthorizationMiddleware) —
+    /// pyfly's `AuthorizationException` (code `AUTHORIZATION_DENIED`).
+    ///
+    /// Displays the result's summary if set, else the joined
+    /// `"<resource>: <message>"` error messages, else
+    /// `"Authorization denied"` — pyfly's exception message derivation.
+    /// The full [`AuthorizationResult`] (errors, codes, severities,
+    /// denied actions) is carried for callers to inspect.
+    #[error("{0}")]
+    Authorization(AuthorizationResult),
+
     /// JSON-encoding the message for the query-cache key failed. The
     /// caching middleware treats this as "skip the cache and dispatch",
     /// matching Go's `keyOf` fall-through.
@@ -84,10 +99,32 @@ impl CqrsError {
         Self::Handler(message.into())
     }
 
+    /// Builds a [`CqrsError::Authorization`] from a denial — the Rust
+    /// spelling of pyfly raising `AuthorizationException(result)`.
+    pub fn authorization(result: AuthorizationResult) -> Self {
+        Self::Authorization(result)
+    }
+
     /// Returns `true` when the error is [`CqrsError::NoHandler`] — the
     /// Rust spelling of Go's `errors.Is(err, ErrNoHandler)`.
     pub fn is_no_handler(&self) -> bool {
         matches!(self, Self::NoHandler { .. })
+    }
+
+    /// Returns `true` when the error is [`CqrsError::Authorization`] —
+    /// the Rust spelling of pyfly's
+    /// `isinstance(err, AuthorizationException)`.
+    pub fn is_authorization(&self) -> bool {
+        matches!(self, Self::Authorization(_))
+    }
+
+    /// Borrows the denial behind a [`CqrsError::Authorization`], or
+    /// `None` for every other variant — pyfly's `exc.result`.
+    pub fn authorization_result(&self) -> Option<&AuthorizationResult> {
+        match self {
+            Self::Authorization(result) => Some(result),
+            _ => None,
+        }
     }
 }
 

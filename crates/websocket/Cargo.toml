@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 http = { workspace = true }
 uuid = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

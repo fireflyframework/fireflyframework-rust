@@ -1,0 +1,18 @@
+//! {{ names.human }} entity.
+
+use serde::{Deserialize, Serialize};
+{% if has_data %}
+use firefly_data::Entity;
+{% endif %}
+
+/// The `{{ names.human }}` {% if has_data %}persistent entity{% else %}domain model{% endif %}.
+///
+/// {% if has_data %}Maps to the `{{ names.snake_plural }}` table.{% else %}A plain serializable model (no persistence configured).{% endif %}
+#[derive(Debug, Clone, Serialize, Deserialize{% if has_data %}, Entity{% endif %})]
+{% if has_data %}#[firefly(table = "{{ names.snake_plural }}")]
+{% endif %}pub struct {{ names.pascal }} {
+    /// Primary identifier.
+    pub id: i64,
+    /// Display name.
+    pub name: String,
+}

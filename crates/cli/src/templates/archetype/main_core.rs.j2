@@ -1,0 +1,12 @@
+//! {{ name }} — Firefly Framework `core` service entry point.
+
+use firefly_lifecycle::Application;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let app = Application::builder()
+        .name("{{ name }}")
+        .build();
+    app.run().await?;
+    Ok(())
+}

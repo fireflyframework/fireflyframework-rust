@@ -1,0 +1,17 @@
+//! Ports for {{ name }}: the boundaries between the domain and the outside world.
+
+use super::models::Item;
+
+/// Inbound port: the use cases the application exposes.
+pub trait ItemUseCase {
+    /// Fetch an item by id.
+    fn get(&self, id: &str) -> Option<Item>;
+}
+
+/// Outbound port: the persistence the domain depends on (implemented by an adapter).
+pub trait ItemRepositoryPort {
+    /// Load an item by id.
+    fn load(&self, id: &str) -> Option<Item>;
+    /// Store an item.
+    fn store(&self, item: &Item);
+}

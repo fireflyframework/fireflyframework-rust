@@ -121,3 +121,42 @@ clamping, duplicate-id rejection, exact Go error strings for
 malformed / forged / expired tokens, byte-for-byte claim-shape pinning,
 acceptance of Go-minted tokens, and concurrent logins through a shared
 `Arc<dyn Adapter>`.
+
+## pyfly parity
+
+This adapter implements the full extended `firefly_idp::Adapter` surface
+(ported from pyfly's `InternalDbIdpAdapter`):
+
+* **Opaque-token registry** — every `login` / `refresh` / `mfa_verify`
+  records the minted access and refresh tokens in an in-process registry
+  (`token → user_id`) *in addition to* returning the stateless JWT. This is
+  what makes server-side `logout` (revoke) and `introspect` (RFC 7662)
+  possible without changing the Go-parity JWT wire shape. `introspect`
+  reports an inactive session for a revoked token or a since-deleted user.
+* **Role catalogue** — `assign_role` / `revoke_role` mutate the user's roles
+  and register the role name in a catalogue; `create_roles`,
+  `set_role_description`, `list_roles`, and `get_roles` (catalogue-enriched)
+  round-trip role metadata. `register_user` forces `enabled=true` and strips
+  the privileged `admin` role.
+* **TOTP MFA (RFC 6238)** — hand-rolled over the workspace `hmac` + `sha2` +
+  `base64` crates (no external TOTP dependency). `enable_mfa` enrolls a
+  base32 secret; an MFA-enrolled `login` returns
+  `Err(Error::MfaRequired(challenge))` (the analogue of pyfly's
+  `mfa_required=True`); `mfa_verify` consumes the single-use challenge,
+  checks the code, and mints tokens. `current_totp` is a test/automation
+  helper that generates the live code.
+
+> **TOTP hash divergence:** pyfly uses `pyotp`, which defaults to
+> HMAC-**SHA1**. The Rust workspace ships only `sha2`, so this port uses
+> HMAC-**SHA256** per the parity brief. The implementation is self-consistent
+> (it both mints and verifies codes) so the behavioral MFA flow matches pyfly
+> exactly; codes are *not* interchangeable with a SHA1 authenticator app. The
+> `totp` module is cross-checked against the **RFC 6238 Appendix B** SHA-256
+> known-answer vectors.
+
+The pyfly test cases (`test_idp.py`, `test_idp_mfa_and_extensions.py`) are
+ported as unit tests: create/login/introspect/logout, login failure,
+change/reset password, role assign/revoke, the full MFA enable → challenge →
+verify flow (incl. wrong-code and consumed-challenge rejection),
+`get_user_info`, `register_user` defaults, and catalogue-enriched
+`get_roles`.

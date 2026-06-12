@@ -12,3 +12,5 @@ description = "Firefly Framework for Rust — CircuitBreaker, RateLimiter, Bulkh
 tokio = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+firefly-config = { workspace = true }
+humantime = { workspace = true }

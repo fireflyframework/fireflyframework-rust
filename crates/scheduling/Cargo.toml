@@ -11,6 +11,16 @@ description = "Firefly Framework for Rust — Cron + FixedRate + FixedDelay sche
 [dependencies]
 tokio = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+redis = { workspace = true }
+tokio-postgres = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

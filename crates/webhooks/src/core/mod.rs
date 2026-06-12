@@ -1,13 +1,16 @@
 //! The ingestion engine — the Rust spelling of the Go `webhooks/core`
-//! package: the [`Pipeline`] (validate → enrich → dispatch → DLQ), the
-//! in-memory [`MemoryDlq`], and the four canonical signature
-//! validators.
+//! package: the [`Pipeline`] (validate → dedupe → enrich → dispatch →
+//! DLQ), the in-memory [`MemoryDlq`], the idempotency
+//! [`EventStore`]/[`MemoryEventStore`] (pyfly parity), and the four
+//! canonical signature validators.
 
+mod event_store;
 mod mime;
 mod sha1;
 mod util;
 mod validators;
 
+pub use event_store::{EventStore, MemoryEventStore};
 pub use validators::{GitHubValidator, HmacValidator, StripeValidator, TwilioValidator};
 
 use std::collections::HashMap;
@@ -18,6 +21,13 @@ use chrono::{DateTime, Utc};
 
 use crate::error::WebhookError;
 use crate::interfaces::{Inbound, Processor, Validator};
+
+/// The default request header carrying a webhook's idempotency key —
+/// the pyfly `WebhookProcessor` default (`idempotency_header`). When a
+/// [`Pipeline`] has an [`EventStore`] registered, [`Pipeline::process`]
+/// reads this header (with Go's canonical MIME casing, as stored on
+/// [`Inbound::headers`](crate::Inbound::headers)) to dedupe deliveries.
+pub const DEFAULT_IDEMPOTENCY_HEADER: &str = "X-Idempotency-Key";
 
 /// The dead-letter queue contract. The default in-memory implementation
 /// ([`MemoryDlq`]) buffers events for inspection; production
@@ -103,14 +113,19 @@ struct Registry {
     validators: HashMap<String, Arc<dyn Validator>>,
     processors: HashMap<String, Vec<Arc<dyn Processor>>>,
     enrich: Option<EnrichFn>,
+    event_store: Option<Arc<dyn EventStore>>,
+    idempotency_header: Option<String>,
 }
 
-/// The validate → enrich → dispatch → DLQ chain that runs on every
-/// inbound webhook.
+/// The validate → dedupe → enrich → dispatch → DLQ chain that runs on
+/// every inbound webhook.
 ///
 /// Registration is thread-safe (`&self`, like Go's `sync.RWMutex`
-/// guarded maps), so validators and processors may be installed while
-/// the ingestion endpoint is live.
+/// guarded maps), so validators, processors, and the idempotency
+/// [`EventStore`] may be installed while the ingestion endpoint is live.
+/// The optional [`EventStore`] (pyfly parity) deduplicates redeliveries
+/// before dispatch — see
+/// [`register_event_store`](Pipeline::register_event_store).
 ///
 /// # Example
 ///
@@ -172,22 +187,72 @@ impl Pipeline {
         self.write().enrich = Some(Arc::new(hook));
     }
 
+    /// Installs the idempotency [`EventStore`] consulted before dispatch
+    /// — the Rust spelling of passing pyfly's `event_store` to
+    /// `WebhookProcessor`.
+    ///
+    /// Once registered, [`process`](Pipeline::process) reads the
+    /// idempotency key from the event's
+    /// [`DEFAULT_IDEMPOTENCY_HEADER`] header (override with
+    /// [`with_idempotency_header`](Pipeline::with_idempotency_header)); a
+    /// key already recorded skips dispatch (the redelivery is treated as
+    /// a success), and a fresh key is recorded before the processors run.
+    /// Events without the header are never deduped, exactly as in pyfly.
+    pub fn register_event_store(&self, store: impl EventStore + 'static) {
+        self.write().event_store = Some(Arc::new(store));
+    }
+
+    /// Installs the idempotency [`EventStore`] from an existing `Arc`,
+    /// so a store shared with other components (e.g. metrics) can be
+    /// reused without re-wrapping.
+    pub fn register_event_store_arc(&self, store: Arc<dyn EventStore>) {
+        self.write().event_store = Some(store);
+    }
+
+    /// Overrides the request header [`process`](Pipeline::process) reads
+    /// the idempotency key from (default
+    /// [`DEFAULT_IDEMPOTENCY_HEADER`]) — the analog of pyfly's
+    /// `idempotency_header` keyword argument.
+    ///
+    /// The name is matched against [`Inbound::headers`](crate::Inbound),
+    /// which the web layer stores with Go's canonical MIME casing, so
+    /// pass the canonical form (e.g. `"X-Idempotency-Key"`).
+    pub fn with_idempotency_header(&self, header: impl Into<String>) {
+        self.write().idempotency_header = Some(header.into());
+    }
+
     /// Returns a copy of the registered validator map — used by the web
     /// layer to look up the right validator per request.
     pub fn validators(&self) -> HashMap<String, Arc<dyn Validator>> {
         self.read().validators.clone()
     }
 
-    /// Runs the pipeline against `ev`: enrich, then dispatch to every
+    /// Runs the pipeline against `ev`: dedupe (when an
+    /// [`EventStore`] is registered), enrich, then dispatch to every
     /// processor registered for `ev.provider`. The first processor
     /// error aborts downstream processors, pushes the (enriched) event
     /// to the DLQ, and is returned.
     ///
+    /// ## Idempotency
+    ///
+    /// When an [`EventStore`] is registered (see
+    /// [`register_event_store`](Pipeline::register_event_store)) and the
+    /// event carries the idempotency header, the pipeline checks the
+    /// store **before** dispatch: a duplicate (a key already recorded)
+    /// returns `Ok(())` without invoking any processor — the redelivery
+    /// is treated as already accepted, exactly as pyfly's
+    /// `WebhookProcessor.process` returns the event and the web layer
+    /// answers `202 Accepted`. A fresh key is recorded before the
+    /// processors run. Events without the header are dispatched
+    /// unconditionally.
+    ///
     /// # Errors
     ///
-    /// The first processor error, verbatim.
+    /// The first processor error, verbatim. A failed
+    /// [`EventStore::already_processed`] lookup is surfaced verbatim
+    /// (and is fail-closed: dispatch does not happen).
     pub async fn process(&self, mut ev: Inbound) -> Result<(), WebhookError> {
-        let (enrich, procs) = {
+        let (enrich, procs, event_store, idempotency_header) = {
             let reg = self.read();
             (
                 reg.enrich.clone(),
@@ -195,8 +260,25 @@ impl Pipeline {
                     .get(&ev.provider)
                     .cloned()
                     .unwrap_or_default(),
+                reg.event_store.clone(),
+                reg.idempotency_header
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_IDEMPOTENCY_HEADER.to_owned()),
             )
         };
+        // Dedup before dispatch, mirroring pyfly's WebhookProcessor: a key
+        // already seen short-circuits (the redelivery is a no-op success),
+        // a fresh key is recorded so the next delivery is recognised.
+        if let Some(store) = &event_store {
+            if let Some(key) = ev.headers.get(&idempotency_header) {
+                if !key.is_empty() {
+                    if store.already_processed(key).await? {
+                        return Ok(());
+                    }
+                    store.remember(key).await?;
+                }
+            }
+        }
         if let Some(enrich) = enrich {
             enrich(&mut ev);
         }

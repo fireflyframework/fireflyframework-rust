@@ -18,7 +18,9 @@ use sha2::Sha256;
 use async_trait::async_trait;
 use firefly_kernel::{Clock, SystemClock, HEADER_CORRELATION_ID};
 
-use crate::interfaces::{Attempt, CallbackError, CallbackEvent, Dispatcher, Store, Target};
+use crate::interfaces::{
+    Attempt, AuthorizedDomain, CallbackError, CallbackEvent, Dispatcher, Store, Target,
+};
 
 /// Header carrying the event type (`CallbackEvent::event_type`).
 pub const HEADER_EVENT: &str = "X-Firefly-Event";
@@ -53,6 +55,16 @@ pub struct DispatcherConfig {
     /// Time source for `X-Firefly-Timestamp` and attempt audit rows;
     /// defaults to [`SystemClock`] (Go's `time.Now`).
     pub clock: Option<Arc<dyn Clock>>,
+    /// Outbound-URL allowlist (SSRF protection) — the Rust spelling of
+    /// pyfly's `CallbackConfig.authorized_domains`.
+    ///
+    /// When **non-empty**, [`HmacDispatcher::dispatch`] delivers to a
+    /// target only if its URL host equals (or is a subdomain of) one of
+    /// these domains; a target failing the check is recorded as a
+    /// rejected attempt and skipped — no HTTP request is made (pyfly
+    /// audit #190). An **empty** list disables the allowlist: every
+    /// target is reachable, preserving the prior (Go-parity) behaviour.
+    pub authorized_domains: Vec<AuthorizedDomain>,
 }
 
 impl std::fmt::Debug for DispatcherConfig {
@@ -62,6 +74,7 @@ impl std::fmt::Debug for DispatcherConfig {
             .field("max_attempts", &self.max_attempts)
             .field("initial_delay", &self.initial_delay)
             .field("clock", &self.clock.as_ref().map(|_| "Arc<dyn Clock>"))
+            .field("authorized_domains", &self.authorized_domains)
             .finish()
     }
 }
@@ -75,6 +88,7 @@ pub struct HmacDispatcher {
     max_attempts: u32,
     initial_delay: Duration,
     clock: Arc<dyn Clock>,
+    authorized_domains: Vec<AuthorizedDomain>,
 }
 
 impl HmacDispatcher {
@@ -103,6 +117,7 @@ impl HmacDispatcher {
                 cfg.initial_delay
             },
             clock: cfg.clock.unwrap_or_else(|| Arc::new(SystemClock)),
+            authorized_domains: cfg.authorized_domains,
         }
     }
 
@@ -140,6 +155,30 @@ impl HmacDispatcher {
             delay *= 2;
         }
         Ok(())
+    }
+
+    /// Records a rejected-delivery audit row for a target blocked by the
+    /// [`authorized_domains`](DispatcherConfig::authorized_domains)
+    /// allowlist. No HTTP request is made: the row carries status `0`,
+    /// the explanatory error, and `attempt: 0` (no delivery was
+    /// attempted) — the audit-trail analog of pyfly's failed execution
+    /// with `last_error = "Domain not authorized"`.
+    async fn record_rejection(&self, target: &Target, ev: &CallbackEvent) {
+        let now = self.clock.now();
+        let _ = self
+            .store
+            .record_attempt(Attempt {
+                id: new_id(),
+                event_id: ev.id.clone(),
+                target_id: target.id.clone(),
+                status: 0,
+                body: String::new(),
+                error: ERR_DOMAIN_NOT_AUTHORIZED.to_owned(),
+                attempt: 0,
+                started_at: now,
+                finished_at: now,
+            })
+            .await;
     }
 
     /// Sends one signed POST to the target. Returns
@@ -197,10 +236,24 @@ impl Dispatcher for HmacDispatcher {
     /// `event_types` match (empty = match-all). Each delivery records
     /// an [`Attempt`] audit entry; per-target failures are best-effort
     /// (recorded, then the next target is tried), exactly as in Go.
+    ///
+    /// When the dispatcher has a non-empty
+    /// [`authorized_domains`](DispatcherConfig::authorized_domains)
+    /// allowlist (SSRF protection), a matching target whose URL host is
+    /// not authorized is **rejected before any HTTP request** — a
+    /// rejected-attempt audit row is recorded and the target is skipped
+    /// (pyfly audit #190).
     async fn dispatch(&self, event: CallbackEvent) -> Result<(), CallbackError> {
         let targets = self.store.list_targets().await?;
         for target in targets {
             if !target.active || !matches_type(&target, &event.event_type) {
+                continue;
+            }
+            if !self.authorized_domains.is_empty()
+                && !is_authorized(&target.url, &self.authorized_domains)
+            {
+                tracing::debug!(target = %target.id, event = %event.id, url = %target.url, "callback target rejected: domain not authorized");
+                self.record_rejection(&target, &event).await;
                 continue;
             }
             if let Err(err) = self.deliver(&target, &event).await {
@@ -211,10 +264,64 @@ impl Dispatcher for HmacDispatcher {
     }
 }
 
+/// The audit-row / log message recorded when an outbound target is
+/// blocked by the [`authorized_domains`](DispatcherConfig::authorized_domains)
+/// allowlist — pyfly's `"Domain not authorized"`, lowercased to match
+/// the framework's snake-case error-message convention.
+const ERR_DOMAIN_NOT_AUTHORIZED: &str = "domain not authorized";
+
 /// Reports whether the target subscribes to `event_type` (an empty
 /// subscription list matches every type).
 fn matches_type(target: &Target, event_type: &str) -> bool {
     target.event_types.is_empty() || target.event_types.iter().any(|et| et == event_type)
+}
+
+/// Reports whether `target_url`'s host is allowed by `domains` — the
+/// Rust spelling of pyfly's `_is_authorized`.
+///
+/// The host is extracted from the URL (see [`host_of`]) and lowercased;
+/// a URL with no parseable host is **never** authorized (fail-closed). A
+/// host is authorized when it equals an entry's domain or is a subdomain
+/// of it (`host == domain` or `host` ends with `".{domain}"`), matched
+/// case-insensitively after trimming each entry.
+fn is_authorized(target_url: &str, domains: &[AuthorizedDomain]) -> bool {
+    let Some(host) = host_of(target_url) else {
+        return false;
+    };
+    if host.is_empty() {
+        return false;
+    }
+    domains.iter().any(|entry| {
+        let allowed = entry.domain.trim().to_ascii_lowercase();
+        !allowed.is_empty() && (host == allowed || host.ends_with(&format!(".{allowed}")))
+    })
+}
+
+/// Extracts the lowercase host from an absolute URL — the dependency-free
+/// analog of pyfly's `urlparse(target_url).hostname`.
+///
+/// Strips the `scheme://`, any `userinfo@` prefix, then the `:port`,
+/// path, query, and fragment, returning what remains (which may be an
+/// IPv4 literal or a bracketed IPv6 literal). Returns `None` when the
+/// input has no `://` authority component.
+fn host_of(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://")?.1;
+    // Authority ends at the first '/', '?', or '#'.
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    // Drop any userinfo ("user:pass@host").
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    // Bracketed IPv6 literal: "[::1]:8080" → "[::1]".
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        let end = rest.find(']')?;
+        &host_port[..end + 2]
+    } else {
+        // Strip the ":port" suffix from a host:port pair.
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+    Some(host.to_ascii_lowercase())
 }
 
 /// Computes the `X-Firefly-Signature` value:
@@ -269,6 +376,58 @@ mod tests {
         };
         assert!(matches_type(&t, "order.placed"));
         assert!(!matches_type(&t, "order.cancelled"));
+    }
+
+    #[test]
+    fn host_of_extracts_lowercase_host_from_urls() {
+        assert_eq!(
+            host_of("https://Example.com/cb").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            host_of("http://customer.example.com:8443/hook?x=1#frag").as_deref(),
+            Some("customer.example.com")
+        );
+        assert_eq!(
+            host_of("https://user:pass@host.example.org/p").as_deref(),
+            Some("host.example.org")
+        );
+        assert_eq!(
+            host_of("https://10.0.0.1:9000/x").as_deref(),
+            Some("10.0.0.1")
+        );
+        // Bracketed IPv6 literal keeps its brackets, drops the port.
+        assert_eq!(host_of("http://[::1]:8080/x").as_deref(), Some("[::1]"));
+        // No authority component → no host.
+        assert_eq!(host_of("not-a-url"), None);
+        assert_eq!(host_of("mailto:user@example.com"), None);
+    }
+
+    #[test]
+    fn is_authorized_matches_exact_and_subdomains_case_insensitively() {
+        let allow = vec![AuthorizedDomain::new("trusted.example.com")];
+        // Exact host match (case-insensitive).
+        assert!(is_authorized("https://trusted.example.com/x", &allow));
+        assert!(is_authorized("https://TRUSTED.example.com/x", &allow));
+        // Subdomain match.
+        assert!(is_authorized("https://api.trusted.example.com/x", &allow));
+        // A different host is rejected.
+        assert!(!is_authorized("https://evil.example.org/x", &allow));
+        // A "suffix but not subdomain" host must NOT match (no leading dot).
+        assert!(!is_authorized("https://nottrusted.example.com/x", &allow));
+        // Unparseable URL → fail-closed.
+        assert!(!is_authorized("garbage", &allow));
+    }
+
+    #[test]
+    fn is_authorized_trims_entries_and_ignores_blanks() {
+        let allow = vec![
+            AuthorizedDomain::new("  trusted.example.com  "),
+            AuthorizedDomain::new("   "),
+        ];
+        assert!(is_authorized("https://trusted.example.com/x", &allow));
+        // A blank entry never authorizes anything.
+        assert!(!is_authorized("https://", &allow));
     }
 
     #[test]

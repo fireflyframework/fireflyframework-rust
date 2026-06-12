@@ -1,0 +1,26 @@
+//! Infrastructure layer for {{ name }}: outbound adapters implementing ports.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use crate::domain::models::Item;
+use crate::domain::ports::ItemRepositoryPort;
+
+/// An in-memory adapter for [`ItemRepositoryPort`] (swap for a real datastore).
+#[derive(Default)]
+pub struct InMemoryItemRepository {
+    items: Mutex<HashMap<String, Item>>,
+}
+
+impl ItemRepositoryPort for InMemoryItemRepository {
+    fn load(&self, id: &str) -> Option<Item> {
+        self.items.lock().unwrap().get(id).cloned()
+    }
+
+    fn store(&self, item: &Item) {
+        self.items
+            .lock()
+            .unwrap()
+            .insert(item.id.clone(), item.clone());
+    }
+}

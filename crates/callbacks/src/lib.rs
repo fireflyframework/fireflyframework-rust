@@ -94,7 +94,9 @@ pub use crate::core::{
     DispatcherConfig, HmacDispatcher, HEADER_EVENT, HEADER_EVENT_ID, HEADER_SIGNATURE,
     HEADER_TIMESTAMP,
 };
-pub use crate::interfaces::{Attempt, CallbackError, CallbackEvent, Dispatcher, Store, Target};
+pub use crate::interfaces::{
+    Attempt, AuthorizedDomain, CallbackError, CallbackEvent, Dispatcher, Store, Target,
+};
 pub use crate::models::MemoryStore;
 pub use crate::sdk::CallbacksClient;
 pub use crate::web::handler;

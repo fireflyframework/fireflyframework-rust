@@ -1,26 +1,47 @@
-//! firefly-ecm-esignature-adobe-sign — the placeholder Adobe Sign
-//! [`ESignatureProvider`] adapter (OAuth2 refresh-token + REST v6).
+//! firefly-ecm-esignature-adobe-sign — the Adobe Sign / Adobe Acrobat Sign
+//! [`ESignatureProvider`] adapter (Bearer-token + REST v6).
 //!
-//! Faithful port of the Go module `fireflyframework-go/ecmesignatureadobesign`:
-//! a contract-only stub. The crate and types are declared, the port assertion
-//! compiles, and sentinel-error smoke tests guard the wire shape — but the
-//! SaaS / cloud SDK integration is **not yet wired**. Every port method
-//! returns the [`ERR_NOT_IMPLEMENTED`] sentinel, rendered byte-for-byte equal
-//! to the Go port's `ErrNotImplemented`:
+//! [`RestProvider`] is a real REST integration over `reqwest`, porting pyfly's
+//! `AdobeSignESignatureAdapter`: it builds the agreement-create payload,
+//! parses the returned agreement `id`, maps Adobe's agreement `status` strings
+//! onto [`SignatureStatus`], and cancels agreements via the `/state` endpoint.
 //!
-//! ```text
-//! firefly/ecmesignatureadobesign: not yet implemented
+//! # Legacy stub
+//!
+//! For backward compatibility with the Go-parity release, the original
+//! contract-only [`Provider`] stub is retained: every port method returns the
+//! [`ERR_NOT_IMPLEMENTED`] sentinel, byte-for-byte equal to the Go port's
+//! `ErrNotImplemented` (`firefly/ecmesignatureadobesign: not yet implemented`).
+//! New code should prefer [`RestProvider`].
+//!
+//! # Quick start (REST)
+//!
+//! ```no_run
+//! use firefly_ecm::{ESignatureProvider, SignatureRequest};
+//! use firefly_ecm_esignature_adobe_sign::RestProvider;
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<(), firefly_ecm::EcmError> {
+//! let provider = RestProvider::new(
+//!     "https://api.eu1.adobesign.com/api/rest/v6",
+//!     "integration-key-or-token",
+//! );
+//! assert_eq!(provider.name(), "adobe-sign");
+//!
+//! let id = provider
+//!     .create(SignatureRequest {
+//!         document_id: "transient-doc-1".into(),
+//!         signers: vec!["alice@example.com".into()],
+//!         title: "Loan agreement".into(),
+//!         provider: "adobesign".into(),
+//!     })
+//!     .await?;
+//! let _status = provider.status(&id).await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! # Why ship a stub?
-//!
-//! * The framework's tier diagram stays correct (no missing module).
-//! * The port boundary stays locked — when the real implementation lands,
-//!   no consuming code needs to change.
-//! * The wire contract is exercised end-to-end before the integration
-//!   ships, via the smoke tests that assert the sentinel return.
-//!
-//! # Quick start
+//! # Quick start (legacy stub)
 //!
 //! ```
 //! use firefly_ecm::{ESignatureProvider, SignatureRequest};
@@ -42,6 +63,7 @@
 
 use async_trait::async_trait;
 use firefly_ecm::{ESignatureProvider, EcmError, SignatureRequest, SignatureStatus};
+use serde_json::json;
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.1";
@@ -125,6 +147,168 @@ impl ESignatureProvider for Provider {
     /// Human-readable provider identifier, matching the Go stub.
     fn name(&self) -> &str {
         "ecmesignatureadobesign-stub"
+    }
+}
+
+/// Maps an Adobe Sign agreement `status` string onto the framework's
+/// [`SignatureStatus`], porting pyfly's `_map_status` table.
+/// `OUT_FOR_SIGNATURE`/`WAITING_FOR_MY_SIGNATURE` are still in flight
+/// ([`SignatureStatus::Pending`]), `SIGNED`/`COMPLETED` are
+/// [`SignatureStatus::Signed`], `CANCELLED`/`DECLINED`/`DRAFT` are
+/// [`SignatureStatus::Declined`] (`DRAFT` has no Pending analog in the
+/// 4-state framework enum, so it groups with the not-yet-actionable
+/// "Declined" terminal-ish bucket only when surfaced; in practice Adobe
+/// returns `OUT_FOR_SIGNATURE` once sent), and `EXPIRED` is
+/// [`SignatureStatus::Expired`]. Unknown values fall back to
+/// [`SignatureStatus::Pending`] (pyfly's `SENT`).
+pub fn map_status(value: &str) -> SignatureStatus {
+    match value.to_ascii_uppercase().as_str() {
+        "OUT_FOR_SIGNATURE" | "WAITING_FOR_MY_SIGNATURE" | "DRAFT" => SignatureStatus::Pending,
+        "SIGNED" | "COMPLETED" => SignatureStatus::Signed,
+        "CANCELLED" | "DECLINED" => SignatureStatus::Declined,
+        "EXPIRED" => SignatureStatus::Expired,
+        _ => SignatureStatus::Pending,
+    }
+}
+
+/// RestProvider is the real Adobe Sign [`ESignatureProvider`] adapter over
+/// `reqwest` (Bearer-token + REST v6) — the Rust port of pyfly's
+/// `AdobeSignESignatureAdapter`.
+#[derive(Debug, Clone)]
+pub struct RestProvider {
+    api_base: String,
+    access_token: String,
+    http: reqwest::Client,
+}
+
+impl RestProvider {
+    /// Returns an Adobe Sign REST adapter.
+    ///
+    /// * `api_base` — e.g. `https://api.eu1.adobesign.com/api/rest/v6`
+    ///   (a trailing slash is stripped).
+    /// * `access_token` — an integration key or OAuth access token.
+    pub fn new(api_base: impl Into<String>, access_token: impl Into<String>) -> Self {
+        Self {
+            api_base: api_base.into().trim_end_matches('/').to_string(),
+            access_token: access_token.into(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// Reuses a caller-provided `reqwest::Client` instead of the default.
+    pub fn with_client(mut self, http: reqwest::Client) -> Self {
+        self.http = http;
+        self
+    }
+
+    fn agreements_url(&self) -> String {
+        format!("{}/agreements", self.api_base)
+    }
+
+    fn agreement_url(&self, agreement_id: &str) -> String {
+        format!("{}/agreements/{}", self.api_base, agreement_id)
+    }
+}
+
+#[async_trait]
+impl ESignatureProvider for RestProvider {
+    async fn create(&self, req: SignatureRequest) -> Result<String, EcmError> {
+        let participants: Vec<_> = req
+            .signers
+            .iter()
+            .enumerate()
+            .map(|(i, email)| {
+                json!({
+                    "memberInfos": [{ "email": email }],
+                    "order": i + 1,
+                    "role": "SIGNER",
+                })
+            })
+            .collect();
+        let payload = json!({
+            "fileInfos": [{ "transientDocumentId": req.document_id }],
+            "name": req.title,
+            "participantSetsInfo": participants,
+            "signatureType": "ESIGN",
+            "state": "IN_PROCESS",
+            "message": "",
+        });
+
+        let resp = self
+            .http
+            .post(self.agreements_url())
+            .bearer_auth(&self.access_token)
+            .header("Accept", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(provider_err)?;
+        let resp = error_for_status(resp)?;
+        let body: serde_json::Value = resp.json().await.map_err(provider_err)?;
+        body.get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| EcmError::provider("adobe-sign: response missing id"))
+    }
+
+    async fn status(&self, id: &str) -> Result<SignatureStatus, EcmError> {
+        let resp = self
+            .http
+            .get(self.agreement_url(id))
+            .bearer_auth(&self.access_token)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(provider_err)?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(EcmError::NotFound);
+        }
+        let resp = error_for_status(resp)?;
+        let body: serde_json::Value = resp.json().await.map_err(provider_err)?;
+        let status = body
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("IN_PROCESS");
+        Ok(map_status(status))
+    }
+
+    async fn cancel(&self, id: &str) -> Result<(), EcmError> {
+        let resp = self
+            .http
+            .put(format!("{}/state", self.agreement_url(id)))
+            .bearer_auth(&self.access_token)
+            .header("Accept", "application/json")
+            .json(&json!({
+                "state": "CANCELLED",
+                "agreementCancellationInfo": { "comment": "cancelled by app" },
+            }))
+            .send()
+            .await
+            .map_err(provider_err)?;
+        error_for_status(resp).map(|_| ())
+    }
+
+    fn name(&self) -> &str {
+        "adobe-sign"
+    }
+}
+
+/// Wraps a `reqwest` transport error as an [`EcmError::Provider`].
+fn provider_err(err: reqwest::Error) -> EcmError {
+    EcmError::provider(format!("adobe-sign: {err}"))
+}
+
+/// The analog of pyfly's `resp.raise_for_status()`: turns a >= 400 response
+/// into an [`EcmError::Provider`] carrying the status code.
+fn error_for_status(resp: reqwest::Response) -> Result<reqwest::Response, EcmError> {
+    let status = resp.status();
+    if status.is_client_error() || status.is_server_error() {
+        Err(EcmError::provider(format!(
+            "adobe-sign: HTTP {}",
+            status.as_u16()
+        )))
+    } else {
+        Ok(resp)
     }
 }
 

@@ -48,6 +48,8 @@ form body is a signature mismatch (Go's `ParseForm` error path).
 ```text
 Pipeline::process(ev)
    │
+   ├─ dedupe (optional EventStore; skip duplicate → Ok)
+   │
    ├─ enrich (optional hook)
    │
    ├─ for each registered Processor for ev.provider:
@@ -110,6 +112,52 @@ GitHubValidator::new(secret)
 TwilioValidator::new(auth_token, post_url)
 
 WebhookError::SignatureMismatch             // "firefly/webhooks: signature mismatch"
+```
+
+## pyfly parity — idempotency `EventStore`
+
+Mirrors pyfly's `WebhookEventStore` / `InMemoryWebhookEventStore`: a
+dedup store the pipeline consults **before** dispatch so a redelivered
+webhook (same idempotency key) is recognised and skipped instead of
+re-processed.
+
+```rust,ignore
+#[async_trait]
+pub trait EventStore: Send + Sync {
+    async fn already_processed(&self, idempotency_key: &str) -> Result<bool, WebhookError>;
+    async fn remember(&self, idempotency_key: &str) -> Result<(), WebhookError>;
+}
+pub struct MemoryEventStore { /* new(), len(), is_empty() */ }
+
+pub const DEFAULT_IDEMPOTENCY_HEADER: &str = "X-Idempotency-Key";
+
+impl Pipeline {
+    pub fn register_event_store(&self, s: impl EventStore + 'static);
+    pub fn register_event_store_arc(&self, s: Arc<dyn EventStore>);
+    pub fn with_idempotency_header(&self, header: impl Into<String>); // default X-Idempotency-Key
+}
+```
+
+When a store is registered and the event carries the idempotency header
+(read from `Inbound.headers`, Go canonical-MIME cased):
+
+- a key already recorded → `process` returns `Ok(())` **without
+  dispatching** (the ingestion endpoint answers `202 Accepted`), exactly
+  as pyfly's `WebhookProcessor.process` returns the event for a duplicate;
+- a fresh key is recorded with `remember` **before** the processors run;
+- an event with no idempotency header is dispatched unconditionally;
+- a failed `already_processed` lookup is fail-closed (surfaced, no
+  dispatch).
+
+Production deployments supply a distributed implementation (pyfly ships
+a Redis adapter); `MemoryEventStore` covers tests and single-instance
+services.
+
+```rust,ignore
+let pipeline = Arc::new(Pipeline::new(Arc::new(MemoryDlq::new())));
+pipeline.register_validator(StripeValidator::new(b"whsec_test"));
+pipeline.register_event_store(MemoryEventStore::new());
+// Duplicate X-Idempotency-Key deliveries are skipped (202), processed once.
 ```
 
 ### `web`

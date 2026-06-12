@@ -50,9 +50,19 @@ pub enum ClientError {
     #[error("client: exhausted {0} attempts")]
     Exhausted(usize),
 
+    /// A GraphQL response carried a non-empty `errors` array. The raw
+    /// error objects are preserved verbatim (each is the spec's
+    /// `{ message, locations?, path?, extensions? }` shape) so callers
+    /// can inspect `message`, `path`, and `extensions` — the Rust analog
+    /// of pyfly's `RuntimeError(f"GraphQL errors: {data['errors']}")`,
+    /// except the structured array is kept instead of stringified.
+    #[error("client: graphql errors: {0:?}")]
+    GraphQl(Vec<serde_json::Value>),
+
     /// The SOAP / gRPC / WebSocket placeholder sentinel — mirrors Go's
-    /// `ErrTransportNotRegistered`. Production adapters live in
-    /// dedicated transport modules.
+    /// `ErrTransportNotRegistered`. Returned by [`new_soap`](crate::new_soap)
+    /// / [`new_grpc`](crate::new_grpc) / [`new_websocket`](crate::new_websocket)
+    /// and by the feature-gated builders when their feature is disabled.
     #[error("firefly/client: transport adapter not registered")]
     TransportNotRegistered,
 }

@@ -63,15 +63,39 @@
 
 #![warn(missing_docs)]
 
+mod appender;
 mod banner;
 mod health;
 mod logging;
+mod metrics;
+mod process_metrics;
+mod redaction;
+mod trace_context;
 
+pub use appender::{parse_size, FileConfig, RollingFileWriter, TeeWriter};
 pub use banner::{banner_string, print_banner, render_banner, BannerData, RUSTC_VERSION};
 pub use health::{Composite, HealthResult, Indicator, IndicatorFn, Status};
 pub use logging::{
-    init_logging, subscriber, subscriber_with_writer, BufferWriter, CorrelationLayer, LogConfig,
-    LogFormat,
+    init_logging, init_logging_with_handle, subscriber, subscriber_with_handle,
+    subscriber_with_writer, subscriber_with_writer_and_handle, BufferWriter, CorrelationLayer,
+    LevelHandle, LogConfig, LogFormat, ROOT_TARGET,
+};
+pub use metrics::{
+    counted, counted_result, sanitize_metric_name, timed, timed_result, Counted, Counter, Gauge,
+    Histogram, LabeledCounter, LabeledGauge, LabeledHistogram, MetricsRegistry, Timed,
+    DEFAULT_BUCKETS,
+};
+pub use process_metrics::{
+    ProcessMetricsCollector, PROCESS_START_TIME_SECONDS, PROCESS_UPTIME_SECONDS, SYSTEM_CPU_COUNT,
+};
+pub use redaction::{
+    build_redactor, builtin_pattern, luhn_valid, MaskStyle, RedactionConfig, Redactor,
+    RegexRedactor, BUILTIN_ENTITIES, REDACTED,
+};
+pub use trace_context::{
+    current_traceparent, current_tracestate, inject_headers, inject_reqwest, with_trace_context,
+    TraceContextError, TraceContextLayer, TraceContextService, TraceParent, TraceState,
+    TRACEPARENT_HEADER, TRACESTATE_HEADER,
 };
 
 #[cfg(test)]
@@ -89,5 +113,19 @@ mod tests {
         assert_send_sync::<BufferWriter>();
         assert_send_sync::<LogConfig>();
         assert_send_sync::<BannerData>();
+        // pyfly-parity surface
+        assert_send_sync::<MetricsRegistry>();
+        assert_send_sync::<Counter>();
+        assert_send_sync::<Gauge>();
+        assert_send_sync::<Histogram>();
+        assert_send_sync::<ProcessMetricsCollector>();
+        assert_send_sync::<TraceParent>();
+        assert_send_sync::<TraceState>();
+        assert_send_sync::<TraceContextLayer>();
+        assert_send_sync::<RegexRedactor>();
+        assert_send_sync::<RedactionConfig>();
+        assert_send_sync::<LevelHandle>();
+        assert_send_sync::<FileConfig>();
+        assert_send_sync::<RollingFileWriter>();
     }
 }

@@ -14,6 +14,13 @@
 //! service running version `X` on any of the runtimes emits the same
 //! JSON.
 //!
+//! The pyfly-parity layer adds the [`ddd`] module (the zero-dependency
+//! DDD kit: [`ddd::Specification`], [`ddd::Entity`],
+//! [`ddd::PendingEvents`], [`ddd::TransientDomainEvent`]), the
+//! domain-error constructors [`FireflyError::business_rule`] /
+//! [`FireflyError::aggregate_not_found`], and the request-id /
+//! tenant-id task-local scopes alongside the correlation id.
+//!
 //! ## Why a separate crate?
 //!
 //! Java's `Throwable` hierarchy and .NET's `Exception` family are
@@ -45,13 +52,20 @@
 
 mod clock;
 mod correlation;
+pub mod ddd;
 mod errors;
 mod problem;
 
 pub use clock::{Clock, FixedClock, MutableClock, SystemClock};
 pub use correlation::{
-    correlation_id, new_correlation_id, with_correlation_id, with_correlation_id_sync,
-    HEADER_CORRELATION_ID, HEADER_IDEMPOTENCY_KEY,
+    correlation_id, new_correlation_id, new_request_id, request_id, tenant_id, with_correlation_id,
+    with_correlation_id_sync, with_request_id, with_request_id_sync, with_tenant_id,
+    with_tenant_id_sync, HEADER_CORRELATION_ID, HEADER_IDEMPOTENCY_KEY, HEADER_REQUEST_ID,
+    HEADER_TENANT_ID,
+};
+pub use ddd::{
+    AndSpec, BoxedDomainEvent, Entity, EventMeta, NotSpec, OrSpec, PendingEvents, Specification,
+    TransientDomainEvent,
 };
 pub use errors::{as_problem, is_firefly, status_of, FireflyError, FireflyResult};
 pub use problem::{

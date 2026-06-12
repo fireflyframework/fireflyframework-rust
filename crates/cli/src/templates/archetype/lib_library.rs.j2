@@ -1,0 +1,25 @@
+//! {{ name }} — a reusable Rust library.
+//!
+//! Built with the Firefly Framework conventions.
+
+#![forbid(unsafe_code)]
+
+/// Greet someone by name.
+///
+/// # Examples
+/// ```
+/// assert_eq!({{ package_name }}::greet("world"), "Hello, world!");
+/// ```
+pub fn greet(who: &str) -> String {
+    format!("Hello, {who}!")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greets() {
+        assert_eq!(greet("firefly"), "Hello, firefly!");
+    }
+}

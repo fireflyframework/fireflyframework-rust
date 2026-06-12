@@ -15,7 +15,13 @@
 //!   [`Action`], [`Op`].
 //! * [`interfaces`] — port: [`Evaluator`], [`Verdict`], [`Fact`].
 //! * [`core`] — [`AstEvaluator`], the default [`Evaluator`].
-//! * [`web`] — REST admin router ([`rule_engine_router`]).
+//! * [`actions`] — pyfly-parity action execution: [`ActionHandler`] SPI,
+//!   the `set`/`increment`/`log` builtins, and [`ActionRegistry`].
+//! * [`service`] — pyfly-parity named-ruleset management:
+//!   [`RuleSetRepository`], [`MemoryRuleSetRepository`], and
+//!   [`RuleEngineService`] (`register` / `evaluate_by_name`).
+//! * [`web`] — REST admin router ([`rule_engine_router`]) and the
+//!   named-ruleset service router ([`rule_engine_service_router`]).
 //! * [`sdk`] — typed admin client ([`RuleEngineClient`]).
 //!
 //! ## Rule shape
@@ -78,18 +84,29 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod actions;
 pub mod core;
 pub mod interfaces;
 pub mod models;
 pub mod sdk;
+pub mod service;
 pub mod web;
 
+pub use crate::actions::{
+    ActionError, ActionHandler, ActionOutcome, ActionRegistry, IncrementHandler, LogHandler,
+    SetHandler,
+};
 pub use crate::core::{AstEvaluator, EvalError};
 pub use crate::interfaces::{Evaluator, Fact, Verdict};
 pub use crate::models::{Action, Condition, DslError, Logic, Op, Rule, RuleSet};
 pub use crate::sdk::{HttpTransport, ReqwestTransport, RuleEngineClient, SdkError};
+pub use crate::service::{
+    EvaluationOutcome, MemoryRuleSetRepository, RuleEngineService, RuleSetRepository, ServiceError,
+};
 pub use crate::web::{
-    rule_engine_router, rule_engine_router_with, ErrorBody, EvaluateRequest, EvaluateYamlRequest,
+    rule_engine_router, rule_engine_router_with, rule_engine_service_router,
+    rule_engine_service_router_with, ErrorBody, EvaluateByNameRequest, EvaluateByNameResponse,
+    EvaluateRequest, EvaluateYamlRequest, RegisteredResponse, RuleSetNamesResponse,
 };
 
 /// Framework version stamp.

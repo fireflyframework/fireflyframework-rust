@@ -1,0 +1,14 @@
+//! The sample `Todo` model for {{ name }}.
+
+use serde::{Deserialize, Serialize};
+
+/// A to-do item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Todo {
+    /// Identifier.
+    pub id: i64,
+    /// Title.
+    pub title: String,
+    /// Completion flag.
+    pub done: bool,
+}

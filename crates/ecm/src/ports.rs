@@ -118,6 +118,53 @@ impl Default for Document {
     }
 }
 
+/// DocumentVersion is a single immutable revision of a [`Document`]'s binary
+/// content. Each upload appends a new version; the version number is a
+/// monotonic 1-based counter. Faithful port of pyfly's `ecm.DocumentVersion`
+/// dataclass (`version`, `content_hash`, `size_bytes`, `storage_uri`,
+/// `created_at`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DocumentVersion {
+    /// Monotonic 1-based revision number.
+    pub version: i64,
+    /// Lowercase hexadecimal SHA-256 digest of the stored content.
+    pub content_hash: String,
+    /// Content size in bytes.
+    pub size_bytes: i64,
+    /// Backing-store key (or URI) under which the content lives — the
+    /// version-aware key produced by [`version_key`] and used by
+    /// [`crate::Service::add_version`].
+    pub storage_uri: String,
+    /// Creation timestamp (UTC); filled on append when left at the zero time.
+    pub created_at: DateTime<Utc>,
+}
+
+impl Default for DocumentVersion {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            content_hash: String::new(),
+            size_bytes: 0,
+            storage_uri: String::new(),
+            created_at: zero_time(),
+        }
+    }
+}
+
+/// Builds the version-aware content key for a multi-version blob, used by
+/// [`crate::Service::add_version`] and friends.
+///
+/// The scheme is `<doc-id>__v<n>` — a flat key that mirrors pyfly's
+/// per-version `v<n>` convention while deliberately *not* nesting under the
+/// bare `<doc-id>` key. The Go-parity [`crate::Service::create`] stores its
+/// primary blob at the bare `<doc-id>` key (a file on [`crate::LocalStore`]),
+/// so a nested `<doc-id>/v<n>` key would clash file-vs-directory; the flat
+/// key lets the two coexist on every [`ContentStore`].
+pub fn version_key(document_id: &str, version: i64) -> String {
+    format!("{document_id}__v{version}")
+}
+
 /// Folder is a container of documents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -171,6 +218,43 @@ pub trait DocumentService: Send + Sync {
     async fn read(&self, id: &str) -> Result<ContentReader, EcmError>;
     /// Removes both the record and the stored content of document `id`.
     async fn delete(&self, id: &str) -> Result<(), EcmError>;
+}
+
+/// MetadataStore is the document-record index port — the Rust analog of
+/// pyfly's `MetadataStoragePort`. It persists [`Document`] records separately
+/// from their binary content (which lives behind a [`ContentStore`]), so the
+/// same [`crate::Service`] can pair an in-memory index with any blob backend.
+#[async_trait]
+pub trait MetadataStore: Send + Sync {
+    /// Persists `doc` (insert or replace by id), returning the stored record.
+    async fn save(&self, doc: Document) -> Result<Document, EcmError>;
+    /// Returns the document record for `id`, or [`EcmError::NotFound`].
+    async fn get(&self, id: &str) -> Result<Document, EcmError>;
+    /// Lists stored documents, optionally filtered to a `folder_id`
+    /// (`None` returns every folder), capped at `limit` records. Mirrors
+    /// pyfly's `MetadataStoragePort.list(folder_id, *, limit=100)`.
+    async fn list(&self, folder_id: Option<&str>, limit: usize) -> Result<Vec<Document>, EcmError>;
+    /// Removes the record `id`; returns `true` when a record was removed,
+    /// `false` when it was already absent (pyfly's bool-returning delete).
+    async fn delete(&self, id: &str) -> Result<bool, EcmError>;
+}
+
+/// FolderRepository is the folder-record port — the Rust analog of pyfly's
+/// `FolderRepositoryPort`. Folders are containers of documents; this port
+/// manages their lifecycle independently of document content.
+#[async_trait]
+pub trait FolderRepository: Send + Sync {
+    /// Persists `folder` (insert or replace by id), returning the stored record.
+    async fn save(&self, folder: Folder) -> Result<Folder, EcmError>;
+    /// Returns the folder record for `id`, or [`EcmError::NotFound`].
+    async fn get(&self, id: &str) -> Result<Folder, EcmError>;
+    /// Lists folders whose `parent_id` equals `parent_id` (`None` returns the
+    /// root folders, whose parent is empty). Mirrors pyfly's
+    /// `FolderRepositoryPort.list(parent_id)`.
+    async fn list(&self, parent_id: Option<&str>) -> Result<Vec<Folder>, EcmError>;
+    /// Removes the folder `id`; returns `true` when a record was removed,
+    /// `false` when it was already absent (pyfly's bool-returning delete).
+    async fn delete(&self, id: &str) -> Result<bool, EcmError>;
 }
 
 /// SignatureRequest is the universal e-signature creation envelope.
@@ -349,6 +433,47 @@ mod tests {
         assert_eq!(back, Folder::default());
     }
 
+    // ---------------------------------------------------------------------
+    // DocumentVersion (pyfly parity) wire shape and version-key scheme.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn document_version_json_wire_shape() {
+        let v = DocumentVersion {
+            version: 2,
+            content_hash: "abc123".into(),
+            size_bytes: 64,
+            storage_uri: "d1/v2".into(),
+            created_at: Utc.with_ymd_and_hms(2025, 1, 2, 3, 4, 5).unwrap(),
+        };
+        let got = serde_json::to_string(&v).unwrap();
+        let want = r#"{"version":2,"contentHash":"abc123","sizeBytes":64,"storageUri":"d1/v2","createdAt":"2025-01-02T03:04:05Z"}"#;
+        assert_eq!(got, want);
+        let back: DocumentVersion = serde_json::from_str(&got).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn document_version_default_and_missing_fields() {
+        let got = serde_json::to_string(&DocumentVersion::default()).unwrap();
+        assert_eq!(
+            got,
+            r#"{"version":0,"contentHash":"","sizeBytes":0,"storageUri":"","createdAt":"0001-01-01T00:00:00Z"}"#
+        );
+        let back: DocumentVersion = serde_json::from_str("{}").unwrap();
+        assert_eq!(back, DocumentVersion::default());
+    }
+
+    #[test]
+    fn version_key_is_flat_and_collision_free() {
+        // Flat `<id>__v<n>` so it never clashes with the bare `<id>` primary
+        // blob key on a directory-backed store.
+        assert_eq!(version_key("d1", 1), "d1__v1");
+        assert_eq!(version_key("doc-42", 7), "doc-42__v7");
+        // The version key shares no path prefix with the bare document key.
+        assert!(!version_key("d1", 1).starts_with("d1/"));
+    }
+
     #[test]
     fn signature_request_json_wire_shape_matches_go() {
         let req = SignatureRequest {
@@ -498,6 +623,7 @@ mod tests {
         fn assert_send<T: Send>() {}
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Document>();
+        assert_send_sync::<DocumentVersion>();
         assert_send_sync::<Folder>();
         assert_send_sync::<SignatureRequest>();
         assert_send_sync::<SignatureStatus>();
@@ -508,5 +634,7 @@ mod tests {
         assert_send_sync::<Box<dyn ContentStore>>();
         assert_send_sync::<Arc<dyn DocumentService>>();
         assert_send_sync::<Box<dyn ESignatureProvider>>();
+        assert_send_sync::<Arc<dyn MetadataStore>>();
+        assert_send_sync::<Arc<dyn FolderRepository>>();
     }
 }

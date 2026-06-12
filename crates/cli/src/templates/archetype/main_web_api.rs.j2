@@ -1,0 +1,16 @@
+//! {{ name }} — Firefly Framework `web-api` service entry point.
+
+mod controllers;
+mod models;
+mod repositories;
+mod services;
+
+use axum::Router;
+use firefly_web::FireflyServer;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let router = Router::new().merge(controllers::routes());
+    FireflyServer::new(router).bind("0.0.0.0:8080").serve().await?;
+    Ok(())
+}

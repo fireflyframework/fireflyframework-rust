@@ -1,0 +1,14 @@
+//! API layer (driving adapter) for {{ name }}.
+
+use axum::{routing::get, Json, Router};
+use serde_json::json;
+
+/// Assemble the inbound HTTP routes.
+pub fn routes() -> Router {
+    Router::new().route("/items/:id", get(get_item))
+}
+
+/// `GET /items/:id` — fetch an item through the inbound port.
+async fn get_item() -> Json<serde_json::Value> {
+    Json(json!({ "item": null }))
+}

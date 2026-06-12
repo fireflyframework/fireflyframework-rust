@@ -1,0 +1,20 @@
+//! The sample `TodoRepository` for {{ name }}.
+
+use crate::models::todo::Todo;
+
+/// Repository for `Todo` items.
+#[derive(Debug, Default, Clone)]
+pub struct TodoRepository;
+
+impl TodoRepository {
+    /// Construct a new repository.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Find a to-do by id.
+    pub async fn find_by_id(&self, id: i64) -> Option<Todo> {
+        let _ = id;
+        None
+    }
+}

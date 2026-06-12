@@ -1,13 +1,22 @@
-//! firefly-notifications-twilio — the [`notifications::Channel`] adapter for
-//! Twilio (SMS).
+//! firefly-notifications-twilio — the Twilio SMS adapter.
 //!
-//! Direct port of the Go module `fireflyframework-go/notificationstwilio`,
-//! itself a port of the Java `firefly-notifications-twilio` module and the
-//! .NET `FireflyFramework.Notifications.*` project. The SaaS HTTP integration
-//! is in scope for a later milestone — this crate ships the contract-only
-//! stub: the types are declared, the port is satisfied, and sentinel-error
-//! smoke tests guard the wire shape, but [`notifications::Channel::send`]
-//! always returns the [`ERR_NOT_IMPLEMENTED`] sentinel.
+//! This crate ships two layers:
+//!
+//! * The **Go-parity stub** — [`Channel`], the [`notifications::Channel`]
+//!   adapter that routes [`Kind::SMS`] and returns the
+//!   [`ERR_NOT_IMPLEMENTED`] sentinel from [`notifications::Channel::send`].
+//!   Kept for backward compatibility with the Go wire contract; consuming
+//!   code that wired the stub still compiles and behaves identically.
+//! * The **pyfly-parity real provider** — [`TwilioSmsProvider`], a working
+//!   HTTP integration that implements [`SmsProvider`]. It posts to Twilio's
+//!   `Messages.json` endpoint with HTTP basic auth and a form-encoded body,
+//!   parses the `sid` into a [`NotificationResult`], and folds non-2xx
+//!   responses into a [`DeliveryStatus::Failed`] result.
+//!
+//! Direct port of the Go module `fireflyframework-go/notificationstwilio`
+//! (the stub) and of `pyfly.notifications.providers.twilio` (the real
+//! provider), themselves ports of the Java `firefly-notifications-twilio`
+//! module and the .NET `FireflyFramework.Notifications.*` project.
 //!
 //! The sentinel message is bytes-equal to the Go port's `ErrNotImplemented`
 //! (`firefly/notificationstwilio: not yet implemented`), carried through
@@ -57,6 +66,13 @@
 use async_trait::async_trait;
 use firefly_notifications as notifications;
 use firefly_notifications::{DeliveryResult, Kind, Notification, NotificationError};
+
+mod provider;
+
+pub use provider::{
+    DeliveryStatus, NotificationResult, SmsMessage, SmsProvider, TwilioError, TwilioSmsProvider,
+    DEFAULT_BASE_URL,
+};
 
 /// The sentinel message returned by [`notifications::Channel::send`] until
 /// the SaaS HTTP integration is wired. Bytes-equal to the Go port's

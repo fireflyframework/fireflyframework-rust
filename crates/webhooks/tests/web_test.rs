@@ -15,7 +15,9 @@ use tower::ServiceExt as _;
 use common::CaptureProcessor;
 use firefly_kernel::FixedClock;
 use firefly_testkit::{sign_hmac, sign_stripe, sign_twilio};
-use firefly_webhooks::{web, HmacValidator, MemoryDlq, Pipeline, StripeValidator, TwilioValidator};
+use firefly_webhooks::{
+    web, HmacValidator, MemoryDlq, MemoryEventStore, Pipeline, StripeValidator, TwilioValidator,
+};
 
 fn generic_pipeline(secret: &[u8]) -> (Arc<Pipeline>, Arc<MemoryDlq>, Arc<CaptureProcessor>) {
     let dlq = Arc::new(MemoryDlq::new());
@@ -223,6 +225,43 @@ async fn ingest_endpoint_accepts_stripe_testkit_signature() {
     let (status, text) = status_and_body(app, req).await;
     assert_eq!(status, StatusCode::ACCEPTED, "body: {text}");
     assert_eq!(proc.hits(), 1);
+}
+
+// --- pyfly parity: idempotency dedup at the ingestion endpoint ---------------
+
+#[tokio::test]
+async fn ingest_endpoint_dedupes_duplicate_idempotency_keys_with_202() {
+    let secret = b"s3cret";
+    let dlq = Arc::new(MemoryDlq::new());
+    let pipeline = Arc::new(Pipeline::new(dlq));
+    pipeline.register_validator(HmacValidator::new("generic", secret));
+    let proc = CaptureProcessor::new("generic");
+    pipeline.register_processor(proc.clone());
+    pipeline.register_event_store(MemoryEventStore::new());
+    let app = web::router(pipeline);
+
+    let body: &[u8] = br#"{"x":1}"#;
+    let sig = sign_hmac(secret, body);
+    let send = |app: axum::Router| {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/webhooks/generic")
+            .header("X-Signature", &sig)
+            .header("X-Idempotency-Key", "delivery-1")
+            .body(Body::from(body))
+            .expect("request");
+        async move { status_and_body(app, req).await }
+    };
+
+    // First delivery: validated, dispatched, recorded — 202.
+    let (status, text) = send(app.clone()).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "body: {text}");
+    assert_eq!(proc.hits(), 1);
+
+    // Redelivery with the same key: skipped before dispatch, still 202.
+    let (status, _) = send(app).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(proc.hits(), 1, "duplicate must not re-dispatch");
 }
 
 #[tokio::test]

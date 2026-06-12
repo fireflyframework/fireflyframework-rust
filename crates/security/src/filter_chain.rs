@@ -1,6 +1,10 @@
-//! Path-prefix RBAC filter chain — the Rust analog of the Go port's
-//! `FilterChain`.
+//! Path-prefix and glob-pattern RBAC filter chain — the Rust analog of
+//! the Go port's `FilterChain`, upgraded with pyfly's `HttpSecurity`
+//! URL DSL capabilities: glob patterns (`/api/admin/**`), `deny`,
+//! `authenticated`, `require_authority`, and an optional
+//! [`RoleHierarchy`] consulted by role checks.
 
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
@@ -9,37 +13,79 @@ use std::task::{Context, Poll};
 
 use axum::extract::Request;
 use axum::response::Response;
+use globset::{GlobBuilder, GlobMatcher};
 use tower::{Layer, Service};
 
 use crate::authentication::{Authentication, ANONYMOUS_ID};
 use crate::problem;
+use crate::role_hierarchy::RoleHierarchy;
 
-/// `Rule` maps an HTTP path prefix to a set of required roles. The
-/// empty roles vec means "authentication required, any role".
+/// `Rule` maps an HTTP path matcher to an access decision. The path is
+/// matched either by `prefix` (Go parity) or — when `pattern` is set —
+/// by an fnmatch-style glob where `*` crosses `/` boundaries (pyfly
+/// parity). The empty roles + authorities vecs mean "authentication
+/// required, any role".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Rule {
     /// `None` matches any method (Go: `""`); comparison is
     /// case-insensitive, as with Go's `strings.EqualFold`.
     pub method: Option<String>,
-    /// Path prefix the rule applies to.
+    /// Path prefix the rule applies to (ignored when `pattern` is set).
     pub prefix: String,
+    /// Glob pattern the rule applies to (pyfly `HttpSecurity`
+    /// `request_matchers("/api/**")`); takes precedence over `prefix`.
+    pub pattern: Option<String>,
     /// Roles of which at least one is required; empty means any
-    /// authenticated principal.
+    /// authenticated principal (unless `authorities` is non-empty).
     pub roles: Vec<String>,
+    /// Authorities of which at least one is required (pyfly
+    /// `has_permission`); checked against
+    /// [`Authentication::authorities`] and hierarchy-expanded roles.
+    pub authorities: Vec<String>,
     /// When true, no auth required (skip guard).
     pub allow: bool,
+    /// When true, every matching request is rejected with 403 (pyfly
+    /// `deny_all`).
+    pub deny: bool,
 }
 
 impl Rule {
-    /// Reports whether this rule applies to `method` + `path`.
-    fn matches(&self, method: &str, path: &str) -> bool {
-        if let Some(m) = &self.method {
-            if !m.eq_ignore_ascii_case(method) {
-                return false;
-            }
+    /// Reports whether this rule's method constraint applies.
+    fn method_matches(&self, method: &str) -> bool {
+        match &self.method {
+            Some(m) => m.eq_ignore_ascii_case(method),
+            None => true,
         }
-        path.starts_with(&self.prefix)
     }
+}
+
+/// A [`Rule`] plus its compiled glob matcher (when pattern-based).
+#[derive(Clone)]
+struct CompiledRule {
+    rule: Rule,
+    glob: Option<GlobMatcher>,
+}
+
+impl CompiledRule {
+    fn matches(&self, method: &str, path: &str) -> bool {
+        if !self.rule.method_matches(method) {
+            return false;
+        }
+        match &self.glob {
+            Some(glob) => glob.is_match(path),
+            None => path.starts_with(&self.rule.prefix),
+        }
+    }
+}
+
+/// Compiles `pattern` as an fnmatch-style glob (a `*` crosses `/`
+/// segments — pyfly's `fnmatch` semantics).
+fn compile_glob(pattern: &str) -> GlobMatcher {
+    GlobBuilder::new(pattern)
+        .literal_separator(false)
+        .build()
+        .unwrap_or_else(|e| panic!("firefly/security: invalid glob pattern {pattern:?}: {e}"))
+        .compile_matcher()
 }
 
 /// `FilterChain` is an ordered list of [`Rule`]s evaluated in
@@ -47,17 +93,20 @@ impl Rule {
 /// express coarse RBAC like
 ///
 /// ```rust
-/// use firefly_security::FilterChain;
+/// use firefly_security::{FilterChain, RoleHierarchy};
 ///
 /// let chain = FilterChain::new()
 ///     .permit("/actuator/health")
-///     .permit("/actuator/info")
-///     .require("/admin/", &["ADMIN"])
-///     .require("/api/", &["USER"]);
+///     .require_pattern("/api/admin/**", &["ADMIN"])
+///     .authenticated("/api/**")
+///     .require_authority("/files/**", &["files:read"])
+///     .deny("/internal/**")
+///     .with_role_hierarchy(RoleHierarchy::from_string("ADMIN > USER"));
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct FilterChain {
     rules: Vec<Rule>,
+    hierarchy: Option<Arc<RoleHierarchy>>,
 }
 
 impl FilterChain {
@@ -87,6 +136,23 @@ impl FilterChain {
         self
     }
 
+    /// Appends a glob-pattern public rule (pyfly:
+    /// `request_matchers(pattern).permit_all()`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pattern` is not a valid glob.
+    pub fn permit_pattern(mut self, pattern: impl Into<String>) -> Self {
+        let pattern = pattern.into();
+        compile_glob(&pattern); // eager validation
+        self.rules.push(Rule {
+            pattern: Some(pattern),
+            allow: true,
+            ..Rule::default()
+        });
+        self
+    }
+
     /// Appends an auth-required rule with optional role gating; pass
     /// `&[]` for "any authenticated principal" (Go: `Require(prefix)`).
     pub fn require(mut self, prefix: impl Into<String>, roles: &[&str]) -> Self {
@@ -95,6 +161,86 @@ impl FilterChain {
             roles: roles.iter().map(|r| r.to_string()).collect(),
             ..Rule::default()
         });
+        self
+    }
+
+    /// Appends a glob-pattern role rule (pyfly:
+    /// `request_matchers(pattern).has_any_role(...)`); pass `&[]` for
+    /// "any authenticated principal".
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pattern` is not a valid glob.
+    pub fn require_pattern(mut self, pattern: impl Into<String>, roles: &[&str]) -> Self {
+        let pattern = pattern.into();
+        compile_glob(&pattern);
+        self.rules.push(Rule {
+            pattern: Some(pattern),
+            roles: roles.iter().map(|r| r.to_string()).collect(),
+            ..Rule::default()
+        });
+        self
+    }
+
+    /// Appends a glob-pattern authority rule (pyfly:
+    /// `request_matchers(pattern).has_permission(...)`). At least one
+    /// of `authorities` must be carried by the principal — either in
+    /// [`Authentication::authorities`] or as a (hierarchy-expanded)
+    /// role.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pattern` is not a valid glob.
+    pub fn require_authority(mut self, pattern: impl Into<String>, authorities: &[&str]) -> Self {
+        let pattern = pattern.into();
+        compile_glob(&pattern);
+        self.rules.push(Rule {
+            pattern: Some(pattern),
+            authorities: authorities.iter().map(|a| a.to_string()).collect(),
+            ..Rule::default()
+        });
+        self
+    }
+
+    /// Appends a glob-pattern "any authenticated principal" rule
+    /// (pyfly: `request_matchers(pattern).authenticated()`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pattern` is not a valid glob.
+    pub fn authenticated(mut self, pattern: impl Into<String>) -> Self {
+        let pattern = pattern.into();
+        compile_glob(&pattern);
+        self.rules.push(Rule {
+            pattern: Some(pattern),
+            ..Rule::default()
+        });
+        self
+    }
+
+    /// Appends a glob-pattern deny-all rule (pyfly:
+    /// `request_matchers(pattern).deny_all()`); every matching request
+    /// is rejected with 403, authenticated or not.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pattern` is not a valid glob.
+    pub fn deny(mut self, pattern: impl Into<String>) -> Self {
+        let pattern = pattern.into();
+        compile_glob(&pattern);
+        self.rules.push(Rule {
+            pattern: Some(pattern),
+            deny: true,
+            ..Rule::default()
+        });
+        self
+    }
+
+    /// Installs a [`RoleHierarchy`] consulted by role and authority
+    /// checks, so `require(..., &["USER"])` is satisfied for an
+    /// `ADMIN` under `ADMIN > USER`.
+    pub fn with_role_hierarchy(mut self, hierarchy: RoleHierarchy) -> Self {
+        self.hierarchy = Some(Arc::new(hierarchy));
         self
     }
 
@@ -107,8 +253,17 @@ impl FilterChain {
     /// Auth must already have been populated by
     /// [`BearerLayer`](crate::BearerLayer) for non-`allow` rules.
     pub fn layer(self) -> FilterChainLayer {
+        let compiled = self
+            .rules
+            .into_iter()
+            .map(|rule| {
+                let glob = rule.pattern.as_deref().map(compile_glob);
+                CompiledRule { rule, glob }
+            })
+            .collect();
         FilterChainLayer {
-            rules: Arc::new(self.rules),
+            rules: Arc::new(compiled),
+            hierarchy: self.hierarchy,
         }
     }
 }
@@ -116,7 +271,8 @@ impl FilterChain {
 /// The tower layer produced by [`FilterChain::layer`].
 #[derive(Clone)]
 pub struct FilterChainLayer {
-    rules: Arc<Vec<Rule>>,
+    rules: Arc<Vec<CompiledRule>>,
+    hierarchy: Option<Arc<RoleHierarchy>>,
 }
 
 impl<S> Layer<S> for FilterChainLayer {
@@ -126,6 +282,7 @@ impl<S> Layer<S> for FilterChainLayer {
         FilterChainService {
             inner,
             rules: Arc::clone(&self.rules),
+            hierarchy: self.hierarchy.clone(),
         }
     }
 }
@@ -137,25 +294,30 @@ impl<S> Layer<S> for FilterChainLayer {
 #[derive(Clone)]
 pub struct FilterChainService<S> {
     inner: S,
-    rules: Arc<Vec<Rule>>,
+    rules: Arc<Vec<CompiledRule>>,
+    hierarchy: Option<Arc<RoleHierarchy>>,
 }
 
 /// The decision a matched rule produced.
 enum Verdict {
     Pass,
     Unauthorized,
-    Forbidden,
+    Forbidden(&'static str),
 }
 
-fn decide(rules: &[Rule], req: &Request) -> Verdict {
+fn decide(rules: &[CompiledRule], hierarchy: Option<&RoleHierarchy>, req: &Request) -> Verdict {
     let method = req.method().as_str();
     let path = req.uri().path();
-    for rule in rules {
-        if !rule.matches(method, path) {
+    for compiled in rules {
+        if !compiled.matches(method, path) {
             continue;
         }
+        let rule = &compiled.rule;
         if rule.allow {
             return Verdict::Pass;
+        }
+        if rule.deny {
+            return Verdict::Forbidden("access denied");
         }
         let auth = req.extensions().get::<Authentication>();
         let Some(auth) = auth else {
@@ -164,11 +326,20 @@ fn decide(rules: &[Rule], req: &Request) -> Verdict {
         if auth.principal.is_empty() || auth.principal == ANONYMOUS_ID {
             return Verdict::Unauthorized;
         }
-        if !rule.roles.is_empty() {
-            let wanted: Vec<&str> = rule.roles.iter().map(String::as_str).collect();
-            if !auth.has_any_role(&wanted) {
-                return Verdict::Forbidden;
-            }
+        // Roles, expanded through the hierarchy when one is installed.
+        let effective_roles: BTreeSet<String> = match hierarchy {
+            Some(h) => h.expand(auth.roles.iter().cloned()),
+            None => auth.roles.iter().cloned().collect(),
+        };
+        if !rule.roles.is_empty() && !rule.roles.iter().any(|r| effective_roles.contains(r)) {
+            return Verdict::Forbidden("required role missing");
+        }
+        if !rule.authorities.is_empty()
+            && !rule.authorities.iter().any(|a| {
+                effective_roles.contains(a) || auth.authorities.iter().any(|have| have == a)
+            })
+        {
+            return Verdict::Forbidden("required authority missing");
         }
         return Verdict::Pass;
     }
@@ -190,14 +361,14 @@ where
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        let verdict = decide(&self.rules, &req);
+        let verdict = decide(&self.rules, self.hierarchy.as_deref(), &req);
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
         Box::pin(async move {
             match verdict {
                 Verdict::Pass => inner.call(req).await,
                 Verdict::Unauthorized => Ok(problem::unauthorized("authentication required")),
-                Verdict::Forbidden => Ok(problem::forbidden("required role missing")),
+                Verdict::Forbidden(detail) => Ok(problem::forbidden(detail)),
             }
         })
     }

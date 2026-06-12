@@ -12,15 +12,28 @@ use crate::error::ResilienceError;
 #[derive(Debug)]
 pub struct Bulkhead {
     sem: Semaphore,
+    max_concurrent: usize,
 }
 
 impl Bulkhead {
     /// Returns a bulkhead allowing up to `max_concurrent` in-flight calls.
     /// Values below 1 are clamped to 1, mirroring the Go port.
     pub fn new(max_concurrent: usize) -> Self {
+        let max_concurrent = max_concurrent.max(1);
         Self {
-            sem: Semaphore::new(max_concurrent.max(1)),
+            sem: Semaphore::new(max_concurrent),
+            max_concurrent,
         }
+    }
+
+    /// The (clamped) concurrency cap — pyfly's `max_concurrent` property.
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+    }
+
+    /// Currently available slots — pyfly's `available_slots` property.
+    pub fn available_slots(&self) -> usize {
+        self.sem.available_permits()
     }
 
     /// Acquires a slot, runs `op`, releases. Blocks (asynchronously) until a

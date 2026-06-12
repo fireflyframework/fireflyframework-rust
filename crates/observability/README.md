@@ -174,6 +174,158 @@ The `firefly-actuator` crate mounts a composite like this on
 | `go:embed banner.txt` + `text/template` | `include_str!` + `{placeholder}` substitution |
 | `runtime.Version()` minus `"go"` prefix | `RUSTC_VERSION` captured by `build.rs` from `rustc --version` |
 
+## pyfly parity
+
+The crate additionally ports the pyfly (`pyfly.observability` +
+`pyfly.logging`) surface. Everything below is purely additive — every
+Go-parity wire shape above is unchanged.
+
+### Labeled metrics + `timed()` / `counted()` (pyfly `observability/metrics.py`)
+
+```rust,ignore
+pub struct MetricsRegistry;                  // pyfly: MetricsRegistry
+impl MetricsRegistry {
+    pub fn new() -> Self;                    // process-global, idempotent (pyfly module caches)
+    pub fn isolated() -> Self;               // private registry (tests/exporters)
+    pub fn counter(&self, name, desc, labels: &[&str]) -> Arc<Counter>;
+    pub fn gauge(&self, name, desc, labels: &[&str]) -> Arc<Gauge>;
+    pub fn histogram(&self, name, desc, labels: &[&str], buckets: Option<&[f64]>) -> Arc<Histogram>;
+    pub fn prometheus_text(&self) -> String; // text exposition (counters as <name>_total)
+}
+// Counter/Gauge/Histogram: .labels(&["v", …]) -> Labeled* child series,
+// inc/inc_by, set/add/inc/dec, observe; value()/value_with(), count()/sum().
+
+pub async fn timed(®istry, name, fut) -> T;            // pyfly @timed
+pub async fn timed_result(®istry, name, fut) -> Result<T, E>;
+pub async fn counted(®istry, name, fut) -> T;          // pyfly @counted
+pub async fn counted_result(®istry, name, fut) -> Result<T, E>;
+pub struct Timed;   // builder: .description() .class() .method() .tag() .record()/.record_result()
+pub struct Counted; // builder: same, counting result=success|failure + exception
+```
+
+Micrometer naming is preserved: `orders.process` → histogram
+`orders_process_seconds` with `class`/`method`/`exception` labels;
+counted meters are exposed as `<name>_total` with
+`class`/`method`/`result`/`exception`. pyfly derives `class`/`method`
+from the decorated function's qualname; in Rust they are explicit
+builder fields (decorator → builder adaptation). The `exception` label
+on `Err` is the unqualified error type name (`type(exc).__name__`
+analog via `std::any::type_name`).
+
+### W3C trace context (pyfly `observability/propagation.py` + `correlation.py`)
+
+```rust,ignore
+pub struct TraceParent { version, trace_id, parent_id, flags } // parse() / Display / sampled()
+pub struct TraceState;                       // parse() / get() / entries() / Display
+pub const TRACEPARENT_HEADER: &str;          // "traceparent"
+pub const TRACESTATE_HEADER: &str;           // "tracestate"
+
+pub async fn with_trace_context(tp: Option<String>, ts: Option<String>, fut) -> T;
+pub fn current_traceparent() -> Option<String>;  // pyfly get_traceparent()
+pub fn current_tracestate() -> Option<String>;   // pyfly get_tracestate()
+
+pub struct TraceContextLayer;                // tower layer (pyfly TracingFilter):
+                                             //   parses inbound headers, stores TraceParent/
+                                             //   TraceState in request extensions + task-locals
+pub fn inject_headers(&mut http::HeaderMap); // pyfly inject_headers (outbound)
+pub fn inject_reqwest(reqwest::RequestBuilder) -> reqwest::RequestBuilder;
+```
+
+pyfly delegates to the OTel propagator; this port implements the W3C
+wire format natively (lowercase hex, version `ff` and all-zero ids
+rejected, future versions tolerated, `tracestate` capped at 32
+members). The kernel task-local carries the correlation id; the
+trace-context pair lives in this crate's own task-locals (pyfly
+contextvars → tokio `task_local!`).
+
+### Process metrics (pyfly `observability/process_metrics.py`)
+
+```rust,ignore
+pub struct ProcessMetricsCollector;          // sysinfo-backed
+impl ProcessMetricsCollector {
+    pub fn new() -> Self;
+    pub fn uptime_seconds(&self) -> f64;     // process_uptime_seconds
+    pub fn start_time_seconds(&self) -> f64; // process_start_time_seconds (real OS start time)
+    pub fn cpu_count(&self) -> usize;        // system_cpu_count
+    pub fn collect(&self, &MetricsRegistry); // refresh the three gauges
+}
+```
+
+Micrometer/Spring Boot meter names, so Spring dashboards/alerts work
+unchanged across ports.
+
+### Per-target log levels + runtime `set_level` (pyfly level map / `LoggingPort`)
+
+```rust,ignore
+pub struct LogConfig {
+    // … existing fields unchanged …
+    pub levels: BTreeMap<String, Level>,     // pyfly {root: INFO, "my.module": DEBUG}
+    pub file: Option<FileConfig>,            // pyfly.logging.file.*
+    pub redaction: Option<RedactionConfig>,  // pyfly.logging.redaction.*
+}
+impl LogConfig {
+    pub fn with_target_level(self, target, Level) -> Self; // "root" routes to .level
+    pub fn with_file(self, FileConfig) -> Self;
+    pub fn with_redaction(self, RedactionConfig) -> Self;
+}
+
+pub struct LevelHandle;                      // pyfly LoggingPort.set_level
+impl LevelHandle {
+    pub fn set_level(&self, target, Level);  // runtime change, "root" = root level
+    pub fn clear_level(&self, target);       // drop an override (loggers POST null)
+    pub fn level(&self, target) -> Level;    // effective (longest-prefix) level
+    pub fn levels(&self) -> BTreeMap<String, Level>; // GET /actuator/loggers view
+}
+impl CorrelationLayer { pub fn level_handle(&self) -> LevelHandle; }
+
+pub fn subscriber_with_handle(cfg) -> (impl Subscriber…, LevelHandle);
+pub fn subscriber_with_writer_and_handle(cfg, writer) -> (impl Subscriber…, LevelHandle);
+pub fn init_logging_with_handle(cfg) -> Result<LevelHandle, …>;
+```
+
+Targets match by longest prefix at a `::` (or `.`) boundary —
+`firefly_web` covers `firefly_web::routes` but not `firefly_webx`.
+
+### PII redaction (pyfly `logging/redaction/`)
+
+```rust,ignore
+pub trait Redactor { fn redact<'a>(&self, &'a str) -> Cow<'a, str>; }
+pub struct RegexRedactor;                    // 10 builtin entities + extra patterns
+pub enum MaskStyle { Placeholder, Partial, Hash } // <ENTITY> | ****1111 | <ENTITY:sha256_8>
+pub struct RedactionConfig { enabled, entities, mask, extra_patterns, allow_fields, deny_fields }
+pub fn build_redactor(&RedactionConfig) -> Option<RegexRedactor>;
+pub fn luhn_valid(&str) -> bool;             // CREDIT_CARD validator
+pub const BUILTIN_ENTITIES: [&str; 10];      // EMAIL, CREDIT_CARD, IBAN, US_SSN, JWT,
+                                             // BEARER_TOKEN, URL_CREDENTIALS, PHONE, IPV4, IPV6
+pub const REDACTED: &str;                    // "<REDACTED>" (deny-field replacement)
+```
+
+Wired into the JSON/text writers via `LogConfig::with_redaction`:
+deny-listed keys are replaced wholesale, a non-empty allow list limits
+scanning to listed fields plus the message, `CREDIT_CARD` matches are
+gated by the Luhn check. The default config is `None`, so existing log
+output is byte-identical unless redaction is opted in. Divergences
+from pyfly, by design: the Presidio NER engine is Python-only (regex is
+the cross-port contract; pyfly itself falls back to it), stdout/stderr
+stream interception is not possible in Rust (redaction applies at the
+layer's writer boundary), and the `PHONE` look-arounds are emulated
+with a digit-boundary check (the `regex` crate has no look-around).
+
+### Rolling file appender (pyfly `logging/handlers.py`)
+
+```rust,ignore
+pub fn parse_size("10MB" | "512KB" | "4096" | "") -> u64; // 0 when empty/invalid
+pub struct FileConfig { name, path, max_size: String, max_history: u32 } // defaults: 10MB / 7
+pub struct RollingFileWriter;                // impl Write; rotates app.log -> app.log.1…N,
+                                             // prunes beyond max_history; 0 disables rotation
+pub struct TeeWriter<A, B>;                  // console + file both receive every record
+```
+
+`LogConfig::with_file(FileConfig::new("app.log").with_path("logs"))`
+tees output to console and file; an unopenable file falls back to
+console only — a logging misconfiguration never crashes the
+application.
+
 ## Testing
 
 ```bash
@@ -185,3 +337,11 @@ scopes), the `degraded ⊕ up` overall computation, banner content and
 overrides, plus Rust-specific cases: level filtering, text format, span
 field merging, the Go JSON wire shape of `HealthResult` (nanosecond
 `duration`, omitted empty `message`/`details`), and Send/Sync bounds.
+
+The pyfly-parity surface is covered by `tests/pyfly_parity_test.rs`,
+porting pyfly's `tests/observability/` (metric idempotency across
+registries, `@timed`/`@counted` Micrometer naming and tags, W3C
+inject/extract round trips, the tracing-filter inbound-trace test) and
+`tests/logging/` (redaction engine/processor/patterns including Luhn,
+`parse_size`, rotation + backup pruning, per-logger levels and runtime
+`set_level`) suites.

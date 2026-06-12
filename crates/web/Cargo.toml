@@ -11,7 +11,9 @@ description = "Firefly Framework for Rust — Problem renderer, correlation, ide
 [dependencies]
 firefly-kernel = { workspace = true }
 axum = { workspace = true }
-tower = { workspace = true }
+# `limit` enables tower::limit::GlobalConcurrencyLimitLayer for the
+# pyfly-parity server module (max_concurrent_connections).
+tower = { workspace = true, features = ["limit"] }
 http = { workspace = true }
 # Same major as axum's transitive http-body; needed to implement the
 # response-teeing CaptureBody without buffering (Go captureWriter parity).
@@ -25,7 +27,23 @@ regex = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
+# ---- pyfly-parity layer (web + server briefs) ----
+tokio = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }
+uuid = { workspace = true }
+quick-xml = { workspace = true }
+axum-server = { workspace = true }
+# Pin the rustls process-level CryptoProvider to `ring` so TLS works
+# deterministically even when both ring and aws-lc-rs are present in the
+# dependency graph (lettre pulls ring, reqwest pulls aws-lc-rs).
+rustls = { workspace = true }
+socket2 = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
 http-body-util = { workspace = true }
+tracing-subscriber = { workspace = true }
+# For the lifecycle-wiring doctest of `firefly_web::server::serve`
+# (lifecycle is dependency-light and does not depend on firefly-web,
+# so this dev-edge introduces no cycle).
+firefly-lifecycle = { workspace = true }

@@ -1,0 +1,16 @@
+//! {{ name }} — Firefly Framework `hexagonal` (ports & adapters) entry point.
+
+mod api;
+mod application;
+mod domain;
+mod infrastructure;
+
+use axum::Router;
+use firefly_web::FireflyServer;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let router = Router::new().merge(api::routes());
+    FireflyServer::new(router).bind("0.0.0.0:8080").serve().await?;
+    Ok(())
+}

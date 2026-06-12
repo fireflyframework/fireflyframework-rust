@@ -1,26 +1,22 @@
-//! firefly-ecm-storage-azure — the placeholder [`ContentStore`] adapter for
-//! Azure Blob Storage.
+//! firefly-ecm-storage-azure — Azure Blob Storage [`ContentStore`] adapter.
 //!
-//! Faithful port of the Go module `fireflyframework-go/ecmstorageazure`: the
-//! crate and types are declared, the port assertion compiles, and
-//! sentinel-error smoke tests guard the wire shape — but the SaaS / cloud SDK
-//! integration is **not yet wired**. Every [`ContentStore`] method returns the
-//! [`ERR_NOT_IMPLEMENTED`] sentinel, rendered bytes-equal to the Go port's
-//! `ErrNotImplemented`:
+//! This crate ships two flavours that share one [`Config`]:
 //!
-//! ```text
-//! firefly/ecmstorageazure: not yet implemented
-//! ```
+//! * [`BlobStore`] — the **real** adapter (pyfly parity). It speaks the Azure
+//!   Blob REST API directly over [`reqwest`], authorizing every request with a
+//!   self-contained **Shared Key** signer (see the [`sharedkey`] module —
+//!   `hmac`/`sha2`/`base64`, no Azure SDK). It bridges
+//!   [`firefly_ecm::ContentReader`] on both directions:
+//!   [`ContentStore::put`] drains the reader and `PUT`s a block blob;
+//!   [`ContentStore::get`] returns the blob body as a reader. It honours
+//!   [`Config::endpoint`] so tests (and Azurite) can point it at an in-process
+//!   mock server.
+//! * [`Store`] — the original Go-parity **stub**, retained for backward
+//!   compatibility. Every method returns the [`ERR_NOT_IMPLEMENTED`] sentinel,
+//!   bytes-equal to the Go port's `ErrNotImplemented`
+//!   (`firefly/ecmstorageazure: not yet implemented`).
 //!
-//! # Why ship a stub?
-//!
-//! * The framework's tier diagram stays correct (no missing module).
-//! * The port boundary stays locked — when the real implementation lands in
-//!   v26.06, no consuming code needs to change.
-//! * The wire contract is exercised end-to-end before the integration ships,
-//!   via the smoke tests that assert the sentinel return.
-//!
-//! # Quick start
+//! # Quick start (stub, back-compat)
 //!
 //! ```
 //! use firefly_ecm::{bytes_reader, ContentStore};
@@ -40,9 +36,34 @@
 //! assert_eq!(err.to_string(), "firefly/ecmstorageazure: not yet implemented");
 //! # }
 //! ```
+//!
+//! # Quick start (real adapter)
+//!
+//! ```no_run
+//! use firefly_ecm::{bytes_reader, ContentStore};
+//! use firefly_ecm_storage_azure::{BlobStore, Config};
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<(), firefly_ecm::EcmError> {
+//! let store = BlobStore::new(Config {
+//!     account: "fireflyacct".into(),
+//!     key: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==".into(),
+//!     container: "documents".into(),
+//!     ..Default::default()
+//! })?;
+//!
+//! let n = store.put("doc-1/v1", bytes_reader(b"%PDF-1.7".to_vec())).await?;
+//! assert_eq!(n, 8);
+//! # Ok(())
+//! # }
+//! ```
+
+pub mod sharedkey;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use firefly_ecm::{ContentReader, ContentStore, EcmError};
+use tokio::io::AsyncReadExt;
 
 /// The sentinel message returned by every method until the cloud SDK is
 /// wired. Bytes-equal to the Go port's `ErrNotImplemented`
@@ -122,6 +143,270 @@ impl ContentStore for Store {
     /// Human-readable store identifier.
     fn name(&self) -> &str {
         "ecmstorageazure-stub"
+    }
+}
+
+/// The Azure Blob REST API version this adapter targets (sent as
+/// `x-ms-version` on every request and folded into the Shared Key signature).
+const X_MS_VERSION: &str = "2021-08-06";
+
+/// Percent-encodes one blob-name path per RFC 3986: unreserved characters
+/// (`A-Z a-z 0-9 - _ . ~`) and `/` pass through; every other byte becomes
+/// `%XX` (uppercase hex). `/` is preserved so multi-segment blob names like
+/// `doc-1/v1` keep their structure.
+fn encode_blob(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for &b in name.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// `BlobStore` is the production [`ContentStore`] adapter backed by the Azure
+/// Blob REST API.
+///
+/// Construction builds a [`reqwest::Client`] and validates the [`Config`]
+/// (`account`, `key`, and `container` are required; `key` must be base64).
+/// Every request is authorized with the crate's self-contained [`sharedkey`]
+/// signer; no Azure SDK is linked. The store is keyed by an opaque blob name —
+/// the version-aware `<doc-id>/v<n>` scheme used by the ECM service maps
+/// straight onto blob names.
+///
+/// # Endpoint resolution
+///
+/// * When [`Config::endpoint`] is set, requests go to
+///   `{endpoint}/{container}/{blob}` (the form Azurite and the test mock server
+///   use; the canonical resource still names the account).
+/// * Otherwise the host `{account}.blob.core.windows.net` is used over HTTPS.
+#[derive(Debug, Clone)]
+pub struct BlobStore {
+    cfg: Config,
+    client: reqwest::Client,
+    name: String,
+}
+
+impl BlobStore {
+    /// Builds a real Azure-Blob-backed store from `cfg`.
+    ///
+    /// Returns an [`EcmError::Provider`] when the wiring is incomplete
+    /// (`account`, `key`, `container` are required) or the HTTP client cannot
+    /// be created.
+    pub fn new(cfg: Config) -> Result<Self, EcmError> {
+        if cfg.account.is_empty() {
+            return Err(EcmError::provider(
+                "firefly/ecmstorageazure: account is required",
+            ));
+        }
+        if cfg.key.is_empty() {
+            return Err(EcmError::provider(
+                "firefly/ecmstorageazure: key is required",
+            ));
+        }
+        if cfg.container.is_empty() {
+            return Err(EcmError::provider(
+                "firefly/ecmstorageazure: container is required",
+            ));
+        }
+        let client = reqwest::Client::builder()
+            .build()
+            .map_err(|e| EcmError::provider(format!("firefly/ecmstorageazure: client: {e}")))?;
+        Ok(Self {
+            cfg,
+            client,
+            name: "azure-blob".to_string(),
+        })
+    }
+
+    /// Builds a store on top of an existing [`reqwest::Client`] — useful for
+    /// tests and for sharing a connection pool / custom TLS config.
+    pub fn with_client(cfg: Config, client: reqwest::Client) -> Result<Self, EcmError> {
+        let mut s = Self::new(cfg)?;
+        s.client = client;
+        Ok(s)
+    }
+
+    /// The configuration this store was built with.
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
+
+    /// Returns `(url, host)` for the blob named `key`, honouring
+    /// [`Config::endpoint`].
+    fn endpoint(&self, key: &str) -> (String, String) {
+        let encoded = encode_blob(key);
+        if self.cfg.endpoint.is_empty() {
+            let host = format!("{}.blob.core.windows.net", self.cfg.account);
+            (
+                format!("https://{host}/{}/{encoded}", self.cfg.container),
+                host,
+            )
+        } else {
+            let base = self.cfg.endpoint.trim_end_matches('/');
+            let url = format!("{base}/{}/{encoded}", self.cfg.container);
+            let host = host_of(&url);
+            (url, host)
+        }
+    }
+
+    /// Canonical resource for Shared Key signing — always names the account:
+    /// `/<account>/<container>/<blob>`.
+    fn canonical_resource(&self, key: &str) -> String {
+        format!(
+            "/{}/{}/{}",
+            self.cfg.account,
+            self.cfg.container,
+            encode_blob(key)
+        )
+    }
+
+    /// Signs and dispatches one request, returning the [`reqwest::Response`].
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        key: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<reqwest::Response, EcmError> {
+        let (url, host) = self.endpoint(key);
+        let now = Utc::now();
+        // RFC 1123 date in GMT, the format Azure requires for x-ms-date.
+        let x_ms_date = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+
+        let is_put = method == reqwest::Method::PUT;
+        let content_len = body.as_ref().map(|b| b.len()).unwrap_or(0);
+        // The 2015-02-21+ rule: send an empty Content-Length line unless there
+        // is a body.
+        let content_length = if content_len > 0 {
+            content_len.to_string()
+        } else {
+            String::new()
+        };
+        let content_type = if is_put {
+            "application/octet-stream"
+        } else {
+            ""
+        };
+
+        let mut x_ms_headers = vec![
+            sharedkey::Header::new("x-ms-date", &x_ms_date),
+            sharedkey::Header::new("x-ms-version", X_MS_VERSION),
+        ];
+        if is_put {
+            x_ms_headers.push(sharedkey::Header::new("x-ms-blob-type", "BlockBlob"));
+        }
+
+        let sig_req = sharedkey::Request {
+            method: method.as_str(),
+            content_length: &content_length,
+            content_type,
+            x_ms_headers,
+            canonical_resource: &self.canonical_resource(key),
+        };
+        let (authorization, _sig, _sts) =
+            sharedkey::sign(&sig_req, &self.cfg.account, &self.cfg.key)
+                .map_err(|e| EcmError::provider(format!("firefly/ecmstorageazure: sign: {e}")))?;
+
+        let mut builder = self
+            .client
+            .request(method, &url)
+            .header("host", &host)
+            .header("x-ms-date", &x_ms_date)
+            .header("x-ms-version", X_MS_VERSION)
+            .header("authorization", &authorization);
+        if is_put {
+            builder = builder
+                .header("x-ms-blob-type", "BlockBlob")
+                .header("content-type", "application/octet-stream");
+        }
+        if let Some(b) = body {
+            builder = builder.body(b);
+        }
+        builder
+            .send()
+            .await
+            .map_err(|e| EcmError::provider(format!("firefly/ecmstorageazure: request: {e}")))
+    }
+}
+
+/// Extracts the `host[:port]` authority from an `http(s)://host[:port]/...` URL
+/// without a URL-parsing crate. Falls back to the whole input on odd shapes.
+fn host_of(url: &str) -> String {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    after_scheme
+        .split('/')
+        .next()
+        .unwrap_or(after_scheme)
+        .to_string()
+}
+
+#[async_trait]
+impl ContentStore for BlobStore {
+    /// Drains `content` into memory and `PUT`s it as a block blob at `key`,
+    /// returning the number of bytes written. Surfaces any non-2xx response as
+    /// an [`EcmError::Provider`].
+    async fn put(&self, key: &str, mut content: ContentReader) -> Result<i64, EcmError> {
+        let mut buf = Vec::new();
+        content.read_to_end(&mut buf).await?;
+        let len = buf.len() as i64;
+        let resp = self.send(reqwest::Method::PUT, key, Some(buf)).await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(EcmError::provider(format!(
+                "firefly/ecmstorageazure: put {key}: HTTP {}",
+                status.as_u16()
+            )));
+        }
+        Ok(len)
+    }
+
+    /// `GET`s the blob `key` and returns the body as a [`ContentReader`]. A
+    /// `404` maps to [`EcmError::NotFound`]; any other non-2xx is an
+    /// [`EcmError::Provider`].
+    async fn get(&self, key: &str) -> Result<ContentReader, EcmError> {
+        let resp = self.send(reqwest::Method::GET, key, None).await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(EcmError::NotFound);
+        }
+        if !status.is_success() {
+            return Err(EcmError::provider(format!(
+                "firefly/ecmstorageazure: get {key}: HTTP {}",
+                status.as_u16()
+            )));
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| EcmError::provider(format!("firefly/ecmstorageazure: body: {e}")))?;
+        Ok(firefly_ecm::bytes_reader(bytes.to_vec()))
+    }
+
+    /// `DELETE`s the blob `key`. A missing blob (`404`) is not an error
+    /// (matching the port contract); any other non-2xx is an
+    /// [`EcmError::Provider`].
+    async fn delete(&self, key: &str) -> Result<(), EcmError> {
+        let resp = self.send(reqwest::Method::DELETE, key, None).await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        if !status.is_success() {
+            return Err(EcmError::provider(format!(
+                "firefly/ecmstorageazure: delete {key}: HTTP {}",
+                status.as_u16()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Human-readable store identifier — `azure-blob`, matching pyfly's
+    /// `AzureBlobStorageAdapter.name`.
+    fn name(&self) -> &str {
+        &self.name
     }
 }
 

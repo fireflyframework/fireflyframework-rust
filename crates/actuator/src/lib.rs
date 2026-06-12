@@ -4,17 +4,29 @@
 //! counterpart of Spring Boot's `actuator` and the Go port's `actuator`
 //! module:
 //!
-//! | Endpoint                 | What it returns                                                                 |
-//! |--------------------------|---------------------------------------------------------------------------------|
-//! | `GET /actuator/health`   | Per-indicator + overall status; 200 UP/DEGRADED, 503 DOWN                        |
-//! | `GET /actuator/info`     | Build info + app metadata + info contributors                                    |
-//! | `GET /actuator/metrics`  | Prometheus exposition format from the [`MetricRegistry`] primitives              |
-//! | `GET /actuator/env`      | Redacted environment view (`FIREFLY_*` visible by default; everything else `***`)|
-//! | `GET /actuator/tasks`    | `{"count": N}` alive tokio tasks; `?dump=true` returns a runtime report          |
-//! | `GET /actuator/version`  | `{"firefly":"26.6.1","app":"orders","appVersion":"…","rust":"…"}`                |
+//! | Endpoint                            | What it returns                                                                 |
+//! |-------------------------------------|---------------------------------------------------------------------------------|
+//! | `GET /actuator`                     | `_links` index of the exposed endpoints                                          |
+//! | `GET /actuator/health`              | Per-indicator + overall status; 200 UP/DEGRADED, 503 DOWN                        |
+//! | `GET /actuator/health/{selector}`   | `liveness` / `readiness` probes, named groups, per-component drill-down          |
+//! | `GET /actuator/info`                | Build info + app metadata + info contributors                                    |
+//! | `GET /actuator/metrics`             | Prometheus text (`Accept: application/json` → Micrometer `{"names":[…]}`)        |
+//! | `GET /actuator/metrics/{name}`      | Micrometer JSON detail with `?tag=k:v` drill-down + `availableTags`              |
+//! | `GET /actuator/prometheus`          | Prometheus exposition format (labeled), the scrape target                        |
+//! | `GET /actuator/env`                 | Redacted environment view (`FIREFLY_*` visible by default; everything else `***`)|
+//! | `GET /actuator/tasks`               | `{"count": N}` alive tokio tasks; `?dump=true` returns a runtime report          |
+//! | `GET /actuator/version`             | `{"firefly":"26.6.1","app":"orders","appVersion":"…","rust":"…"}`                |
+//! | `GET/POST /actuator/loggers[/{n}]`  | Runtime log levels over a `tracing_subscriber` reload handle                     |
+//! | `GET /actuator/scheduledtasks`      | Tasks grouped by trigger (cron / fixedDelay / fixedRate)                         |
+//! | `GET/POST /actuator/caches[…]`      | Configured caches + `POST /{name}/evict`                                         |
+//! | `POST /actuator/refresh`            | `{"refreshed": [keys…]}` from the wired [`Refresher`]                            |
+//! | `GET /actuator/httpexchanges`       | The last 100 exchanges recorded by [`HttpExchangesLayer`]                        |
 //!
-//! Bind these on a separate admin port (e.g. `:8081`) so they never leak
-//! onto the public network.
+//! Which ids actually go on the wire — and under which base path — is
+//! controlled by the Spring-style [`ExposureConfig`]; custom endpoints
+//! implement the [`Endpoint`] trait and register on an
+//! [`EndpointRegistry`]. Bind these on a separate admin port (e.g.
+//! `:8081`) so they never leak onto the public network.
 //!
 //! ## Why a separate crate?
 //!
@@ -59,13 +71,32 @@
 //! # let _ = app;
 //! ```
 
+mod caches;
+mod endpoint;
+mod exposure;
 mod handler;
 mod health;
+mod http_exchanges;
+mod loggers;
 mod metrics;
+mod refresh;
+mod scheduledtasks;
 
+pub use caches::{CacheDescriptor, CacheOps};
+pub use endpoint::{Endpoint, EndpointRegistry};
+pub use exposure::{ExposureConfig, DEFAULT_BASE_PATH};
 pub use handler::{mount, ActuatorConfig, InfoContributor};
-pub use health::{HealthComposite, HealthIndicator, HealthResult, HealthStatus, IndicatorFn};
-pub use metrics::{Counter, Gauge, MetricRegistry};
+pub use health::{
+    HealthComposite, HealthIndicator, HealthResult, HealthStatus, IndicatorFn, ProbeGroup,
+};
+pub use http_exchanges::{
+    ExchangeRequest, ExchangeResponse, HttpExchange, HttpExchangeRecorder, HttpExchangesLayer,
+    HttpExchangesService, DEFAULT_EXCHANGE_CAPACITY,
+};
+pub use loggers::{LoggersError, LoggersState, SPRING_LEVELS};
+pub use metrics::{Counter, Gauge, Histogram, MetricRegistry, TimerGuard, DEFAULT_BUCKETS};
+pub use refresh::Refresher;
+pub use scheduledtasks::{ScheduledTasksSource, StaticScheduledTasks, TaskDescriptor, TaskTrigger};
 
 /// Released framework version. Calendar-versioned (`YY.M.PATCH`), the
 /// Rust port's counterpart of the Go `kernel.Version` constant.
@@ -86,6 +117,16 @@ mod tests {
         assert_send_sync::<Counter>();
         assert_send_sync::<Gauge>();
         assert_send_sync::<ActuatorConfig>();
+        // pyfly parity surface
+        assert_send_sync::<ProbeGroup>();
+        assert_send_sync::<ExposureConfig>();
+        assert_send_sync::<EndpointRegistry>();
+        assert_send_sync::<Histogram>();
+        assert_send_sync::<LoggersState>();
+        assert_send_sync::<HttpExchangeRecorder>();
+        assert_send_sync::<HttpExchangesLayer>();
+        assert_send_sync::<TaskDescriptor>();
+        assert_send_sync::<CacheDescriptor>();
     }
 
     #[test]

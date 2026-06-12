@@ -1,0 +1,22 @@
+//! Application layer for {{ name }}: orchestrates the domain via ports.
+
+use crate::domain::models::Item;
+use crate::domain::ports::{ItemRepositoryPort, ItemUseCase};
+
+/// Default use-case implementation, wired to an outbound repository port.
+pub struct ItemService<R: ItemRepositoryPort> {
+    repo: R,
+}
+
+impl<R: ItemRepositoryPort> ItemService<R> {
+    /// Construct the service over a repository adapter.
+    pub fn new(repo: R) -> Self {
+        Self { repo }
+    }
+}
+
+impl<R: ItemRepositoryPort> ItemUseCase for ItemService<R> {
+    fn get(&self, id: &str) -> Option<Item> {
+        self.repo.load(id)
+    }
+}

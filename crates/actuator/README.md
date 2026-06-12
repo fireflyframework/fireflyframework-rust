@@ -119,6 +119,82 @@ orders_placed_total 3
 queue_depth 42.500000
 ```
 
+## pyfly parity
+
+On top of the Go-parity surface above, the crate ports pyfly's
+`actuator` package — Spring Boot's full management model:
+
+| Endpoint                              | What it adds                                                                       |
+|---------------------------------------|------------------------------------------------------------------------------------|
+| `GET /actuator/health/liveness`       | Kubernetes liveness probe — only indicators tagged `ProbeGroup::Liveness`          |
+| `GET /actuator/health/readiness`      | Kubernetes readiness probe — only `ProbeGroup::Readiness` indicators               |
+| `GET /actuator/health/{group}`        | Named health group (registered via `HealthComposite::add_group`)                   |
+| `GET /actuator/health/{component}`    | Per-component drill-down (200 UP, 503 DOWN, 404 unknown)                            |
+| `GET/POST /actuator/loggers[/{name}]` | Runtime log levels over a `tracing_subscriber::reload::Handle<EnvFilter>`          |
+| `GET /actuator/scheduledtasks`        | Tasks grouped by trigger (`cron` / `fixedDelay` / `fixedRate`)                     |
+| `GET /actuator/caches[/{name}]`       | Configured caches; `POST /caches/{name}/evict` clears one                          |
+| `POST /actuator/refresh`              | `{"refreshed": [keys…]}` from the wired `Refresher`                                |
+| `GET /actuator/httpexchanges`         | The last 100 exchanges recorded by the `HttpExchangesLayer` ring buffer            |
+| `GET /actuator/metrics/{name}?tag=k:v`| Micrometer JSON meter detail with `measurements` + `availableTags`                 |
+| `GET /actuator/prometheus`            | Labeled Prometheus exposition (counters, gauges, histograms)                       |
+| `GET /actuator/{id}[/{selector}]`     | Any custom `Endpoint` registered on the `EndpointRegistry`                         |
+
+### Exposure model
+
+`ExposureConfig` is the Spring `management.endpoints.web` model:
+include/exclude id sets (CSV or `*` wildcard, exclude wins), a
+configurable `base_path` (default `/actuator`), and per-endpoint
+`endpoint_enabled` overrides. `mount()` honors it — an id is mounted
+only when exposed and not disabled. The crate default exposes
+everything (Go-parity backward compatibility);
+`ExposureConfig::spring_default()` restores Spring's `health,info`.
+
+```rust,ignore
+// Probe groups + named groups
+let health = Arc::new(HealthComposite::new());
+health.add_with_groups(IndicatorFn::new("ping", || async { HealthResult::up() }),
+                       &[ProbeGroup::Liveness]);
+health.add(IndicatorFn::new("db", || async { HealthResult::up() }));
+health.add_group("storage", &["db"]);
+
+// Loggers over a real tracing reload handle
+let (layer, handle) = tracing_subscriber::reload::Layer::new(EnvFilter::new("info"));
+let loggers = Arc::new(LoggersState::from_handle_with_directives(handle, "info"));
+
+// Labeled metrics + histograms (Micrometer JSON + Prometheus text)
+let registry = Arc::new(MetricRegistry::new());
+registry.counter_with("orders_total", &[("method", "GET")]).add(5);
+registry.histogram("latency_seconds").observe(0.12);
+
+let app = mount(ActuatorConfig {
+    health,
+    metric_registry: registry,
+    loggers: Some(loggers),
+    exposure: ExposureConfig::from_csv("*", "env"),
+    ..ActuatorConfig::default()
+});
+
+// Record exchanges by layering the application router:
+let recorder = Arc::new(HttpExchangeRecorder::new());
+let app = app.layer(HttpExchangesLayer::new(Arc::clone(&recorder)));
+```
+
+`MetricRegistry` now carries labeled `Counter`/`Gauge` plus a
+`Histogram` with fixed buckets (`DEFAULT_BUCKETS`) and a `TimerGuard`
+that records an observation on drop. The Micrometer JSON view maps
+counters to a `COUNT` statistic and histograms to
+`COUNT`/`TOTAL_TIME`/`MAX`, exposes label values under `availableTags`,
+and supports `?tag=k:v` filtering. `/actuator/prometheus` serves the
+classic `version=0.0.4` text exposition with labels.
+
+Custom endpoints implement the `Endpoint` trait (`id()` +
+`handle(selector, query)`), register on an `EndpointRegistry`, and are
+mounted at `{base_path}/{id}` — pyfly's `ActuatorRegistry`. The
+`scheduledtasks`, `caches`, `refresh`, and `httpexchanges` surfaces are
+wired through local traits (`ScheduledTasksSource`, `CacheOps`,
+`Refresher`, `HttpExchangeRecorder`) so scheduling and caching stay
+decoupled; the starter bridges them to the real subsystems.
+
 ## Testing
 
 ```bash
@@ -127,5 +203,12 @@ cargo test -p firefly-actuator
 
 Covers UP / DEGRADED / DOWN status mapping (200 vs 503), info
 contributor merging, env-prefix redaction, metrics formatting, the
-task count + dump variants, and the version payload — all driven
-in-process through `tower::ServiceExt::oneshot`, no sockets.
+task count + dump variants, and the version payload. The
+`parity_test.rs` suite ports pyfly's `tests/actuator/` cases — probe
+groups + isolation, named-group + component drill-down,
+show-details/show-components switches, the exposure model
+(include/exclude/base-path/per-endpoint enabled), custom endpoints,
+loggers GET/POST over a real `EnvFilter` reload handle, scheduledtasks
+grouping, caches + evict, refresh, httpexchanges header masking, and
+the Micrometer JSON + labeled Prometheus views — all driven in-process
+through `tower::ServiceExt::oneshot`, no sockets.

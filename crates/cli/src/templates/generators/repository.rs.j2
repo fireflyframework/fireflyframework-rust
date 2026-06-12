@@ -1,0 +1,26 @@
+//! {{ names.human }} repository.
+
+{% if has_data %}use firefly_data::{Repository, RepositoryPort};
+{% endif %}use crate::models::{{ names.snake }}::{{ names.pascal }};
+
+/// Repository for [`{{ names.pascal }}`] aggregates.
+{% if has_data %}///
+/// Backed by the framework's `Repository<{{ names.pascal }}, i64>` over the
+/// configured relational data source.
+{% endif %}#[derive(Debug, Default, Clone)]
+pub struct {{ names.pascal }}Repository{% if has_data %} {
+    inner: Repository<{{ names.pascal }}, i64>,
+}{% else %};{% endif %}
+
+impl {{ names.pascal }}Repository {
+    /// Construct a new repository.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Find a {{ names.human }} by its identifier.
+    pub async fn find_by_id(&self, id: i64) -> Option<{{ names.pascal }}> {
+        {% if has_data %}self.inner.find_by_id(id).await{% else %}let _ = id;
+        None{% endif %}
+    }
+}

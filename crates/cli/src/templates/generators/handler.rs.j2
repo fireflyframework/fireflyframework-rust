@@ -1,0 +1,22 @@
+//! {{ names.human }} request handler.
+
+use firefly_web::Json;
+
+/// HTTP handler for the `{{ names.kebab }}` resource.
+///
+/// Wire this into your router, e.g.
+/// `router.route("/{{ names.kebab_plural }}", get({{ names.snake }}_handler))`.
+#[derive(Debug, Default, Clone)]
+pub struct {{ names.pascal }}Handler;
+
+impl {{ names.pascal }}Handler {
+    /// Construct a new handler.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Handle an incoming `{{ names.human }}` request.
+    pub async fn handle(&self) -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "resource": "{{ names.kebab }}" }))
+    }
+}

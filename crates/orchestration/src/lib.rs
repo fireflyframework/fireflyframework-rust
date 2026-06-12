@@ -44,10 +44,60 @@ mod saga;
 mod tcc;
 mod workflow;
 
+// ── pyfly-parity durable-orchestration layer ────────────────────────────
+mod dlq;
+mod gateway;
+mod model;
+mod persistence;
+mod recovery;
+mod registry;
+mod report;
+mod scheduling;
+mod signal;
+mod timer;
+mod validator;
+mod web;
+
 pub use cancel::CancellationToken;
 pub use saga::{CompensationPolicy, Outcome, Saga, SagaError, SagaFailure, SagaStatus, Step};
 pub use tcc::{ConfirmError, Tcc, TccError, TccParticipant};
 pub use workflow::{Node, Workflow, WorkflowError};
+
+// Durable model + value types.
+pub use model::{
+    ExecutionPattern, ExecutionState, ExecutionStatus, RetryPolicy, StepStatus, TccPhase,
+    TriggerMode,
+};
+// Persistence port + adapters.
+pub use persistence::{
+    ExecutionFilter, MemoryPersistence, PersistenceError, PersistenceProvider, SqlitePersistence,
+};
+// Recovery service.
+pub use recovery::{RecoveryAction, RecoveryDecider, RecoveryHandler, RecoveryService};
+// Dead-letter queue.
+pub use dlq::{
+    DeadLetterCapture, DeadLetterEntry, DeadLetterFilter, DeadLetterService, DeadLetterStore,
+    MemoryDeadLetterStore,
+};
+// Signal + timer services (workflow wait nodes).
+pub use signal::{SignalError, SignalService};
+pub use timer::TimerService;
+// Event gateway + broker-driven saga starts.
+pub use gateway::{trigger_handler, EventGateway, EventTrigger, TriggerHandler};
+// Definition registry + listing accessors.
+pub use registry::{DefinitionInfo, OrchestrationRegistry};
+// Execution reports.
+pub use report::{CompensationReport, ExecutionReport, StepReport};
+// Definition validator (DAG lint).
+pub use validator::{
+    IssueLevel, OrchestrationValidator, ValidationError, ValidationIssue, ValidationReport,
+};
+// Scheduled saga / workflow / TCC starts.
+pub use scheduling::{
+    OrchestrationScheduler, ScheduleTrigger, ScheduledTask, ScheduledTaskInfo, SchedulerError,
+};
+// axum REST router for executions / DLQ / signals.
+pub use web::{router, OrchestrationApi};
 
 use std::future::Future;
 

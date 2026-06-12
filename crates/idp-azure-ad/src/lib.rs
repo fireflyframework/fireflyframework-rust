@@ -1,292 +1,717 @@
-//! firefly-idp-azure-ad — the placeholder [`firefly_idp::Adapter`] for
-//! Azure AD / Entra ID (MSAL + Microsoft Graph).
+//! firefly-idp-azure-ad — a real [`firefly_idp::Adapter`] for Azure AD / Entra ID.
 //!
-//! Direct port of the Go `idpazuread` module (itself a port of the Java
-//! `firefly-idp-azuread` module and the .NET `FireflyFramework.Idp.*`
-//! project). The integration surface (token endpoints, Microsoft Graph
-//! admin REST APIs, MSAL calls) is in scope for a later milestone — this
-//! crate ships the contract-only **stub** today:
+//! Talks to the Microsoft Graph `v1.0` API and the
+//! `login.microsoftonline.com` token endpoint over [`reqwest`] — no MSAL or
+//! Azure SDK is pulled in. It is a behavior-for-behavior port of pyfly's
+//! `AzureAdIdpAdapter`, covering:
 //!
-//! * [`Config`] — typed wiring carried by the production adapter.
-//! * [`Adapter`] — the placeholder implementation of the
-//!   [`firefly_idp::Adapter`] port.
-//! * [`ERR_NOT_IMPLEMENTED`] / [`not_implemented`] — the sentinel every
-//!   method returns until the adapter ships, bytes-equal to the Go port's
-//!   `idpazuread.ErrNotImplemented` (`firefly/idpazuread: not yet
-//!   implemented`).
+//! * **App-token caching** — the `client_credentials` Graph app token is
+//!   fetched once and cached (mirroring pyfly).
+//! * **ROPC login** — the resource-owner password-credentials grant against
+//!   `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`, then a
+//!   user lookup; a non-200 token response maps to
+//!   [`Error::InvalidCredentials`](firefly_idp::Error::InvalidCredentials).
+//! * **User CRUD** against `/users` (create POSTs the full profile +
+//!   `passwordProfile` and captures the returned id; get/find/update/delete/
+//!   list). [`find_by_username`](Adapter::find_by_username) delegates to
+//!   [`get_user`](Adapter::get_user) (Azure resolves the UPN as the id).
+//! * **`/me` introspection / userinfo** with a delegated access token.
+//! * **`passwordProfile` patch** for change/reset password.
+//! * **Groups-as-roles** — assign/revoke via `/groups/{id}/members/$ref`,
+//!   list via `/groups`, and `get_roles` via `/users/{id}/memberOf`.
 //!
-//! # Why ship a stub?
+//! Per pyfly, [`mfa_challenge`](Adapter::mfa_challenge) /
+//! [`mfa_verify`](Adapter::mfa_verify) stay sentinel returns
+//! ([`ERR_NOT_IMPLEMENTED`]) because Azure AD manages MFA natively via
+//! Conditional Access policies.
 //!
-//! * The framework's tier diagram stays correct (no missing module).
-//! * The port boundary stays locked — when the real implementation lands,
-//!   no consuming code needs to change.
-//! * The wire contract is exercised end-to-end before the integration
-//!   ships, via the smoke tests that assert the sentinel return.
+//! # Endpoint overrides
 //!
-//! # Quick start
-//!
-//! ```rust
-//! use firefly_idp_azure_ad::{Adapter, Config, ERR_NOT_IMPLEMENTED};
-//!
-//! # #[tokio::main(flavor = "current_thread")]
-//! # async fn main() {
-//! let idp: std::sync::Arc<dyn firefly_idp::Adapter> =
-//!     std::sync::Arc::new(Adapter::new(Config::default()));
-//! assert_eq!(idp.name(), "azuread-stub");
-//!
-//! // Every method returns the sentinel until the adapter ships.
-//! let err = idp.login("u", "p").await.unwrap_err();
-//! assert_eq!(err.to_string(), ERR_NOT_IMPLEMENTED);
-//! # }
-//! ```
+//! Production defaults are the public Microsoft hosts. For testing against an
+//! in-process mock, set [`Config::graph_base_url`] (Graph host) and
+//! [`Config::base_url`] (login authority host); empty values fall back to the
+//! public hosts.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use firefly_idp::{Error, Result, Token, User};
+use firefly_idp as idp;
+use firefly_idp::{Error, MfaChallenge, Result, Role, SessionIntrospection, Token, User};
+use serde_json::{json, Value};
+use tokio::sync::Mutex;
 
-/// The sentinel message returned by every method until the adapter ships.
+/// The public Microsoft Graph `v1.0` base URL.
+pub const GRAPH_BASE_URL: &str = "https://graph.microsoft.com/v1.0";
+/// The public Azure AD login authority host.
+pub const LOGIN_BASE_URL: &str = "https://login.microsoftonline.com";
+/// The default Graph token scope.
+pub const DEFAULT_SCOPE: &str = "https://graph.microsoft.com/.default";
+
+/// Wire-stable sentinel returned by the operations Azure AD performs natively
+/// ([`Adapter::mfa_challenge`] / [`Adapter::mfa_verify`]).
 ///
-/// Bytes-equal to the Go port's `idpazuread.ErrNotImplemented` value so the
-/// wire shape (error strings surfaced to callers and logs) is identical
-/// across runtimes.
+/// Retained verbatim from the contract-only stub this crate replaced.
 pub const ERR_NOT_IMPLEMENTED: &str = "firefly/idpazuread: not yet implemented";
 
-/// Builds the not-yet-implemented sentinel as a [`firefly_idp::Error`].
+/// Builds the [`ERR_NOT_IMPLEMENTED`] sentinel as an [`Error::Provider`].
 ///
-/// The Go port models this as a package-level `errors.New` value; here it is
-/// an [`Error::Provider`] carrying the same message, so callers can match it
-/// with `err == not_implemented()` or compare the rendered string against
-/// [`ERR_NOT_IMPLEMENTED`].
+/// Mirrors pyfly's `AzureAdIdpAdapter.mfa_challenge`/`mfa_verify` raising
+/// `NotImplementedError` because Azure AD runs MFA via Conditional Access.
 pub fn not_implemented() -> Error {
     Error::provider(ERR_NOT_IMPLEMENTED)
 }
 
-/// Carries the wiring needed by the production adapter.
+/// Typed configuration carrying the wiring the adapter authenticates with.
 ///
-/// The field set covers every wiring variable the Azure AD / Entra ID
-/// integration needs (and mirrors the shared vendor-adapter config shape of
-/// the Go port — unused fields stay empty for this provider).
+/// Field-for-field compatible with the configuration shape this crate shipped
+/// as a stub. The Azure AD adapter uses `tenant`, `client_id`, `client_secret`,
+/// and `scope`; `graph_base_url` / `base_url` allow overriding the Graph and
+/// login hosts (defaulting to the public Microsoft hosts when empty); the
+/// remaining vendor fields are retained for a uniform configuration surface.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Config {
-    /// Base URL of the provider (authority host override).
+    /// Login authority host override (defaults to [`LOGIN_BASE_URL`] when
+    /// empty). A trailing `/` is trimmed at construction.
     pub base_url: String,
-    /// Realm / domain within the provider.
+    /// Microsoft Graph base URL override (defaults to [`GRAPH_BASE_URL`] when
+    /// empty). A trailing `/` is trimmed at construction.
+    pub graph_base_url: String,
+    /// Realm / domain (shared vendor-config field; unused by Azure AD).
     pub realm: String,
     /// OAuth2 client (application) id.
     pub client_id: String,
     /// OAuth2 client secret.
     pub client_secret: String,
-    /// Azure AD tenant id.
+    /// Azure AD tenant (directory) id.
     pub tenant: String,
+    /// Token scope (defaults to [`DEFAULT_SCOPE`] when empty).
+    pub scope: String,
     /// User-pool id (shared vendor-config field; unused by Azure AD).
     pub user_pool_id: String,
     /// Cloud region (shared vendor-config field; unused by Azure AD).
     pub region: String,
 }
 
-/// The placeholder [`firefly_idp::Adapter`] for Azure AD / Entra ID.
+/// The login outcome — the resolved [`User`] plus the minted [`Token`].
 ///
-/// Every port method returns the [`not_implemented`] sentinel; [`Self::config`]
-/// exposes the wiring, and the port's `name()` reports `"azuread-stub"` so
-/// wiring diagnostics make the stub status obvious.
+/// The Rust analogue of pyfly's `AuthResult`. The port's [`Adapter::login`]
+/// returns only the [`Token`]; callers wanting the resolved user call
+/// [`Adapter::login_full`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthResult {
+    /// The user resolved from Graph after a successful grant.
+    pub user: User,
+    /// The minted access/refresh token envelope.
+    pub token: Token,
+}
+
+/// A real [`firefly_idp::Adapter`] backed by Microsoft Graph + Azure AD.
 #[derive(Debug, Clone)]
 pub struct Adapter {
     cfg: Config,
+    graph: String,
+    login: String,
+    scope: String,
+    http: reqwest::Client,
+    app_token: Arc<Mutex<Option<String>>>,
 }
 
 impl Adapter {
-    /// Returns a placeholder `Adapter` carrying the given wiring.
+    /// Returns an [`Adapter`] wired with `cfg`. Empty host/scope fields fall
+    /// back to the public Microsoft defaults; trailing slashes are trimmed.
     pub fn new(cfg: Config) -> Self {
-        Self { cfg }
+        let graph = {
+            let g = cfg.graph_base_url.trim_end_matches('/');
+            if g.is_empty() {
+                GRAPH_BASE_URL.to_string()
+            } else {
+                g.to_string()
+            }
+        };
+        let login = {
+            let l = cfg.base_url.trim_end_matches('/');
+            if l.is_empty() {
+                LOGIN_BASE_URL.to_string()
+            } else {
+                l.to_string()
+            }
+        };
+        let scope = if cfg.scope.is_empty() {
+            DEFAULT_SCOPE.to_string()
+        } else {
+            cfg.scope.clone()
+        };
+        Self {
+            cfg,
+            graph,
+            login,
+            scope,
+            http: reqwest::Client::new(),
+            app_token: Arc::new(Mutex::new(None)),
+        }
     }
 
-    /// Returns the wiring this adapter was constructed with.
-    ///
-    /// Rust-specific accessor (the Go port keeps the field private with no
-    /// getter); handy for wiring inspection and diagnostics.
+    /// Returns the configuration the adapter was constructed with.
     pub fn config(&self) -> &Config {
         &self.cfg
     }
+
+    fn token_url(&self) -> String {
+        format!("{}/{}/oauth2/v2.0/token", self.login, self.cfg.tenant)
+    }
+
+    fn provider_err(context: &str, e: impl std::fmt::Display) -> Error {
+        Error::provider(format!("idp/azure-ad: {context}: {e}"))
+    }
+
+    /// Returns a cached Graph app token, fetching a `client_credentials` grant
+    /// on first use (mirroring pyfly's one-shot cache).
+    async fn app_token(&self) -> Result<String> {
+        {
+            let guard = self.app_token.lock().await;
+            if let Some(tok) = guard.as_ref() {
+                return Ok(tok.clone());
+            }
+        }
+        let resp = self
+            .http
+            .post(self.token_url())
+            .form(&[
+                ("grant_type", "client_credentials"),
+                ("client_id", self.cfg.client_id.as_str()),
+                ("client_secret", self.cfg.client_secret.as_str()),
+                ("scope", self.scope.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("app token request failed", e))?;
+        if !resp.status().is_success() {
+            return Err(Error::provider(format!(
+                "idp/azure-ad: app token grant failed: HTTP {}",
+                resp.status().as_u16()
+            )));
+        }
+        let payload: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("app token decode failed", e))?;
+        let token = payload
+            .get("access_token")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Error::provider("idp/azure-ad: app token response missing access_token")
+            })?
+            .to_string();
+        let mut guard = self.app_token.lock().await;
+        *guard = Some(token.clone());
+        Ok(token)
+    }
+
+    /// ROPC password-grant login returning the resolved user + minted token.
+    ///
+    /// Behavior-equal to pyfly: a non-200 token response maps to
+    /// [`Error::InvalidCredentials`] (no Graph follow-up); on success the
+    /// username is resolved via [`get_user`](Adapter::get_user), falling back to
+    /// a minimal user when absent.
+    pub async fn login_full(&self, username: &str, password: &str) -> Result<AuthResult> {
+        let resp = self
+            .http
+            .post(self.token_url())
+            .form(&[
+                ("grant_type", "password"),
+                ("client_id", self.cfg.client_id.as_str()),
+                ("client_secret", self.cfg.client_secret.as_str()),
+                ("username", username),
+                ("password", password),
+                ("scope", self.scope.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("login request failed", e))?;
+        if resp.status().as_u16() != 200 {
+            return Err(Error::InvalidCredentials);
+        }
+        let tokens: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("login decode failed", e))?;
+        let token = token_from_grant(&tokens);
+        let user = match idp::Adapter::get_user(self, username).await {
+            Ok(u) => u,
+            Err(Error::UserNotFound) => User {
+                username: username.to_string(),
+                ..User::default()
+            },
+            Err(e) => return Err(e),
+        };
+        Ok(AuthResult { user, token })
+    }
+}
+
+fn token_from_grant(tokens: &Value) -> Token {
+    Token {
+        access_token: tokens
+            .get("access_token")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        token_type: tokens
+            .get("token_type")
+            .and_then(Value::as_str)
+            .unwrap_or("Bearer")
+            .to_string(),
+        expires_in: tokens
+            .get("expires_in")
+            .and_then(Value::as_i64)
+            .unwrap_or(3600),
+        refresh_token: tokens
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        ..Token::default()
+    }
+}
+
+/// Maps an Azure AD user representation into the port's [`User`].
+fn from_aad(data: &Value) -> User {
+    let upn = data
+        .get("userPrincipalName")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let email = data
+        .get("mail")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(upn);
+    let mut attributes = std::collections::HashMap::new();
+    if let Some(given) = data.get("givenName").and_then(Value::as_str) {
+        attributes.insert("firstName".to_string(), json!(given));
+    }
+    if let Some(surname) = data.get("surname").and_then(Value::as_str) {
+        attributes.insert("lastName".to_string(), json!(surname));
+    }
+    User {
+        id: data
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        username: upn.to_string(),
+        email: email.to_string(),
+        roles: Vec::new(),
+        attributes,
+        enabled: data
+            .get("accountEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        ..User::default()
+    }
+}
+
+fn role_from_group(g: &Value) -> Role {
+    Role {
+        name: g
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        description: g
+            .get("displayName")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        scopes: Vec::new(),
+    }
+}
+
+fn attr_str<'a>(user: &'a User, key: &str) -> &'a str {
+    user.attributes
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+fn random_password() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seed = uuid::Uuid::new_v4().simple().to_string();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{seed}{nanos:x}")
 }
 
 #[async_trait]
-impl firefly_idp::Adapter for Adapter {
-    /// Implements [`firefly_idp::Adapter::login`]; always returns the
-    /// [`not_implemented`] sentinel.
-    async fn login(&self, _username: &str, _password: &str) -> Result<Token> {
-        Err(not_implemented())
+impl idp::Adapter for Adapter {
+    async fn login(&self, username: &str, password: &str) -> Result<Token> {
+        Ok(self.login_full(username, password).await?.token)
     }
 
-    /// Implements [`firefly_idp::Adapter::refresh`]; always returns the
-    /// [`not_implemented`] sentinel.
-    async fn refresh(&self, _refresh_token: &str) -> Result<Token> {
-        Err(not_implemented())
+    async fn refresh(&self, refresh_token: &str) -> Result<Token> {
+        let resp = self
+            .http
+            .post(self.token_url())
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", self.cfg.client_id.as_str()),
+                ("client_secret", self.cfg.client_secret.as_str()),
+                ("refresh_token", refresh_token),
+                ("scope", self.scope.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("refresh request failed", e))?;
+        if !resp.status().is_success() {
+            return Err(Error::provider(format!(
+                "idp/azure-ad: refresh failed: HTTP {}",
+                resp.status().as_u16()
+            )));
+        }
+        let tokens: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("refresh decode failed", e))?;
+        let mut token = token_from_grant(&tokens);
+        if token.refresh_token.is_empty() {
+            token.refresh_token = refresh_token.to_string();
+        }
+        Ok(token)
     }
 
-    /// Implements [`firefly_idp::Adapter::validate`]; always returns the
-    /// [`not_implemented`] sentinel.
-    async fn validate(&self, _access_token: &str) -> Result<User> {
-        Err(not_implemented())
+    async fn validate(&self, access_token: &str) -> Result<User> {
+        self.get_user_info(access_token).await
     }
 
-    /// Implements [`firefly_idp::Adapter::get_user`]; always returns the
-    /// [`not_implemented`] sentinel.
-    async fn get_user(&self, _id: &str) -> Result<User> {
-        Err(not_implemented())
+    async fn get_user(&self, id: &str) -> Result<User> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .get(format!("{}/users/{id}", self.graph))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("get_user request failed", e))?;
+        if resp.status().as_u16() == 404 {
+            return Err(Error::UserNotFound);
+        }
+        if !resp.status().is_success() {
+            return Err(Error::provider(format!(
+                "idp/azure-ad: get_user failed: HTTP {}",
+                resp.status().as_u16()
+            )));
+        }
+        let data: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("get_user decode failed", e))?;
+        Ok(from_aad(&data))
     }
 
-    /// Implements [`firefly_idp::Adapter::create_user`]; always returns the
-    /// [`not_implemented`] sentinel.
-    async fn create_user(&self, _user: User, _password: &str) -> Result<User> {
-        Err(not_implemented())
-    }
-
-    /// Implements [`firefly_idp::Adapter::update_user`]; always returns the
-    /// [`not_implemented`] sentinel.
-    async fn update_user(&self, _user: User) -> Result<User> {
-        Err(not_implemented())
-    }
-
-    /// Implements [`firefly_idp::Adapter::delete_user`]; always returns the
-    /// [`not_implemented`] sentinel.
-    async fn delete_user(&self, _id: &str) -> Result<()> {
-        Err(not_implemented())
-    }
-
-    /// Implements [`firefly_idp::Adapter::name`].
-    fn name(&self) -> &str {
-        "azuread-stub"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    // ---------------------------------------------------------------------
-    // Port of Go TestImplementsPort: compile-time port satisfaction
-    // (`var _ idp.Adapter = New(Config{})`).
-    // ---------------------------------------------------------------------
-
-    #[test]
-    fn implements_port() {
-        let _adapter: Arc<dyn firefly_idp::Adapter> = Arc::new(Adapter::new(Config::default()));
-        let _boxed: Box<dyn firefly_idp::Adapter> = Box::new(Adapter::new(Config::default()));
-    }
-
-    // ---------------------------------------------------------------------
-    // Port of Go TestStubReturnsSentinel: every method returns the
-    // ErrNotImplemented sentinel and Name() is non-empty.
-    // ---------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn stub_returns_sentinel() {
-        let a = Adapter::new(Config::default());
-        let idp: &dyn firefly_idp::Adapter = &a;
-
-        assert_eq!(
-            idp.login("u", "p").await.unwrap_err(),
-            not_implemented(),
-            "login: want ErrNotImplemented"
-        );
-        assert_eq!(
-            idp.refresh("tok").await.unwrap_err(),
-            not_implemented(),
-            "refresh"
-        );
-        assert_eq!(
-            idp.validate("tok").await.unwrap_err(),
-            not_implemented(),
-            "validate"
-        );
-        assert_eq!(
-            idp.get_user("u").await.unwrap_err(),
-            not_implemented(),
-            "get_user"
-        );
-        assert_eq!(
-            idp.create_user(User::default(), "p").await.unwrap_err(),
-            not_implemented(),
-            "create_user"
-        );
-        assert_eq!(
-            idp.update_user(User::default()).await.unwrap_err(),
-            not_implemented(),
-            "update_user"
-        );
-        assert_eq!(
-            idp.delete_user("u").await.unwrap_err(),
-            not_implemented(),
-            "delete_user"
-        );
-        assert!(!idp.name().is_empty(), "name should be non-empty");
-    }
-
-    // ---------------------------------------------------------------------
-    // Rust-specific guards.
-    // ---------------------------------------------------------------------
-
-    #[test]
-    fn sentinel_message_matches_go() {
-        // Wire-stable: bytes-equal to Go's idpazuread.ErrNotImplemented.
-        assert_eq!(
-            ERR_NOT_IMPLEMENTED,
-            "firefly/idpazuread: not yet implemented"
-        );
-        assert_eq!(not_implemented().to_string(), ERR_NOT_IMPLEMENTED);
-        assert_eq!(
-            not_implemented(),
-            Error::Provider("firefly/idpazuread: not yet implemented".into())
-        );
-    }
-
-    #[test]
-    fn sentinel_is_not_a_canonical_idp_sentinel() {
-        // The stub's failure must never be confused with the canonical
-        // login/lookup sentinels of the port.
-        assert_ne!(not_implemented(), Error::InvalidCredentials);
-        assert_ne!(not_implemented(), Error::UserNotFound);
-    }
-
-    #[test]
-    fn name_is_stable() {
-        let a = Adapter::new(Config::default());
-        assert_eq!(firefly_idp::Adapter::name(&a), "azuread-stub");
-    }
-
-    #[test]
-    fn config_round_trips_through_adapter() {
-        let cfg = Config {
-            base_url: "https://login.microsoftonline.com".into(),
-            realm: "contoso.onmicrosoft.com".into(),
-            client_id: "client".into(),
-            client_secret: "secret".into(),
-            tenant: "tenant-id".into(),
-            user_pool_id: String::new(),
-            region: String::new(),
+    async fn create_user(&self, user: User, password: &str) -> Result<User> {
+        let token = self.app_token().await?;
+        let first = attr_str(&user, "firstName");
+        let last = attr_str(&user, "lastName");
+        let display = format!("{first} {last}");
+        let display = display.trim();
+        let display = if display.is_empty() {
+            user.username.as_str()
+        } else {
+            display
         };
-        let a = Adapter::new(cfg.clone());
-        assert_eq!(a.config(), &cfg);
+        let upn = if user.email.is_empty() {
+            user.username.as_str()
+        } else {
+            user.email.as_str()
+        };
+        let payload = json!({
+            "accountEnabled": user.enabled,
+            "displayName": display,
+            "mailNickname": user.username,
+            "userPrincipalName": upn,
+            "givenName": first,
+            "surname": last,
+            "passwordProfile": {
+                "forceChangePasswordNextSignIn": false,
+                "password": password,
+            },
+        });
+        let resp = self
+            .http
+            .post(format!("{}/users", self.graph))
+            .bearer_auth(&token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("create_user request failed", e))?;
+        if !resp.status().is_success() {
+            return Err(Error::provider(format!(
+                "idp/azure-ad: create_user failed: HTTP {}",
+                resp.status().as_u16()
+            )));
+        }
+        let data: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("create_user decode failed", e))?;
+        let mut created = user;
+        if let Some(id) = data.get("id").and_then(Value::as_str) {
+            created.id = id.to_string();
+        }
+        Ok(created)
     }
 
-    #[test]
-    fn config_default_is_all_empty() {
-        // Mirrors Go's Config{} zero value.
-        let cfg = Config::default();
-        assert!(cfg.base_url.is_empty());
-        assert!(cfg.realm.is_empty());
-        assert!(cfg.client_id.is_empty());
-        assert!(cfg.client_secret.is_empty());
-        assert!(cfg.tenant.is_empty());
-        assert!(cfg.user_pool_id.is_empty());
-        assert!(cfg.region.is_empty());
+    async fn update_user(&self, user: User) -> Result<User> {
+        let token = self.app_token().await?;
+        let payload = json!({
+            "accountEnabled": user.enabled,
+            "givenName": attr_str(&user, "firstName"),
+            "surname": attr_str(&user, "lastName"),
+        });
+        self.http
+            .patch(format!("{}/users/{}", self.graph, user.id))
+            .bearer_auth(&token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("update_user request failed", e))?;
+        Ok(user)
     }
 
-    #[test]
-    fn adapter_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<Adapter>();
-        assert_send_sync::<Config>();
-        assert_send_sync::<Arc<dyn firefly_idp::Adapter>>();
+    async fn delete_user(&self, id: &str) -> Result<()> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .delete(format!("{}/users/{id}", self.graph))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("delete_user request failed", e))?;
+        let code = resp.status().as_u16();
+        if code == 200 || code == 204 {
+            Ok(())
+        } else if code == 404 {
+            Err(Error::UserNotFound)
+        } else {
+            Err(Error::provider(format!(
+                "idp/azure-ad: delete_user failed: HTTP {code}"
+            )))
+        }
+    }
+
+    fn name(&self) -> &str {
+        "azure-ad"
+    }
+
+    // -- extended surface (pyfly parity) ----------------------------------
+
+    async fn logout(&self, _access_token: &str) -> Result<bool> {
+        // Azure AD has no server-side logout for non-interactive clients.
+        Ok(true)
+    }
+
+    async fn introspect(&self, access_token: &str) -> Result<SessionIntrospection> {
+        let resp = self
+            .http
+            .get(format!("{}/me", self.graph))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("introspect request failed", e))?;
+        if resp.status().as_u16() != 200 {
+            return Ok(SessionIntrospection::inactive());
+        }
+        let data: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("introspect decode failed", e))?;
+        Ok(SessionIntrospection {
+            active: true,
+            user_id: data
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            username: data
+                .get("userPrincipalName")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            scopes: Vec::new(),
+        })
+    }
+
+    async fn find_by_username(&self, username: &str) -> Result<User> {
+        // Azure resolves the UPN as the id, so this delegates to get_user.
+        idp::Adapter::get_user(self, username).await
+    }
+
+    async fn list_users(&self, limit: usize) -> Result<Vec<User>> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .get(format!("{}/users", self.graph))
+            .bearer_auth(&token)
+            .query(&[("$top", limit.to_string())])
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("list_users request failed", e))?;
+        if !resp.status().is_success() {
+            return Err(Error::provider(format!(
+                "idp/azure-ad: list_users failed: HTTP {}",
+                resp.status().as_u16()
+            )));
+        }
+        let data: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("list_users decode failed", e))?;
+        Ok(data
+            .get("value")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(from_aad).collect())
+            .unwrap_or_default())
+    }
+
+    async fn change_password(
+        &self,
+        user_id: &str,
+        _old_password: &str,
+        new_password: &str,
+    ) -> Result<bool> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .patch(format!("{}/users/{user_id}", self.graph))
+            .bearer_auth(&token)
+            .json(&json!({
+                "passwordProfile": {
+                    "forceChangePasswordNextSignIn": false,
+                    "password": new_password,
+                }
+            }))
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("change_password request failed", e))?;
+        let code = resp.status().as_u16();
+        Ok(code == 200 || code == 204)
+    }
+
+    async fn reset_password(&self, user_id: &str) -> Result<String> {
+        let new_password = random_password();
+        self.change_password(user_id, "", &new_password).await?;
+        Ok(new_password)
+    }
+
+    async fn register_user(&self, mut user: User, password: &str) -> Result<User> {
+        user.enabled = true;
+        self.create_user(user, password).await
+    }
+
+    async fn get_user_info(&self, access_token: &str) -> Result<User> {
+        let resp = self
+            .http
+            .get(format!("{}/me", self.graph))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("get_user_info request failed", e))?;
+        if resp.status().as_u16() != 200 {
+            return Err(Error::UserNotFound);
+        }
+        let data: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("get_user_info decode failed", e))?;
+        Ok(from_aad(&data))
+    }
+
+    async fn mfa_challenge(&self, _user_id: &str) -> Result<MfaChallenge> {
+        Err(not_implemented())
+    }
+
+    async fn mfa_verify(&self, _challenge_id: &str, _code: &str) -> Result<Token> {
+        Err(not_implemented())
+    }
+
+    async fn get_roles(&self, user_id: &str) -> Result<Vec<Role>> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .get(format!("{}/users/{user_id}/memberOf", self.graph))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("get_roles request failed", e))?;
+        if resp.status().as_u16() != 200 {
+            return Ok(Vec::new());
+        }
+        let data: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("get_roles decode failed", e))?;
+        Ok(data
+            .get("value")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(role_from_group).collect())
+            .unwrap_or_default())
+    }
+
+    async fn assign_role(&self, user_id: &str, role: &str) -> Result<bool> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .post(format!("{}/groups/{role}/members/$ref", self.graph))
+            .bearer_auth(&token)
+            .json(&json!({
+                "@odata.id": format!("{}/directoryObjects/{user_id}", self.graph),
+            }))
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("assign_role request failed", e))?;
+        let code = resp.status().as_u16();
+        Ok(code == 200 || code == 204)
+    }
+
+    async fn revoke_role(&self, user_id: &str, role: &str) -> Result<bool> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .delete(format!(
+                "{}/groups/{role}/members/{user_id}/$ref",
+                self.graph
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("revoke_role request failed", e))?;
+        let code = resp.status().as_u16();
+        Ok(code == 200 || code == 204)
+    }
+
+    async fn list_roles(&self) -> Result<Vec<Role>> {
+        let token = self.app_token().await?;
+        let resp = self
+            .http
+            .get(format!("{}/groups", self.graph))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| Self::provider_err("list_roles request failed", e))?;
+        if !resp.status().is_success() {
+            return Err(Error::provider(format!(
+                "idp/azure-ad: list_roles failed: HTTP {}",
+                resp.status().as_u16()
+            )));
+        }
+        let data: Value = resp
+            .json()
+            .await
+            .map_err(|e| Self::provider_err("list_roles decode failed", e))?;
+        Ok(data
+            .get("value")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(role_from_group).collect())
+            .unwrap_or_default())
     }
 }

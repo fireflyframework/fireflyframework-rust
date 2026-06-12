@@ -155,6 +155,26 @@ impl Workflow {
         &self.name
     }
 
+    /// The configured nodes, in insertion order — the definition-listing
+    /// accessor used by the validator, registry, and admin surfaces.
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
+
+    /// Node names in insertion order.
+    pub fn node_names(&self) -> Vec<&str> {
+        self.nodes.iter().map(|n| n.name.as_str()).collect()
+    }
+
+    /// The dependency graph as `node -> dependencies`, the shape consumed
+    /// by [`OrchestrationValidator::validate_dag`](crate::OrchestrationValidator::validate_dag).
+    pub fn graph(&self) -> std::collections::BTreeMap<String, Vec<String>> {
+        self.nodes
+            .iter()
+            .map(|n| (n.name.clone(), n.depends_on.clone()))
+            .collect()
+    }
+
     /// Executes the workflow. Returns the first node error encountered
     /// (joined with the other failures of the same wave, if any).
     pub async fn run(&self) -> Result<(), WorkflowError> {

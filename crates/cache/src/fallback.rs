@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::adapter::{Adapter, CacheError};
+use crate::adapter::{Adapter, CacheError, CacheStats};
 
 /// Chains a primary adapter with a secondary so that any failure from the
 /// primary (other than [`CacheError::NotFound`]) demotes the request to the
@@ -90,6 +90,59 @@ impl Adapter for FallbackAdapter {
             return Ok(());
         }
         self.secondary.health_check().await
+    }
+
+    /// Mirrors the conditional write to both adapters. Returns `true` if
+    /// *either* adapter recorded a fresh write — pyfly's `CacheManager
+    /// .put_if_absent` (`result or fallback_result`). A primary transport
+    /// failure is swallowed so the secondary still gets the write.
+    async fn set_if_absent(
+        &self,
+        key: &str,
+        value: &[u8],
+        ttl: Option<Duration>,
+    ) -> Result<bool, CacheError> {
+        let primary = match self.primary.set_if_absent(key, value, ttl).await {
+            Ok(stored) => stored,
+            Err(err) if is_transport(&err) => false,
+            Err(err) => return Err(err),
+        };
+        let secondary = self.secondary.set_if_absent(key, value, ttl).await?;
+        Ok(primary || secondary)
+    }
+
+    /// Union existence: `true` when *either* adapter holds the key —
+    /// pyfly's `CacheManager.exists`. A primary transport failure demotes
+    /// to the secondary.
+    async fn exists(&self, key: &str) -> Result<bool, CacheError> {
+        match self.primary.exists(key).await {
+            Ok(true) => Ok(true),
+            Ok(false) => self.secondary.exists(key).await,
+            Err(err) if is_transport(&err) => self.secondary.exists(key).await,
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Evicts the prefix from both adapters and returns the *summed* count —
+    /// pyfly's `CacheManager.evict_by_prefix` (`primary_count +
+    /// fallback_count`). A primary transport failure contributes `0`.
+    async fn delete_prefix(&self, prefix: &str) -> Result<u64, CacheError> {
+        let primary = match self.primary.delete_prefix(prefix).await {
+            Ok(n) => n,
+            Err(err) if is_transport(&err) => 0,
+            Err(err) => return Err(err),
+        };
+        let secondary = self.secondary.delete_prefix(prefix).await?;
+        Ok(primary + secondary)
+    }
+
+    /// Returns the primary's stats when available, otherwise the
+    /// secondary's — the composite has no counters of its own.
+    async fn stats(&self) -> Option<CacheStats> {
+        match self.primary.stats().await {
+            Some(s) => Some(s),
+            None => self.secondary.stats().await,
+        }
     }
 }
 

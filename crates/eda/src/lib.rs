@@ -67,6 +67,7 @@ mod error;
 mod event;
 mod inmemory;
 mod kafka;
+mod listener;
 mod ports;
 mod rabbitmq;
 
@@ -74,6 +75,7 @@ pub use error::{EdaError, EdaResult};
 pub use event::Event;
 pub use inmemory::InMemoryBroker;
 pub use kafka::{new_kafka_broker, KafkaConfig};
+pub use listener::{wrap_listener, ListenerPolicy, HEADER_EXCEPTION, HEADER_ORIGINAL_TOPIC};
 pub use ports::{handler, Broker, Handler, HandlerFuture, Publisher, Subscriber};
 pub use rabbitmq::{new_rabbitmq_broker, RabbitMqConfig};
 

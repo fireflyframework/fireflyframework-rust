@@ -80,6 +80,14 @@ use axum::Router;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod backend;
+mod server;
+
+pub use backend::{
+    BackendError, ConfigBackend, ConfigSource, FsStore, GitStore, MemoryBackend, Properties,
+};
+pub use server::ConfigServer;
+
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.1";
 
@@ -94,6 +102,13 @@ pub enum ConfigServerError {
     /// The backing store failed to produce an [`Environment`].
     #[error("{0}")]
     Store(String),
+    /// The store does not support the requested write operation.
+    ///
+    /// Returned by the default [`Store::save`] implementation; a
+    /// read-only store leaves it in place, a writable one overrides
+    /// `save`.
+    #[error("config-server: operation not supported: {0}")]
+    Unsupported(String),
 }
 
 /// One logical source of properties (file, profile, db row).
@@ -151,6 +166,25 @@ pub trait Store: Send + Sync {
         profile: &str,
         label: &str,
     ) -> Result<Environment, ConfigServerError>;
+
+    /// Persists `env` under `(app, profile, label)`.
+    ///
+    /// This is the **optional write path**: the default implementation
+    /// returns [`ConfigServerError::Unsupported`], so a read-only store
+    /// (the common case, including [`MemoryStore`]'s lookup-only
+    /// contract) need not implement it and existing implementations keep
+    /// compiling unchanged. A writable store — e.g. one backed by
+    /// [`FsStore`] or [`GitStore`] — overrides `save` to commit changes.
+    async fn save(
+        &self,
+        app: &str,
+        profile: &str,
+        label: &str,
+        env: Environment,
+    ) -> Result<(), ConfigServerError> {
+        let _ = (app, profile, label, env);
+        Err(ConfigServerError::Unsupported("save".to_string()))
+    }
 }
 
 /// The default in-process [`Store`]. Use [`MemoryStore::put`] to seed values.

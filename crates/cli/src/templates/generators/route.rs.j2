@@ -1,0 +1,22 @@
+//! {{ names.human }} route mappings.
+
+use axum::{routing::get, Router};
+
+/// Mount the `{{ names.kebab }}` routes onto an Axum [`Router`].
+///
+/// REST base path: `/{{ names.kebab_plural }}`.
+pub fn {{ names.snake }}_routes() -> Router {
+    Router::new()
+        .route("/{{ names.kebab_plural }}", get(list_{{ names.snake_plural }}))
+        .route("/{{ names.kebab_plural }}/:id", get(get_{{ names.snake }}))
+}
+
+/// `GET /{{ names.kebab_plural }}` — list {{ names.human_plural }}.
+async fn list_{{ names.snake_plural }}() -> &'static str {
+    "[]"
+}
+
+/// `GET /{{ names.kebab_plural }}/:id` — fetch one {{ names.human }}.
+async fn get_{{ names.snake }}() -> &'static str {
+    "{}"
+}

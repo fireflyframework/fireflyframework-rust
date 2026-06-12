@@ -5,8 +5,12 @@
 //! [`HealthComposite`] aggregator — adapted to async Rust: indicators are
 //! `async_trait` probes awaited sequentially, exactly as the Go composite
 //! runs its indicators one by one.
+//!
+//! The pyfly-parity layer adds Kubernetes-style [`ProbeGroup`]s
+//! (liveness/readiness), named health groups, and per-component
+//! drill-down — the engine behind `/actuator/health/{group|component}`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, RwLock};
@@ -15,6 +19,30 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// Kubernetes-style probe groups for health indicators — the counterpart
+/// of pyfly's `ProbeGroup` enum and Spring Boot's availability groups.
+///
+/// An indicator registered with **no** groups participates in *both*
+/// probes (pyfly's rule); an indicator registered with explicit groups
+/// participates only in those probes. The full `/actuator/health` view
+/// always includes every indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProbeGroup {
+    /// Included in `GET /actuator/health/liveness`.
+    Liveness,
+    /// Included in `GET /actuator/health/readiness`.
+    Readiness,
+}
+
+impl fmt::Display for ProbeGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ProbeGroup::Liveness => "liveness",
+            ProbeGroup::Readiness => "readiness",
+        })
+    }
+}
 
 /// Canonical Firefly health states. Wire-compatible with the Java
 /// `HealthIndicator.Status`, the .NET `HealthStatus` enum, and the Go
@@ -177,12 +205,25 @@ where
     }
 }
 
+/// An indicator plus its probe-group membership.
+#[derive(Clone)]
+struct Registered {
+    indicator: Arc<dyn HealthIndicator>,
+    groups: Vec<ProbeGroup>,
+}
+
 /// Aggregates multiple indicators. The overall status is `DOWN` if any
 /// indicator is `DOWN`, else `DEGRADED` if any is `DEGRADED`, else `UP` —
 /// the same precedence the Go `observability.Composite` applies.
+///
+/// pyfly parity: indicators may be registered with [`ProbeGroup`]
+/// membership ([`HealthComposite::add_with_groups`]) and collected into
+/// named health groups ([`HealthComposite::add_group`]), consumed by the
+/// `/actuator/health/{liveness|readiness|group|component}` drill-down.
 #[derive(Default)]
 pub struct HealthComposite {
-    indicators: RwLock<Vec<Arc<dyn HealthIndicator>>>,
+    indicators: RwLock<Vec<Registered>>,
+    custom_groups: RwLock<BTreeMap<String, BTreeSet<String>>>,
 }
 
 impl HealthComposite {
@@ -191,30 +232,74 @@ impl HealthComposite {
         Self::default()
     }
 
-    /// Registers an indicator.
+    /// Registers an indicator that participates in every probe group.
     pub fn add<I: HealthIndicator + 'static>(&self, indicator: I) {
         self.add_arc(Arc::new(indicator));
     }
 
-    /// Registers an already-shared indicator.
+    /// Registers an already-shared indicator that participates in every
+    /// probe group.
     pub fn add_arc(&self, indicator: Arc<dyn HealthIndicator>) {
+        self.add_arc_with_groups(indicator, &[]);
+    }
+
+    /// Registers an indicator with explicit [`ProbeGroup`] membership.
+    /// An empty `groups` slice means the indicator participates in both
+    /// liveness and readiness (pyfly's default rule).
+    pub fn add_with_groups<I: HealthIndicator + 'static>(
+        &self,
+        indicator: I,
+        groups: &[ProbeGroup],
+    ) {
+        self.add_arc_with_groups(Arc::new(indicator), groups);
+    }
+
+    /// Registers an already-shared indicator with explicit [`ProbeGroup`]
+    /// membership.
+    pub fn add_arc_with_groups(&self, indicator: Arc<dyn HealthIndicator>, groups: &[ProbeGroup]) {
         self.indicators
             .write()
             .expect("health indicator lock poisoned")
-            .push(indicator);
+            .push(Registered {
+                indicator,
+                groups: groups.to_vec(),
+            });
     }
 
-    /// Runs every registered indicator (sequentially, like the Go
-    /// composite) and returns the overall status plus a per-indicator
-    /// map. Each result is stamped with its check duration and the
-    /// UTC wall-clock instant at which the check started.
-    pub async fn check_all(&self) -> (HealthStatus, BTreeMap<String, HealthResult>) {
-        let indicators: Vec<Arc<dyn HealthIndicator>> = self
-            .indicators
+    /// Registers a named health group — Spring's
+    /// `management.endpoint.health.group.<name>` — listing the indicator
+    /// names it includes. Served on `GET /actuator/health/{name}`.
+    pub fn add_group(&self, name: impl Into<String>, members: &[&str]) {
+        self.custom_groups
+            .write()
+            .expect("health group lock poisoned")
+            .insert(name.into(), members.iter().map(|m| m.to_string()).collect());
+    }
+
+    /// Whether an indicator is registered under `name`.
+    pub fn has_indicator(&self, name: &str) -> bool {
+        self.indicators
             .read()
             .expect("health indicator lock poisoned")
-            .clone();
+            .iter()
+            .any(|r| r.indicator.name() == name)
+    }
 
+    /// Snapshot of registered entries matching `pred`.
+    fn snapshot(&self, pred: impl Fn(&Registered) -> bool) -> Vec<Arc<dyn HealthIndicator>> {
+        self.indicators
+            .read()
+            .expect("health indicator lock poisoned")
+            .iter()
+            .filter(|r| pred(r))
+            .map(|r| Arc::clone(&r.indicator))
+            .collect()
+    }
+
+    /// Runs the given indicators sequentially and aggregates.
+    async fn check_indicators(
+        indicators: Vec<Arc<dyn HealthIndicator>>,
+    ) -> (HealthStatus, BTreeMap<String, HealthResult>) {
         let mut out = BTreeMap::new();
         let mut overall = HealthStatus::Up;
         for indicator in indicators {
@@ -235,6 +320,70 @@ impl HealthComposite {
             out.insert(indicator.name().to_string(), result);
         }
         (overall, out)
+    }
+
+    /// Runs every registered indicator (sequentially, like the Go
+    /// composite) and returns the overall status plus a per-indicator
+    /// map. Each result is stamped with its check duration and the
+    /// UTC wall-clock instant at which the check started.
+    pub async fn check_all(&self) -> (HealthStatus, BTreeMap<String, HealthResult>) {
+        Self::check_indicators(self.snapshot(|_| true)).await
+    }
+
+    /// Runs only the indicators participating in the liveness probe —
+    /// those registered with [`ProbeGroup::Liveness`] or with no groups.
+    pub async fn check_liveness(&self) -> (HealthStatus, BTreeMap<String, HealthResult>) {
+        Self::check_indicators(
+            self.snapshot(|r| r.groups.is_empty() || r.groups.contains(&ProbeGroup::Liveness)),
+        )
+        .await
+    }
+
+    /// Runs only the indicators participating in the readiness probe —
+    /// those registered with [`ProbeGroup::Readiness`] or with no groups.
+    pub async fn check_readiness(&self) -> (HealthStatus, BTreeMap<String, HealthResult>) {
+        Self::check_indicators(
+            self.snapshot(|r| r.groups.is_empty() || r.groups.contains(&ProbeGroup::Readiness)),
+        )
+        .await
+    }
+
+    /// Runs a named group's indicators. The built-in `liveness` /
+    /// `readiness` probe groups are always available; other names must
+    /// have been registered via [`HealthComposite::add_group`]. Returns
+    /// `None` when no such group exists (pyfly's `check_group`).
+    pub async fn check_group(
+        &self,
+        name: &str,
+    ) -> Option<(HealthStatus, BTreeMap<String, HealthResult>)> {
+        match name {
+            "liveness" => Some(self.check_liveness().await),
+            "readiness" => Some(self.check_readiness().await),
+            _ => {
+                let members = self
+                    .custom_groups
+                    .read()
+                    .expect("health group lock poisoned")
+                    .get(name)
+                    .cloned()?;
+                Some(
+                    Self::check_indicators(self.snapshot(|r| members.contains(r.indicator.name())))
+                        .await,
+                )
+            }
+        }
+    }
+
+    /// Runs a single indicator by name and returns its stamped result,
+    /// or `None` when no indicator is registered under `name` — the
+    /// engine behind the `/actuator/health/{component}` drill-down.
+    pub async fn check_component(&self, name: &str) -> Option<HealthResult> {
+        let matching = self.snapshot(|r| r.indicator.name() == name);
+        if matching.is_empty() {
+            return None;
+        }
+        let (_, mut results) = Self::check_indicators(matching).await;
+        results.remove(name)
     }
 }
 
@@ -351,5 +500,153 @@ mod tests {
         let r = &results["db"];
         assert!(r.time >= before);
         assert!(r.time <= Utc::now());
+    }
+
+    // ----- pyfly parity: probe groups -----
+
+    fn up(
+        name: &'static str,
+    ) -> IndicatorFn<impl Fn() -> std::future::Ready<HealthResult> + Send + Sync> {
+        IndicatorFn::new(name, || std::future::ready(HealthResult::up()))
+    }
+
+    fn down(
+        name: &'static str,
+    ) -> IndicatorFn<impl Fn() -> std::future::Ready<HealthResult> + Send + Sync> {
+        IndicatorFn::new(name, || std::future::ready(HealthResult::down("offline")))
+    }
+
+    // pyfly: test_default_indicator_appears_in_all_probes
+    #[tokio::test]
+    async fn default_indicator_appears_in_all_probes() {
+        let c = HealthComposite::new();
+        c.add(up("db"));
+        let (_, general) = c.check_all().await;
+        let (_, liveness) = c.check_liveness().await;
+        let (_, readiness) = c.check_readiness().await;
+        assert!(general.contains_key("db"));
+        assert!(liveness.contains_key("db"));
+        assert!(readiness.contains_key("db"));
+    }
+
+    // pyfly: test_liveness_only_indicator_in_liveness_only
+    #[tokio::test]
+    async fn liveness_only_indicator_in_liveness_only() {
+        let c = HealthComposite::new();
+        c.add_with_groups(up("ping"), &[ProbeGroup::Liveness]);
+        let (_, general) = c.check_all().await;
+        let (_, liveness) = c.check_liveness().await;
+        let (_, readiness) = c.check_readiness().await;
+        assert!(general.contains_key("ping"));
+        assert!(liveness.contains_key("ping"));
+        assert!(!readiness.contains_key("ping"));
+    }
+
+    // pyfly: test_readiness_only_indicator_in_readiness_only
+    #[tokio::test]
+    async fn readiness_only_indicator_in_readiness_only() {
+        let c = HealthComposite::new();
+        c.add_with_groups(up("cache"), &[ProbeGroup::Readiness]);
+        let (_, general) = c.check_all().await;
+        let (_, liveness) = c.check_liveness().await;
+        let (_, readiness) = c.check_readiness().await;
+        assert!(general.contains_key("cache"));
+        assert!(!liveness.contains_key("cache"));
+        assert!(readiness.contains_key("cache"));
+    }
+
+    // pyfly: test_indicator_with_both_groups_appears_in_both
+    #[tokio::test]
+    async fn indicator_with_both_groups_appears_in_both() {
+        let c = HealthComposite::new();
+        c.add_with_groups(up("core"), &[ProbeGroup::Liveness, ProbeGroup::Readiness]);
+        let (_, liveness) = c.check_liveness().await;
+        let (_, readiness) = c.check_readiness().await;
+        assert!(liveness.contains_key("core"));
+        assert!(readiness.contains_key("core"));
+    }
+
+    // pyfly: test_down_liveness_does_not_affect_readiness (and vice versa)
+    #[tokio::test]
+    async fn down_probes_are_isolated() {
+        let c = HealthComposite::new();
+        c.add_with_groups(down("live-check"), &[ProbeGroup::Liveness]);
+        c.add_with_groups(up("ready-check"), &[ProbeGroup::Readiness]);
+        let (liveness, _) = c.check_liveness().await;
+        let (readiness, _) = c.check_readiness().await;
+        assert_eq!(liveness, HealthStatus::Down);
+        assert_eq!(readiness, HealthStatus::Up);
+    }
+
+    // pyfly: test_empty_indicators_all_probes_up
+    #[tokio::test]
+    async fn empty_indicators_all_probes_up() {
+        let c = HealthComposite::new();
+        let (general, _) = c.check_all().await;
+        let (liveness, _) = c.check_liveness().await;
+        let (readiness, _) = c.check_readiness().await;
+        assert_eq!(general, HealthStatus::Up);
+        assert_eq!(liveness, HealthStatus::Up);
+        assert_eq!(readiness, HealthStatus::Up);
+    }
+
+    // pyfly: test_mixed_groups_and_defaults
+    #[tokio::test]
+    async fn mixed_groups_and_defaults() {
+        let c = HealthComposite::new();
+        c.add(up("default"));
+        c.add_with_groups(up("live-only"), &[ProbeGroup::Liveness]);
+        c.add_with_groups(up("ready-only"), &[ProbeGroup::Readiness]);
+        let (_, general) = c.check_all().await;
+        let (_, liveness) = c.check_liveness().await;
+        let (_, readiness) = c.check_readiness().await;
+        assert_eq!(general.len(), 3);
+        assert_eq!(
+            liveness.keys().cloned().collect::<Vec<_>>(),
+            vec!["default", "live-only"]
+        );
+        assert_eq!(
+            readiness.keys().cloned().collect::<Vec<_>>(),
+            vec!["default", "ready-only"]
+        );
+    }
+
+    // ----- pyfly parity: named groups + component drill-down -----
+
+    #[tokio::test]
+    async fn named_group_runs_only_members() {
+        let c = HealthComposite::new();
+        c.add(up("db"));
+        c.add(down("broker"));
+        c.add_group("storage", &["db"]);
+        let (overall, results) = c.check_group("storage").await.unwrap();
+        assert_eq!(overall, HealthStatus::Up);
+        assert!(results.contains_key("db"));
+        assert!(!results.contains_key("broker"));
+    }
+
+    #[tokio::test]
+    async fn builtin_probe_groups_always_available() {
+        let c = HealthComposite::new();
+        assert!(c.check_group("liveness").await.is_some());
+        assert!(c.check_group("readiness").await.is_some());
+        assert!(c.check_group("nope").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn check_component_returns_single_result() {
+        let c = HealthComposite::new();
+        c.add(up("db"));
+        let result = c.check_component("db").await.unwrap();
+        assert_eq!(result.status, HealthStatus::Up);
+        assert!(c.check_component("missing").await.is_none());
+        assert!(c.has_indicator("db"));
+        assert!(!c.has_indicator("missing"));
+    }
+
+    #[test]
+    fn probe_group_display() {
+        assert_eq!(ProbeGroup::Liveness.to_string(), "liveness");
+        assert_eq!(ProbeGroup::Readiness.to_string(), "readiness");
     }
 }

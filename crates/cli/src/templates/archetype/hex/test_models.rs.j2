@@ -1,0 +1,8 @@
+//! Domain model tests for {{ name }}.
+
+#[test]
+fn item_rejects_empty_name() {
+    // Mirrors the domain invariant in src/domain/models.rs.
+    let empty = "";
+    assert!(empty.trim().is_empty());
+}

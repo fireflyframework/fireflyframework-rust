@@ -93,17 +93,42 @@
 //!                        T = your tracing/auth/etc.
 //! ```
 
+//! ## pyfly parity
+//!
+//! On top of the Go-parity surface above, the crate ports pyfly's CQRS
+//! layer: an [`AuthorizationMiddleware`] driven by the
+//! [`Message::authorize`] hook, an [`ExecutionContext`] (user / tenant /
+//! attributes) threaded through dispatch via
+//! [`Bus::send_with_context`] and [`Bus::register_with_context`],
+//! fluent [`CommandBuilder`] / [`QueryBuilder`] dispatch builders, an
+//! [`EdaCacheInvalidationBridge`] evicting [`QueryCache`] entries when
+//! events arrive on a [`firefly_eda`] broker, and a
+//! [`Bus::handler_names`] listing for the admin actuator.
+
 #![warn(missing_docs)]
 
+mod authorization;
 mod bus;
 mod cache;
+mod context;
+mod eda_bridge;
 mod error;
+mod fluent;
 
+pub use authorization::{
+    AuthorizationError, AuthorizationMiddleware, AuthorizationResult, AuthorizationSeverity,
+    AUTHORIZATION_ERROR_CODE,
+};
 pub use bus::{
     AnyResult, Bus, DynHandler, Envelope, HandlerFuture, Message, Middleware, ValidationMiddleware,
 };
 pub use cache::{QueryCache, QueryCacheMiddleware};
+pub use context::{ExecutionContext, ExecutionContextBuilder};
+pub use eda_bridge::{
+    resolve_pattern, CacheInvalidationEvent, EdaCacheInvalidationBridge, CACHE_INVALIDATION_TOPIC,
+};
 pub use error::CqrsError;
+pub use fluent::{CommandBuilder, MessageMetadata, QueryBuilder};
 
 /// The released framework version. Calendar-versioned (`YY.M.PATCH`)
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to

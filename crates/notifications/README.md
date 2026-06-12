@@ -120,3 +120,96 @@ cargo test -p firefly-notifications
 Covers dispatch routing by channel `Kind`, the `NoChannel` sentinel for
 unrouted messages, register-overwrite semantics, concurrent dispatch,
 and Go wire-format parity for the `Notification` JSON envelope.
+
+## pyfly parity
+
+Alongside the Go-parity envelope above (which is **unchanged** — the
+`Notification` / `Dispatcher` / `Channel` / `MemoryChannel` types and their
+wire formats are preserved), this crate ships the richer
+`pyfly.notifications` surface for channel-specific messaging with hexagonal
+provider adapters.
+
+### What's added
+
+* **Rich models** — `DeliveryStatus` (`QUEUED` / `SENT` / `DELIVERED` /
+  `BOUNCED` / `FAILED` / `SUPPRESSED`, serialized as the upper-case wire value
+  exactly like pyfly's `EmailStatus`), `Attachment`, `EmailMessage`
+  (cc/bcc/attachments/custom headers/separate text+html bodies/provider-native
+  template routing), `SmsMessage`, `PushMessage`, and `NotificationResult`.
+* **Ports** — `EmailProvider` / `SmsProvider` / `PushProvider` (object-safe
+  `async_trait`s; a provider returns `Err(String)` to signal a delivery
+  failure) and `EmailService` / `SmsService` / `PushService` (which never
+  error back to the caller — they always return a `NotificationResult`).
+* **Default services** — `DefaultEmailService` / `DefaultSmsService` /
+  `DefaultPushService`, each layering on:
+  * **opt-out pruning** of EVERY recipient (`to` + `cc` + `bcc` for email,
+    every device token for push), short-circuiting to a `SUPPRESSED` result
+    (without calling the provider) when *all* recipients have opted out;
+  * **template precedence** — an injected local engine renders into `body_html`
+    and clears `template_id` / `template_data`; with no engine, those fields are
+    forwarded for provider-native routing;
+  * **provider-error → FAILED** conversion (pyfly's `_send_safely`);
+  * **metrics** — sent / failed / suppressed counters via the
+    `NotificationMetrics` hook.
+* **Preferences** — `PreferenceService` trait + `InMemoryPreferenceService`
+  with recipient normalization (email/token lower-cased, SMS reduced to digits
+  with an optional leading `+`), so opt-out matches regardless of casing or
+  phone formatting.
+* **Templates** — `TemplateEngine` trait, `NoOpTemplateEngine` (errors on any
+  render — the safe default), and `MiniJinjaTemplateEngine` (feature
+  `minijinja`, on by default) — a Jinja-compatible engine with HTML
+  autoescaping always on, the counterpart of pyfly's `Jinja2TemplateEngine`.
+* **Metrics hook** — `NotificationMetrics` trait (`record_sent` /
+  `record_failed` / `record_suppressed`, with default no-op methods) +
+  `InMemoryNotificationMetrics` for tests.
+* **Dummy providers** — `DummyEmailProvider` / `DummySmsProvider` /
+  `DummyPushProvider` (record every message, report `SENT`).
+* **Config selection** — `EmailProviderSelection` / `SmsProviderSelection` /
+  `PushProviderSelection` / `TemplateEngineSelection` /
+  `PreferenceStoreSelection`, each with a `from_config(&str)` that maps a config
+  string to a typed selection (unknown / empty falls back to the in-process
+  dummy). Actual construction of vendor adapters is left to the vendor crates.
+
+### Example
+
+```rust
+use std::sync::Arc;
+
+use firefly_notifications::{
+    DefaultEmailService, DeliveryStatus, DummyEmailProvider, EmailMessage, EmailService,
+    InMemoryPreferenceService, MiniJinjaTemplateEngine,
+};
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let prefs = Arc::new(InMemoryPreferenceService::new());
+    prefs.opt_out("blocked@example.com", "email");
+
+    let engine = Arc::new(MiniJinjaTemplateEngine::new([(
+        "welcome".to_string(),
+        "<h1>Hi {{ name }}</h1>".to_string(),
+    )]));
+
+    let provider = Arc::new(DummyEmailProvider::new());
+    let service = DefaultEmailService::new(provider.clone())
+        .with_preference_service(prefs)
+        .with_template_engine(engine);
+
+    let mut msg = EmailMessage::new();
+    msg.to = vec!["alice@example.com".into(), "blocked@example.com".into()];
+    msg.sender = "noreply@example.com".into();
+    msg.subject = "Welcome".into();
+    msg.template_id = Some("welcome".into());
+    msg.template_data.insert("name".into(), serde_json::json!("Alice"));
+
+    let result = service.send(msg).await;
+    assert_eq!(result.status, DeliveryStatus::Sent);
+    // blocked@example.com was pruned; only alice received the rendered HTML.
+    assert_eq!(provider.sent()[0].to, vec!["alice@example.com".to_string()]);
+    assert_eq!(provider.sent()[0].body_html.as_deref(), Some("<h1>Hi Alice</h1>"));
+}
+```
+
+The pyfly-parity tests live in `tests/pyfly_parity.rs` (ports of
+`test_template_and_preferences.py` and `test_optout_per_recipient.py`) and
+`tests/models_and_config.rs` (model wire shapes and config selection).

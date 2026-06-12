@@ -1,17 +1,20 @@
 # `firefly-notifications-firebase`
 
-> **Tier:** Adapter · **Status:** Stub (port-asserting) · **Backing tech:** Firebase Cloud Messaging (push)
+> **Tier:** Adapter · **Status:** Real provider (pyfly parity) + Go-parity stub · **Backing tech:** Firebase Cloud Messaging (push)
 
 ## Overview
 
-`firefly-notifications-firebase` is the placeholder
-[`firefly_notifications::Channel`] adapter for Firebase Cloud Messaging
-(push) — the Rust port of the Go module
-`fireflyframework-go/notificationsfirebase`. The crate and types are
-declared, the port assertion compiles, and sentinel-error smoke tests
-guard the wire shape — but the SaaS / cloud SDK integration is **not yet
-wired**. `Channel::send` returns the `ERR_NOT_IMPLEMENTED` sentinel,
-byte-for-byte equal to the Go module's `ErrNotImplemented`:
+`firefly-notifications-firebase` ships two layers:
+
+* **`FirebasePushProvider`** — the real, working FCM HTTP v1 integration (pyfly
+  parity). It implements the `PushProvider` port, posts once per device token
+  to `…/v1/projects/{id}/messages:send` with a bearer token, and folds the
+  per-token outcomes into a single `NotificationResult` with partial-success
+  semantics. See [pyfly parity](#pyfly-parity).
+* **`Channel`** — the Go-parity stub `Channel` adapter (port of
+  `fireflyframework-go/notificationsfirebase`), kept for backward
+  compatibility. `Channel::send` returns the `ERR_NOT_IMPLEMENTED` sentinel,
+  byte-for-byte equal to the Go module's `ErrNotImplemented`:
 
 ```rust
 pub const ERR_NOT_IMPLEMENTED: &str = "firefly/notificationsfirebase: not yet implemented";
@@ -71,11 +74,58 @@ pub struct Config {
 }
 ```
 
-## Roadmap
+## pyfly parity
 
-The real implementation is scheduled for **v26.06.x**, mirroring the Go
-module's roadmap (see the Go repo's `docs/AUDIT.md` § Roadmap for
-sequencing).
+The real provider is a 1:1 port of `pyfly.notifications.providers.firebase`.
+
+| Item | Description |
+| --- | --- |
+| `FirebasePushProvider` | The working FCM v1 adapter. `new(project_id, access_token)` takes a fixed token; `with_token_provider(project_id, src)` takes a refreshing source; `with_base_url(..)` / `with_http_client(..)` are wiring seams. |
+| `PushProvider` | The async port (`name`, `send(PushMessage) -> Result<NotificationResult, FirebaseError>`), object-safe behind `Arc`/`Box`. |
+| `AccessTokenProvider` | The token-source seam (see below); blanket-impl'd for `Fn() -> Result<String, String>`. |
+| `PushMessage` | Port of pyfly's `PushMessage` (`id` defaults to a UUID v4, `device_tokens`, `title`, `body`, `data`). `new(tokens, title, body)` + `with_data(..)`. |
+| `NotificationResult` | Port of pyfly's `NotificationResult` (`id`, `provider`, `status`, `provider_id`, `error`). |
+| `DeliveryStatus` | Port of pyfly's `EmailStatus` enum (`QUEUED`/`SENT`/`DELIVERED`/`BOUNCED`/`FAILED`/`SUPPRESSED`). |
+| `FirebaseError` | `Transport(..)` and `Token(..)`. |
+
+### Access-token source (no JWT/OAuth here)
+
+FCM v1 needs a short-lived OAuth2 bearer token minted from a Google
+service-account key. **This crate intentionally does not implement the
+service-account JWT → OAuth2 exchange.** It accepts an injected
+`AccessTokenProvider` (a `Fn() -> Result<String, String>` works), invoked once
+per `send` so the token can refresh. Wire it to whatever mints/refreshes tokens
+in your deployment (GCP metadata server, workload-identity sidecar,
+`google-auth`-style library, …). For a fixed token use `new(..)`.
+
+### Partial-success semantics
+
+One HTTP send per device token, in order. The aggregate result:
+
+* **all delivered, no errors** → `SENT`, `provider_id` = `;`-joined message
+  names, `error` = `None`;
+* **some delivered, some failed** → `SENT` (partial success) with both
+  `provider_id` and `error = "{token}: http {status}; …"` populated;
+* **none delivered** → `FAILED`, `provider_id = None`.
+
+`data` values are coerced to strings, matching pyfly's
+`{k: str(v) for k, v in message.data.items()}`.
+
+```rust
+use firefly_notifications_firebase::{FirebasePushProvider, PushMessage, PushProvider};
+
+# async fn demo() {
+let provider = FirebasePushProvider::new("my-proj", "ya29.token");
+let result = provider.send(PushMessage::new(["tok-1"], "Hello", "World")).await.unwrap();
+assert_eq!(result.provider, "firebase");
+# }
+```
+
+## Public surface (Go-parity stub)
+
+The stub `Channel` continues to register with `firefly_notifications::Dispatcher`
+under `Kind::PUSH` and surface the `ERR_NOT_IMPLEMENTED` sentinel; consuming code
+that wired the stub still compiles and behaves identically.
 
 ## Testing
 
@@ -83,11 +133,10 @@ sequencing).
 cargo test -p firefly-notifications-firebase
 ```
 
-Smoke tests assert (a) port satisfaction (the adapter coerces to
-`Box<dyn firefly_notifications::Channel>` / `Arc<dyn ...>`) and (b)
-`send` returns `ERR_NOT_IMPLEMENTED` while `name`/`kind` are non-empty —
-the 1:1 port of the Go `TestImplementsPort` and `TestStubReturnsSentinel`
-cases — plus Rust-specific coverage for sentinel byte-parity, error
-taxonomy, config plumbing, dispatcher wiring, and `Send + Sync` bounds.
-Once the production adapter ships, these tests are deleted in favour of
-integration tests against a real provider container / mock server.
+The behavior tests (`tests/firebase_behavior.rs`) are ported 1:1 from pyfly's
+`test_firebase_behavior.py`: they spin up an **in-process axum mock on
+`127.0.0.1:0`** that replays a per-token response queue, and assert on the
+actual outbound requests (URL, bearer header, JSON payload) plus the parsed
+`NotificationResult` for the success, error, and partial-success cases — no
+network, no Docker. The stub smoke tests (port satisfaction, sentinel return)
+are retained for Go parity.

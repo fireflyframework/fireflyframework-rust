@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use firefly_cache::{Adapter, CacheError, FallbackAdapter, MemoryAdapter, NoOpAdapter, Typed};
+use firefly_cache::{
+    Adapter, CacheError, CacheStats, FallbackAdapter, MemoryAdapter, NoOpAdapter, Typed,
+};
 
 /// Test double whose every operation fails with a transport-class error —
 /// the stand-in for an unreachable Redis node.
@@ -36,6 +38,20 @@ impl Adapter for FailingAdapter {
         "failing".to_owned()
     }
     async fn health_check(&self) -> Result<(), CacheError> {
+        Err(CacheError::Backend("connection refused".into()))
+    }
+    async fn set_if_absent(
+        &self,
+        _key: &str,
+        _value: &[u8],
+        _ttl: Option<Duration>,
+    ) -> Result<bool, CacheError> {
+        Err(CacheError::Backend("connection refused".into()))
+    }
+    async fn exists(&self, _key: &str) -> Result<bool, CacheError> {
+        Err(CacheError::Backend("connection refused".into()))
+    }
+    async fn delete_prefix(&self, _prefix: &str) -> Result<u64, CacheError> {
         Err(CacheError::Backend("connection refused".into()))
     }
 }
@@ -468,4 +484,340 @@ async fn adapter_shared_across_tasks() {
     for (i, h) in handles.into_iter().enumerate() {
         assert_eq!(h.await.unwrap(), format!("v{i}").into_bytes());
     }
+}
+
+// ---------------------------------------------------------------------------
+// pyfly: test_wave_cache_fixes — set_if_absent / delete_prefix / stats
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn memory_set_if_absent() {
+    // pyfly test_put_if_absent (audit #75).
+    let m = MemoryAdapter::new();
+    assert!(m.set_if_absent("k", b"first", None).await.unwrap());
+    assert!(!m.set_if_absent("k", b"second", None).await.unwrap());
+    assert_eq!(m.get("k").await.unwrap(), b"first");
+}
+
+#[tokio::test]
+async fn memory_set_if_absent_overwrites_expired() {
+    // An expired entry is treated as absent, so the conditional write wins.
+    let m = MemoryAdapter::new();
+    m.set("k", b"stale", Some(Duration::from_millis(1)))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert!(m.set_if_absent("k", b"fresh", None).await.unwrap());
+    assert_eq!(m.get("k").await.unwrap(), b"fresh");
+}
+
+#[tokio::test]
+async fn memory_delete_prefix() {
+    // pyfly test_evict_by_prefix (audit #78).
+    let m = MemoryAdapter::new();
+    m.set("user:1", b"a", None).await.unwrap();
+    m.set("user:2", b"b", None).await.unwrap();
+    m.set("order:1", b"c", None).await.unwrap();
+    let removed = m.delete_prefix("user:").await.unwrap();
+    assert_eq!(removed, 2);
+    assert!(m.get("user:1").await.unwrap_err().is_not_found());
+    assert_eq!(m.get("order:1").await.unwrap(), b"c");
+}
+
+#[tokio::test]
+async fn memory_exists() {
+    let m = MemoryAdapter::new();
+    assert!(!m.exists("k").await.unwrap());
+    m.set("k", b"v", None).await.unwrap();
+    assert!(m.exists("k").await.unwrap());
+}
+
+#[tokio::test]
+async fn memory_exists_evicts_expired() {
+    let m = MemoryAdapter::new();
+    m.set("k", b"v", Some(Duration::from_millis(1)))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert!(!m.exists("k").await.unwrap());
+    assert_eq!(m.len().await, 0, "exists() should lazily evict");
+}
+
+#[tokio::test]
+async fn memory_stats_track_hit_rate() {
+    // pyfly test_stats_track_hit_rate (audit #76).
+    let m = MemoryAdapter::new();
+    m.set("k", b"v", None).await.unwrap();
+    m.get("k").await.unwrap(); // hit
+    assert!(m.get("missing").await.unwrap_err().is_not_found()); // miss
+    let stats = m.stats().await.unwrap();
+    assert_eq!(stats.hits, 1);
+    assert_eq!(stats.misses, 1);
+    assert_eq!(stats.hit_rate, 0.5);
+    assert_eq!(stats.requests(), 2);
+}
+
+#[tokio::test]
+async fn memory_stats_empty_hit_rate_is_zero() {
+    // pyfly: `hits / requests if requests else 0.0`.
+    let m = MemoryAdapter::new();
+    let stats = m.stats().await.unwrap();
+    assert_eq!(stats.size, 0);
+    assert_eq!(stats.hit_rate, 0.0);
+    assert_eq!(stats.evictions, 0);
+}
+
+#[tokio::test]
+async fn memory_stats_size_counts_live_entries_only() {
+    // pyfly test_get_stats_expired_excluded.
+    let m = MemoryAdapter::new();
+    m.set("alive", b"yes", None).await.unwrap();
+    m.set("dead", b"no", Some(Duration::from_millis(1)))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let stats = m.stats().await.unwrap();
+    assert_eq!(stats.size, 1, "expired entry should be excluded from size");
+}
+
+#[tokio::test]
+async fn memory_stats_count_evictions() {
+    let m = MemoryAdapter::new();
+    m.set("a", b"1", None).await.unwrap();
+    m.set("b", b"2", None).await.unwrap();
+    m.delete("a").await.unwrap();
+    m.delete("missing").await.unwrap(); // not present -> not counted
+    assert_eq!(m.delete_prefix("b").await.unwrap(), 1);
+    let stats = m.stats().await.unwrap();
+    assert_eq!(stats.evictions, 2);
+}
+
+#[tokio::test]
+async fn memory_keys_excludes_expired() {
+    // pyfly test_get_keys / test_get_keys_expired_excluded.
+    let m = MemoryAdapter::new();
+    m.set("fresh", b"yes", None).await.unwrap();
+    m.set("stale", b"no", Some(Duration::from_millis(1)))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(m.keys().await, vec!["fresh".to_owned()]);
+}
+
+// ---------------------------------------------------------------------------
+// pyfly: test_cache_hardening — InMemoryCache(max_size) LRU bound
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn memory_lru_eviction_when_full() {
+    // pyfly TestInMemoryMaxSize::test_lru_eviction_when_full.
+    let m = MemoryAdapter::with_max_entries(2);
+    assert_eq!(m.max_entries(), Some(2));
+    m.set("a", b"1", None).await.unwrap();
+    m.set("b", b"2", None).await.unwrap();
+    // Touch 'a' so it becomes most-recently-used; 'b' is now the LRU.
+    assert_eq!(m.get("a").await.unwrap(), b"1");
+    m.set("c", b"3", None).await.unwrap(); // over capacity -> evict 'b'
+
+    assert!(!m.exists("b").await.unwrap(), "LRU entry not evicted");
+    assert_eq!(m.get("a").await.unwrap(), b"1");
+    assert_eq!(m.get("c").await.unwrap(), b"3");
+}
+
+#[tokio::test]
+async fn memory_unbounded_by_default() {
+    // pyfly TestInMemoryMaxSize::test_unbounded_by_default.
+    let m = MemoryAdapter::new();
+    assert_eq!(m.max_entries(), None);
+    for i in 0..100 {
+        m.set(&format!("k{i}"), b"v", None).await.unwrap();
+    }
+    assert_eq!(m.keys().await.len(), 100);
+    assert_eq!(
+        m.stats().await.unwrap().size,
+        100,
+        "unbounded keeps all entries"
+    );
+}
+
+#[tokio::test]
+async fn memory_lru_set_if_absent_marks_recency() {
+    // set_if_absent must also enforce the LRU bound and count evictions.
+    let m = MemoryAdapter::with_max_entries(2);
+    assert!(m.set_if_absent("a", b"1", None).await.unwrap());
+    assert!(m.set_if_absent("b", b"2", None).await.unwrap());
+    assert!(m.set_if_absent("c", b"3", None).await.unwrap()); // evicts 'a' (LRU)
+    assert!(!m.exists("a").await.unwrap());
+    assert!(m.stats().await.unwrap().evictions >= 1);
+}
+
+// ---------------------------------------------------------------------------
+// Default trait implementations (NoOp + a minimal custom adapter)
+// ---------------------------------------------------------------------------
+
+/// A bare adapter that implements only the required methods, exercising the
+/// default `set_if_absent` / `exists` / `delete_prefix` / `stats`.
+#[derive(Default)]
+struct BareAdapter {
+    store: tokio::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+}
+
+#[async_trait]
+impl Adapter for BareAdapter {
+    async fn get(&self, key: &str) -> Result<Vec<u8>, CacheError> {
+        self.store
+            .lock()
+            .await
+            .get(key)
+            .cloned()
+            .ok_or(CacheError::NotFound)
+    }
+    async fn set(&self, key: &str, value: &[u8], _ttl: Option<Duration>) -> Result<(), CacheError> {
+        self.store
+            .lock()
+            .await
+            .insert(key.to_owned(), value.to_vec());
+        Ok(())
+    }
+    async fn delete(&self, key: &str) -> Result<(), CacheError> {
+        self.store.lock().await.remove(key);
+        Ok(())
+    }
+    async fn clear(&self) -> Result<(), CacheError> {
+        self.store.lock().await.clear();
+        Ok(())
+    }
+    fn name(&self) -> String {
+        "bare".to_owned()
+    }
+    async fn health_check(&self) -> Result<(), CacheError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn default_set_if_absent_and_exists_via_get() {
+    let a = BareAdapter::default();
+    assert!(!a.exists("k").await.unwrap());
+    assert!(a.set_if_absent("k", b"v", None).await.unwrap());
+    assert!(!a.set_if_absent("k", b"v2", None).await.unwrap());
+    assert!(a.exists("k").await.unwrap());
+    assert_eq!(a.get("k").await.unwrap(), b"v");
+}
+
+#[tokio::test]
+async fn default_delete_prefix_is_unsupported() {
+    let a = BareAdapter::default();
+    let err = a.delete_prefix("p:").await.unwrap_err();
+    assert!(matches!(err, CacheError::Backend(_)), "got {err}");
+    assert!(err.to_string().contains("delete_prefix unsupported"));
+}
+
+#[tokio::test]
+async fn default_stats_is_none() {
+    let a = BareAdapter::default();
+    assert!(a.stats().await.is_none());
+}
+
+#[tokio::test]
+async fn noop_new_methods() {
+    let n = NoOpAdapter;
+    // NoOp never stores, so set_if_absent always "succeeds" with a fresh write.
+    assert!(n.set_if_absent("k", b"v", None).await.unwrap());
+    assert!(!n.exists("k").await.unwrap());
+    // NoOp inherits the default unsupported delete_prefix.
+    assert!(n.delete_prefix("p:").await.is_err());
+    assert!(n.stats().await.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// pyfly: test_cache_hardening — CacheManager (== FallbackAdapter) full protocol
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn fallback_set_if_absent_mirrors_both() {
+    // pyfly TestCacheManagerProtocol::test_new_methods_delegate_to_both.
+    let primary = Arc::new(MemoryAdapter::new());
+    let secondary = Arc::new(MemoryAdapter::new());
+    let f = FallbackAdapter::new(primary.clone(), secondary.clone());
+
+    assert!(f.set_if_absent("k", b"v", None).await.unwrap());
+    assert!(!f.set_if_absent("k", b"v2", None).await.unwrap());
+    assert!(f.exists("k").await.unwrap());
+    // Mirrored to both halves.
+    assert_eq!(primary.get("k").await.unwrap(), b"v");
+    assert_eq!(secondary.get("k").await.unwrap(), b"v");
+}
+
+#[tokio::test]
+async fn fallback_delete_prefix_sums_both() {
+    // pyfly: evict_by_prefix returns primary_count + fallback_count.
+    let primary = Arc::new(MemoryAdapter::new());
+    let secondary = Arc::new(MemoryAdapter::new());
+    primary.set("p:1", b"a", None).await.unwrap();
+    secondary.set("p:2", b"b", None).await.unwrap();
+    // A shared key counts on both sides (summed, like pyfly).
+    primary.set("p:shared", b"x", None).await.unwrap();
+    secondary.set("p:shared", b"x", None).await.unwrap();
+
+    let f = FallbackAdapter::new(primary, secondary);
+    assert_eq!(f.delete_prefix("p:").await.unwrap(), 4);
+    assert!(!f.exists("p:1").await.unwrap());
+}
+
+#[tokio::test]
+async fn fallback_exists_union() {
+    let primary = Arc::new(MemoryAdapter::new());
+    let secondary = Arc::new(MemoryAdapter::new());
+    secondary.set("only-secondary", b"v", None).await.unwrap();
+    let f = FallbackAdapter::new(primary, secondary);
+    assert!(f.exists("only-secondary").await.unwrap());
+    assert!(!f.exists("nowhere").await.unwrap());
+}
+
+#[tokio::test]
+async fn fallback_new_methods_demote_on_transport_error() {
+    let secondary = Arc::new(MemoryAdapter::new());
+    let f = FallbackAdapter::new(Arc::new(FailingAdapter), secondary.clone());
+
+    // set_if_absent: primary transport error swallowed, secondary writes.
+    assert!(f.set_if_absent("k", b"v", None).await.unwrap());
+    assert_eq!(secondary.get("k").await.unwrap(), b"v");
+
+    // exists: primary transport error demotes to secondary.
+    assert!(f.exists("k").await.unwrap());
+
+    // delete_prefix: primary contributes 0, secondary count returned.
+    assert_eq!(f.delete_prefix("k").await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn fallback_stats_prefers_primary() {
+    let primary = Arc::new(MemoryAdapter::new());
+    let secondary = Arc::new(MemoryAdapter::new());
+    primary.set("a", b"1", None).await.unwrap();
+    primary.get("a").await.unwrap();
+    let f = FallbackAdapter::new(primary, secondary);
+    let stats = f.stats().await.unwrap();
+    assert_eq!(stats.hits, 1);
+
+    // When the primary has no stats, the secondary's are surfaced.
+    let f = FallbackAdapter::new(Arc::new(NoOpAdapter), Arc::new(MemoryAdapter::new()));
+    assert!(f.stats().await.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// CacheStats helper
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cache_stats_from_counters_derives_hit_rate() {
+    let s = CacheStats::from_counters(3, 3, 1, 2);
+    assert_eq!(s.size, 3);
+    assert_eq!(s.requests(), 4);
+    assert_eq!(s.hit_rate, 0.75);
+
+    // Zero requests -> 0.0 (no division by zero), matching pyfly.
+    let s = CacheStats::from_counters(0, 0, 0, 0);
+    assert_eq!(s.hit_rate, 0.0);
 }

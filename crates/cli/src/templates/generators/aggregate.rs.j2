@@ -1,0 +1,40 @@
+//! {{ names.human }} aggregate root.
+
+use firefly_eventsourcing::{AggregateRoot, DomainEvent};
+
+/// The `{{ names.pascal }}` DDD aggregate root.
+///
+/// Raises domain events into `_events`, drained by the repository when the
+/// aggregate is persisted.
+#[derive(Debug, Default, Clone)]
+pub struct {{ names.pascal }} {
+    /// Aggregate identifier.
+    pub id: String,
+    /// Uncommitted domain events raised since the last load/save.
+    _events: Vec<DomainEvent>,
+}
+
+impl {{ names.pascal }} {
+    /// Create a new {{ names.human }} aggregate.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            _events: Vec::new(),
+        }
+    }
+
+    /// Record a domain event onto this aggregate.
+    pub fn record(&mut self, event: DomainEvent) {
+        self._events.push(event);
+    }
+}
+
+impl AggregateRoot for {{ names.pascal }} {
+    fn aggregate_id(&self) -> &str {
+        &self.id
+    }
+
+    fn pending_events(&mut self) -> Vec<DomainEvent> {
+        std::mem::take(&mut self._events)
+    }
+}

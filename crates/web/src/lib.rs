@@ -65,20 +65,60 @@
 //! # let _ = app;
 //! ```
 
+//! ## pyfly parity layer
+//!
+//! Beyond the Go-parity chain above, this crate ships the pyfly web +
+//! server surface: [`CorsLayer`], [`SecurityHeadersLayer`],
+//! [`CsrfLayer`], [`RequestLogLayer`], [`MetricsLayer`] (with the
+//! pluggable [`RequestObserver`]), the extended [`CorrelationContext`]
+//! (`X-Request-Id`, `X-Tenant-Id`, `X-Transaction-Id`,
+//! `traceparent`/`tracestate`), `Accept`-driven content negotiation
+//! ([`MessageConverterRegistry`], [`Negotiate`],
+//! [`ContentNegotiationLayer`]) and the config-driven [`server`]
+//! bootstrap ([`server::ServerProperties`] / [`server::serve`]).
+
+mod content_negotiation;
 mod correlation;
+mod cors;
+mod csrf;
+mod globs;
+mod headers;
 mod idempotency;
+mod metrics;
 mod pii;
 mod problem;
+mod request_log;
+pub mod server;
 
-pub use correlation::{CorrelationId, CorrelationLayer, CorrelationService};
+pub use content_negotiation::{
+    default_message_converters, parse_accept, value_to_xml, xml_to_value, ContentNegotiationLayer,
+    ContentNegotiationService, JsonMessageConverter, MessageConverter, MessageConverterRegistry,
+    NegotiablePayload, Negotiate, XmlMessageConverter,
+};
+pub use correlation::{
+    current_correlation_context, with_correlation_context, CorrelationContext, CorrelationId,
+    CorrelationLayer, CorrelationService, HEADER_REQUEST_ID, HEADER_TENANT_ID, HEADER_TRACEPARENT,
+    HEADER_TRACESTATE, HEADER_TRANSACTION_ID,
+};
+pub use cors::{CorsConfig, CorsLayer, CorsService, PERMIT_DEFAULT_METHODS};
+pub use csrf::{
+    generate_csrf_token, validate_csrf_token, CsrfLayer, CsrfService, CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME, CSRF_SAFE_METHODS,
+};
+pub use headers::{SecurityHeadersConfig, SecurityHeadersLayer, SecurityHeadersService};
 pub use idempotency::{
     IdempotencyConfig, IdempotencyLayer, IdempotencyRecord, IdempotencyService, IdempotencyStore,
     MemoryIdempotencyStore,
+};
+pub use metrics::{
+    MetricsLayer, MetricsService, Outcome, RequestMetric, RequestObserver, RollingMax,
+    HTTP_SERVER_REQUESTS_MAX_METRIC, HTTP_SERVER_REQUESTS_METRIC,
 };
 pub use pii::{mask_map, mask_pii};
 pub use problem::{
     error_response, problem_response, ProblemLayer, ProblemService, WebError, WebResult,
 };
+pub use request_log::{RequestLogLayer, RequestLogService, REQUEST_LOG_TARGET};
 
 /// The released framework version, mirroring [`firefly_kernel::VERSION`].
 pub const VERSION: &str = firefly_kernel::VERSION;

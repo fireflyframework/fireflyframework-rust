@@ -15,6 +15,26 @@
 //! left-to-right, leftmost outermost — `Chain::new().with(timeout)
 //! .with(breaker).with(bulkhead)` evaluates `timeout(breaker(bulkhead(call)))`.
 //!
+//! # pyfly parity layer
+//!
+//! On top of the Go-parity surface the crate ports pyfly's
+//! `pyfly.resilience` extensions:
+//!
+//! * [`CircuitConfig`] gains a count-based **failure-rate window**
+//!   (`failure_rate_threshold` + `window_size`, Resilience4j `COUNT_BASED`)
+//!   and a **half-open probe budget** (`half_open_max_calls`); the historical
+//!   consecutive-failures mode stays the default.
+//! * [`CircuitBreaker`] exposes pyfly's manual hooks
+//!   ([`before_call`](CircuitBreaker::before_call),
+//!   [`on_success`](CircuitBreaker::on_success),
+//!   [`on_failure`](CircuitBreaker::on_failure)).
+//! * [`Fallback`] is the graceful-degradation decorator for [`Chain`].
+//! * [`ResilienceRegistry`] materialises named breakers / limiters /
+//!   bulkheads / time-limiters from `firefly.resilience.*` configuration
+//!   keys ([`ResilienceRegistry::from_config`]), with [`parse_duration`]
+//!   accepting pyfly-style values (`"500ms"`, `"2.5"`, `"1m"`) plus anything
+//!   `humantime` understands.
+//!
 //! Error messages are byte-identical to the Go port's sentinels
 //! (`firefly/resilience: circuit open`, …), so logs and dashboards stay
 //! consistent across the sibling framework ports. Where Go threads a
@@ -49,14 +69,18 @@ mod bulkhead;
 mod chain;
 mod circuit_breaker;
 mod error;
+mod fallback;
 mod rate_limiter;
+mod registry;
 mod timeout;
 
 pub use bulkhead::Bulkhead;
 pub use chain::{from_fn, operation, Chain, Decorator, FnDecorator, OpFuture, Operation};
 pub use circuit_breaker::{CircuitBreaker, CircuitConfig, CircuitState, Clock};
 pub use error::{BoxError, ResilienceError};
+pub use fallback::Fallback;
 pub use rate_limiter::RateLimiter;
+pub use registry::{parse_duration, RegistryError, ResilienceRegistry};
 pub use timeout::Timeout;
 
 /// Framework version stamp.
@@ -75,5 +99,8 @@ mod tests {
         assert_send_sync::<Timeout>();
         assert_send_sync::<Chain>();
         assert_send_sync::<ResilienceError>();
+        assert_send_sync::<Fallback>();
+        assert_send_sync::<ResilienceRegistry>();
+        assert_send_sync::<RegistryError>();
     }
 }

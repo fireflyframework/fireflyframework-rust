@@ -64,18 +64,54 @@
 //! assert_eq!(cfg.tags, vec!["alpha", "beta"]);
 //! # Ok::<(), firefly_config::ConfigError>(())
 //! ```
+//!
+//! # pyfly parity layer
+//!
+//! On top of the Go-parity surface above, this crate ports pyfly's
+//! configuration subsystem:
+//!
+//! - **`${...}` placeholders** — [`load`]/[`bind`] resolve `${key}`,
+//!   `${key:default}` and `${ENV_VAR}` placeholders post-merge
+//!   (environment beats config, depth-10 circular-reference guard); see
+//!   [`resolve_placeholders`].
+//! - **Relaxed keys** — merge and binder fold kebab-case to snake_case,
+//!   so `graceful-timeout:` in YAML binds a `graceful_timeout` field.
+//! - **Runtime reload** — [`ReloadableConfig`] replays the source chain
+//!   on [`reload`](ReloadableConfig::reload) and reports changed top-level
+//!   keys; the [`Refresher`] trait is the `/actuator/refresh` hook.
+//! - **Introspection** — [`Layered::property_sources`] returns ordered,
+//!   origin-attributed property sources with sensitive values masked via
+//!   the [`mask`] module (Spring `Sanitizer` parity).
+//! - **Multi-profile** — [`active_profiles`] reads a comma-separated
+//!   `FIREFLY_PROFILE`, overlaid by [`multi_profile_sources`].
+//! - **Remote config** — [`ConfigClient`] fetches a Spring-Cloud-Config
+//!   `/{app}/{profile}/{label}` document and flattens it into a
+//!   [`StaticSource`].
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod binder;
+mod client;
 mod error;
+mod introspect;
+pub mod mask;
+mod placeholder;
 mod profile;
+mod reload;
 mod source;
 mod yaml;
 
 pub use binder::{bind, load};
+pub use client::ConfigClient;
 pub use error::ConfigError;
-pub use profile::{active_profile, load_from_profile, profile_sources};
+pub use introspect::{
+    PropertySourceView, PropertyView, SYSTEM_ENVIRONMENT_ORIGIN, SYSTEM_ENVIRONMENT_SOURCE,
+};
+pub use placeholder::resolve_placeholders;
+pub use profile::{
+    active_profile, active_profiles, load_from_profile, multi_profile_sources, profile_sources,
+};
+pub use reload::{Refresher, ReloadableConfig};
 pub use source::{from_env, EnvSource, FlagSource, Layered, Source, StaticSource};
 pub use yaml::{from_optional_yaml, from_yaml, YamlSource};

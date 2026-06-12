@@ -138,6 +138,100 @@ fn main() -> Result<(), ConfigError> {
 }
 ```
 
+## pyfly parity
+
+On top of the Go-parity surface, the crate ports pyfly's configuration
+subsystem (`pyfly.core.config` + `pyfly.config_server.client`):
+
+### `${...}` placeholder resolution
+
+`load`/`bind` run a post-merge pass resolving placeholders in values
+(also exposed standalone as `resolve_placeholders(&flat)`):
+
+- `${ENV_VAR}` — literal environment variable name;
+- `${app.name}` — config reference (relaxed: kebab/snake segments are
+  interchangeable), resolved recursively with a **depth-10 guard**
+  against circular references;
+- `${key:default}` — fallback when neither environment nor config
+  resolves `key`;
+- **environment beats config**: `${app.name}` honors `FIREFLY_APP_NAME`
+  (a leading `firefly.` segment is stripped, dots/dashes map to `_`)
+  before falling back to the merged map.
+
+Unresolvable placeholders without a default raise
+`ConfigError::Placeholder`.
+
+### Relaxed (kebab ↔ snake) keys
+
+The merge and the binder normalize keys (`-` → `_`, lower-case), so
+`graceful-timeout:` in YAML binds a `graceful_timeout` serde field.
+
+### Runtime reload (`/actuator/refresh` contract)
+
+```rust,ignore
+let cfg: ReloadableConfig<AppCfg> = ReloadableConfig::load(sources)?;
+let snapshot = cfg.get();           // Arc<AppCfg>, re-read per call
+let mut rx = cfg.subscribe();       // tokio watch receiver
+let changed: Vec<String> = cfg.reload()?; // changed top-level keys, sorted
+```
+
+`ReloadableConfig<T>` replays the exact merge → placeholder-resolution →
+bind pipeline and atomically swaps the snapshot; failed reloads keep the
+previous snapshot. The object-safe `Refresher` trait
+(`refresh() -> Result<Vec<String>, ConfigError>`) is the hook an
+actuator `POST /actuator/refresh` endpoint wires up —
+`Arc<ReloadableConfig<T>>` coerces to `Arc<dyn Refresher>`.
+
+### Property-source introspection + masking
+
+`Layered::property_sources()` returns ordered `PropertySourceView`s
+(highest precedence first, Spring `/actuator/env` style): a synthetic
+`systemEnvironment` source with every `FIREFLY_*` variable leads the
+list, then the chain's sources in reverse merge order, each property
+carrying `{value, origin}`. Values are sanitized by the public `mask`
+module (Spring Boot `Sanitizer` parity): keys naming secrets
+(`password`, `secret`, `token`, `credential`, `*key`, …) mask fully as
+`******`; URI-shaped values get the userinfo password redacted
+(`postgresql://user:******@host`).
+
+### Multi-profile
+
+`active_profiles("dev")` reads a **comma-separated** `FIREFLY_PROFILE`
+(`dev,cloud` → `["dev", "cloud"]`); `multi_profile_sources` overlays
+one `application-{p}.yaml` per profile in order, and
+`load_from_profile` now composes both (single-profile behavior is
+unchanged).
+
+### Spring-Cloud-Config client
+
+```rust,ignore
+let remote = ConfigClient::new("http://config:8888", "orders")
+    .with_profile("prod")
+    .with_label("main")
+    .with_basic_auth("user", "pass")
+    .fetch_source()           // -> StaticSource, fail-fast
+    .await?;                  // .fetch_source_or_empty() = soft fallback
+sources.insert(1, Box::new(remote)); // above defaults, below env/flags
+```
+
+`fetch()` GETs `/{application}/{profile}/{label}` and flattens the
+document's `propertySources` (highest priority first on the wire, so
+applied in reverse) into a flat map. Non-2xx responses log a warning
+and yield an empty map (pyfly soft-miss parity); transport/decode
+failures raise `ConfigError::Remote`.
+
+| New symbol | Purpose |
+|---|---|
+| `resolve_placeholders(&flat)` | Post-merge `${...}` pass (called by `load`/`bind`) |
+| `ReloadableConfig<T>` / `Refresher` | Runtime reload + actuator refresh hook |
+| `Layered::property_sources()` | Ordered, masked, origin-attributed view |
+| `PropertySourceView` / `PropertyView` | `/actuator/env`-shaped rows (serde-serializable) |
+| `mask::{mask_value, is_sensitive_key, sanitize_uri, MASK}` | Spring Sanitizer parity |
+| `active_profiles(fallback)` | Comma-separated `FIREFLY_PROFILE` list |
+| `multi_profile_sources(dir, app, &profiles)` | One overlay per active profile |
+| `ConfigClient` | Spring-Cloud-Config `/{app}/{profile}/{label}` fetch → `StaticSource` |
+| `ConfigError::{Placeholder, Remote}` | New failure shapes |
+
 ## Testing
 
 ```bash
@@ -151,3 +245,12 @@ integer width and float, Go `ParseBool` acceptance set, `Option`/enum/
 map binding, `serde_json::Value` binding through `deserialize_any`,
 YAML flattening edge cases, `Send + Sync` bounds, and `load` inside a
 tokio task.
+
+The pyfly-parity layer ports the pyfly test contract
+(`test_placeholder_resolution.py`, `test_config_reload.py`,
+`test_config.py` property-sources/masking, `test_wave_config_relaxed.py`,
+and the config-server client): placeholder env/config/default/recursion
+cases, kebab↔snake binding, reload-on-file-change with changed-key
+reporting, ordered+masked property sources, multi-profile overlays, and
+`ConfigClient` against an in-process axum mock (flattening precedence,
+basic auth, soft-miss on non-2xx, transport-error fallback).

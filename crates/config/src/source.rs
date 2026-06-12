@@ -27,8 +27,17 @@ pub trait Source: Send + Sync {
     fn load(&self) -> Result<HashMap<String, String>, ConfigError>;
 }
 
-/// Merges `sources` left to right (later wins), lower-casing every key.
-/// Errors short-circuit and are wrapped with the failing source's name.
+/// Normalizes a key for relaxed (Spring Boot–style) matching: lower-cased
+/// with kebab-case dashes folded to snake-case underscores, so a YAML key
+/// `graceful-timeout` binds a `graceful_timeout` serde field (pyfly
+/// `_relaxed` parity).
+pub(crate) fn normalize_key(key: &str) -> String {
+    key.to_lowercase().replace('-', "_")
+}
+
+/// Merges `sources` left to right (later wins), normalizing every key
+/// (lower-case, `-` → `_`). Errors short-circuit and are wrapped with the
+/// failing source's name.
 pub(crate) fn merge(sources: &[Box<dyn Source>]) -> Result<HashMap<String, String>, ConfigError> {
     let mut out = HashMap::new();
     for source in sources {
@@ -37,7 +46,7 @@ pub(crate) fn merge(sources: &[Box<dyn Source>]) -> Result<HashMap<String, Strin
             source: Box::new(err),
         })?;
         for (key, value) in entries {
-            out.insert(key.to_lowercase(), value);
+            out.insert(normalize_key(&key), value);
         }
     }
     Ok(out)
@@ -57,6 +66,11 @@ impl Layered {
     /// Merges every source into a single flat map. Errors short-circuit.
     pub fn map(&self) -> Result<HashMap<String, String>, ConfigError> {
         merge(&self.sources)
+    }
+
+    /// The sources in merge order (earliest = lowest precedence).
+    pub(crate) fn sources(&self) -> &[Box<dyn Source>] {
+        &self.sources
     }
 }
 
@@ -183,6 +197,26 @@ mod tests {
         let flat = Layered::new(sources).map().unwrap();
         assert_eq!(flat.len(), 1);
         assert_eq!(flat["web.port"], "2");
+    }
+
+    // pyfly parity (audit #92): relaxed key normalization folds kebab-case
+    // to snake_case at merge time, so `graceful-timeout:` in YAML lands on
+    // the same flat key as a `graceful_timeout` serde field.
+    #[test]
+    fn merge_normalizes_kebab_keys_to_snake() {
+        let sources: Vec<Box<dyn Source>> = vec![
+            Box::new(StaticSource::new(
+                "a",
+                entries(&[("server.graceful-timeout", "30")]),
+            )),
+            Box::new(StaticSource::new(
+                "b",
+                entries(&[("server.graceful_timeout", "60")]),
+            )),
+        ];
+        let flat = Layered::new(sources).map().unwrap();
+        assert_eq!(flat.len(), 1, "kebab and snake forms must collide");
+        assert_eq!(flat["server.graceful_timeout"], "60");
     }
 
     #[test]

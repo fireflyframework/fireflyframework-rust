@@ -178,3 +178,93 @@ Ports every Go test (`all` / `any` / `not` composition, regex
 unknown-operator rejection, wire-format assertions against the Go
 struct tags, serde round-trips, in-process router tests, and SDK ↔
 router round-trips.
+
+## pyfly parity — action execution + named-ruleset service
+
+The Go-parity [`AstEvaluator`](src/core.rs) is a **pure** engine: it
+returns the matched actions in a `Verdict` but never runs them. The
+pyfly port adds an action-execution layer and a named-ruleset service on
+top, without changing any Go-parity surface.
+
+### `actions` — the `ActionHandler` SPI + builtins
+
+```rust,ignore
+pub trait ActionHandler: Send + Sync {
+    fn apply(&self, action: &Action, facts: &mut Fact) -> Result<(), ActionError>;
+}
+// Any `Fn(&Action, &mut Fact) -> Result<(), ActionError>` is an ActionHandler
+// (blanket impl) — the Rust counterpart of pyfly's __call__ protocol.
+
+pub struct ActionRegistry; // default(): set / increment / log builtins
+impl ActionRegistry {
+    fn with_handler(self, action_type, handler) -> Self;   // additive; may override a builtin
+    fn execute(&self, actions: &[Action], facts: &mut Fact) -> ActionOutcome;
+}
+pub struct ActionOutcome { executed: Vec<Action>, error: Option<String> }
+```
+
+Builtins, keyed by the action's `type` and reading `params`:
+
+* `set` — writes `params["value"]` into the dot-path `params["target"]`
+  (creating intermediate objects). Missing `target` ⇒ error; missing
+  `value` writes `null`.
+* `increment` — adds `params["value"]` (default `1`) to the current
+  numeric value at `params["target"]` (absent ⇒ `0`); integer arithmetic
+  stays integral, a float operand promotes to float.
+* `log` — a side-effect-only no-op on the context (matches pyfly's
+  logger-only `log` action).
+
+An unregistered action type fails with `ActionError::Unsupported`
+(pyfly's loud-failure, audit #215). `execute` **isolates** each action:
+a failure is recorded in `ActionOutcome::error` and the remaining
+actions still run (audit #216).
+
+### `service` — `RuleSetRepository` + `RuleEngineService`
+
+```rust,ignore
+#[async_trait]
+pub trait RuleSetRepository: Send + Sync {
+    async fn save(&self, ruleset: RuleSet);
+    async fn get(&self, name: &str) -> Option<RuleSet>;
+    async fn list(&self) -> Vec<RuleSet>;
+    async fn delete(&self, name: &str) -> bool;
+}
+pub struct MemoryRuleSetRepository;   // RwLock-backed, keyed by RuleSet.name
+
+pub struct RuleEngineService;         // RuleEngineService::in_memory()
+impl RuleEngineService {
+    async fn register(&self, ruleset: RuleSet);
+    async fn evaluate(&self, &RuleSet, &Fact) -> Result<EvaluationOutcome, EvalError>;
+    async fn evaluate_by_name(&self, name, &Fact) -> Result<EvaluationOutcome, ServiceError>;
+    async fn get / list / delete (passthrough)
+}
+pub struct EvaluationOutcome {
+    verdict: Verdict, facts: Fact, actions_executed: Vec<Action>, error: Option<String>,
+}
+```
+
+Rulesets are keyed by `RuleSet::name` (the Rust port has no separate
+`id`). `evaluate`/`evaluate_by_name` run the matched verdict's actions
+over a **copy** of the input fact (the input is never mutated) and return
+the post-execution `facts` alongside the verdict.
+
+### REST: evaluate-by-name (`web`)
+
+`rule_engine_service_router()` (or `…_with(Arc<RuleEngineService>)`)
+exposes named-ruleset management on top of a `RuleEngineService`:
+
+| Method | Path                                    | Body / Response |
+|--------|-----------------------------------------|-----------------|
+| `PUT`  | `/api/rules/rulesets/{name}`            | body `<RuleSet>` → `200` `{"name": …}` (URL name wins) |
+| `GET`  | `/api/rules/rulesets`                   | → `200` `{"names": […]}` |
+| `POST` | `/api/rules/rulesets/{name}/evaluate`   | `{"fact": {…}}` → `200` outcome / `404` unknown / `400` eval error |
+
+The evaluate-by-name `200` body is the action-executed outcome:
+`{"matched": […], "actions": […], "facts": {…}, "actionsExecuted": […],
+"error": <string|null>}`.
+
+```rust,ignore
+let app = firefly_rule_engine::rule_engine_service_router();
+// PUT  /api/rules/rulesets/orders   (body: RuleSet)
+// POST /api/rules/rulesets/orders/evaluate   {"fact": {"amount": 1500}}
+```

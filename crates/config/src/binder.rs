@@ -14,11 +14,13 @@ use serde::de::value::{StrDeserializer, StringDeserializer};
 use serde::de::{DeserializeOwned, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use crate::error::ConfigError;
-use crate::source::{merge, Source};
+use crate::placeholder::resolve_placeholders;
+use crate::source::{merge, normalize_key, Source};
 
 /// Decodes `flat` onto a fresh `T` via `serde`. Nested structs use
-/// dot-joined paths; field names (post-`#[serde(rename)]`) are lower-cased
-/// before lookup, matching the Go binder's tag-or-field-name rule.
+/// dot-joined paths; field names (post-`#[serde(rename)]`) are normalized
+/// (lower-cased, `-` → `_`) before lookup, matching the Go binder's
+/// tag-or-field-name rule plus pyfly's relaxed kebab↔snake binding.
 ///
 /// Supported leaf kinds: `String`, `bool` (Go `strconv.ParseBool` syntax:
 /// `1/t/T/true/TRUE/True` and `0/f/F/false/FALSE/False`), all integer
@@ -27,9 +29,39 @@ use crate::source::{merge, Source};
 /// (comma-separated, items trimmed). Maps (`HashMap<String, _>`) collect
 /// every immediate child segment under their prefix.
 ///
-/// Keys in `flat` are expected lower-case, as produced by
-/// [`Layered::map`](crate::Layered::map).
+/// Two pyfly-parity passes run before decoding (both are no-ops on maps
+/// produced by [`Layered::map`](crate::Layered::map) without placeholders):
+///
+/// 1. keys are normalized (lower-case, `-` → `_`), so kebab-case keys bind
+///    snake_case serde fields;
+/// 2. `${key}` / `${key:default}` / `${ENV_VAR}` placeholders in values are
+///    resolved via [`resolve_placeholders`] — environment beats config, and
+///    circular references fail with [`ConfigError::Placeholder`].
 pub fn bind<T: DeserializeOwned>(flat: &HashMap<String, String>) -> Result<T, ConfigError> {
+    let needs_normalize = flat
+        .keys()
+        .any(|k| k.contains('-') || k.bytes().any(|b| b.is_ascii_uppercase()));
+    let needs_resolve = flat.values().any(|v| v.contains("${"));
+    if !needs_normalize && !needs_resolve {
+        return bind_flat(flat);
+    }
+    let normalized: HashMap<String, String> = if needs_normalize {
+        flat.iter()
+            .map(|(k, v)| (normalize_key(k), v.clone()))
+            .collect()
+    } else {
+        flat.clone()
+    };
+    let resolved = if needs_resolve {
+        resolve_placeholders(&normalized)?
+    } else {
+        normalized
+    };
+    bind_flat(&resolved)
+}
+
+/// Decodes an already-normalized flat map onto a fresh `T`.
+fn bind_flat<T: DeserializeOwned>(flat: &HashMap<String, String>) -> Result<T, ConfigError> {
     T::deserialize(FlatDeserializer {
         flat,
         prefix: String::new(),
@@ -37,15 +69,16 @@ pub fn bind<T: DeserializeOwned>(flat: &HashMap<String, String>) -> Result<T, Co
 }
 
 /// The canonical entry point: merges the sources (later wins) and binds
-/// the result onto a fresh `T`.
+/// the result onto a fresh `T`, resolving `${...}` placeholders post-merge.
 pub fn load<T: DeserializeOwned>(sources: &[Box<dyn Source>]) -> Result<T, ConfigError> {
     let flat = merge(sources)?;
     bind(&flat)
 }
 
-/// Joins a lower-cased path segment onto a dotted prefix.
+/// Joins a normalized (lower-cased, `-` → `_`) path segment onto a dotted
+/// prefix.
 fn join(prefix: &str, segment: &str) -> String {
-    let segment = segment.to_lowercase();
+    let segment = normalize_key(segment);
     if prefix.is_empty() {
         segment
     } else {

@@ -1,0 +1,38 @@
+# {{ name }}
+
+A [Firefly Framework for Rust]({{ "https://github.com/fireflyframework/fireflyframework-rust" }}) application.
+
+- **Archetype:** `{{ archetype }}`
+{% if features %}- **Features:** {{ features | join(", ") }}
+{% endif %}
+
+## Getting started
+
+```bash
+cargo run
+```
+{% if has_web %}
+The HTTP server listens on `http://localhost:8080`.
+
+- Health: `GET /actuator/health`
+- Info: `GET /actuator/info`
+{% endif %}{% if has_data %}
+Migrations under `migrations/` are applied at startup by `firefly-migrations`.
+{% endif %}
+
+## Generate code
+
+```bash
+firefly generate handler {{ "<name>" }}
+firefly generate entity {{ "<name>" }}
+```
+
+## Layout
+
+```
+{{ package_name }}/
+├── Cargo.toml
+├── firefly.yaml
+├── src/
+└── tests/
+```

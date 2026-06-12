@@ -1,15 +1,20 @@
 # `firefly-notifications-twilio`
 
-> **Tier:** Adapter · **Status:** Stub (port-asserting) · **Backing tech:** Twilio (SMS)
+> **Tier:** Adapter · **Status:** Real provider (pyfly parity) + Go-parity stub · **Backing tech:** Twilio (SMS)
 
 ## Overview
 
-`firefly-notifications-twilio` is the placeholder `Channel` adapter for Twilio
-(SMS). The crate and types are declared, the port assertion compiles, and
-sentinel-error smoke tests guard the wire shape — but the SaaS / cloud SDK
-integration is **not yet wired**. `send` returns the not-yet-implemented
-sentinel, carried through `firefly_notifications::NotificationError::Delivery`
-so its rendered message is bytes-equal to the Go port's `ErrNotImplemented`:
+`firefly-notifications-twilio` ships two layers:
+
+* **`TwilioSmsProvider`** — the real, working HTTP integration (pyfly parity).
+  It implements the `SmsProvider` port, posts to Twilio's `Messages.json`
+  endpoint with HTTP basic auth and a form-encoded body, parses the response
+  `sid` into a `NotificationResult`, and folds non-2xx responses into a
+  `FAILED` result. See [pyfly parity](#pyfly-parity).
+* **`Channel`** — the Go-parity stub `Channel` adapter, kept for backward
+  compatibility. `send` returns the not-yet-implemented sentinel, carried
+  through `firefly_notifications::NotificationError::Delivery` so its rendered
+  message is bytes-equal to the Go port's `ErrNotImplemented`:
 
 ```rust
 pub const ERR_NOT_IMPLEMENTED: &str = "firefly/notificationstwilio: not yet implemented";
@@ -73,10 +78,51 @@ pub struct Config {
 | `err_not_implemented()` | Builds the sentinel as `NotificationError::Delivery`. |
 | `VERSION` | Framework version stamp. |
 
-## Roadmap
+## pyfly parity
 
-The real implementation is scheduled for **v26.06.x** — see the Go port's
-`docs/AUDIT.md` § Roadmap for sequencing.
+The real provider is a 1:1 port of `pyfly.notifications.providers.twilio`.
+
+| Item | Description |
+| --- | --- |
+| `TwilioSmsProvider` | The working adapter. `new(account_sid, auth_token)` constructs it; `with_from_number(..)` sets a default sender; `with_base_url(..)` / `with_http_client(..)` are wiring seams (the base URL defaults to the real Twilio host). |
+| `SmsProvider` | The async port (`name`, `send(SmsMessage) -> Result<NotificationResult, TwilioError>`), object-safe behind `Arc`/`Box`. |
+| `SmsMessage` | Port of pyfly's `SmsMessage` (`id` defaults to a UUID v4, optional `sender`). `new(to, body)` + `with_sender(..)`. |
+| `NotificationResult` | Port of pyfly's `NotificationResult` (`id`, `provider`, `status`, `provider_id`, `error`). |
+| `DeliveryStatus` | Port of pyfly's `EmailStatus` enum (`QUEUED`/`SENT`/`DELIVERED`/`BOUNCED`/`FAILED`/`SUPPRESSED`). |
+| `TwilioError` | `MissingSender` (no message `sender` and no provider `from_number`) and `Transport(..)`. |
+
+### Behavior
+
+* **Basic auth + form post:** the request goes to
+  `{base}/2010-04-01/Accounts/{sid}/Messages.json` with an
+  `Authorization: Basic base64(sid:token)` header and a form body of
+  `From` / `To` / `Body`.
+* **Sender precedence:** `SmsMessage.sender` wins over the provider's
+  `from_number`.
+* **Missing sender:** if neither is set, `send` returns
+  `Err(TwilioError::MissingSender)` *before* any HTTP call.
+* **Status mapping:** a 2xx yields `SENT` with `provider_id = sid`; any non-2xx
+  yields a `FAILED` result carrying `http {status}: {body}` (the call returns
+  `Ok` — non-2xx is a domain result, not a Rust error).
+
+```rust
+use firefly_notifications_twilio::{SmsMessage, SmsProvider, TwilioSmsProvider};
+
+# async fn demo() {
+let provider = TwilioSmsProvider::new("AC_sid", "tok").with_from_number("+15550001111");
+let result = provider.send(SmsMessage::new("+15559876543", "hello")).await.unwrap();
+assert_eq!(result.provider, "twilio");
+# }
+```
+
+> **Access / secrets:** the auth token is the Twilio account auth token; this
+> crate performs no token minting — pass the secret directly.
+
+## Public surface (Go-parity stub)
+
+The stub `Channel` continues to register with `firefly_notifications::Dispatcher`
+under `Kind::SMS` and surface the `ERR_NOT_IMPLEMENTED` sentinel; consuming code
+that wired the stub still compiles and behaves identically.
 
 ## Testing
 
@@ -84,8 +130,9 @@ The real implementation is scheduled for **v26.06.x** — see the Go port's
 cargo test -p firefly-notifications-twilio
 ```
 
-Smoke tests assert (a) port satisfaction (`Channel:
-firefly_notifications::Channel`, object-safe behind `Box`/`Arc`) and (b)
-`send` returns the sentinel while `name` and `kind` answer non-empty. Once the
-production adapter ships, these tests are deleted in favour of integration
-tests against a real provider container / mock server.
+The behavior tests (`tests/twilio_behavior.rs`) are ported 1:1 from pyfly's
+`test_twilio_behavior.py`: they spin up an **in-process axum mock on
+`127.0.0.1:0`** and assert on the actual request bytes (URL, basic-auth header,
+form fields) plus the parsed `NotificationResult` — no network, no Docker. The
+stub smoke tests (port satisfaction, sentinel return) are retained for Go
+parity.

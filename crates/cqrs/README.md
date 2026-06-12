@@ -135,6 +135,70 @@ async fn main() {
 }
 ```
 
+## pyfly parity
+
+On top of the Go-parity surface above, the crate ports pyfly's CQRS layer
+(`pyfly.cqrs.{authorization,context,cache.eda_bridge,fluent}` and the
+`HandlerRegistry` listing). Every Python idiom is adapted to a Rust one —
+decorators and kwargs-reflection become builders/closures, `contextvars`
+become an explicitly-threaded value, and `AuthorizationException` becomes
+a `CqrsError` variant — while preserving behaviour and wire strings.
+
+### Authorization
+
+| Symbol                                   | pyfly equivalent                                  |
+|------------------------------------------|---------------------------------------------------|
+| `Message::authorize(ctx)`                | the message's `authorize()` / `authorize_with_context(ctx)` hook (default = always authorized, same pattern as `validate`) |
+| `AuthorizationMiddleware` (`new` / `disabled` / `with_enabled`) | `AuthorizationService(enabled=…)` wired into the bus |
+| `AuthorizationResult` (`success` / `failure` / `failure_with` / `combine` / `error_messages`) | frozen `AuthorizationResult` dataclass |
+| `AuthorizationError` + `AuthorizationSeverity` (`WARNING`/`ERROR`/`CRITICAL`) | the matching frozen dataclass / `StrEnum` (wire strings preserved) |
+| `CqrsError::Authorization(result)` + `is_authorization` / `authorization_result` | `AuthorizationException` raised on denial |
+
+A denial short-circuits dispatch before the handler runs; a disabled
+middleware authorizes everything. The hook receives the dispatch's
+`ExecutionContext` when one is attached, and `None` otherwise.
+
+### ExecutionContext
+
+`ExecutionContext` (user / tenant / organization / session / request /
+source / client IP / user agent / `created_at` / arbitrary properties /
+feature flags) is the Rust spelling of pyfly's `DefaultExecutionContext`,
+built via the fluent `ExecutionContext::builder()`. Attach one with
+`Bus::send_with_context` / `Bus::query_with_context` (or a builder's
+`with_context`); it reaches `Message::authorize`, any middleware reading
+`Envelope::context`, and handlers registered via
+`Bus::register_with_context` (pyfly's context-aware `do_handle(cmd, ctx)`).
+
+### Fluent builders
+
+`CommandBuilder::create(cmd)` / `QueryBuilder::create(q)` accumulate the
+identity fields pyfly's `Command`/`Query` base classes carry — a fresh
+UUID `message_id`, `correlated_by`, `initiated_by`, `at` (timestamp),
+free-form `with_metadata`, an optional `with_context` — and dispatch via
+`execute_with(&bus)`. `QueryBuilder` adds cache control: `cached_for(ttl)`
+/ `uncached()` override `Message::cache_ttl` for the dispatch, and
+`with_cache_key(key)` replaces the derived `<type>:<sha-256>` key (pyfly's
+`get_cache_key()` override). Field mutation uses a typed `with(|m| …)`
+closure in place of Python's reflective `with_field`.
+
+### EDA cache-invalidation bridge
+
+`EdaCacheInvalidationBridge::new(cache)` evicts `QueryCache` entries when
+domain events arrive on a `firefly-eda` broker (pyfly's
+`EdaCacheInvalidationBridge`). `register(event_type, "order:{order_id}")`
+maps an event type to cache-key patterns whose `{field}` placeholders are
+resolved from the event's JSON payload; `subscribe(&broker, topic)` wires
+it in (call once per topic — the Rust `Subscriber` port is per-topic where
+pyfly subscribes a `"*"` wildcard). Explicit `CacheInvalidationEvent`s on
+the dedicated `CACHE_INVALIDATION_TOPIC` evict their prefixes directly
+with no rule registration.
+
+### Admin listing
+
+`Bus::handler_names()` returns the sorted, fully-qualified type names of
+every registered handler — pyfly's `HandlerRegistry.get_registered_*_types()`,
+consumed later by the admin actuator.
+
 ## Testing
 
 ```bash
@@ -147,4 +211,8 @@ once), and prefix-keyed invalidation — plus Rust-specific cases:
 middleware registration order, TTL expiry, zero-TTL (cache forever),
 per-value cache keys, error responses never cached, handler overwrite,
 result-type-mismatch diagnostics, concurrent dispatch, and `Send + Sync`
-bounds.
+bounds. The `pyfly_parity_test` suite ports pyfly's
+`test_authorization.py`, `test_context.py`,
+`test_eda_cache_invalidation.py`, and `test_fluent_builders.py` (plus
+`HandlerRegistry` listing and context threading) end-to-end against an
+in-memory EDA broker.

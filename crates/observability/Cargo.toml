@@ -17,7 +17,16 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+sysinfo = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+futures = { workspace = true }

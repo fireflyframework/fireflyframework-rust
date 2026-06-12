@@ -1,0 +1,19 @@
+//! {{ names.human }} CQRS command.
+
+use firefly_cqrs::Command;
+use serde::{Deserialize, Serialize};
+
+/// The `{{ names.pascal }}` command. Produces a `String` result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct {{ names.pascal }} {
+    /// Target aggregate identifier.
+    pub id: String,
+}
+
+impl Command for {{ names.pascal }} {
+    type Result = String;
+
+    fn command_type(&self) -> &'static str {
+        "{{ names.pascal }}"
+    }
+}

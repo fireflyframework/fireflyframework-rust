@@ -1,12 +1,22 @@
-//! firefly-notifications-firebase — the placeholder Firebase Cloud Messaging
-//! (push) [`Channel`](firefly_notifications::Channel) adapter.
+//! firefly-notifications-firebase — the Firebase Cloud Messaging (push)
+//! adapter.
 //!
-//! Faithful port of the Go module `fireflyframework-go/notificationsfirebase`:
-//! a contract-only stub. The crate and types are declared, the port assertion
-//! compiles, and sentinel-error smoke tests guard the wire shape — but the
-//! SaaS / cloud SDK integration is **not yet wired**. [`Channel::send`]
-//! returns the [`ERR_NOT_IMPLEMENTED`] sentinel, rendered byte-for-byte equal
-//! to the Go port's `ErrNotImplemented`:
+//! This crate ships two layers:
+//!
+//! * The **Go-parity stub** — [`Channel`], the
+//!   [`firefly_notifications::Channel`] adapter that routes [`Kind::PUSH`] and
+//!   returns the [`ERR_NOT_IMPLEMENTED`] sentinel from [`Channel::send`]. Kept
+//!   for backward compatibility with the Go wire contract; consuming code that
+//!   wired the stub still compiles and behaves identically.
+//! * The **pyfly-parity real provider** — [`FirebasePushProvider`], a working
+//!   FCM HTTP v1 integration that implements [`PushProvider`]. It posts once
+//!   per device token to `…/v1/projects/{id}/messages:send` with a bearer
+//!   token from an injected [`AccessTokenProvider`], and folds per-token
+//!   results into a single [`NotificationResult`] with partial-success
+//!   semantics.
+//!
+//! The stub's `ERR_NOT_IMPLEMENTED` sentinel remains byte-for-byte equal to
+//! the Go port's `ErrNotImplemented`:
 //!
 //! ```text
 //! firefly/notificationsfirebase: not yet implemented
@@ -47,6 +57,13 @@
 
 use async_trait::async_trait;
 use firefly_notifications::{DeliveryResult, Kind, Notification, NotificationError};
+
+mod provider;
+
+pub use provider::{
+    AccessTokenProvider, DeliveryStatus, FirebaseError, FirebasePushProvider, NotificationResult,
+    PushMessage, PushProvider, DEFAULT_BASE_URL,
+};
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.1";

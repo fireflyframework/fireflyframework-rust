@@ -1,27 +1,47 @@
-//! firefly-ecm-esignature-logalty — the placeholder Logalty
-//! [`ESignatureProvider`] adapter (EU qualified e-signature, OAuth2
-//! client_credentials).
+//! firefly-ecm-esignature-logalty — the Logalty [`ESignatureProvider`]
+//! adapter (EU qualified / eIDAS e-signature, REST + `X-Api-Key`).
 //!
-//! Faithful port of the Go module `fireflyframework-go/ecmesignaturelogalty`:
-//! a contract-only stub. The crate and types are declared, the port assertion
-//! compiles, and sentinel-error smoke tests guard the wire shape — but the
-//! SaaS / cloud SDK integration is **not yet wired**. Every port method
-//! returns the [`ERR_NOT_IMPLEMENTED`] sentinel, rendered byte-for-byte equal
-//! to the Go port's `ErrNotImplemented`:
+//! [`RestProvider`] is a real REST integration over `reqwest`, porting pyfly's
+//! `LogaltyESignatureAdapter`: it builds the envelope-create payload, parses
+//! the returned `envelopeId`, maps Logalty's `status` strings onto
+//! [`SignatureStatus`], and deletes envelopes on cancel.
 //!
-//! ```text
-//! firefly/ecmesignaturelogalty: not yet implemented
+//! # Legacy stub
+//!
+//! For backward compatibility with the Go-parity release, the original
+//! contract-only [`Provider`] stub is retained: every port method returns the
+//! [`ERR_NOT_IMPLEMENTED`] sentinel, byte-for-byte equal to the Go port's
+//! `ErrNotImplemented` (`firefly/ecmesignaturelogalty: not yet implemented`).
+//! New code should prefer [`RestProvider`].
+//!
+//! # Quick start (REST)
+//!
+//! ```no_run
+//! use firefly_ecm::{ESignatureProvider, SignatureRequest};
+//! use firefly_ecm_esignature_logalty::RestProvider;
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() -> Result<(), firefly_ecm::EcmError> {
+//! let provider = RestProvider::new(
+//!     "https://tenant.logalty.example/api/v1",
+//!     "secret-api-key",
+//! );
+//! assert_eq!(provider.name(), "logalty");
+//!
+//! let id = provider
+//!     .create(SignatureRequest {
+//!         document_id: "doc-42".into(),
+//!         signers: vec!["alice@example.com".into()],
+//!         title: "Sign this".into(),
+//!         provider: "logalty".into(),
+//!     })
+//!     .await?;
+//! let _status = provider.status(&id).await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! # Why ship a stub?
-//!
-//! * The framework's tier diagram stays correct (no missing module).
-//! * The port boundary stays locked — when the real implementation lands,
-//!   no consuming code needs to change.
-//! * The wire contract is exercised end-to-end before the integration
-//!   ships, via the smoke tests that assert the sentinel return.
-//!
-//! # Quick start
+//! # Quick start (legacy stub)
 //!
 //! ```
 //! use firefly_ecm::{ESignatureProvider, SignatureRequest};
@@ -43,6 +63,7 @@
 
 use async_trait::async_trait;
 use firefly_ecm::{ESignatureProvider, EcmError, SignatureRequest, SignatureStatus};
+use serde_json::json;
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.1";
@@ -126,6 +147,151 @@ impl ESignatureProvider for Provider {
     /// Human-readable provider identifier, matching the Go stub.
     fn name(&self) -> &str {
         "ecmesignaturelogalty-stub"
+    }
+}
+
+/// Maps a Logalty `status` string onto the framework's [`SignatureStatus`],
+/// porting pyfly's `_map_status` table. `SENT`/`PENDING` are still in flight
+/// ([`SignatureStatus::Pending`]), `SIGNED`/`COMPLETED` are
+/// [`SignatureStatus::Signed`], `DECLINED` is [`SignatureStatus::Declined`],
+/// `EXPIRED` is [`SignatureStatus::Expired`], and `DRAFT` maps to
+/// [`SignatureStatus::Pending`] (the closest of the 4 framework states).
+/// Unknown values fall back to [`SignatureStatus::Pending`] (pyfly's `SENT`).
+pub fn map_status(value: &str) -> SignatureStatus {
+    match value.to_ascii_uppercase().as_str() {
+        "DRAFT" | "SENT" | "PENDING" => SignatureStatus::Pending,
+        "SIGNED" | "COMPLETED" => SignatureStatus::Signed,
+        "DECLINED" => SignatureStatus::Declined,
+        "EXPIRED" => SignatureStatus::Expired,
+        _ => SignatureStatus::Pending,
+    }
+}
+
+/// RestProvider is the real Logalty [`ESignatureProvider`] adapter over
+/// `reqwest` (eIDAS REST + `X-Api-Key`) — the Rust port of pyfly's
+/// `LogaltyESignatureAdapter`.
+#[derive(Debug, Clone)]
+pub struct RestProvider {
+    api_base: String,
+    api_key: String,
+    http: reqwest::Client,
+}
+
+impl RestProvider {
+    /// Returns a Logalty REST adapter.
+    ///
+    /// * `api_base` — the tenant-specific API root (a trailing slash is
+    ///   stripped).
+    /// * `api_key` — the Logalty API key, sent as the `X-Api-Key` header.
+    pub fn new(api_base: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self {
+            api_base: api_base.into().trim_end_matches('/').to_string(),
+            api_key: api_key.into(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// Reuses a caller-provided `reqwest::Client` instead of the default.
+    pub fn with_client(mut self, http: reqwest::Client) -> Self {
+        self.http = http;
+        self
+    }
+
+    fn envelopes_url(&self) -> String {
+        format!("{}/envelopes", self.api_base)
+    }
+
+    fn envelope_url(&self, envelope_id: &str) -> String {
+        format!("{}/envelopes/{}", self.api_base, envelope_id)
+    }
+}
+
+#[async_trait]
+impl ESignatureProvider for RestProvider {
+    async fn create(&self, req: SignatureRequest) -> Result<String, EcmError> {
+        let signers: Vec<_> = req
+            .signers
+            .iter()
+            .map(|email| json!({ "name": email, "email": email, "role": "signer" }))
+            .collect();
+        let payload = json!({
+            "documentId": req.document_id,
+            "subject": req.title,
+            "message": "",
+            "signers": signers,
+        });
+
+        let resp = self
+            .http
+            .post(self.envelopes_url())
+            .header("X-Api-Key", &self.api_key)
+            .header("Accept", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(provider_err)?;
+        let resp = error_for_status(resp)?;
+        let body: serde_json::Value = resp.json().await.map_err(provider_err)?;
+        body.get("envelopeId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| EcmError::provider("logalty: response missing envelopeId"))
+    }
+
+    async fn status(&self, id: &str) -> Result<SignatureStatus, EcmError> {
+        let resp = self
+            .http
+            .get(self.envelope_url(id))
+            .header("X-Api-Key", &self.api_key)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(provider_err)?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(EcmError::NotFound);
+        }
+        let resp = error_for_status(resp)?;
+        let body: serde_json::Value = resp.json().await.map_err(provider_err)?;
+        let status = body
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("SENT");
+        Ok(map_status(status))
+    }
+
+    async fn cancel(&self, id: &str) -> Result<(), EcmError> {
+        let resp = self
+            .http
+            .delete(self.envelope_url(id))
+            .header("X-Api-Key", &self.api_key)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(provider_err)?;
+        error_for_status(resp).map(|_| ())
+    }
+
+    fn name(&self) -> &str {
+        "logalty"
+    }
+}
+
+/// Wraps a `reqwest` transport error as an [`EcmError::Provider`].
+fn provider_err(err: reqwest::Error) -> EcmError {
+    EcmError::provider(format!("logalty: {err}"))
+}
+
+/// The analog of pyfly's `resp.raise_for_status()`: turns a >= 400 response
+/// into an [`EcmError::Provider`] carrying the status code.
+fn error_for_status(resp: reqwest::Response) -> Result<reqwest::Response, EcmError> {
+    let status = resp.status();
+    if status.is_client_error() || status.is_server_error() {
+        Err(EcmError::provider(format!(
+            "logalty: HTTP {}",
+            status.as_u16()
+        )))
+    } else {
+        Ok(resp)
     }
 }
 

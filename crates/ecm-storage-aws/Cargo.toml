@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Firefly Framework for Rust — AWS S3 storage adapter (stub)"
+description = "Firefly Framework for Rust — AWS S3 storage adapter"
 
 [dependencies]
 firefly-ecm = { workspace = true }
@@ -17,8 +17,13 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
+axum = { workspace = true }

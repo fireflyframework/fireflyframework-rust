@@ -15,6 +15,28 @@
 //! against their driver of choice, using [`Filter::to_sql`] to render
 //! the WHERE / ORDER BY / LIMIT clauses.
 //!
+//! ## pyfly parity
+//!
+//! On top of the Go-parity surface above, this crate ports pyfly's
+//! Spring-Data-style data primitives, all kept storage-agnostic (no SQL
+//! engine is implied):
+//!
+//! - **[`Specification`]** — composable query predicates (`Pred` /
+//!   `And` / `Or` / `Not`, combined with `&` / `|` / `!`) that lower to
+//!   the [`Filter`] DSL ([`Specification::to_filter`]), render to a
+//!   parenthesised parameterised SQL fragment
+//!   ([`Specification::to_sql`]), or evaluate in memory
+//!   ([`Specification::matches`]).
+//! - **[`AuditStamps`] + [`Auditor`]** — automatic
+//!   `created_at` / `updated_at` / `created_by` / `updated_by` stamping
+//!   on insert and update.
+//! - **[`SoftDelete`] + [`SoftDeletePolicy`]** — a `deleted_at` column
+//!   helper plus predicate injection that hides soft-deleted rows from
+//!   every read path.
+//! - **[`RoutingPolicy`] + [`read_only`]** — read/write datasource
+//!   routing; and **[`NamedDataSources`]**, a registry of additional
+//!   named datasources.
+//!
 //! # Quick start
 //!
 //! ```
@@ -44,13 +66,23 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod auditing;
 mod filter;
 mod page;
 mod repository;
+mod routing;
+mod soft_delete;
+mod specification;
 
+pub use auditing::{AuditStamps, Auditor};
 pub use filter::{Direction, Filter, Op, Predicate, Sort};
 pub use page::Page;
 pub use repository::{DataError, MemoryRepository, Repository};
+pub use routing::{
+    is_read_only, read_only, NamedDataSources, ReadOnlyGuard, RoutingError, RoutingPolicy,
+};
+pub use soft_delete::{SoftDelete, SoftDeletePolicy, DEFAULT_DELETED_AT_COLUMN};
+pub use specification::Specification;
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.1";

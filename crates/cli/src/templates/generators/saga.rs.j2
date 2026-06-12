@@ -1,0 +1,25 @@
+//! {{ names.human }} saga orchestration.
+
+use firefly_orchestration::{saga, saga_step, SagaContext};
+
+/// The `{{ names.kebab }}` saga: a multi-step orchestration with compensation.
+#[saga(name = "{{ names.kebab }}")]
+#[derive(Debug, Default)]
+pub struct {{ names.pascal }}Saga;
+
+impl {{ names.pascal }}Saga {
+    /// First step. Compensated by [`Self::undo_reserve`] on downstream failure.
+    #[saga_step(compensate = "undo_reserve")]
+    pub async fn reserve(&self, ctx: &SagaContext) -> Result<(), String> {
+        let _ = ctx;
+        // TODO: perform the forward action.
+        Ok(())
+    }
+
+    /// Compensating action for [`Self::reserve`].
+    pub async fn undo_reserve(&self, ctx: &SagaContext) -> Result<(), String> {
+        let _ = ctx;
+        // TODO: undo the forward action.
+        Ok(())
+    }
+}

@@ -1,14 +1,18 @@
 # `firefly-ecm-esignature-docusign`
 
-> **Tier:** Adapter · **Status:** Stub (port-asserting) · **Backing tech:** DocuSign — JWT-Bearer + REST v2.1
+> **Tier:** Adapter · **Status:** Full (REST v2.1) + legacy stub · **Backing tech:** DocuSign — Bearer-token + REST v2.1
 
 ## Overview
 
-`firefly-ecm-esignature-docusign` is the placeholder
-[`firefly_ecm::ESignatureProvider`] adapter for DocuSign — JWT-Bearer + REST
-v2.1. The crate and types are declared, the port assertion compiles, and
-sentinel-error smoke tests guard the wire shape — but the SaaS / cloud SDK
-integration is **not yet wired**. Every method returns the
+`firefly-ecm-esignature-docusign` is the DocuSign
+[`firefly_ecm::ESignatureProvider`] adapter. `RestProvider` is a **real REST
+integration** over [`reqwest`](https://docs.rs/reqwest), porting pyfly's
+`DocuSignESignatureAdapter`: it builds the envelope-create payload, parses the
+returned `envelopeId`, maps DocuSign's envelope `status` strings onto
+`firefly_ecm::SignatureStatus`, and voids envelopes on cancel.
+
+The original contract-only `Provider` stub is **retained for backward
+compatibility** with the Go-parity release: every method returns the
 `ERR_NOT_IMPLEMENTED` sentinel, byte-for-byte equal to the Go port's
 `ErrNotImplemented`:
 
@@ -16,19 +20,48 @@ integration is **not yet wired**. Every method returns the
 pub const ERR_NOT_IMPLEMENTED: &str = "firefly/ecmesignaturedocusign: not yet implemented";
 ```
 
-The sentinel is carried as `firefly_ecm::EcmError::Provider`, whose `Display`
-output renders the message verbatim, so the error string observed by callers
-is identical across the Go, Java, .NET, Python, and Rust ports.
+New code should prefer `RestProvider`; `Provider` remains for callers that
+wired the stub before the REST adapter landed.
 
-## Why ship a stub?
+## Quick start (REST)
 
-* The framework's tier diagram stays correct (no missing module).
-* The port boundary stays locked — when the real implementation lands,
-  no consuming code needs to change.
-* The wire contract is exercised end-to-end before the integration
-  ships, via the smoke tests that assert the sentinel return.
+```rust
+use firefly_ecm::{ESignatureProvider, SignatureRequest};
+use firefly_ecm_esignature_docusign::RestProvider;
 
-## Quick start
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), firefly_ecm::EcmError> {
+    let provider = RestProvider::new(
+        "https://demo.docusign.net/restapi",
+        "account-123",
+        "bearer-token",
+    );
+    assert_eq!(provider.name(), "docusign");
+
+    let id = provider
+        .create(SignatureRequest {
+            document_id: "doc-1".into(),
+            signers: vec!["alice@example.com".into()],
+            title: "Sign please".into(),
+            provider: "docusign".into(),
+        })
+        .await?;
+    let _status = provider.status(&id).await?;
+    Ok(())
+}
+```
+
+### Status mapping (pyfly parity)
+
+| DocuSign `status` | `SignatureStatus` |
+|---|---|
+| `created`, `sent`, `delivered` | `Pending` |
+| `completed` | `Signed` |
+| `declined`, `voided` | `Declined` |
+| `expired` | `Expired` |
+| _(unknown)_ | `Pending` |
+
+## Quick start (legacy stub)
 
 ```rust
 use firefly_ecm::{ESignatureProvider, SignatureRequest};
@@ -70,17 +103,14 @@ in the real adapter without changes.
 
 | Item | Description |
 |---|---|
-| `Config` | OAuth2 / JWT-grant wiring for the production adapter |
-| `Provider` | Placeholder `ESignatureProvider`; `Provider::new(cfg)` |
+| `RestProvider` | Real DocuSign `ESignatureProvider` over `reqwest`; `RestProvider::new(base_url, account_id, access_token)`, `.with_client(reqwest::Client)` |
+| `map_status(&str)` | DocuSign envelope `status` → `SignatureStatus` (pyfly `_map_status` table) |
+| `Config` | OAuth2 / JWT-grant wiring (legacy stub) |
+| `Provider` | Legacy port-asserting stub; `Provider::new(cfg)` |
 | `ERR_NOT_IMPLEMENTED` | Sentinel message, bytes-equal to Go's `ErrNotImplemented` |
 | `not_implemented()` | Builds the sentinel as `EcmError::Provider` |
 | `is_not_implemented(&EcmError)` | Analog of Go's `errors.Is(err, ErrNotImplemented)` |
 | `VERSION` | Framework version stamp |
-
-## Roadmap
-
-The real implementation is scheduled for a future release — see the Go
-repository's `docs/AUDIT.md` § Roadmap for sequencing.
 
 ## Testing
 
@@ -88,8 +118,9 @@ repository's `docs/AUDIT.md` § Roadmap for sequencing.
 cargo test -p firefly-ecm-esignature-docusign
 ```
 
-Smoke tests assert (a) port satisfaction (the adapter coerces to
-`Box<dyn ESignatureProvider>` / `Arc<dyn ESignatureProvider>`) and (b) every
-method returns the `ERR_NOT_IMPLEMENTED` sentinel. Once the production adapter
-ships, these tests are deleted in favour of integration tests against a real
-provider container / mock server.
+The REST behavior tests (`tests/rest_test.rs`, ported from pyfly's
+`test_docusign_behavior.py`) spin up an in-process axum mock on port 0 and
+assert both the outbound request the adapter builds (method, path, auth header,
+JSON payload) and how each canned response is parsed into the domain types — no
+network, Docker, or real DocuSign. The legacy stub smoke tests still assert
+port satisfaction and the `ERR_NOT_IMPLEMENTED` sentinel for back-compat.

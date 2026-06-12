@@ -230,6 +230,17 @@ impl Saga {
         &self.name
     }
 
+    /// The configured steps, in execution order — the definition-listing
+    /// accessor used by the validator, registry, and admin surfaces.
+    pub fn steps(&self) -> &[Step] {
+        &self.steps
+    }
+
+    /// Step names in execution order.
+    pub fn step_names(&self) -> Vec<&str> {
+        self.steps.iter().map(|s| s.name.as_str()).collect()
+    }
+
     /// Executes the saga. On success the returned [`Outcome`] has status
     /// [`SagaStatus::Completed`]; on failure the [`SagaFailure`] carries
     /// both the error and the terminal outcome.

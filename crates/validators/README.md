@@ -28,6 +28,13 @@ Coverage:
 | `validate_dni`         | Spanish DNI with letter checksum                                            |
 | `validate_nie`         | Spanish NIE (X/Y/Z prefix variant)                                          |
 | `validate_nif`         | Spanish NIF (DNI ∪ NIE)                                                     |
+| `validate_cvv`         | Card CVV/CVC — 3 or 4 digits *(pyfly parity)*                               |
+| `validate_pin`         | Card PIN — 4 digits by default, `_with_length` variant *(pyfly parity)*    |
+| `validate_amount`      | Monetary amount — finite, non-negative, ≤ 18 integer digits *(pyfly parity)* |
+| `validate_account_number` | Bank account number — 6..34 alphanumerics *(pyfly parity)*               |
+| `validate_interest_rate` | Percentage band 0..=100, `_within` variant *(pyfly parity)*               |
+| `validate_date`        | ISO-8601 calendar date, `_with_format` strftime variant *(pyfly parity)*    |
+| `validate_datetime`    | ISO-8601 datetime (`T` or space, fractional secs, offset or `Z`) *(pyfly parity)* |
 
 ## Why pure functions?
 
@@ -78,6 +85,65 @@ impl Default for PasswordPolicy { /* 12+ chars, upper, lower, digit, symbol */ }
 
 pub const IBAN_COUNTRY_LENGTHS: &[(&str, usize)];
 pub fn iban_country_length(country: &str) -> Option<usize>;
+
+// pyfly parity — banking predicates (see below)
+pub fn validate_cvv(s: &str) -> Result<(), ValidationError>;
+pub fn validate_pin(s: &str) -> Result<(), ValidationError>;                       // length 4
+pub fn validate_pin_with_length(s: &str, length: usize) -> Result<(), ValidationError>;
+pub fn validate_amount(value: f64) -> Result<(), ValidationError>;                 // allow_zero=false, max_digits=18
+pub fn validate_amount_with(value: f64, allow_zero: bool, max_digits: usize) -> Result<(), ValidationError>;
+pub fn validate_account_number(s: &str) -> Result<(), ValidationError>;
+pub fn validate_interest_rate(value: f64) -> Result<(), ValidationError>;          // 0.0..=100.0
+pub fn validate_interest_rate_within(value: f64, min_pct: f64, max_pct: f64) -> Result<(), ValidationError>;
+pub fn validate_date(s: &str) -> Result<(), ValidationError>;                      // %Y-%m-%d
+pub fn validate_date_with_format(s: &str, fmt: &str) -> Result<(), ValidationError>;
+pub fn validate_datetime(s: &str) -> Result<(), ValidationError>;
+```
+
+## pyfly parity
+
+The banking predicates from `pyfly.validation.domain` that the Go
+lineage lacked ship as the same `Result<(), ValidationError>` functions
+as the rest of the crate:
+
+* **Error reasons are pyfly's messages verbatim** — `invalid CVV`,
+  `invalid pin`, `invalid amount`, `invalid account number`,
+  `interest rate out of range`, `invalid date`, `invalid datetime` —
+  wrapped in the crate-canonical `Display`
+  (`firefly/validators: invalid: invalid CVV`). pyfly's boolean
+  `is_valid_*` and its pydantic `valid_*` factory collapse into one
+  function here.
+* **Keyword arguments become `_with`/`_within` variants**: the
+  unsuffixed function applies pyfly's defaults (PIN length 4, amount
+  `allow_zero=false`/`max_digits=18`, interest band `0..=100`, date
+  format `%Y-%m-%d`).
+* **`validate_amount` mirrors pyfly's hardening**: `inf`/`-inf`/`NaN`
+  are rejected (never panic), negatives are rejected, zero needs
+  `allow_zero`, and the truncated integer part may carry at most
+  `max_digits` decimal digits (Python's `len(str(int(v))) <= max_digits`).
+* **`validate_date`/`validate_datetime` parse with chrono**:
+  `validate_date_with_format` takes `chrono::format::strftime`
+  specifiers (the same `%Y-%m-%d`-style directives `datetime.strptime`
+  uses); `validate_datetime` accepts the `datetime.fromisoformat`
+  shapes — `T` or space separator, optional fractional seconds,
+  `±HH:MM`/`±HHMM` offsets or trailing `Z`, minute precision, and bare
+  dates. Compact "basic" forms (`20260507T120000`) and hour-only times
+  are deliberately not accepted.
+* **Deliberate divergences**: alphabets are ASCII-only (Python's
+  `str.isdigit`/`str.isalnum` would also accept non-ASCII Unicode
+  digits/letters), and the amount/interest validators take a typed
+  `f64` instead of pyfly's "anything `float()` can coerce".
+
+```rust
+use firefly_validators::{validate_amount_with, validate_cvv, validate_datetime};
+
+validate_cvv("123").unwrap();
+validate_amount_with(0.0, true, 18).unwrap();          // allow_zero
+validate_datetime("2026-05-07T12:00:00Z").unwrap();    // Z == +00:00
+assert_eq!(
+    validate_cvv("12").unwrap_err().reason(),
+    "invalid CVV"                                      // pyfly's message, verbatim
+);
 ```
 
 ## Quick start

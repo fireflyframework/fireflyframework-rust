@@ -1,0 +1,19 @@
+//! The sample `TodoService` for {{ name }}.
+
+use crate::models::todo::Todo;
+
+/// Application service for `Todo` items.
+#[derive(Debug, Default, Clone)]
+pub struct TodoService;
+
+impl TodoService {
+    /// Construct a new service.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// List all to-dos.
+    pub async fn list(&self) -> Vec<Todo> {
+        Vec::new()
+    }
+}

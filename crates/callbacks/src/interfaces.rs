@@ -91,6 +91,50 @@ mod base64_bytes {
     }
 }
 
+/// One entry in a dispatcher's outbound-URL allowlist — the Rust
+/// spelling of pyfly's `callbacks.models.AuthorizedDomain`.
+///
+/// When a dispatcher is configured with one or more authorized domains
+/// (an SSRF allowlist), a [`Target`] is delivered to only if its URL
+/// host equals an authorized [`domain`](AuthorizedDomain::domain) or is
+/// a subdomain of it (`host == domain` or `host` ends with
+/// `".{domain}"`), matched case-insensitively — exactly pyfly's
+/// `_is_authorized` rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AuthorizedDomain {
+    /// The allowlisted host (e.g. `customer.example.com`). Compared
+    /// case-insensitively; surrounding whitespace is ignored.
+    pub domain: String,
+    /// Free-form human description, never used in matching. Omitted from
+    /// JSON when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+impl AuthorizedDomain {
+    /// Builds an [`AuthorizedDomain`] for `domain` with no description —
+    /// the common case.
+    pub fn new(domain: impl Into<String>) -> Self {
+        Self {
+            domain: domain.into(),
+            description: String::new(),
+        }
+    }
+}
+
+impl From<&str> for AuthorizedDomain {
+    fn from(domain: &str) -> Self {
+        AuthorizedDomain::new(domain)
+    }
+}
+
+impl From<String> for AuthorizedDomain {
+    fn from(domain: String) -> Self {
+        AuthorizedDomain::new(domain)
+    }
+}
+
 /// Target is one outbound delivery destination.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -352,6 +396,30 @@ mod tests {
         let obj = json.as_object().unwrap();
         assert!(!obj.contains_key("headers"), "omitempty");
         assert!(!obj.contains_key("correlationId"), "omitempty");
+    }
+
+    #[test]
+    fn authorized_domain_constructors_and_json() {
+        let d = AuthorizedDomain::new("example.com");
+        assert_eq!(d.domain, "example.com");
+        assert!(d.description.is_empty());
+        // From<&str> and From<String> convenience.
+        assert_eq!(AuthorizedDomain::from("a.com").domain, "a.com");
+        assert_eq!(AuthorizedDomain::from("b.com".to_string()).domain, "b.com");
+
+        // Empty description is omitted on the wire.
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["domain"], "example.com");
+        assert!(!json.as_object().unwrap().contains_key("description"));
+
+        // A described entry round-trips with a camelCase-free shape.
+        let described = AuthorizedDomain {
+            domain: "x.com".into(),
+            description: "partner".into(),
+        };
+        let back: AuthorizedDomain =
+            serde_json::from_str(&serde_json::to_string(&described).unwrap()).unwrap();
+        assert_eq!(back, described);
     }
 
     #[test]

@@ -2,13 +2,14 @@
 //! [`EventStore`] port and its in-memory default.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::EventSourcingError;
+use crate::upcaster::{apply_upcasters, EventUpcaster};
 
 /// Serializes binary payloads as standard (padded) base64 strings — the JSON
 /// encoding Go gives `[]byte` — so events written by any port can be read by
@@ -152,15 +153,41 @@ pub trait EventStore: Send + Sync {
 
 /// MemoryEventStore is the in-process [`EventStore`] — suitable for tests
 /// and for the default starter-domain wiring before a real DB is added.
-#[derive(Debug, Default)]
+///
+/// An optional [`EventUpcaster`] chain (see
+/// [`MemoryEventStore::with_upcasters`]) is applied on the read paths
+/// ([`load`](EventStore::load) / [`load_after`](EventStore::load_after)) so
+/// consumers always observe current-schema events — matching pyfly's
+/// `InMemoryEventStore`. The write path ([`append`](EventStore::append)) is
+/// never touched.
+#[derive(Default)]
 pub struct MemoryEventStore {
     streams: RwLock<HashMap<String, Vec<DomainEvent>>>,
+    upcasters: Vec<Arc<dyn EventUpcaster>>,
+}
+
+impl std::fmt::Debug for MemoryEventStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryEventStore")
+            .field("upcasters", &self.upcasters.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl MemoryEventStore {
-    /// Returns an empty store.
+    /// Returns an empty store with no upcasters configured.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Returns an empty store whose read paths apply `upcasters` (in order)
+    /// to every event before returning it — the Rust analog of pyfly's
+    /// `InMemoryEventStore(upcasters=[...])`.
+    pub fn with_upcasters(upcasters: Vec<Arc<dyn EventUpcaster>>) -> Self {
+        MemoryEventStore {
+            streams: RwLock::new(HashMap::new()),
+            upcasters,
+        }
     }
 }
 
@@ -190,7 +217,11 @@ impl EventStore for MemoryEventStore {
     async fn load(&self, aggregate_id: &str) -> Result<Vec<DomainEvent>, EventSourcingError> {
         let streams = self.streams.read().expect("event store lock poisoned");
         match streams.get(aggregate_id) {
-            Some(events) if !events.is_empty() => Ok(events.clone()),
+            Some(events) if !events.is_empty() => Ok(events
+                .iter()
+                .cloned()
+                .map(|e| apply_upcasters(e, &self.upcasters))
+                .collect()),
             _ => Err(EventSourcingError::AggregateNotFound),
         }
     }
@@ -208,6 +239,7 @@ impl EventStore for MemoryEventStore {
                     .iter()
                     .filter(|e| e.version > since_version)
                     .cloned()
+                    .map(|e| apply_upcasters(e, &self.upcasters))
                     .collect()
             })
             .unwrap_or_default())

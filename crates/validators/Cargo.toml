@@ -9,5 +9,6 @@ rust-version.workspace = true
 description = "Firefly Framework for Rust — IBAN, BIC, Luhn, currency, phone, password, sort code, VAT, Spanish IDs"
 
 [dependencies]
+chrono = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }

@@ -1,0 +1,17 @@
+//! Greeting service for {{ name }}.
+
+/// Produces greetings for the CLI commands.
+#[derive(Debug, Default, Clone)]
+pub struct GreetingService;
+
+impl GreetingService {
+    /// Construct a new greeting service.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Greet `name`.
+    pub fn greet(&self, name: &str) -> String {
+        format!("Hello, {name}! Welcome to {{ name }}.")
+    }
+}

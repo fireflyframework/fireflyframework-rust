@@ -13,6 +13,16 @@
 //!   cost. Default [`MemorySnapshotStore`].
 //! * [`Projection`] + [`ProjectionRunner`] — read-side handlers with replay.
 //!
+//! ## pyfly parity additions
+//!
+//! * [`EventUpcaster`] — schema migration applied on the read paths
+//!   ([`MemoryEventStore::with_upcasters`] / [`SqlEventStore::with_upcasters`]).
+//! * [`TransactionalOutbox`] + [`OutboxRecord`] — at-least-once delivery of
+//!   stored events to a broker via an [`OutboxSink`] (default [`EdaSink`]
+//!   over `firefly-eda`).
+//! * [`SqlEventStore`] — a SQL-backed [`EventStore`] over the
+//!   `firefly-transactional` `Database` port.
+//!
 //! The [`DomainEvent`] JSON wire format (camelCase field names, base64
 //! payload, `metadata` omitted when empty) is byte-compatible with the
 //! Java, .NET, Go and Python ports.
@@ -39,13 +49,19 @@
 
 mod aggregate;
 mod error;
+mod outbox;
 mod projection;
 mod snapshot;
+mod sql_store;
+mod upcaster;
 
 pub use aggregate::{AggregateRoot, DomainEvent, EventStore, MemoryEventStore};
 pub use error::EventSourcingError;
+pub use outbox::{EdaSink, OutboxRecord, OutboxSink, TransactionalOutbox};
 pub use projection::{Projection, ProjectionRunner};
 pub use snapshot::{MemorySnapshotStore, Snapshot, SnapshotStore};
+pub use sql_store::{parse_occurred_at, SqlEventStore, DDL};
+pub use upcaster::{EventUpcaster, NoOpUpcaster};
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.1";

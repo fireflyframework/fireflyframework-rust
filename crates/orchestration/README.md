@@ -144,6 +144,120 @@ pub struct CancellationToken;          // new() / cancel() / is_cancelled()
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 ```
 
+## pyfly parity — durable orchestration layer
+
+On top of the three in-process engines, the crate ports pyfly's
+`pyfly.transactional` durability layer: persistent execution state, stuck-run
+recovery, a dead-letter queue, signal/timer workflow nodes, broker-driven
+saga starts, scheduled starts, definition validation, and a REST admin
+surface.
+
+### Execution model
+
+```rust,ignore
+pub enum ExecutionStatus { Pending, Running, Waiting, Suspended, Completed,
+    Failed, Cancelled, TimedOut, Trying, Confirming, Confirmed, Canceling,
+    Canceled, Compensating, Compensated }              // wire: "TIMED_OUT", …
+pub enum ExecutionPattern { Saga, Workflow, Tcc }       // wire: "SAGA", …
+pub enum StepStatus { Pending, Running, Done, Failed, Skipped, Compensating,
+    Compensated, CompensationFailed }
+pub enum TccPhase { Try, Confirm, Cancel }
+pub enum TriggerMode { Sync, Async }
+pub struct RetryPolicy { max_attempts, backoff_ms, timeout_ms, jitter, jitter_factor }
+pub struct ExecutionState { correlation_id, name, pattern, status,
+    started_at, updated_at, completed_at, payload }     // .to_json() / .from_json()
+```
+
+### Persistence + recovery
+
+```rust,ignore
+#[async_trait] pub trait PersistenceProvider {
+    async fn save(&self, state: ExecutionState) -> Result<(), PersistenceError>;
+    async fn load(&self, correlation_id: &str) -> Result<Option<ExecutionState>, _>;
+    async fn list(&self, filter: ExecutionFilter) -> Result<Vec<ExecutionState>, _>;
+    async fn list_stale(&self, before: DateTime<Utc>) -> Result<Vec<ExecutionState>, _>;
+    async fn delete(&self, correlation_id: &str) -> Result<bool, _>;
+    async fn cleanup(&self, older_than: Duration) -> Result<usize, _>;
+    async fn is_healthy(&self) -> bool;
+}
+pub struct MemoryPersistence;                            // default in-process adapter
+pub struct SqlitePersistence;                            // durable dev adapter over rusqlite
+
+pub struct RecoveryService;   // .recover_stale() resumes / compensates / marks-failed;
+                              // .cleanup() evicts old terminal history.
+pub enum RecoveryAction { MarkFailed, Resume, Compensate, Skip }
+```
+
+`MemoryPersistence` and `SqlitePersistence` pass the identical port test suite
+(`save`/`load`/`list`/filter/`list_stale`/`cleanup`/`delete`/health), and the
+SQLite adapter additionally survives a reopen of its file. Production
+deployments plug a server-grade `PersistenceProvider`; only the port and the
+two dev adapters ship here (the workspace carries no redis/postgres driver).
+
+### Dead-letter queue
+
+```rust,ignore
+#[async_trait] pub trait DeadLetterStore { add / get / list / delete / clear / count }
+pub struct MemoryDeadLetterStore;
+pub struct DeadLetterService;  // .capture(DeadLetterCapture) / .list / .get / .count /
+                              // .mark_retried / .delete
+pub struct DeadLetterEntry { id, execution_name, correlation_id, step_id,
+    error_type, error_message, timestamp, retry_count, input }
+```
+
+### Signals & timers (workflow wait nodes)
+
+```rust,ignore
+pub struct SignalService;      // subscribe / wait_for / deliver / list_active / unregister
+Node::wait_for_signal(name, &signals, correlation_id, signal)  // parks until delivered
+pub struct TimerService;       // sleep_ms / sleep
+Node::timer(name, Duration)    // sleeps, then completes
+```
+
+### Event gateway, scheduler & registry
+
+```rust,ignore
+pub struct EventGateway;       // register / register_saga_trigger(TriggerMode) /
+                              // dispatch / bind(&Subscriber, topic) over firefly-eda
+pub struct OrchestrationScheduler;   // register(ScheduledTask) / start / stop / list
+pub enum ScheduleTrigger { FixedRate(Duration), FixedDelay(Duration), Cron(String) }
+ScheduledTask::for_saga(&registry, name, trigger, mode)   // @scheduled_saga
+pub struct OrchestrationRegistry;    // register_{saga,workflow,tcc}; {saga,workflow,tcc}_names();
+                                    // definitions() -> Vec<DefinitionInfo>  (admin listing)
+```
+
+Cron triggers are inert without a cron evaluator, exactly as pyfly behaves
+without `croniter`; fixed-rate / fixed-delay are the always-active forms.
+
+### Definition validation & reports
+
+```rust,ignore
+pub struct OrchestrationValidator;   // validate_dag(target, graph) -> ValidationReport
+pub struct ValidationReport { issues }  // has_errors() / raise_if_errors()
+pub struct ExecutionReport;          // from_saga_outcome(cid, &Outcome) / from_state(&state)
+```
+
+`Workflow::graph()` lowers a workflow to the `node -> [deps]` shape the
+validator lints for empty graphs, unknown dependencies, and cycles.
+
+### REST router
+
+```rust,ignore
+pub fn router(api: OrchestrationApi) -> axum::Router;   // mounts /api/orchestration/*
+```
+
+| Method   | Path                                  | Behavior                              |
+|----------|---------------------------------------|---------------------------------------|
+| `GET`    | `/api/orchestration/executions`       | in-flight runs (default) or `?status=`|
+| `GET`    | `/api/orchestration/executions/{cid}` | one run, `204` when absent            |
+| `GET`    | `/api/orchestration/dlq`              | entries, `?execution_name=`/`?correlation_id=` |
+| `GET`    | `/api/orchestration/dlq/count`        | `{"count": n}`                        |
+| `GET`    | `/api/orchestration/dlq/{id}`         | one entry, `204` when absent          |
+| `POST`   | `/api/orchestration/dlq/{id}/retry`   | `{"retried": bool}`                   |
+| `DELETE` | `/api/orchestration/dlq/{id}`         | `{"deleted": bool}`                   |
+| `POST`   | `/api/orchestration/workflow/signal`  | `{"delivered": bool}`                 |
+| `GET`    | `/api/orchestration/definitions`      | registered definitions (admin)        |
+
 ## Testing
 
 ```bash
@@ -154,4 +268,9 @@ Covers happy-path completion, reverse-order compensation, the two
 compensation policies, concurrent DAG wave execution, fail-fast on
 upstream error, cycle / duplicate / unknown-dependency validation, TCC
 try / confirm / cancel orderings, joined confirm errors, cooperative
-cancellation, and `Outcome` serde round-trips.
+cancellation, and `Outcome` serde round-trips — plus the ported pyfly
+transactional-engine suites: persistence (memory + sqlite), recovery,
+dead-letter capture/retry, signal delivery, timer nodes, event-gateway
+dispatch and broker-driven saga starts, scheduled fixed-rate/delay starts,
+DAG validation, execution reports, and the `axum` REST router exercised via
+`tower::ServiceExt::oneshot`.

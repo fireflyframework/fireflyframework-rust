@@ -11,10 +11,6 @@ description = "Firefly Framework for Rust — Aspect-oriented advice: pointcut g
 [dependencies]
 regex = { workspace = true }
 async-trait = { workspace = true }
-futures = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-futures = { workspace = true }
-serde_json = { workspace = true }

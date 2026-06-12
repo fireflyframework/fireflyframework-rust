@@ -119,8 +119,9 @@ pub struct DispatcherConfig {
     pub max_attempts: u32,                      // Go: MaxAttempts
     pub initial_delay: Duration,                // Go: InitialDelay
     pub clock: Option<Arc<dyn Clock>>,          // Go: Now func() time.Time
+    pub authorized_domains: Vec<AuthorizedDomain>, // pyfly: SSRF allowlist (#190)
 }
-// DispatcherConfig::default() == Go's core.Default()
+// DispatcherConfig::default() == Go's core.Default() (empty allowlist)
 
 pub struct HmacDispatcher { /* Go: core.Dispatcher */ }
 impl HmacDispatcher {
@@ -170,6 +171,46 @@ impl CallbacksClient {
 Built on `firefly_client::RestClient` (as the Go SDK builds on
 `client.NewREST`), so it inherits correlation-id propagation and
 429/5xx retry for free.
+
+## pyfly parity — `AuthorizedDomain` allowlist (SSRF protection)
+
+Mirrors pyfly's `CallbackConfig.authorized_domains` / `_is_authorized`
+(#190): an optional outbound-URL allowlist enforced on dispatch.
+
+```rust,ignore
+pub struct AuthorizedDomain {
+    pub domain: String,       // e.g. "customer.example.com" (trimmed, case-insensitive)
+    pub description: String,  // free-form; omitted from JSON when empty
+}
+impl AuthorizedDomain {
+    pub fn new(domain: impl Into<String>) -> Self;
+}
+// From<&str> / From<String> for ergonomic construction.
+```
+
+When `DispatcherConfig.authorized_domains` is **non-empty**, a matching
+target is delivered to only if its URL **host** equals an authorized
+domain or is a subdomain of one (`host == domain` or `host` ends with
+`".{domain}"`), matched case-insensitively. A target failing the check
+is **rejected before any HTTP request**: a rejection audit row is
+recorded (`status: 0`, `attempt: 0`, `error: "domain not authorized"` —
+pyfly's failed-execution audit) and the dispatcher continues with the
+next target. A URL with no parseable host is fail-closed (never
+authorized).
+
+An **empty** allowlist (the default) disables the check entirely, so
+existing Go-parity behaviour — every target reachable — is preserved.
+
+```rust,ignore
+let dispatcher = HmacDispatcher::new(
+    store.clone(),
+    DispatcherConfig {
+        authorized_domains: vec![AuthorizedDomain::new("customer.example.com")],
+        ..DispatcherConfig::default()
+    },
+);
+// Targets at *.customer.example.com are delivered; any other host is blocked + audited.
+```
 
 ## Quick start
 

@@ -1,83 +1,93 @@
 # `firefly-idp-aws-cognito`
 
-> **Tier:** Adapter · **Status:** Stub (port-asserting) · **Backing tech:** AWS Cognito — AWS SDK CognitoIdentityProvider · **Go module:** `idpawscognito`
+> **Tier:** Adapter · **Status:** Full · **Backing tech:** Cognito Identity Provider JSON API (`X-Amz-Target`) over `reqwest` + a self-contained, KAT-tested SigV4 signer
 
 ## Overview
 
-`firefly-idp-aws-cognito` is the placeholder `firefly_idp::Adapter` adapter
-for AWS Cognito — AWS SDK CognitoIdentityProvider. The crate and types are
-declared, the port implementation compiles, and sentinel-error smoke tests
-guard the wire shape — but the SaaS / cloud SDK integration is **not yet
-wired**. Every method returns the `not_implemented()` sentinel.
+`firefly-idp-aws-cognito` is a real `firefly_idp::Adapter` for AWS Cognito. It
+talks directly to the **Cognito Identity Provider JSON API** over `reqwest` —
+**no AWS SDK is pulled in**. Requests are `POST`s to
+`https://cognito-idp.{region}.amazonaws.com/` carrying an
+`X-Amz-Target: AWSCognitoIdentityProviderService.{Action}` header and a JSON
+body, exactly the wire protocol the AWS SDK speaks underneath.
+
+This is a behavior port of pyfly's `AwsCognitoIdpAdapter` (which wraps boto3)
+with a deliberate, brief-mandated divergence: instead of an SDK we drive the raw
+JSON API and sign the **admin** calls with a self-contained SigV4 signer
+(`src/sigv4.rs`), validated against the official AWS SigV4 Known-Answer-Test
+vectors.
 
 ```rust
-/// Bytes-equal to the Go module's ErrNotImplemented error value.
-pub const ERR_NOT_IMPLEMENTED: &str = "firefly/idpawscognito: not yet implemented";
+use firefly_idp::Adapter as _;
+use firefly_idp_aws_cognito::{Adapter, Config};
 
-/// Builds the sentinel as `firefly_idp::Error::Provider(ERR_NOT_IMPLEMENTED)`.
-pub fn not_implemented() -> firefly_idp::Error;
+let idp = Adapter::new(Config {
+    user_pool_id: "us-east-1_AbcDef".into(),
+    client_id: "app-client-id".into(),
+    region: "us-east-1".into(),
+    access_key: "AKIA...".into(),
+    secret_key: "...".into(),
+    ..Config::default()
+});
+let token = idp.login("alice", "pw").await?;
 ```
 
-## Why ship a stub?
+## What it does
 
-* The framework's tier diagram stays correct (no missing module).
-* The port boundary stays locked — when the real implementation lands
-  in v26.06, no consuming code needs to change.
-* The wire contract is exercised end-to-end before the integration
-  ships, via the smoke tests that assert the sentinel return.
+* **Client flows (unsigned)** — `InitiateAuth` with `USER_PASSWORD_AUTH`
+  (`login`) and `REFRESH_TOKEN_AUTH` (`refresh`), `GetUser` (`introspect` /
+  `get_user_info` / `validate`), and `GlobalSignOut` (`logout`). When the app
+  client has a secret, the computed `SECRET_HASH` is included.
+* **Admin calls (SigV4-signed)** — `AdminCreateUser` + `AdminSetUserPassword`
+  (`create_user`), `AdminGetUser` (`get_user` / `find_by_username`),
+  `AdminUpdateUserAttributes` (`update_user`), `AdminDeleteUser`,
+  `ListUsers`, `ListGroups` (`list_roles`), `AdminListGroupsForUser`
+  (`get_roles`), `AdminAddUserToGroup` / `AdminRemoveUserFromGroup`
+  (`assign_role` / `revoke_role`), and `AdminSetUserPassword`
+  (`change_password` / `reset_password`).
 
-## Public surface
-
-```rust
-pub struct Config {
-    pub base_url: String,
-    pub realm: String,
-    pub client_id: String,
-    pub client_secret: String,
-    pub tenant: String,
-    pub user_pool_id: String,
-    pub region: String,
-}
-
-pub struct Adapter { /* retains Config */ }
-
-impl Adapter {
-    pub fn new(cfg: Config) -> Self;
-    pub fn config(&self) -> &Config;
-}
-
-impl firefly_idp::Adapter for Adapter { /* every method → not_implemented() */ }
-```
-
-`Adapter::name()` returns the stable identifier `"awscognito-stub"`.
+`SECRET_HASH = Base64(HMAC-SHA256(client_secret, username + client_id))`, exposed
+as `Adapter::secret_hash`. `mfa_challenge` / `mfa_verify` return the
+`ERR_NOT_IMPLEMENTED` sentinel because Cognito manages MFA via its native auth
+challenge flow.
 
 ## Configuration
 
-`Config`'s fields cover every wiring variable the production adapter
-needs (`base_url`, `realm`, `client_id`, `client_secret`, `tenant`,
-`user_pool_id`, `region`); they are accepted and retained today so
-consuming configuration code stays stable when the implementation lands.
-
-## Quick start
-
 ```rust
-use firefly_idp_aws_cognito::{not_implemented, Adapter, Config};
-
-let idp = Adapter::new(Config {
-    user_pool_id: "eu-west-1_AbCdEfGhI".into(),
-    region: "eu-west-1".into(),
-    ..Config::default()
-});
-assert_eq!(firefly_idp::Adapter::name(&idp), "awscognito-stub");
-
-// Until the integration ships, every call fails with the sentinel:
-// idp.login("alice", "s3cret").await == Err(not_implemented())
+pub struct Config {
+    pub base_url: String,      // endpoint host override (default regional Cognito host)
+    pub realm: String,         // shared vendor-config field (unused)
+    pub client_id: String,     // Cognito app-client id
+    pub client_secret: String, // app-client secret (optional; enables SECRET_HASH)
+    pub tenant: String,        // shared vendor-config field (unused)
+    pub user_pool_id: String,  // Cognito user-pool id
+    pub region: String,        // AWS region
+    pub access_key: String,    // AWS access key id (signs admin calls)
+    pub secret_key: String,    // AWS secret access key (signs admin calls)
+}
 ```
 
-## Roadmap
+## SigV4 signer (`src/sigv4.rs`)
 
-The real implementation is scheduled for **v26.06.x**, mirroring the Go
-port's sequencing (see the Go repo's `docs/AUDIT.md` § Roadmap).
+A from-scratch, dependency-light implementation of header-based AWS Signature
+Version 4 built on the workspace `hmac` / `sha2` / `hex` crates. It is validated
+against the official `aws4_testsuite` Known-Answer-Test vectors (`get-vanilla`,
+`get-vanilla-query`, `post-header-key-sort`, and the derived signing key), so
+its output is byte-for-byte identical to AWS's reference signer.
+
+## pyfly parity
+
+| pyfly `AwsCognitoIdpAdapter` (boto3) | Rust (raw JSON API) |
+| --- | --- |
+| `initiate_auth` USER_PASSWORD_AUTH | `InitiateAuth` (unsigned) |
+| `initiate_auth` REFRESH_TOKEN_AUTH | `InitiateAuth` (unsigned) |
+| `admin_create_user` + `admin_set_user_password` | `AdminCreateUser` + `AdminSetUserPassword` (signed) |
+| `admin_get_user` / `list_users` | `AdminGetUser` / `ListUsers` (signed) |
+| `get_user` / `global_sign_out` | `GetUser` / `GlobalSignOut` (unsigned) |
+| `admin_add/remove_user_to_group` / `list_groups` / `admin_list_groups_for_user` | signed group ops |
+| `SECRET_HASH` computation | `Adapter::secret_hash` |
+| `login` → `AuthResult` | `login` → `Token`; `login_full` → `AuthResult` |
+| `mfa_challenge` / `mfa_verify` | sentinel (`ERR_NOT_IMPLEMENTED`) |
 
 ## Testing
 
@@ -85,10 +95,9 @@ port's sequencing (see the Go repo's `docs/AUDIT.md` § Roadmap).
 cargo test -p firefly-idp-aws-cognito
 ```
 
-Smoke tests assert (a) compile-time port satisfaction (the struct
-implements `firefly_idp::Adapter` and is usable behind
-`Arc<dyn Adapter>`), and (b) every method returns the
-`not_implemented()` sentinel, whose message is bytes-equal to the Go
-module's `ErrNotImplemented`. Once the production adapter ships, these
-tests are deleted in favour of integration tests against a real
-provider container / mock server.
+Unit tests cover the SigV4 KAT vectors and the SECRET_HASH KAT. Behavior tests
+(`tests/cognito_behavior.rs`) drive the real `reqwest` path against an in-process
+`axum` mock server (port 0, no network, no AWS credentials), asserting the
+`X-Amz-Target` action header, the JSON request body, and (for admin calls) the
+SigV4 `Authorization` header — the Rust analog of pyfly's
+`tests/idp/test_cognito_behavior.py`.
