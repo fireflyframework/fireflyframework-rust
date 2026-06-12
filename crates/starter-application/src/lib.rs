@@ -20,6 +20,11 @@
 //! `health`, …) and convenience method ([`Core::apply_middleware`],
 //! [`Core::actuator_router`], [`Core::new_application`],
 //! [`Core::print_banner`]) is reachable directly on the application.
+//! That includes the pyfly-parity batteries on [`CoreConfig`] (CORS,
+//! security headers, CSRF, request-log, request-metrics, http-exchanges,
+//! loggers, redaction — all OFF by default) and the admin-dashboard
+//! accessors ([`Core::cqrs_bus`], [`Core::scheduler`],
+//! [`Core::http_exchanges`], …).
 //!
 //! ## Quick start
 //!

@@ -1,4 +1,4 @@
-.PHONY: help build test test-v clippy fmt fmt-check sample clean ci
+.PHONY: help build test test-v clippy fmt fmt-check sample cli cli-install clean ci
 
 VERSION := 26.6.1
 
@@ -16,8 +16,10 @@ help:
 	@echo "  fmt        cargo fmt --all"
 	@echo "  fmt-check  verify rustfmt cleanliness"
 	@echo "  sample     run samples/orders"
+	@echo "  cli        run the firefly developer CLI (make cli ARGS='info')"
+	@echo "  cli-install install the firefly binary into ~/.cargo/bin"
 	@echo "  clean      cargo clean"
-	@echo "  ci         fmt-check + clippy + build + test"
+	@echo "  ci         fmt-check + clippy + build + test (whole 65-member workspace)"
 
 build:
 	cargo build --workspace
@@ -40,7 +42,16 @@ fmt-check:
 sample:
 	cargo run -p firefly-sample-orders
 
+# Run the `firefly` developer CLI: `make cli ARGS="doctor"`, `make cli ARGS="info"`.
+cli:
+	cargo run -p firefly-cli --bin firefly -- $(ARGS)
+
+# Install the `firefly` binary into ~/.cargo/bin.
+cli-install:
+	cargo install --path crates/cli
+
 clean:
 	cargo clean
 
+# `--workspace` covers every member, so `ci` scales with the workspace.
 ci: fmt-check clippy build test

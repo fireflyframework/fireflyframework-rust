@@ -31,6 +31,65 @@ Plus four convenience methods:
 * `print_banner()` — emits the ASCII banner identifying starter + app +
   runtime (`banner()` returns it as a `String` for tests).
 
+### pyfly-parity batteries (all OFF by default)
+
+Mirroring how pyfly's starters/auto-configuration assemble the stack,
+`CoreConfig` carries `Option`-typed knobs that — when set — weave the P1
+middleware surfaces into `apply_middleware` / `actuator_router` at their
+canonical pyfly filter order. Leaving every knob unset (the default)
+reproduces exactly the Go-parity Problem → Correlation → Idempotency
+chain and actuator surface, so existing wire shapes and tests are
+unchanged.
+
+| Knob | Effect when `Some` |
+|------|--------------------|
+| `cors` | `CorsLayer` at the outermost edge (preflight + simple-request decoration) |
+| `security_headers` | `SecurityHeadersLayer` (OWASP response headers) |
+| `csrf` | `CsrfLayer` (double-submit cookie) |
+| `request_log` | `RequestLogLayer` (one structured access-log event per request) |
+| `request_metrics` | `MetricsLayer` bridged into the actuator `MetricRegistry` via `MetricRegistryObserver` |
+| `http_exchanges` | `HttpExchangesLayer` recording + `/actuator/httpexchanges` endpoint |
+| `loggers` | `/actuator/loggers[/{name}]` runtime log-level control |
+| `redaction` | PII scrubbing on the default log writer |
+
+The effective `apply_middleware` chain (outermost → innermost, matching
+pyfly's filter order) is:
+
+```text
+CorsLayer            (cors)              — Starlette CORSMiddleware edge
+ProblemLayer         (always)           — panic → 500 RFC7807
+SecurityHeadersLayer (security_headers) — decorate every response
+CorrelationLayer     (always)           — X-Correlation-Id
+MetricsLayer         (request_metrics)  — http_server_requests_* (order -100)
+HttpExchangesLayer   (http_exchanges)   — record into the recorder (order -90)
+RequestLogLayer      (request_log)      — one access-log event (order +200)
+CsrfLayer            (csrf)             — double-submit cookie (order +210)
+IdempotencyLayer     (always)           — replay on Idempotency-Key (order +230)
+        │
+        ▼
+     your router
+```
+
+The `firefly-web` `RequestObserver` trait is local on purpose (web does
+not depend on the actuator); `MetricRegistryObserver` bridges it onto the
+actuator `MetricRegistry`, and `firefly-starter-core` — the crate that
+depends on both — is where that bridge lives. Each observation records the
+labeled `http_server_requests_seconds` timer and the companion
+`…_max` gauge, tagged `method`/`uri`/`status`/`outcome`/`exception`
+(a clean request carries `exception="None"`, pyfly's sentinel).
+
+### Wiring a downstream admin dashboard
+
+A downstream `firefly-admin` `AdminDeps` is built from the public `Core`
+accessors — `cqrs_bus()`, `scheduler()`, `health_composite()`,
+`metric_registry()`, `http_exchanges()`, `loggers()` — plus the public
+fields they mirror. `firefly-starter-core` does **not** depend on
+`firefly-admin` (a separate, later-tier crate), so there is no
+`Core::admin_deps()` convenience: adding one would invert the dependency
+graph (admin → starter-core, not the reverse). The admin crate constructs
+its `AdminDeps` from a `&Core` (or a shared `Arc<Core>`) using these
+accessors instead.
+
 ### Health glue
 
 The Go module hands an `observability.Composite` to `actuator.Mount`;
@@ -58,6 +117,21 @@ pub struct CoreConfig {
     pub idempotency: Option<IdempotencyConfig>, // default 24 h, POST/PUT/PATCH
     pub metrics: Option<Arc<MetricRegistry>>,   // default empty registry
     pub scheduler: Option<Arc<Scheduler>>,      // default Scheduler::new()
+
+    // pyfly-parity optional middleware — all OFF (None) by default:
+    pub cors: Option<CorsConfig>,                       // CorsLayer at the edge
+    pub security_headers: Option<SecurityHeadersConfig>,// OWASP headers
+    pub csrf: Option<CsrfLayer>,                        // double-submit cookie
+    pub request_log: Option<RequestLogLayer>,          // access-log event
+    pub request_metrics: Option<RequestMetricsConfig>, // http_server_requests_* bridge
+    pub http_exchanges: Option<Arc<HttpExchangeRecorder>>, // recorder + endpoint
+    pub loggers: Option<Arc<LoggersState>>,            // /actuator/loggers
+    pub redaction: Option<RedactionConfig>,            // PII scrubbing on the log
+}
+
+pub struct RequestMetricsConfig {
+    pub step_seconds: Option<f64>,            // rolling-max window (default 60s)
+    pub exclude_patterns: Option<Vec<String>>,// path globs not instrumented
 }
 
 pub struct Core { /* every field above, defaulted and wired */ }
@@ -70,9 +144,18 @@ impl Core {
     pub fn add_observability_indicator(&self, indicator: impl Indicator + 'static);
     pub fn banner(&self) -> String;
     pub fn print_banner(&self);
+
+    // Accessors a downstream admin dashboard reads to build its AdminDeps:
+    pub fn http_exchanges(&self) -> Option<Arc<HttpExchangeRecorder>>;
+    pub fn loggers(&self) -> Option<Arc<LoggersState>>;
+    pub fn cqrs_bus(&self) -> Arc<Bus>;
+    pub fn scheduler(&self) -> Arc<Scheduler>;
+    pub fn health_composite(&self) -> Arc<HealthComposite>;
+    pub fn metric_registry(&self) -> Arc<MetricRegistry>;
 }
 
 pub struct ObservabilityIndicator { /* obs Indicator → actuator HealthIndicator */ }
+pub struct MetricRegistryObserver { /* web RequestObserver → actuator MetricRegistry */ }
 pub fn to_actuator_status(s: firefly_observability::Status) -> HealthStatus;
 pub fn to_actuator_result(r: firefly_observability::HealthResult) -> HealthResult;
 ```
@@ -137,3 +220,13 @@ shut down through the lifecycle handle), validation middleware wired
 by default, the cache DOWN → 503 path, the observability → actuator
 health bridge, idempotency replay and correlation echo through the
 middleware chain, and `/actuator/{version,info}` reflection.
+
+The pyfly-parity wiring adds: every optional knob OFF by default (the
+default chain unchanged), a headline boot test proving **CORS preflight +
+security headers + a request-metrics counter incrementing** all flow
+through `apply_middleware`, the metrics bridge tagging a panic as a 500
+with `exception="panic"`, `/actuator/httpexchanges` recording and serving,
+`/actuator/loggers` mounted only when wired, CSRF guarding unsafe requests,
+idempotency replay surviving the full optional stack (proving the layer
+order keeps idempotency innermost), and the `MetricRegistryObserver`
+bridge recording the timer + max gauge directly.

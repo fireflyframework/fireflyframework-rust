@@ -16,7 +16,11 @@
 //! [`Deref`]/[`DerefMut`] to it, so every `Core` field and method is
 //! reachable directly on the starter (`data.bus`, `data.actuator_router(..)`,
 //! …). The full `firefly-starter-core` surface is re-exported, so this
-//! crate is the only starter dependency a data service needs.
+//! crate is the only starter dependency a data service needs — including
+//! the pyfly-parity batteries on `CoreConfig` (CORS, security headers,
+//! CSRF, request-log, request-metrics, http-exchanges, loggers,
+//! redaction — all OFF by default), which flow through the inherited
+//! `apply_middleware` / `actuator_router`.
 //!
 //! ## Quick start
 //!

@@ -24,7 +24,7 @@
 | [`firefly-observability`](crates/observability/README.md) | `tracing` + correlation enrichment, health composite, startup banner |
 | [`firefly-data`](crates/data/README.md) | Filter DSL, `Page<T>`, `Repository<T, K>` |
 | [`firefly-cqrs`](crates/cqrs/README.md) | Command + query `Bus` with validation + caching middleware |
-| [`firefly-eda`](crates/eda/README.md) | `Event` envelope, `Publisher`/`Subscriber`, in-memory broker, Kafka/RabbitMQ scaffolds |
+| [`firefly-eda`](crates/eda/README.md) | `Event` envelope, `Publisher`/`Subscriber`/`Broker` ports, `InMemoryBroker`, glob topics, consumer groups, `wrap_listener` retry/DLQ (transports in `eda-*`) |
 | [`firefly-eventsourcing`](crates/eventsourcing/README.md) | Aggregate roots + event store + snapshots + projections |
 | [`firefly-orchestration`](crates/orchestration/README.md) | `Saga`, `Workflow` (DAG), `Tcc` engines |
 | [`firefly-rule-engine`](crates/rule-engine/README.md) | YAML DSL → AST → evaluator (sub-modules: interfaces, models, core, web, sdk) |
@@ -55,30 +55,31 @@
 |-------|---------|
 | [`firefly-idp`](crates/idp/README.md) | Common `Adapter` trait port |
 | [`firefly-idp-internal-db`](crates/idp-internal-db/README.md) | Self-hosted (bcrypt + HS256 JWT) — **Full** |
-| [`firefly-idp-keycloak`](crates/idp-keycloak/README.md) | Keycloak OIDC + admin REST — Stub |
-| [`firefly-idp-azure-ad`](crates/idp-azure-ad/README.md) | Azure AD / Entra ID (MSAL + Microsoft Graph) — Stub |
-| [`firefly-idp-aws-cognito`](crates/idp-aws-cognito/README.md) | AWS Cognito — Stub |
+| [`firefly-idp-keycloak`](crates/idp-keycloak/README.md) | Keycloak OIDC + admin REST over `reqwest` — **Full** |
+| [`firefly-idp-azure-ad`](crates/idp-azure-ad/README.md) | Azure AD / Entra ID (Microsoft Graph + ROPC) — **Full** |
+| [`firefly-idp-aws-cognito`](crates/idp-aws-cognito/README.md) | AWS Cognito (JSON API + self-contained SigV4) — **Full** |
 
 ### Enterprise content management
 
 | Crate | Backing |
 |-------|---------|
 | [`firefly-ecm`](crates/ecm/README.md) | Adapter framework + LocalStore — **Full** |
-| [`firefly-ecm-storage-aws`](crates/ecm-storage-aws/README.md) | AWS S3 — Stub |
-| [`firefly-ecm-storage-azure`](crates/ecm-storage-azure/README.md) | Azure Blob Storage — Stub |
-| [`firefly-ecm-esignature-docusign`](crates/ecm-esignature-docusign/README.md) | DocuSign — Stub |
-| [`firefly-ecm-esignature-adobe-sign`](crates/ecm-esignature-adobe-sign/README.md) | Adobe Sign — Stub |
-| [`firefly-ecm-esignature-logalty`](crates/ecm-esignature-logalty/README.md) | Logalty — Stub |
+| [`firefly-ecm-storage-aws`](crates/ecm-storage-aws/README.md) | AWS S3 (`S3Store`) — **Full** (+ back-compat stub) |
+| [`firefly-ecm-storage-azure`](crates/ecm-storage-azure/README.md) | Azure Blob Storage (`BlobStore`) — **Full** (+ back-compat stub) |
+| [`firefly-ecm-esignature-docusign`](crates/ecm-esignature-docusign/README.md) | DocuSign REST v2.1 — **Full** (+ legacy stub) |
+| [`firefly-ecm-esignature-adobe-sign`](crates/ecm-esignature-adobe-sign/README.md) | Adobe Sign REST v6 — **Full** (+ legacy stub) |
+| [`firefly-ecm-esignature-logalty`](crates/ecm-esignature-logalty/README.md) | Logalty eIDAS REST — **Full** (+ legacy stub) |
 
 ### Notifications
 
 | Crate | Channel |
 |-------|---------|
 | [`firefly-notifications`](crates/notifications/README.md) | Dispatcher + MemoryChannel — **Full** |
+| [`firefly-notifications-smtp`](crates/notifications-smtp/README.md) | SMTP email via `lettre` (`SmtpEmailProvider`, real MIME, STARTTLS) — **Full** |
 | [`firefly-notifications-sendgrid`](crates/notifications-sendgrid/README.md) | SendGrid (email) — Stub |
 | [`firefly-notifications-resend`](crates/notifications-resend/README.md) | Resend (email) — Stub |
-| [`firefly-notifications-twilio`](crates/notifications-twilio/README.md) | Twilio (SMS) — Stub |
-| [`firefly-notifications-firebase`](crates/notifications-firebase/README.md) | Firebase (push) — Stub |
+| [`firefly-notifications-twilio`](crates/notifications-twilio/README.md) | Twilio (SMS) — **Full** real provider (+ Go-parity stub) |
+| [`firefly-notifications-firebase`](crates/notifications-firebase/README.md) | Firebase Cloud Messaging (push) — **Full** real provider (+ Go-parity stub) |
 
 ### Webhooks (outbound + inbound)
 
@@ -86,6 +87,23 @@
 |-------|------------------|
 | [`firefly-callbacks`](crates/callbacks/README.md) | Outbound webhook subsystem (HMAC dispatcher + audit + REST admin + SDK) |
 | [`firefly-webhooks`](crates/webhooks/README.md) | Inbound ingestion (Stripe / GitHub / Twilio / generic HMAC validators + DLQ + SDK) |
+
+### Infrastructure adapters
+
+Optional leaf crates implementing a platform port over a real backing
+library, selected at wiring time. The heavy SDK dependency
+(`rdkafka` / `lapin` / `tokio-postgres` / `redis` / `lettre`) is pulled
+in only by services that select that backend.
+
+| Crate | Port → backend |
+|-------|----------------|
+| [`firefly-cache-redis`](crates/cache-redis/README.md) | `cache::Adapter` → Redis (`RedisAdapter`, RESP via `redis`) — **Full** |
+| [`firefly-eda-kafka`](crates/eda-kafka/README.md) | `eda::Broker` → Apache Kafka (`KafkaBroker`, `new_kafka_broker`, `rdkafka`) — **Full** |
+| [`firefly-eda-rabbitmq`](crates/eda-rabbitmq/README.md) | `eda::Broker` → RabbitMQ (`RabbitMqBroker`, durable direct exchange, publisher confirms, `lapin`) — **Full** |
+| [`firefly-eda-postgres`](crates/eda-postgres/README.md) | `eda::Broker` → Postgres transactional outbox + `LISTEN`/`NOTIFY` (`PostgresBroker`, advisory-lock drain) — **Full** |
+| [`firefly-eda-redis`](crates/eda-redis/README.md) | `eda::Broker` → Redis Streams consumer groups (`RedisStreamsBroker`, `new_redis_broker`) — **Full** |
+
+(The notifications-`smtp` adapter is grouped with Notifications above.)
 
 ## 04 — Starters
 
@@ -97,13 +115,38 @@
 | [`firefly-starter-data`](crates/starter-data/README.md) | starter-core (consumer supplies their own DB) |
 | [`firefly-backoffice`](crates/backoffice/README.md) | starter-application + back-office context middleware |
 
-## 05 — Tests
+## 05 — DI / AOP / Shell / Sessions / WebSockets
+
+The PyFly-parity cross-cutting crates. These are *opt-in* — none of the
+Go-parity core or the starters require them.
+
+| Crate | What it provides |
+|-------|------------------|
+| [`firefly-container`](crates/container/README.md) | Opt-in, `TypeId`-keyed DI `Container` (service locator): `register_factory`, `resolve`/`resolve_all`, `bind::<dyn Trait>`, `Scope` (Singleton/Prototype/Request/Session/custom), `Provider<T>`, `RefreshScope` — explicit factory closures (no reflective autowiring) |
+| [`firefly-aop`](crates/aop/README.md) | Spring-style aspect advice: `Pointcut` glob matcher, `JoinPoint`, `Aspect` (5 hooks), `AspectRegistry`/`AdviceBinding`, `intercept` chain executor with `around`/`Proceed` — explicit weaving at the call site |
+| [`firefly-session`](crates/session/README.md) | Server-side HTTP `Session` (typed serde attributes) + async `SessionStore` (`MemorySessionStore` / `CacheSessionStore`) + `SessionLayer` (cookie load/save, id rotation, invalidation, HMAC signing, `SessionRegistry` concurrency control) |
+| [`firefly-shell`](crates/shell/README.md) | Spring-Shell-style CLI framework: `CommandSpec` builder, typed `CommandArgs`, `StdShell` parser + REPL, `ApplicationArguments`, `CommandLineRunner`/`ApplicationRunner` + `RunnerRegistry` post-startup hooks |
+| [`firefly-websocket`](crates/websocket/README.md) | WebSocket server over axum: `WsSession` (typed send/recv), `WebSocketHandler` lifecycle trait, `ws_route`/`serve_ws` registration, topic `BroadcastHub` fan-out |
+
+## 06 — Operations
+
+| Crate | What it provides |
+|-------|------------------|
+| [`firefly-admin`](crates/admin) | Spring-Boot-Admin-style embedded dashboard: single-page UI (overview / health / metrics / loggers / mappings / caches / scheduled tasks / traces / CQRS / transactions / beans / config / instances), JSON API over `firefly-actuator`, and SSE live streams |
+
+## 07 — Tooling
+
+| Crate | What it provides |
+|-------|------------------|
+| [`firefly-cli`](crates/cli/README.md) | The `firefly` developer binary: `new` (project scaffold), `generate`/`g` (handler / entity / command / saga / migration / …), `info`, `doctor` (toolchain checks), `actuator` (remote `/actuator/*` introspection) |
+
+## 08 — Tests
 
 | Member | Purpose |
 |--------|---------|
 | [`tests/integration`](tests/integration) | Cross-crate integration suite (CQRS + callbacks + webhooks + saga roundtrips + starter-core boot) |
 
-## 06 — Samples
+## 09 — Samples
 
 | Path | Purpose |
 |------|---------|

@@ -643,6 +643,29 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK, "no back-office guard");
     }
 
+    /// The optional pyfly-parity Core middleware (here: security headers)
+    /// threads through `apply_middleware_chain`, decorating responses
+    /// alongside the back-office guard — proving the back-office tier
+    /// inherits Core's new capabilities for free.
+    #[tokio::test]
+    async fn core_optional_middleware_threads_through_chain() {
+        let bo = BackOffice::new(CoreConfig {
+            app_name: "bo".into(),
+            security_headers: Some(firefly_starter_core::SecurityHeadersConfig::default()),
+            ..CoreConfig::default()
+        });
+        let app = bo.apply_middleware_chain(ok_router());
+        let res = app
+            .oneshot(request(&[
+                ("X-BackOffice-Branch", "b1"),
+                ("X-BackOffice-Operator", "op1"),
+            ]))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get("x-frame-options").unwrap(), "DENY");
+    }
+
     #[test]
     fn version_matches_workspace() {
         assert_eq!(VERSION, firefly_starter_application::VERSION);

@@ -10,14 +10,11 @@ description = "Firefly Framework for Rust — Spring-Boot-Admin-style embedded d
 
 [dependencies]
 firefly-actuator = { workspace = true }
-firefly-cache = { workspace = true }
 firefly-scheduling = { workspace = true }
 firefly-orchestration = { workspace = true }
 firefly-cqrs = { workspace = true }
-firefly-sse = { workspace = true }
 firefly-security = { workspace = true }
 firefly-lifecycle = { workspace = true }
-firefly-config = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 http = { workspace = true }
@@ -33,7 +30,6 @@ include_dir = { workspace = true }
 sysinfo = { workspace = true }
 reqwest = { workspace = true }
 futures = { workspace = true }
-uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -41,3 +37,6 @@ futures = { workspace = true }
 serde_json = { workspace = true }
 tower = { workspace = true }
 http-body-util = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+firefly-security = { workspace = true }

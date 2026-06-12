@@ -40,6 +40,22 @@ spring MessageSource                 → firefly-i18n
 spring ServerSentEvent               → firefly-sse
 spring @Transactional                → firefly-transactional
 spring-boot-starter-test             → firefly-testkit
+
+# PyFly-parity layer (additive)
+spring @Component/@Autowired DI      → firefly-container
+spring AOP / @Aspect                 → firefly-aop
+spring HttpSession / Spring Session  → firefly-session
+spring-shell @ShellMethod            → firefly-shell
+jakarta @ServerEndpoint / WebSocket  → firefly-websocket
+spring-boot CommandLineRunner        → firefly-shell (RunnerRegistry)
+spring-boot-admin                    → firefly-admin
+spring-security OAuth2 resource/auth → firefly-security (oauth2)
+spring Kafka / @KafkaListener        → firefly-eda-kafka
+spring AMQP / RabbitMQ               → firefly-eda-rabbitmq
+(transactional outbox over Postgres) → firefly-eda-postgres
+(Redis Streams listener)             → firefly-eda-redis
+spring-data-redis cache              → firefly-cache-redis
+spring JavaMailSender (SMTP)         → firefly-notifications-smtp
 ```
 
 ## Spring concept mapping
@@ -52,7 +68,15 @@ composition, `async`/`await`).
 |------------------------------------------|--------------------------------------------------------------------------------------|
 | Spring WebFlux (Netty)                   | `axum` router on `tokio`, middleware as `tower::Layer`s                              |
 | Reactor `Mono<T>` / `Flux<T>`            | `async fn -> FireflyResult<T>` / `impl Stream<Item = T>`                             |
-| `@Component` / `@Autowired` DI container | Explicit construction; ports injected as `Arc<dyn Trait>`; `Core::new(CoreConfig)` wires the infrastructure tier |
+| `@Component` / `@Autowired` DI container | Explicit construction by default; ports injected as `Arc<dyn Trait>`; `Core::new(CoreConfig)` wires the infrastructure tier. For a service-locator surface, opt into `firefly_container::Container` (`register_factory` / `resolve` / `bind::<dyn Trait>`) |
+| `@Aspect` + `@Before/@Around/@AfterReturning/@AfterThrowing/@After` | `firefly_aop::{AspectRegistry, Aspect, intercept}` — pointcut globs over qualified names, weaving at the call site (no monkey-patching) |
+| Spring Shell `@ShellMethod` / `@ShellOption` | `firefly_shell::{CommandSpec, StdShell}` builder + typed `CommandArgs`; `CommandLineRunner` / `ApplicationRunner` + `RunnerRegistry` for post-startup hooks |
+| `HttpSession` / Spring Session         | `firefly_session::{Session, SessionLayer, SessionStore}` — typed serde attributes, cookie load/save, id rotation, concurrency control |
+| `@ServerEndpoint` / Spring WebSocket   | `firefly_websocket::{WebSocketHandler, ws_route, WsSession}` on axum; `BroadcastHub` for topic fan-out |
+| Spring Boot Admin                      | `firefly-admin` — embedded dashboard SPA + `/admin/api/*` JSON over `firefly-actuator` + SSE; server/client modes via `firefly.admin.*` |
+| Spring Security OAuth2 (resource + authorization server) | `firefly_security::oauth2` — `JwksVerifier`, `ClientRegistration`, `OAuth2LoginHandler` (PKCE/OIDC), `AuthorizationServer` (client-credentials + refresh) |
+| `@KafkaListener` / Spring AMQP / message brokers | `firefly-eda-{kafka,rabbitmq,postgres,redis}` — same `Broker` port, swap the constructor (see below) |
+| `spring-data-redis` cache / `JavaMailSender` | `firefly_cache_redis::RedisAdapter` / `firefly_notifications_smtp::SmtpEmailProvider` |
 | `application.yaml` + `@ConfigurationProperties` | `firefly_config::load::<T>(&sources)` / `load_from_profile(dir, app, fallback)`|
 | `SpringApplication.run()`                | `core.new_application().on_server(..).run().await` (`firefly-lifecycle`)             |
 | `spring-boot-starter-actuator`           | `core.actuator_router(info_contributors)` → `/actuator/{health,info,metrics,env,tasks,version}` |
@@ -230,6 +254,56 @@ returns 409.
 `firefly-config` is a full typed loader (YAML + env + flags + profile
 selection) — see [CONFIGURATION.md](CONFIGURATION.md) for the binding
 rules and the complete Java-key mapping tables.
+
+## PyFly → Rust idioms
+
+The Rust port carries the full PyFly module surface, but where PyFly
+relies on the Python runtime (decorators, reflection, `contextvars`,
+monkey-patching), the Rust port substitutes an explicit, type-safe
+equivalent. Porting a PyFly service, the recurring substitutions are:
+
+| PyFly idiom                                   | Rust idiom                                                       |
+|-----------------------------------------------|------------------------------------------------------------------|
+| `@decorator` metadata (`@shell_method`, `@before`, `@bean`, `@cacheable`) | A fluent **builder** call — `CommandSpec::new(..).arg(..)`, `register(aspect, pointcut, order)`, `register_factory(scope, f)`, `Message::cache_ttl` override |
+| `contextvars` / context-local request state   | **task-local scopes** (`with_correlation_id`, the kernel task-locals) or request `Extension`s; never an ambient global |
+| DI autowiring from `__init__` type hints       | `firefly_container` **explicit factory closures** (`resolve`/`resolve_all`/`resolve_named` inside the closure), or plain `Arc<dyn Trait>` construction |
+| `@aspect` monkey-patching via `setattr`        | **call-site weaving** — wrap the call in an `Invocation`, route through `intercept` |
+| `Protocol` ports + adapter classes             | `#[async_trait]` object-safe traits + adapter crates behind `Arc<dyn Port>` |
+| `@auto_configuration` / `@conditional_on_*`    | **explicit wiring** at bootstrap (`Core::new`, `SessionLayer::from_config`, `mount(..)`) — the condition is just an `if` over your config |
+| dynamic typing (`Any`, `except Exception`)     | type-erasure where unavoidable (`Arc<dyn Any + Send + Sync>` in AOP, `Box<dyn Error>`); typed everywhere else |
+| `asyncio.run` sync/async bridge                | uniformly `async` (`tokio`); handlers return futures |
+| `fnmatch` pattern matching                     | `globset` glob matching (same `*` / `?` / `[..]` semantics) |
+
+The wire formats, exit codes, and behavioral contracts stay identical to
+PyFly — only the mechanism changes. Each ported crate's README has a
+"pyfly parity" section listing its exact substitutions and any
+deliberate divergences.
+
+## Message brokers
+
+PyFly (and Spring) bind a listener with a decorator/annotation; the Rust
+`firefly-eda` port is constructor-swappable — code against
+`Arc<dyn Broker>` and pick the backend at wiring time:
+
+```rust
+// In-memory (default, no infrastructure)
+let broker = firefly_eda::InMemoryBroker::new();
+
+// Kafka — same Publisher/Subscriber surface
+let broker = firefly_eda_kafka::new_kafka_broker(firefly_eda_kafka::KafkaConfig {
+    brokers: vec!["localhost:9092".into()],
+    consumer_group: "orders-svc".into(),
+    ..Default::default()
+})?;
+
+// RabbitMQ / Postgres outbox / Redis Streams: same shape, different crate.
+broker.subscribe("orders.created", handler(|ev| async move { Ok(()) })).await?;
+```
+
+No handler changes are needed to move between transports — the `Event`
+JSON envelope is byte-identical across all of them and across the
+sibling ports. See [CONFIGURATION.md](CONFIGURATION.md) for each
+transport's connection-config surface.
 
 ## Porting notes per tier
 

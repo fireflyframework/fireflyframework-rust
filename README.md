@@ -17,7 +17,14 @@ non-trivial business service needs — RFC 7807 error envelopes,
 idempotency, correlation propagation, CQRS, event-driven messaging,
 event sourcing, sagas, configuration servers, identity adapters,
 document management, notifications, callbacks, webhooks — behind a
-single, opinionated composition pattern.
+single, opinionated composition pattern. On top of that core it ships a
+**full PyFly-parity layer**: a domain-driven kernel, an opt-in DI
+container, aspect-oriented advice, server-side HTTP sessions, a
+Spring-Shell-style CLI framework, WebSocket server support, a
+Spring-Boot-Admin-style dashboard, a `firefly` developer CLI, and
+**real** vendor adapters — Keycloak/Azure/Cognito IDP, S3/Blob/e-sign
+ECM, SMTP/SendGrid/Resend/Twilio/Firebase notifications, Redis cache,
+and Kafka/RabbitMQ/Postgres/Redis-Streams event transports.
 
 This repository is the official Rust port of the Java/Spring Boot
 [`org.fireflyframework`](https://fireflyframework.org) platform — the
@@ -31,6 +38,12 @@ tooling (`tokio`, `axum`, `tower`, `serde`, `thiserror`, `async-trait`,
 RustCrypto, `tracing`). A service running version *X* on Java, .NET,
 Go, Python, or Rust consumes the same contracts and emits the same
 wire format.
+
+The compiled-language core (foundational + platform + starter tiers)
+holds module-for-module parity with the Go port and is kept
+wire-stable; the **PyFly-parity layer is purely additive** — every
+extension layers onto the existing crates without changing a single
+Go-parity wire format.
 
 ---
 
@@ -62,11 +75,15 @@ Firefly Framework treats those concerns as solved problems on Rust too:
   correlation-id enrichment, actuator health/metrics endpoints,
   RFC 7807 error envelopes, and a startup banner that names the
   application, version and runtime are all on out of the box.
-- **Honest about boundaries.** Every public method either runs real
-  code or returns a typed `…NotImplemented`-style error with an
-  actionable message documenting why the underlying provider is not yet
-  wired. There are no silent stubs. See [`MODULES.md`](MODULES.md) for
-  per-crate status.
+- **Real adapters, not promises.** The infrastructure adapters ship
+  wired: `firefly-cache-redis` speaks RESP, `firefly-eda-{kafka,rabbitmq,
+  postgres,redis}` drive `rdkafka` / `lapin` / `tokio-postgres` / Redis
+  Streams, `firefly-notifications-smtp` delivers MIME over `lettre`, and
+  the IDP / ECM vendor adapters carry their real provider flows. Where a
+  provider genuinely isn't wired yet, the method returns a typed
+  `…NotImplemented`-style error with an actionable message — never a
+  silent stub. See [`MODULES.md`](MODULES.md) for per-crate Full / Stub
+  status.
 
 ---
 
@@ -83,19 +100,21 @@ left-to-right dependency direction:
 │  utils         │   │  observability   │   │  idp-*         │   │  starter-application │
 │  validators    │   │  data            │   │  ecm-*         │   │  starter-domain      │
 │  web           │   │  cqrs            │   │  notifications*│   │  starter-data        │
-│  config        │   │  eda             │   │  callbacks     │   │  backoffice          │
+│  config        │   │  eda  · eda-*    │   │  callbacks     │   │  backoffice          │
 │  i18n          │   │  eventsourcing   │   │  webhooks      │   │                      │
-│                │   │  orchestration   │   │  config-server │   │                      │
-│                │   │  rule-engine     │   │                │   │                      │
-│                │   │  plugins         │   │                │   │                      │
-│                │   │  lifecycle       │   │                │   │                      │
-│                │   │  actuator        │   │                │   │                      │
+│  session       │   │  orchestration   │   │  config-server │   │                      │
+│                │   │  rule-engine     │   │  cache-redis   │   │  ── Operations ──    │
+│                │   │  plugins         │   │  notif.-smtp   │   │  admin               │
+│                │   │  container · aop │   │                │   │                      │
+│                │   │  lifecycle       │   │                │   │  ── Tooling ──       │
+│                │   │  actuator        │   │                │   │  cli                 │
 │                │   │  scheduling      │   │                │   │                      │
 │                │   │  resilience      │   │                │   │                      │
 │                │   │  security        │   │                │   │                      │
 │                │   │  migrations      │   │                │   │                      │
 │                │   │  openapi         │   │                │   │                      │
-│                │   │  sse             │   │                │   │                      │
+│                │   │  sse · websocket │   │                │   │                      │
+│                │   │  shell           │   │                │   │                      │
 │                │   │  transactional   │   │                │   │                      │
 │                │   │  testkit         │   │                │   │                      │
 └────────────────┘   └──────────────────┘   └────────────────┘   └──────────────────────┘
@@ -104,7 +123,12 @@ left-to-right dependency direction:
 Each tier may depend on the tiers to its left, never to its right. The
 Cargo crate graph enforces the layering — every internal dependency is
 declared once in `[workspace.dependencies]` and there is no path that
-bypasses it.
+bypasses it. The infrastructure adapters (`cache-redis`,
+`eda-{kafka,rabbitmq,postgres,redis}`, `notifications-smtp`) are
+*optional* leaf crates: they implement the platform ports
+(`cache::Adapter`, `eda::Broker`, the notifications `Channel`) so a
+service pulls in `rdkafka` / `lapin` / `redis` / `lettre` only when it
+actually selects that backend.
 
 See [`MODULES.md`](MODULES.md) for the full per-crate catalogue and
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design rationale.
@@ -113,22 +137,51 @@ See [`MODULES.md`](MODULES.md) for the full per-crate catalogue and
 
 ## Workspace layout
 
-One Cargo workspace, 52 members — the same shape as the Go port's
-`go.work`:
+One Cargo workspace, 65 members — the Go-parity core (foundational,
+platform, adapter, starter tiers) plus the PyFly-parity layer:
 
 ```
 fireflyframework-rust/
-├── crates/             # 50 framework crates (firefly-<name>), one per Go module
-│   ├── kernel/         #   each with its own README.md + test suite
-│   ├── web/
-│   ├── cqrs/
-│   ├── …
+├── crates/                       # 63 framework crates (firefly-<name>)
+│   ├── kernel/                   #   each with its own README.md + test suite
+│   ├── web/  cqrs/  eda/  …       #   Go-parity core
+│   │
+│   ├── container/  aop/           #   PyFly: DI container + aspect advice
+│   ├── session/  shell/  websocket/  #   PyFly: sessions, CLI framework, WS server
+│   ├── cli/                       #   PyFly: the `firefly` developer CLI binary
+│   ├── admin/                     #   PyFly: Spring-Boot-Admin-style dashboard
+│   │
+│   ├── cache-redis/               #   adapter: Redis cache
+│   ├── eda-kafka/  eda-rabbitmq/  #   adapter: event transports
+│   ├── eda-postgres/  eda-redis/  #     (Kafka / RabbitMQ / Postgres outbox / Redis Streams)
+│   ├── notifications-smtp/        #   adapter: SMTP e-mail
+│   ├── idp-*/  ecm-*/             #   adapters: identity + content vendors
 │   └── backoffice/
-├── tests/integration/  # cross-crate integration suite
-├── samples/orders/     # reference service (firefly-sample-orders)
-├── docs/               # ARCHITECTURE, CONFIGURATION, MIGRATION-GUIDE, DESIGN
-└── Cargo.toml          # workspace root — version 26.6.1, edition 2021, MSRV 1.85
+├── tests/integration/            # cross-crate integration suite
+├── samples/orders/               # reference service (firefly-sample-orders)
+├── docs/                         # ARCHITECTURE, CONFIGURATION, MIGRATION-GUIDE, DESIGN
+└── Cargo.toml                    # workspace root — version 26.6.1, edition 2021, MSRV 1.85
 ```
+
+### Choosing your tier / optional adapters
+
+Start from a **starter** and add only the adapters you need:
+
+- **Default, zero infrastructure** — `firefly-starter-core` boots with
+  the in-process `MemoryAdapter` cache and `InMemoryBroker` event bus.
+  Nothing external is required; a service runs against pure-Rust defaults.
+- **Pick a cache backend** — drop in `firefly-cache-redis`
+  (`RedisAdapter`) wherever an `Arc<dyn cache::Adapter>` is expected.
+- **Pick an event transport** — `firefly-eda-kafka`,
+  `-rabbitmq`, `-postgres` (durable outbox), or `-redis` (Streams) each
+  implement the same `Broker` port; swap the constructor, keep your
+  handlers.
+- **Pick notification channels / IDP / ECM vendors** — code against the
+  parent-port trait (`notifications::Channel`, `idp::Adapter`,
+  `ecm::ContentStore`) and pull in the concrete adapter crate at wiring
+  time, so the heavy vendor SDKs stay out of services that don't use them.
+- **Add operations** — `firefly-admin` mounts the dashboard;
+  `firefly-cli` installs the `firefly` developer binary.
 
 ---
 
@@ -206,19 +259,29 @@ Requires Rust 1.85+ (edition 2021).
 
 ## Status
 
-The framework ships **52 workspace members** across the four tiers
-(50 crates under `crates/` plus the integration suite and the Orders
+The framework ships **65 workspace members** across the four tiers
+(63 crates under `crates/` plus the integration suite and the Orders
 sample). The workspace quality gate is `make ci`: `cargo fmt --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo build --workspace`, `cargo test --workspace`.
 
-Foundational, platform and starter tiers are fully implemented.
-Adapter-tier integrations against external SaaS providers (Keycloak
-admin REST, Azure Graph, AWS Cognito, DocuSign / Adobe Sign / Logalty,
-SendGrid / Resend / Twilio / Firebase, S3 / Azure Blob, Kafka,
-RabbitMQ) ship in this release as port-only stubs returning typed
-not-implemented errors — the contract is locked, the wire is in scope
-for a follow-up release, matching the Go port's adapter status.
+The foundational, platform and starter tiers are fully implemented,
+including the PyFly-parity layer — `firefly-container` (DI),
+`firefly-aop` (aspect advice), `firefly-session`, `firefly-shell`,
+`firefly-websocket`, `firefly-cli`, and the extensions to
+`firefly-web` / `firefly-security` / `firefly-observability` /
+`firefly-actuator` / `firefly-config` / `firefly-orchestration`.
+
+The infrastructure adapters ship **real and wired**:
+`firefly-cache-redis`, `firefly-eda-{kafka,rabbitmq,postgres,redis}`,
+and `firefly-notifications-smtp` each drive their backing library and
+pass an in-process test suite (live-broker round-trips gated behind
+`#[ignore]`). The vendor adapters are likewise mostly real now —
+Keycloak (OIDC + admin REST), Azure AD (Microsoft Graph), AWS Cognito
+(JSON API + SigV4), DocuSign / Adobe Sign / Logalty (real REST), S3 /
+Azure Blob (real object stores), and Twilio / Firebase (real providers).
+The remaining SaaS channels (SendGrid, Resend) carry their locked ports
+and fail loud with typed not-implemented errors until wired.
 
 See [`MODULES.md`](MODULES.md) for the per-crate Full / Stub status.
 

@@ -19,6 +19,15 @@ firefly-webhooks = { workspace = true }
 firefly-starter-core = { workspace = true }
 
 [dev-dependencies]
+# ---- framework crates exercised by the pyfly-parity cross-module scenarios ----
+firefly-web = { workspace = true }
+firefly-security = { workspace = true }
+firefly-eda = { workspace = true }
+firefly-eventsourcing = { workspace = true }
+firefly-actuator = { workspace = true }
+firefly-config = { workspace = true }
+firefly-notifications = { workspace = true }
+# ---- third-party (catalog refs only) ----
 tokio = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
@@ -33,3 +42,4 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+jsonwebtoken = { workspace = true }

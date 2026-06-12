@@ -24,7 +24,11 @@
 //! embedding), so every core field and convenience method —
 //! `apply_middleware`, `actuator_router`, `new_application`,
 //! `print_banner`, … — is available directly on the domain value.
-//! `starter_name` defaults to `"starter-domain"`.
+//! `starter_name` defaults to `"starter-domain"`. The pyfly-parity
+//! batteries on [`CoreConfig`] (CORS, security headers, CSRF,
+//! request-log, request-metrics, http-exchanges, loggers, redaction —
+//! all OFF by default) are configured the same way here and flow through
+//! the inherited `apply_middleware` / `actuator_router`.
 //!
 //! ## Quick start
 //!
