@@ -1,5 +1,6 @@
 .PHONY: help build test test-v clippy fmt fmt-check sample cli cli-install clean ci \
-        infra-up infra-down infra-status test-integration book book-serve
+        infra-up infra-down infra-status test-integration book book-serve \
+        book-pdf book-epub book-dist
 
 VERSION := 26.6.2
 
@@ -31,6 +32,9 @@ help:
 	@echo "Docs:"
 	@echo "  book        build the mdBook documentation site (docs/book)"
 	@echo "  book-serve  serve the book locally with live reload"
+	@echo "  book-pdf    render the book to docs/book/dist/*.pdf  (pandoc + tectonic)"
+	@echo "  book-epub   render the book to docs/book/dist/*.epub (pandoc)"
+	@echo "  book-dist   render both the PDF and the EPUB"
 
 # ---- Integration test infrastructure -------------------------------------
 # Host ports (chosen to avoid collisions with other local services):
@@ -76,6 +80,17 @@ book:
 
 book-serve:
 	mdbook serve docs/book --open
+
+# Polished PDF/EPUB editions rendered from the mdBook chapters via
+# pandoc + tectonic. Artifacts land in docs/book/dist/ and are committed.
+book-pdf:
+	bash docs/book/build-book.sh --pdf
+
+book-epub:
+	bash docs/book/build-book.sh --epub
+
+book-dist:
+	bash docs/book/build-book.sh
 
 build:
 	cargo build --workspace

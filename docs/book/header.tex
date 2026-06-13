@@ -1,0 +1,30 @@
+% Typesetting tweaks for the Firefly-for-Rust PDF (loaded via pandoc -H).
+% Keeps long code lines inside the text block instead of spilling into the
+% margin, and gives code blocks a touch of breathing room.
+
+% Allow Pandoc's Shaded/Highlighting verbatim code blocks to soft-wrap.
+\usepackage{fvextra}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{%
+  breaklines,breakanywhere,commandchars=\\\{\},fontsize=\small}
+
+% Tame the overfull boxes that remain (mostly wide tables): prefer a slightly
+% loose line over a black overfull rule punching into the margin.
+\setlength{\emergencystretch}{3em}
+
+% Wide mapping tables: render longtables in a smaller font and let their text
+% columns wrap, so long descriptive cells stay inside the margins. Pandoc emits
+% tables as longtable environments.
+\usepackage{etoolbox}
+\AtBeginEnvironment{longtable}{\small}
+% Pandoc's "real" wrapping columns are introduced via \real{..}\columnwidth;
+% nothing extra needed there. For the narrow two-column mapping tables that
+% pandoc lays out as plain l-columns, ragged2e keeps any wrapped lines tidy.
+\usepackage{ragged2e}
+
+% Let long URLs break at any character so bare links (e.g. the GitHub
+% repository links in the Module Index) wrap instead of overflowing.
+\usepackage{xurl}
+
+% A little vertical air around code listings.
+\BeforeBeginEnvironment{Shaded}{\vspace{0.4\baselineskip}}
+\AfterEndEnvironment{Shaded}{\vspace{0.4\baselineskip}}

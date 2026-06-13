@@ -4,8 +4,10 @@ Definitions of the terms and types that recur throughout this book, in the
 precise sense Firefly uses them.
 
 ### Actuator
-The management surface (`firefly-actuator`) exposing
-`/actuator/{health,info,metrics,env,tasks,version,loggers,httpexchanges,refresh}`.
+The management surface (`firefly-actuator`) exposing the endpoints
+`/actuator/health`, `/actuator/info`, `/actuator/metrics`, `/actuator/env`,
+`/actuator/tasks`, `/actuator/version`, `/actuator/loggers`,
+`/actuator/httpexchanges`, and `/actuator/refresh`.
 Mounted by `core.actuator_router(..)`, typically on a separate, firewalled port.
 
 ### Adapter
