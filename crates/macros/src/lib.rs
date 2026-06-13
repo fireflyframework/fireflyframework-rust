@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! firefly — derive/attribute macros (the declarative service-development layer) (port pending).
-
-/// Framework version stamp.
-pub const VERSION: &str = "26.6.2";
+//! firefly-macros — derive/attribute macros for declarative service development (port pending).
+//!
+//! A proc-macro crate: it exports only macros, so the real implementation
+//! replaces this placeholder.
