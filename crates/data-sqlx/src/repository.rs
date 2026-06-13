@@ -51,6 +51,7 @@ use firefly_kernel::FireflyError;
 use firefly_reactive::{Flux, Mono};
 use serde_json::Value;
 
+use crate::binding::timestamp_value;
 use crate::db::{Backend, Db};
 use crate::row::{AnyRow, SqlxRowMapper};
 use crate::sql;
@@ -625,9 +626,26 @@ async fn do_upsert<T: Send + 'static>(
         Some(_) => !row_exists(inner, &id_value).await?,
         None => true, // audit-irrelevant; columns() is used directly
     };
-    let cols = inner
+    let mut cols = inner
         .writer
         .columns_audited(entity, inner.auditor.as_deref(), is_insert);
+    // With a soft-delete policy configured, an UPSERT must *resurrect* a row
+    // that was previously soft-deleted: clear its `deleted_at` so the
+    // post-write read (which always appends the live-row guard) finds the
+    // persisted row, matching the Mongo adapter's whole-document replace. A
+    // RowWriter never emits the soft-delete column itself, so inject a
+    // `deleted_at = NULL` when the writer has not already set it.
+    if let Some(policy) = &inner.soft_delete {
+        let del_col = policy.column();
+        if !cols.iter().any(|c| c.column == del_col) {
+            // A *typed* NULL timestamp (not a text NULL) so Postgres accepts
+            // it against a TIMESTAMPTZ column in the INSERT VALUES list.
+            cols.push(ColumnValue {
+                column: del_col.to_string(),
+                value: crate::binding::timestamp_null_value(),
+            });
+        }
+    }
     let dialect = inner.dialect();
     let (sql, args) = sql::upsert_sql(&inner.config, dialect.as_ref(), inner.backend(), &cols);
     execute_write(inner, sql, args).await?;
@@ -744,7 +762,7 @@ where
                     let id_ph = dialect.placeholder(2);
                     let sql =
                         format!("UPDATE {table_q} SET {del_q} = {set_ph} WHERE {id_q} = {id_ph}");
-                    (sql, vec![Value::String(now.to_rfc3339()), id_value])
+                    (sql, vec![timestamp_value(now), id_value])
                 }
                 None => {
                     let sql = sql::delete_by_id(&inner.config, dialect.as_ref());
@@ -770,7 +788,7 @@ where
                     // rows keep their original timestamp.
                     let sql =
                         format!("UPDATE {table_q} SET {del_q} = {set_ph} WHERE {del_q} IS NULL");
-                    (sql, vec![Value::String(now.to_rfc3339())])
+                    (sql, vec![timestamp_value(now)])
                 }
                 None => (sql::delete_all(&inner.config, dialect.as_ref()), Vec::new()),
             };
@@ -1022,7 +1040,7 @@ where
                 let set_ph = dialect.placeholder(1);
                 let id_ph = dialect.placeholder(2);
                 let sql = format!("UPDATE {table_q} SET {del_q} = {set_ph} WHERE {id_q} = {id_ph}");
-                (sql, vec![Value::String(now.to_rfc3339()), id_value])
+                (sql, vec![timestamp_value(now), id_value])
             }
             None => (
                 sql::delete_by_id(&inner.config, dialect.as_ref()),

@@ -911,6 +911,41 @@ mod tests {
         let in_op = Specification::pred(Predicate::new("role", Op::In, json!(["a", "b"])));
         assert_eq!(in_op.to_mongo(), json!({ "role": { "$in": ["a", "b"] } }));
         let like = Specification::pred(Predicate::new("name", Op::Like, "A%"));
-        assert_eq!(like.to_mongo(), json!({ "name": { "$regex": "A.*" } }));
+        assert_eq!(like.to_mongo(), json!({ "name": { "$regex": "^A.*$" } }));
+    }
+
+    /// Regression for the cross-backend `Op::Like` inconsistency: the
+    /// SAME `Specification` must select the same rows whether it is lowered
+    /// to SQL, evaluated in memory, or lowered to a Mongo `$regex`.
+    ///
+    /// `name LIKE 'A%'` is anchored on SQL (`LIKE $1`, anchored at start)
+    /// and on the in-memory matcher (`like_match_chars` must consume the
+    /// whole value), so it matches `"Alice"` but not `"bAr"`. The Mongo
+    /// lowering previously emitted an UNanchored `$regex: "A.*"`, which
+    /// Mongo treats as a substring match — silently also selecting
+    /// `"bAr"`. The `$regex` must therefore be wrapped in `^…$`.
+    #[test]
+    fn test_to_mongo_like_anchored_matches_in_memory_semantics() {
+        #[derive(Serialize)]
+        struct Row {
+            name: String,
+        }
+        let spec = Specification::pred(Predicate::new("name", Op::Like, "A%"));
+
+        // In-memory matcher: anchored full match.
+        assert!(spec.matches(&Row {
+            name: "Alice".into()
+        }));
+        assert!(!spec.matches(&Row { name: "bAr".into() }));
+
+        // Mongo lowering must be anchored so it agrees with the above.
+        let doc = spec.to_mongo();
+        assert_eq!(doc, json!({ "name": { "$regex": "^A.*$" } }));
+        let regex = doc["name"]["$regex"].as_str().unwrap();
+        assert!(
+            regex.starts_with('^') && regex.ends_with('$'),
+            "Mongo $regex must be anchored (^…$) to match the SQL/in-memory \
+             full-match semantics, got: {regex}"
+        );
     }
 }

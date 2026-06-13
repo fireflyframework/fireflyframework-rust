@@ -73,6 +73,14 @@ impl Facade {
         let rt = self.rt();
         quote!(#rt::firefly_eventsourcing)
     }
+
+    /// `#facade::__rt::serde_json` — the facade-re-exported `serde_json`, so
+    /// generated code (e.g. `#[derive(DomainEvent)]`'s payload encoder) never
+    /// forces the user crate to depend on `serde_json` directly.
+    pub(crate) fn serde_json(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::serde_json)
+    }
 }
 
 /// Parses a `crate = "..."` argument out of a darling-collected attribute or a

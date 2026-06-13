@@ -45,12 +45,28 @@ struct ListenerArgs {
 /// broker's `EdaResult<()>` so a failed subscription surfaces to the caller.
 pub(crate) fn event_listener_attr(args: TokenStream, item: ItemFn) -> syn::Result<TokenStream> {
     let attr_args = NestedMeta::parse_meta_list(args)?;
-    // Allow a bare positional string: `#[event_listener("topic")]`.
-    let mut parsed = ListenerArgs::from_list(&attr_args).unwrap_or_default();
-    if parsed.topic.is_none() {
-        if let Some(NestedMeta::Lit(syn::Lit::Str(s))) = attr_args.first() {
-            parsed.topic = Some(s.value());
+    // Allow a bare positional string for the topic:
+    // `#[event_listener("topic", group = "g")]`. darling's `from_list` errors
+    // out the instant it sees a positional literal, so feeding it the raw list
+    // would discard EVERY successfully-parsed named arg (e.g. `group`) too.
+    // Recover the positional topic separately, then parse the remaining
+    // *named* args on their own so `group` / `register` / `crate` survive.
+    let (positional_topic, named_args): (Option<String>, Vec<NestedMeta>) = {
+        let mut topic = None;
+        let mut named = Vec::with_capacity(attr_args.len());
+        for arg in &attr_args {
+            match arg {
+                NestedMeta::Lit(syn::Lit::Str(s)) if topic.is_none() => {
+                    topic = Some(s.value());
+                }
+                other => named.push(other.clone()),
+            }
         }
+        (topic, named)
+    };
+    let mut parsed = ListenerArgs::from_list(&named_args).map_err(syn::Error::from)?;
+    if parsed.topic.is_none() {
+        parsed.topic = positional_topic;
     }
     let topic = parsed.topic.clone().ok_or_else(|| {
         syn::Error::new_spanned(

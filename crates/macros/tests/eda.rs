@@ -55,3 +55,52 @@ async fn event_listener_subscribes_and_receives() {
         "the listener should have received exactly one event"
     );
 }
+
+// ===========================================================================
+// Regression: a positional topic must NOT discard a named `group`.
+//
+// `#[event_listener("t.evt", group = "g1")]` used to be parsed by darling's
+// `from_list`, which errors on the positional literal; the previous code
+// swallowed that error with `unwrap_or_default()`, dropping the `group`
+// entirely and emitting a plain `subscribe(...)` (fan-out) instead of a
+// `subscribe_group(...)` (competing-consumer). Two same-group members must
+// therefore receive exactly ONE delivery in total, not two.
+// ===========================================================================
+
+static GROUP_DELIVERED: AtomicU32 = AtomicU32::new(0);
+
+#[event_listener("billing.charged", group = "settlement")]
+async fn on_charged_a(ev: Event) -> FireflyResult<()> {
+    assert_eq!(ev.topic, "billing.charged");
+    GROUP_DELIVERED.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+#[event_listener("billing.charged", group = "settlement")]
+async fn on_charged_b(ev: Event) -> FireflyResult<()> {
+    assert_eq!(ev.topic, "billing.charged");
+    GROUP_DELIVERED.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tokio::test]
+async fn event_listener_positional_topic_preserves_group() {
+    let broker = InMemoryBroker::new();
+
+    // Both helpers join the SAME consumer group via a positional topic.
+    subscribe_on_charged_a(&broker).await.expect("subscribe a");
+    subscribe_on_charged_b(&broker).await.expect("subscribe b");
+
+    let ev = Event::new("billing.charged", "Charged", "test", Some(b"{}".to_vec()));
+    broker.publish(ev).await.expect("publish");
+
+    // Competing-consumer delivery: exactly one of the two group members fires.
+    // Before the fix the `group` was dropped, both subscribed ungrouped, and
+    // the count was 2 (fan-out).
+    assert_eq!(
+        GROUP_DELIVERED.load(Ordering::SeqCst),
+        1,
+        "a named group on a positional-topic listener must give competing-consumer \
+         (one delivery), not fan-out (two)"
+    );
+}

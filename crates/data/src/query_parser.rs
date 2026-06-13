@@ -1126,9 +1126,14 @@ mod tests {
 
     #[test]
     fn test_to_mongo_containing_is_regex() {
+        // `_containing` lowers to `LIKE '%lph%'`, i.e. an anchored
+        // `$regex: "^.*lph.*$"`. The `^…$` anchors keep the document
+        // backend a full-value match consistent with SQL LIKE and the
+        // in-memory matcher; with the leading/trailing `.*` this is exactly
+        // a substring match, so `_containing` still selects the same rows.
         let parsed = parser().parse("find_by_name_containing").unwrap();
         let doc = parsed.to_mongo(&[json!("lph")]).unwrap();
-        assert_eq!(doc, json!({ "name": { "$regex": ".*lph.*" } }));
+        assert_eq!(doc, json!({ "name": { "$regex": "^.*lph.*$" } }));
     }
 
     #[test]

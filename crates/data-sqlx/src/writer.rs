@@ -125,14 +125,14 @@ fn apply_audit_columns(
     };
     if is_insert {
         if let Some(ts) = stamps.created_at {
-            set(cols, "created_at", Value::String(ts.to_rfc3339()));
+            set(cols, "created_at", crate::binding::timestamp_value(ts));
         }
         if let Some(u) = &stamps.created_by {
             set(cols, "created_by", Value::String(u.clone()));
         }
     }
     if let Some(ts) = stamps.updated_at {
-        set(cols, "updated_at", Value::String(ts.to_rfc3339()));
+        set(cols, "updated_at", crate::binding::timestamp_value(ts));
     }
     if let Some(u) = &stamps.updated_by {
         set(cols, "updated_by", Value::String(u.clone()));

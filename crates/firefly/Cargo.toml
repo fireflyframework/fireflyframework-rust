@@ -39,6 +39,13 @@ firefly-starter-core = { workspace = true }
 firefly-starter-web = { workspace = true }
 firefly-client = { workspace = true }
 
+# ---- always-on: third-party crate the `__rt` macro contract needs -----
+# `serde_json` is re-exported under `__rt` so `#[derive(DomainEvent)]`-generated
+# code can JSON-encode the event payload through `::firefly::__rt::serde_json`
+# WITHOUT the user crate having to add `serde_json` itself — preserving the
+# one-dependency facade contract.
+serde_json = { workspace = true }
+
 # ---- optional: heavy adapter crates, gated behind cargo features ------
 # A minimal `firefly` dep pulls NONE of these. Turn them on with the
 # matching feature (e.g. `firefly = { version = "...", features = ["data-sqlx"] }`).
@@ -94,7 +101,14 @@ full = [
 
 [dev-dependencies]
 tokio = { workspace = true }
-serde_json = { workspace = true }
+# A `#[derive(DomainEvent)]` payload is `serde::Serialize`; the regression test
+# for the one-dependency contract derives it. `serde` is the ONLY direct
+# ecosystem crate a Firefly service writes against (alongside `firefly`), so a
+# user adding it is expected — what must NOT be required is `serde_json`.
+serde = { workspace = true }
+# `serde_json` is a regular dependency (re-exported under `__rt` for the
+# `#[derive(DomainEvent)]` macro contract), so it is already available to the
+# crate's own tests without a separate dev-dependency entry.
 
 [package.metadata.docs.rs]
 all-features = true

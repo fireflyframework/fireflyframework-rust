@@ -214,6 +214,12 @@ pub async fn run_full_suite(db: Db) {
 
     create_table(&db).await;
     soft_delete_hides_rows(db.clone()).await;
+
+    create_table(&db).await;
+    save_after_soft_delete_resurrects(db.clone()).await;
+
+    create_table(&db).await;
+    rfc3339_text_value_round_trips(db.clone()).await;
 }
 
 /// Full reactive CRUD: save / find_by_id / exists / save_all / find_all /
@@ -650,6 +656,116 @@ pub async fn soft_delete_hides_rows(db: Db) {
     repo.delete_all().block().await.unwrap();
     assert_eq!(repo.count().block().await.unwrap(), Some(0));
     assert_eq!(raw_count(&db).await, 3, "delete_all keeps physical rows");
+}
+
+/// Regression for the save-after-soft-delete bug: with a [`SoftDeletePolicy`]
+/// wired, an UPSERT of a previously soft-deleted row must *resurrect* it —
+/// clearing `deleted_at` — so the post-write read through the live-row guard
+/// finds the persisted row and `save` / `save_all` / blocking `save` emit it,
+/// rather than reporting empty / NotFound despite a successful write.
+pub async fn save_after_soft_delete_resurrects(db: Db) {
+    use firefly_data::DataError;
+    let repo = reactive_repo(db.clone()).with_soft_delete(SoftDeletePolicy::new());
+
+    // Persist then soft-delete u1.
+    repo.save(User::new("u1", "alice", 10, true))
+        .block()
+        .await
+        .unwrap();
+    repo.delete_by_id("u1".into()).block().await.unwrap();
+    // Hidden, but the physical row is still there with its deleted_at stamp.
+    assert_eq!(repo.find_by_id("u1".into()).block().await.unwrap(), None);
+    assert_eq!(raw_count(&db).await, 1);
+
+    // Re-saving the soft-deleted row must return the persisted value (not an
+    // empty Mono) AND make it live again.
+    let resurrected = repo
+        .save(User::new("u1", "alice", 99, false))
+        .block()
+        .await
+        .unwrap();
+    assert_eq!(
+        resurrected,
+        Some(User::new("u1", "alice", 99, false)),
+        "reactive save after soft-delete must emit the persisted row"
+    );
+    assert_eq!(
+        repo.find_by_id("u1".into()).block().await.unwrap(),
+        Some(User::new("u1", "alice", 99, false)),
+        "the row is live again after re-save"
+    );
+    assert_eq!(repo.count().block().await.unwrap(), Some(1));
+    assert_eq!(raw_count(&db).await, 1, "no duplicate row was inserted");
+
+    // save_all over a soft-deleted row likewise resurrects + streams it back.
+    repo.delete_by_id("u1".into()).block().await.unwrap();
+    assert_eq!(repo.find_by_id("u1".into()).block().await.unwrap(), None);
+    let streamed = repo
+        .save_all(vec![User::new("u1", "alice", 7, true)])
+        .collect_list()
+        .block()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        streamed,
+        vec![User::new("u1", "alice", 7, true)],
+        "save_all after soft-delete must stream the persisted row"
+    );
+    assert_eq!(
+        repo.find_by_id("u1".into()).block().await.unwrap(),
+        Some(User::new("u1", "alice", 7, true))
+    );
+
+    // The blocking Repository::save must NOT return NotFound after a re-save
+    // of a soft-deleted row.
+    let blocking = blocking_repo(db.clone()).with_soft_delete(SoftDeletePolicy::new());
+    blocking.delete(&"u1".to_string()).await.unwrap();
+    assert_eq!(
+        blocking.find_by_id(&"u1".to_string()).await,
+        Err(DataError::NotFound)
+    );
+    let saved = blocking
+        .save(User::new("u1", "alice", 5, false))
+        .await
+        .expect("blocking save after soft-delete must not be NotFound");
+    assert_eq!(saved, User::new("u1", "alice", 5, false));
+    assert_eq!(
+        blocking.find_by_id(&"u1".to_string()).await.unwrap(),
+        User::new("u1", "alice", 5, false)
+    );
+}
+
+/// Regression for the value-driven timestamp mis-typing bug: a text column
+/// holding a value that *happens* to parse as an RFC 3339 instant must be
+/// bound and round-tripped as plain text — not silently coerced to a
+/// timestamp parameter (which would type-mismatch a TEXT/VARCHAR column on
+/// Postgres/MySQL or change comparison semantics).
+pub async fn rfc3339_text_value_round_trips(db: Db) {
+    use firefly_data::{Filter, Op, Predicate};
+    let repo = reactive_repo(db.clone());
+    let blocking = blocking_repo(db);
+
+    // The `name` column is TEXT/VARCHAR; store an ISO-8601 instant in it.
+    let iso = "2026-06-13T10:30:00+00:00";
+    let saved = repo
+        .save(User::new("u1", iso, 1, true))
+        .block()
+        .await
+        .unwrap();
+    assert_eq!(
+        saved,
+        Some(User::new("u1", iso, 1, true)),
+        "an RFC3339-looking text value persists + reads back verbatim"
+    );
+
+    // A WHERE filter on that text value must also bind as text and match.
+    let page = blocking
+        .find(&Filter::new().add(Predicate::new("name", Op::Eq, iso)))
+        .await
+        .expect("filtering a text column on an RFC3339-looking value must not type-mismatch");
+    assert_eq!(page.total_elements, 1, "the text equality filter matches");
+    assert_eq!(page.content[0].name, iso);
 }
 
 /// Raw physical row count (bypassing the soft-delete guard).

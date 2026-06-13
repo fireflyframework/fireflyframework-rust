@@ -29,21 +29,32 @@
 //! | `true` / `false`          | boolean                              |
 //! | integer                   | `i64`                                |
 //! | float                     | `f64`                                |
-//! | RFC 3339 instant string   | `DateTime<Utc>` (pg / mysql)         |
-//! | other string              | `&str`                               |
+//! | tagged timestamp value    | `DateTime<Utc>` (pg / mysql)         |
+//! | string                    | `&str`                               |
 //! | array (Postgres `IN`)     | a typed Postgres array (`int8[]` / `text[]`) |
 //! | object                    | the JSON text (`String`)             |
 //!
-//! Strings that parse as a full RFC 3339 timestamp (the form the audit /
-//! soft-delete stamps take) bind as a real `DateTime<Utc>` on Postgres and
-//! MySQL, so `TIMESTAMP` / `TIMESTAMPTZ` columns accept them; SQLite keeps
-//! them as text (its timestamp columns are `TEXT`). A `Value::Array` only
-//! reaches [`bind_pg`] for the Postgres `field = ANY($n)` form (the other
-//! dialects flatten the list into scalars before binding), where it is bound
-//! as one typed array parameter.
+//! Only the repository's own audit / soft-delete stamps are bound as a real
+//! `DateTime<Utc>` on Postgres and MySQL (so `TIMESTAMP` / `TIMESTAMPTZ`
+//! columns accept them); SQLite keeps them as text (its timestamp columns are
+//! `TEXT`). Those stamps are carried as a **tagged** [`Value`] —
+//! [`timestamp_value`] wraps the instant in a `{ "$firefly_ts": "<rfc3339>" }`
+//! object — so the coercion is driven by where the value came from, not by
+//! what it happens to look like. A plain [`Value::String`] (an id, a name, a
+//! status, a user-supplied filter argument) is **always** bound as `&str`,
+//! even when its contents happen to parse as an ISO-8601 instant, so a text /
+//! varchar column is never mis-typed. A `Value::Array` only reaches
+//! [`bind_pg`] for the Postgres `field = ANY($n)` form (the other dialects
+//! flatten the list into scalars before binding), where it is bound as one
+//! typed array parameter.
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+
+/// The JSON object key the repository tags its own timestamp stamps with so
+/// the binders bind them as a real `DateTime<Utc>` (rather than text) without
+/// guessing from the string contents. See [`timestamp_value`] / [`as_timestamp`].
+pub(crate) const TIMESTAMP_TAG: &str = "$firefly_ts";
 
 /// Renders a [`Value`] to the `String` form used when a non-scalar (array /
 /// object) value has to be bound as text — and the textual form a `null`
@@ -55,17 +66,51 @@ pub(crate) fn value_as_text(v: &Value) -> String {
     }
 }
 
-/// Parses a string that is an **RFC 3339 / ISO-8601 instant** (the form the
-/// audit / soft-delete stamps are rendered as) into a `DateTime<Utc>`, so
-/// timestamp columns bind as a real instant rather than text.
+/// Wraps an instant in the **tagged** [`Value`] form the repository uses to
+/// carry its own audit / `deleted_at` stamps through the [`Value`]-typed
+/// argument vector. The binders ([`bind_pg`] / [`bind_mysql`]) recognise this
+/// tag and bind it as a real `DateTime<Utc>` so `TIMESTAMP` / `TIMESTAMPTZ`
+/// columns accept it; SQLite binds the textual RFC 3339 form (its timestamp
+/// columns are `TEXT`).
 ///
-/// Returns `None` for any string that is not a full RFC 3339 timestamp, so a
-/// plain text value (a name, an id) is never mis-bound as a date. This is the
-/// bridge that lets the repository carry audit/`deleted_at` instants through
-/// the [`Value`]-typed argument vector and still bind them as `TIMESTAMP` /
-/// `TIMESTAMPTZ` on the database side.
+/// Crucially this is the *only* thing bound as a timestamp — a user-supplied
+/// [`Value::String`] is never coerced just because it looks like an instant,
+/// so a TEXT / VARCHAR column whose value happens to be ISO-8601 is bound as
+/// `&str`, with no parameter-type mismatch.
+pub(crate) fn timestamp_value(dt: DateTime<Utc>) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(TIMESTAMP_TAG.to_string(), Value::String(dt.to_rfc3339()));
+    Value::Object(obj)
+}
+
+/// The **tagged NULL timestamp** [`Value`] — a typed `NULL` for a timestamp
+/// column. The repository uses it to *clear* a `deleted_at` stamp when an
+/// UPSERT resurrects a previously soft-deleted row: binding it as a typed
+/// `Option<DateTime<Utc>>::None` (rather than a text NULL) keeps Postgres
+/// from rejecting a text expression against a `TIMESTAMPTZ` column.
+pub(crate) fn timestamp_null_value() -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(TIMESTAMP_TAG.to_string(), Value::Null);
+    Value::Object(obj)
+}
+
+/// Whether `v` is one of the repository's **tagged** timestamp values
+/// ([`timestamp_value`] or [`timestamp_null_value`]) — i.e. a value the
+/// binders must bind as a timestamp parameter rather than as text. This is
+/// the only thing treated as a timestamp; a plain [`Value::String`] that
+/// happens to look like an instant is always bound as text.
+pub(crate) fn is_timestamp_tagged(v: &Value) -> bool {
+    v.as_object().is_some_and(|o| o.contains_key(TIMESTAMP_TAG))
+}
+
+/// Recognises the **tagged** timestamp [`Value`] produced by
+/// [`timestamp_value`] and parses it back into a `DateTime<Utc>`. Returns
+/// `None` for everything else — including a plain [`Value::String`] that
+/// happens to be a valid RFC 3339 instant (so user text is never mis-typed)
+/// and the [`timestamp_null_value`] tagged NULL (which is a *typed NULL*, not
+/// an instant; binders test [`is_timestamp_tagged`] to handle it).
 pub(crate) fn as_timestamp(v: &Value) -> Option<DateTime<Utc>> {
-    let s = v.as_str()?;
+    let s = v.as_object()?.get(TIMESTAMP_TAG)?.as_str()?;
     DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
@@ -91,7 +136,12 @@ pub(crate) fn bind_pg<'q>(
                 q.bind(n.as_f64().unwrap_or_default())
             }
         }
-        Value::String(_) if as_timestamp(v).is_some() => q.bind(as_timestamp(v).unwrap()),
+        // A repository-tagged timestamp stamp -> a real `DateTime<Utc>`, or a
+        // typed `NULL` timestamp when it carries the tagged NULL.
+        Value::Object(_) if is_timestamp_tagged(v) => match as_timestamp(v) {
+            Some(dt) => q.bind(dt),
+            None => q.bind(Option::<DateTime<Utc>>::None),
+        },
         Value::String(s) => q.bind(s.as_str()),
         // A JSON array reaches `bind_pg` only for the Postgres `IN` form
         // (`field = ANY($n)`), which binds the whole list as ONE array
@@ -132,7 +182,12 @@ pub(crate) fn bind_mysql<'q>(
                 q.bind(n.as_f64().unwrap_or_default())
             }
         }
-        Value::String(_) if as_timestamp(v).is_some() => q.bind(as_timestamp(v).unwrap()),
+        // A repository-tagged timestamp stamp -> a real `DateTime<Utc>`, or a
+        // typed `NULL` timestamp when it carries the tagged NULL.
+        Value::Object(_) if is_timestamp_tagged(v) => match as_timestamp(v) {
+            Some(dt) => q.bind(dt),
+            None => q.bind(Option::<DateTime<Utc>>::None),
+        },
         Value::String(s) => q.bind(s.as_str()),
         other => q.bind(value_as_text(other)),
     }
@@ -156,6 +211,12 @@ pub(crate) fn bind_sqlite<'q>(
                 q.bind(n.as_f64().unwrap_or_default())
             }
         }
+        // A repository-tagged timestamp stamp -> its RFC 3339 text (SQLite's
+        // timestamp columns are `TEXT`), or a typed `NULL` for the tagged NULL.
+        Value::Object(_) if is_timestamp_tagged(v) => match as_timestamp(v) {
+            Some(dt) => q.bind(dt.to_rfc3339()),
+            None => q.bind(Option::<String>::None),
+        },
         Value::String(s) => q.bind(s.as_str()),
         other => q.bind(value_as_text(other)),
     }
@@ -176,15 +237,27 @@ mod tests {
     }
 
     #[test]
-    fn as_timestamp_parses_rfc3339_and_rejects_plain_strings() {
-        // A full RFC 3339 instant parses to a UTC DateTime.
-        let ts = as_timestamp(&json!("2026-06-13T10:30:00+00:00"));
-        assert!(ts.is_some(), "rfc3339 should parse");
-        // A plain string (a name, an id, a date-only) does not.
+    fn as_timestamp_only_matches_the_tagged_stamp_value() {
+        use chrono::TimeZone;
+        let dt = Utc.with_ymd_and_hms(2026, 6, 13, 10, 30, 0).unwrap();
+
+        // The repository's own tagged stamp round-trips to a UTC DateTime.
+        let tagged = timestamp_value(dt);
+        assert_eq!(as_timestamp(&tagged), Some(dt), "tagged stamp parses");
+
+        // A plain string that *looks* like an RFC 3339 instant is NOT treated
+        // as a timestamp — it is user data bound as text (regression for the
+        // value-driven mis-typing of TEXT/VARCHAR columns).
+        assert!(
+            as_timestamp(&json!("2026-06-13T10:30:00+00:00")).is_none(),
+            "a bare rfc3339 string must not be coerced"
+        );
+        // Neither is any other plain string, number, or null.
         assert!(as_timestamp(&json!("alice")).is_none());
         assert!(as_timestamp(&json!("2026-06-13")).is_none());
-        // Non-strings are never timestamps.
         assert!(as_timestamp(&json!(42)).is_none());
         assert!(as_timestamp(&json!(null)).is_none());
+        // An ordinary JSON object (not the tag) is not a timestamp either.
+        assert!(as_timestamp(&json!({"a": 1})).is_none());
     }
 }

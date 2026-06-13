@@ -1447,6 +1447,7 @@ dependencies = [
  "firefly-starter-core",
  "firefly-starter-web",
  "firefly-web",
+ "serde",
  "serde_json",
  "tokio",
 ]

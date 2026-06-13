@@ -89,6 +89,17 @@ pub(crate) fn scheduled_attr(args: TokenStream, item: ItemFn) -> syn::Result<Tok
             "#[scheduled(zone = ...)] is only valid with `cron`",
         ));
     }
+    // `initial_delay` only has meaning for the interval triggers; the cron
+    // branch never consumes it. Reject it with `cron` at expansion time
+    // (mirroring the `zone` check) so a user who expects a delayed first cron
+    // firing gets a compile error rather than a silently ignored argument.
+    if args.initial_delay.is_some() && args.cron.is_some() {
+        return Err(syn::Error::new_spanned(
+            &item.sig,
+            "#[scheduled(initial_delay = ...)] is only valid with `fixed_rate` or \
+             `fixed_delay`, not `cron`",
+        ));
+    }
 
     let task_name = fn_ident.to_string();
     let register_ident = match &args.register {

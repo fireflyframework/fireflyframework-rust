@@ -287,10 +287,13 @@ impl Filter {
     /// applies those via the cursor's `sort` / `skip` / `limit`; use
     /// [`Filter::mongo_sort`] for the sort spec.
     ///
-    /// `LIKE` / `ILIKE` patterns lower to `$regex` (translating SQL `%` →
-    /// `.*` and `_` → `.`, regex-escaping every other character), matching
-    /// pyfly's `MongoQueryMethodCompiler`. `ILIKE` adds the `i` option for
-    /// case-insensitivity.
+    /// `LIKE` / `ILIKE` patterns lower to an **anchored** `$regex`
+    /// (translating SQL `%` → `.*` and `_` → `.`, regex-escaping every
+    /// other character, then wrapping the body in `^` … `$`). The anchors
+    /// make the document backend a full-value match, matching SQL `LIKE`
+    /// and the in-memory matcher — and pyfly's own `MongoSpecification.like`
+    /// — rather than Mongo's default unanchored substring `$regex`. `ILIKE`
+    /// adds the `i` option for case-insensitivity.
     pub fn to_mongo(&self) -> Value {
         let clauses: Vec<Value> = self.predicates.iter().map(predicate_to_mongo).collect();
         combine_mongo_and(clauses)
@@ -424,16 +427,25 @@ pub(crate) fn predicate_to_mongo(p: &Predicate) -> Value {
     }
 }
 
-/// Translates a SQL `LIKE` pattern into a MongoDB `$regex` body, matching
-/// pyfly's `MongoQueryMethodCompiler._build_clause`: `%` → `.*`, `_` →
-/// `.`, every other character regex-escaped. A non-string pattern is
-/// rendered as its plain JSON string form (it never matches a wildcard).
+/// Translates a SQL `LIKE` pattern into a MongoDB `$regex` body: `%` →
+/// `.*`, `_` → `.`, every other character regex-escaped. The body is
+/// anchored with `^` … `$` so the regex must match the *entire* field
+/// value — exactly like SQL `LIKE` (anchored at start, terminated by the
+/// pattern's end) and the in-memory `like_match_chars` full-match
+/// semantics, and like pyfly's own `MongoSpecification.like` (which wraps
+/// the body in `^…$`). Without the anchors a Mongo `$regex` is a
+/// substring match, so `name LIKE 'A%'` would silently match `"bAr"` on
+/// the document backend while excluding it on SQL/in-memory — the same
+/// Specification must yield the same rows on every backend. A non-string
+/// pattern is rendered as its plain JSON string form (it never matches a
+/// wildcard).
 fn like_to_regex(pattern: &Value) -> String {
     let text = match pattern {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-    let mut out = String::with_capacity(text.len() * 2);
+    let mut out = String::with_capacity(text.len() * 2 + 2);
+    out.push('^');
     for ch in text.chars() {
         match ch {
             '%' => out.push_str(".*"),
@@ -446,6 +458,7 @@ fn like_to_regex(pattern: &Value) -> String {
             other => out.push(other),
         }
     }
+    out.push('$');
     out
 }
 
@@ -737,13 +750,13 @@ mod tests {
     #[test]
     fn test_to_mongo_like_translates_wildcards_to_regex() {
         let f = Filter::new().add(Predicate::new("name", Op::Like, "a%c_"));
-        assert_eq!(f.to_mongo(), json!({ "name": { "$regex": "a.*c." } }));
+        assert_eq!(f.to_mongo(), json!({ "name": { "$regex": "^a.*c.$" } }));
     }
 
     #[test]
     fn test_to_mongo_like_escapes_regex_metachars() {
         let f = Filter::new().add(Predicate::new("name", Op::Like, "a.b+"));
-        assert_eq!(f.to_mongo(), json!({ "name": { "$regex": r"a\.b\+" } }));
+        assert_eq!(f.to_mongo(), json!({ "name": { "$regex": r"^a\.b\+$" } }));
     }
 
     #[test]
@@ -751,7 +764,28 @@ mod tests {
         let f = Filter::new().add(Predicate::new("name", Op::ILike, "a%"));
         assert_eq!(
             f.to_mongo(),
-            json!({ "name": { "$regex": "a.*", "$options": "i" } })
+            json!({ "name": { "$regex": "^a.*$", "$options": "i" } })
+        );
+    }
+
+    /// Regression: `Op::Like` lowers to an **anchored** `$regex` (`^…$`),
+    /// so the document backend is a full-value match — matching the SQL
+    /// `LIKE` and in-memory matcher rather than Mongo's default unanchored
+    /// substring `$regex`. `name LIKE 'A%'` would, when unanchored, lower
+    /// to `A.*` which Mongo treats as a substring match (selecting `"bAr"`),
+    /// whereas SQL `LIKE`/in-memory matching require the pattern to consume
+    /// the whole value. The anchors realign the document backend with the
+    /// others.
+    #[test]
+    fn test_to_mongo_like_is_anchored_full_match() {
+        let f = Filter::new().add(Predicate::new("name", Op::Like, "A%"));
+        let doc = f.to_mongo();
+        assert_eq!(doc, json!({ "name": { "$regex": "^A.*$" } }));
+        let regex = doc["name"]["$regex"].as_str().unwrap();
+        assert!(
+            regex.starts_with('^') && regex.ends_with('$'),
+            "Mongo $regex must be anchored at both ends so it is a \
+             full-value match like SQL LIKE / in-memory matching: {regex}"
         );
     }
 

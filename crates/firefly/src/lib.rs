@@ -127,6 +127,13 @@ pub mod __rt {
     pub use ::firefly_starter_web;
     pub use ::firefly_web;
 
+    // Third-party crate re-exported under the same contract so generated code
+    // never forces the user crate to add it directly. `#[derive(DomainEvent)]`
+    // JSON-encodes the event payload through `::firefly::__rt::serde_json`,
+    // keeping the one-dependency facade promise intact for users who depend on
+    // only `firefly` + `serde`.
+    pub use ::serde_json;
+
     // Optional adapter crates — present in `__rt` only when their feature is on,
     // so generated code that targets an adapter still resolves through the same
     // contract path.
