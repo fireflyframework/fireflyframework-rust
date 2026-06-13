@@ -47,13 +47,17 @@ cd orders
 ```toml
 # Cargo.toml
 [dependencies]
-firefly-starter-core = "26.6.2"
-firefly-reactive = "26.6.2"
-firefly-web = "26.6.2"
+firefly-starter-core = "26.6.3"
+firefly-reactive = "26.6.3"
+firefly-web = "26.6.3"
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 serde_json = "1"
 ```
+
+> Prefer the one-dependency front door? Replace the three `firefly-*` lines with
+> a single `firefly = "26.6.3"` and `use firefly::prelude::*;`. See the
+> [Declarative Services with Macros](./21-declarative-macros.md) chapter.
 
 ## A running service in one file
 

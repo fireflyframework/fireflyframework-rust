@@ -91,7 +91,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.2";
+pub const VERSION: &str = "26.6.3";
 
 /// Errors produced by the notification port.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

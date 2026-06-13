@@ -126,7 +126,7 @@ All three backends are enabled by default. Disable the ones you do not need
 for a smaller build, e.g. a SQLite-only repository:
 
 ```toml
-firefly-data-sqlx = { version = "26.6.2", default-features = false, features = ["sqlite"] }
+firefly-data-sqlx = { version = "26.6.3", default-features = false, features = ["sqlite"] }
 ```
 
 ## License

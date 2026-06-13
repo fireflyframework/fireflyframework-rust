@@ -158,4 +158,4 @@ pub use password::{BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
 pub use role_hierarchy::RoleHierarchy;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.2";
+pub const VERSION: &str = "26.6.3";

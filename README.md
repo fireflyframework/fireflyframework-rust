@@ -14,19 +14,35 @@ _/ ____\__|______   _____/ ____\  | ___.__.
 Rust 1.85+ (tokio + axum).**
 
 [![Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version 26.6.2](https://img.shields.io/badge/version-26.6.2-orange.svg)](CHANGELOG.md)
+[![Version 26.6.3](https://img.shields.io/badge/version-26.6.3-orange.svg)](CHANGELOG.md)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-93450a.svg)](https://www.rust-lang.org)
 [![Reactive: Mono / Flux](https://img.shields.io/badge/reactive-Mono%20%2F%20Flux-success.svg)](docs/book/src/05-reactive-model.md)
+[![One dependency: firefly](https://img.shields.io/badge/one%20dep-firefly%20%2B%20macros-success.svg)](crates/firefly/README.md)
 [![Real-infra tested](https://img.shields.io/badge/tests-real%20infra%20(Docker)-2496ed.svg)](#real-infrastructure-testing)
 
 > 📖 **Read the book — [Firefly Framework for Rust](docs/book/)** — the canonical,
 > best-in-class guide: a punchy [Quickstart](docs/book/src/02-quickstart.md)
 > (zero to a running reactive endpoint in minutes), the keystone
 > [Reactive Model](docs/book/src/05-reactive-model.md) chapter (`Mono`/`Flux`),
-> and full chapters on configuration, persistence, DDD, CQRS, EDA, event
+> the new [Declarative Services with Macros](docs/book/src/21-declarative-macros.md)
+> chapter, and full chapters on configuration, persistence, DDD, CQRS, EDA, event
 > sourcing, sagas, HTTP clients, security, observability, testing, and
 > production. Build it locally with `mdbook build docs/book` and open
-> `docs/book/book/index.html`.
+> `docs/book/book/index.html`, or read the offline editions:
+> [`docs/book/dist/firefly-rust-by-example.pdf`](docs/book/dist/firefly-rust-by-example.pdf)
+> and [`.epub`](docs/book/dist/firefly-rust-by-example.epub).
+
+> 🚀 **New in 26.6.3 — two headline wins.** (1) A **Spring-Boot-for-Rust
+> developer experience**: add the one [`firefly`](crates/firefly/README.md)
+> dependency, `use firefly::prelude::*;`, and declare your service with
+> [`firefly-macros`](crates/macros/README.md) —
+> `#[derive(Command)]`/`#[rest_controller]`/`#[command_handler]`/`#[scheduled]`
+> instead of hand-rolled builder wiring. (2) **Pluggable hexagonal databases**:
+> one set of [`firefly-data`](crates/data/README.md) ports, real adapters for
+> **Postgres, MySQL, SQLite** ([`firefly-data-sqlx`](crates/data-sqlx/README.md))
+> and **MongoDB** ([`firefly-data-mongodb`](crates/data-mongodb/README.md)) — a
+> *new database is a new adapter, not a rewrite*. See
+> [The two 26.6.3 headlines](#the-two-2663-headlines) below.
 
 At its heart is a **WebFlux-style reactive core** — [`firefly-reactive`](crates/reactive/README.md)
 gives you `Mono<T>` (0-or-1) and `Flux<T>` (0..N) over `tokio`
@@ -71,6 +87,90 @@ holds module-for-module parity with the Go port and is kept
 wire-stable; the **PyFly-parity layer is purely additive** — every
 extension layers onto the existing crates without changing a single
 Go-parity wire format.
+
+---
+
+## The two 26.6.3 headlines
+
+### 1 · Spring-Boot-for-Rust ergonomics — one dependency, declarative macros
+
+Before, a service listed ten-to-fifteen `firefly-*` crates and wired
+everything by hand. Now there is the [`firefly`](crates/firefly/README.md)
+**facade crate**: add one dependency, glob-import one prelude, and the whole
+framework — CQRS, the DI container, the reactive web stack, scheduling,
+orchestration — is in scope, alongside every macro from
+[`firefly-macros`](crates/macros/README.md):
+
+```toml
+[dependencies]
+firefly = "26.6.3"            # the whole framework + every macro
+axum    = "0.7"               # you author axum handlers
+serde   = { version = "1", features = ["derive"] }
+tokio   = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+The macros (`#[derive(Command)]` / `#[derive(Query)]` / `#[derive(Component)]`
+/ `#[derive(DomainEvent)]` / `#[derive(AggregateRoot)]`, `#[command_handler]` /
+`#[query_handler]`, `#[scheduled]`, `#[rest_controller]` + `#[get/post/put/delete/patch]`,
+`#[event_listener]`) collapse the framework's builder wiring into declarations
+that sit next to the code they describe:
+
+```rust,ignore
+use firefly::prelude::*;
+use serde::Serialize;
+
+// A command + its handler — `register_place_order(bus)` is generated.
+#[derive(Clone, Serialize, Command)]
+pub struct PlaceOrder {
+    #[firefly(validate)] pub customer: String,
+    #[firefly(validate)] pub sku: String,
+}
+
+#[command_handler]
+pub async fn place_order(cmd: PlaceOrder) -> Result<OrderView, CqrsError> { /* … */ }
+
+// An axum controller — `OrderApi::routes(state) -> axum::Router` is generated.
+#[rest_controller(path = "/api/v1/orders")]
+impl OrderApi {
+    #[post("")]    async fn create(/* … */) -> WebResult<Json<OrderView>> { /* … */ }
+    #[get("/:id")] async fn fetch(/* … */)  -> WebResult<Json<OrderView>> { /* … */ }
+}
+```
+
+The macro-generated code references runtime types through the facade's hidden
+`__rt` contract path, so a service that depends only on `firefly` (plus the
+`axum`/`serde` it writes against anyway) compiles whatever a macro expands to —
+without ever listing the underlying `firefly-*` crates. The new
+[`samples/macro-quickstart`](samples/macro-quickstart) re-implements the
+[`orders`](samples/orders) sample this way: the same behaviour in **376 source
+lines instead of 1022 (−63%)**, **2 modules instead of 7**, no hand-written
+`impl Message`, `bus.register(…)`, `Router::new().route(…)`, or scheduler
+builder. See the
+[Declarative Services with Macros](docs/book/src/21-declarative-macros.md)
+chapter.
+
+### 2 · Pluggable hexagonal databases — a new DB is a new adapter
+
+[`firefly-data`](crates/data/README.md) defines the storage-agnostic ports —
+the `Filter` DSL, the composable `Specification`, the `Repository` /
+`ReactiveCrudRepository` / `ReactiveSpecificationRepository` traits, plus
+auditing and soft-delete. 26.6.3 makes the data layer *truly hexagonal*: a
+`SqlDialect` abstraction (`PostgresDialect` / `MySqlDialect` / `SqliteDialect`)
+renders the same query tree for any relational backend, and
+`Specification::to_mongo()` lowers it to a MongoDB `$`-operator filter. Two new
+adapter crates implement the **same ports**:
+
+| Adapter crate | Backends | Behind the ports |
+|---------------|----------|------------------|
+| [`firefly-data-sqlx`](crates/data-sqlx/README.md) | **Postgres + MySQL + SQLite** (over `sqlx`) | `SqlxRepository` / `SqlxReactiveRepository` — picks the right `SqlDialect` from the pool at runtime; streams reads as a `Flux<T>` |
+| [`firefly-data-mongodb`](crates/data-mongodb/README.md) | **MongoDB** (official `mongodb` crate) | `MongoRepository<T, ID>` — the same `Specification` lowered via `Specification::to_mongo()` |
+
+Both auto-apply auditing (`created_at`/`updated_at`/`created_by`/`updated_by`)
+and soft-delete (hidden-on-read, logical delete). A service codes once against
+the `firefly-data` ports and swaps Postgres for MySQL, SQLite, or MongoDB by
+swapping the adapter — *no call-site changes*. All four backends are exercised
+against **real** Postgres/MySQL/SQLite/MongoDB. See the
+[Persistence](docs/book/src/07-persistence.md) chapter.
 
 ---
 
@@ -126,9 +226,12 @@ Firefly Framework treats those concerns as solved problems on Rust too:
 
 | Capability | Crate(s) | Spring / Reactor analog | Status |
 |------------|----------|-------------------------|:------:|
+| **One-dependency facade + prelude** | `firefly` | `spring-boot-starter` | ✅ Full |
+| **Declarative macros** (`#[derive(Command)]`, `#[rest_controller]`, `#[command_handler]`, `#[scheduled]`, …) | `firefly-macros` | Spring annotations / pyfly decorators | ✅ Full |
 | **Reactive core (`Mono` / `Flux`)** | `firefly-reactive` | Project Reactor | ✅ Full |
 | **Reactive HTTP responders** (NDJSON / SSE streaming, backpressure) | `firefly-web` | WebFlux `@RestController` returning `Mono`/`Flux` | ✅ Full |
-| **Reactive repositories** (in-memory + real Postgres) | `firefly-data` | R2DBC `ReactiveCrudRepository` | ✅ Full |
+| **Pluggable hexagonal databases** (Postgres / MySQL / SQLite / MongoDB) | `firefly-data`, `-data-sqlx`, `-data-mongodb` | Spring Data ports + adapters | ✅ Full |
+| **Reactive repositories** (in-memory + real Postgres + sqlx + Mongo) | `firefly-data`, `-data-sqlx`, `-data-mongodb` | R2DBC `ReactiveCrudRepository` | ✅ Full |
 | **Reactive HTTP client** (`WebClient`, `body_to_mono`/`body_to_flux`) | `firefly-client` | WebFlux `WebClient` | ✅ Full |
 | **Reactive CQRS bus** (`send_mono` / `query_mono`) | `firefly-cqrs` | Axon / reactive command bus | ✅ Full |
 | **Reactive EDA** (`subscribe_reactive` → `Flux<Event>`) | `firefly-eda` | reactive Kafka/AMQP listener | ✅ Full |
@@ -145,7 +248,8 @@ Firefly Framework treats those concerns as solved problems on Rust too:
 | Content + e-signature (**S3 / Blob / DocuSign / Adobe Sign / Logalty**) | `firefly-ecm-*` | — | ✅ Full |
 | Notifications (**SMTP / SendGrid / Resend / Twilio / Firebase**) | `firefly-notifications-*` | — | ✅ Full |
 | DI container / AOP / sessions / shell / WebSockets | `firefly-container`, `-aop`, `-session`, `-shell`, `-websocket` | Spring DI / AOP / Session / Shell | ✅ Full |
-| Admin dashboard + `firefly` developer CLI | `firefly-admin`, `firefly-cli` | spring-boot-admin / Spring Boot CLI | ✅ Full |
+| Distributed session registries (cluster-wide concurrency cap) | `firefly-session-redis`, `firefly-session-postgres` | Spring Session | ✅ Full |
+| Admin dashboard + `firefly` developer CLI (`completion`/`sbom`/`license`) | `firefly-admin`, `firefly-cli` | spring-boot-admin / Spring Boot CLI | ✅ Full |
 
 Every entry is real and wired — there are no stub adapters in this
 release.
@@ -168,15 +272,15 @@ left-to-right dependency direction:
 │  web           │   │  eda  · eda-*    │   │  callbacks           │   │  starter-web         │
 │  config        │   │  eventsourcing   │   │  webhooks            │   │  backoffice          │
 │  i18n          │   │  orchestration   │   │  config-server       │   │                      │
-│  session       │   │  rule-engine     │   │  cache-redis         │   │  ── Operations ──    │
-│                │   │  plugins         │   │  cache-postgres      │   │  admin               │
-│                │   │  container · aop │   │  notifications-smtp  │   │                      │
-│                │   │  lifecycle       │   │                      │   │  ── Tooling ──       │
-│                │   │  actuator        │   │                      │   │  cli                 │
-│                │   │  scheduling      │   │                      │   │                      │
-│                │   │  resilience      │   │                      │   │                      │
-│                │   │  security        │   │                      │   │                      │
-│                │   │  migrations      │   │                      │   │                      │
+│  session       │   │  rule-engine     │   │  cache-redis         │   │  ── Front door ──    │
+│                │   │  plugins         │   │  cache-postgres      │   │  firefly (facade)    │
+│                │   │  container · aop │   │  notifications-smtp  │   │  firefly-macros      │
+│                │   │  lifecycle       │   │  data-sqlx (pg/      │   │                      │
+│                │   │  actuator        │   │    mysql/sqlite)     │   │  ── Operations ──    │
+│                │   │  scheduling      │   │  data-mongodb        │   │  admin               │
+│                │   │  resilience      │   │  session-redis       │   │                      │
+│                │   │  security        │   │  session-postgres    │   │  ── Tooling ──       │
+│                │   │  migrations      │   │                      │   │  cli                 │
 │                │   │  openapi         │   │                      │   │                      │
 │                │   │  sse · websocket │   │                      │   │                      │
 │                │   │  shell           │   │                      │   │                      │
@@ -184,6 +288,13 @@ left-to-right dependency direction:
 │                │   │  testkit         │   │                      │   │                      │
 └────────────────┘   └──────────────────┘   └──────────────────────┘   └──────────────────────┘
 ```
+
+The [`firefly`](crates/firefly/README.md) facade and
+[`firefly-macros`](crates/macros/README.md) sit at the **front door**: a
+service depends on `firefly` alone, and macro-generated code resolves runtime
+types through the facade's hidden `__rt` contract path. Heavy vendor adapters
+(`data-sqlx`, `data-mongodb`, the `eda-*`/`cache-*` transports, `admin`) are
+opt-in cargo features on the facade, so a lean build pulls in none of them.
 
 Each tier may depend on the tiers to its left, never to its right. The
 Cargo crate graph enforces the layering — every internal dependency is
@@ -210,14 +321,16 @@ See [`MODULES.md`](MODULES.md) for the full per-crate catalogue and
 
 ## Workspace layout
 
-One Cargo workspace, **69 members** — 66 framework crates plus the
-integration suite and two reference samples — spanning the Go-parity
+One Cargo workspace, **76 members** — 72 framework crates plus the
+integration suite and three reference samples — spanning the Go-parity
 core (foundational, platform, adapter, starter tiers) and the
 PyFly-parity layer:
 
 ```
 fireflyframework-rust/
-├── crates/                       # 66 framework crates (firefly-<name>)
+├── crates/                       # 72 framework crates (firefly-<name>)
+│   ├── firefly/                  #   the one-dependency facade (prelude + __rt + features)
+│   ├── macros/                   #   firefly-macros — derive/attribute declarative layer
 │   ├── reactive/                 #   the Mono/Flux reactive core (keystone)
 │   ├── kernel/                   #   each with its own README.md + test suite
 │   ├── web/  cqrs/  eda/  …       #   Go-parity core (+ reactive surfaces)
@@ -227,6 +340,8 @@ fireflyframework-rust/
 │   ├── cli/                       #   PyFly: the `firefly` developer CLI binary
 │   ├── admin/                     #   PyFly: Spring-Boot-Admin-style dashboard
 │   │
+│   ├── data-sqlx/  data-mongodb/ #   adapters: relational (pg/mysql/sqlite) + document
+│   ├── session-redis/  session-postgres/  #   adapters: distributed session registries
 │   ├── cache-redis/  cache-postgres/  #   adapters: Redis + Postgres cache
 │   ├── eda-kafka/  eda-rabbitmq/  #   adapter: event transports
 │   ├── eda-postgres/  eda-redis/  #     (Kafka / RabbitMQ / Postgres outbox / Redis Streams)
@@ -237,31 +352,47 @@ fireflyframework-rust/
 ├── tests/integration/            # cross-crate integration suite
 ├── samples/orders/               # reference service (firefly-sample-orders)
 ├── samples/reactive-banking/     # end-to-end reactive service (firefly-sample-reactive-banking)
+├── samples/macro-quickstart/     # the declarative one-dependency DX (firefly-sample-macro-quickstart)
 ├── docs/                         # ARCHITECTURE, CONFIGURATION, MIGRATION-GUIDE, DESIGN
-├── docs/book/                    # the mdBook guide (mdbook build docs/book)
+├── docs/book/                    # the mdBook guide (mdbook build docs/book) + dist/*.pdf,*.epub
 ├── docker-compose.yml            # real backing services for integration tests
-└── Cargo.toml                    # workspace root — version 26.6.2, edition 2021, MSRV 1.85
+└── Cargo.toml                    # workspace root — version 26.6.3, edition 2021, MSRV 1.85
 ```
 
 ### Choosing your tier / optional adapters
 
-Start from a **starter** and add only the adapters you need:
+The fastest path is the **one-dependency facade** — `firefly = "26.6.3"`
+brings the whole framework and every macro in via `use firefly::prelude::*;`,
+with heavy adapters as opt-in cargo features
+(`features = ["data-sqlx", "eda-kafka", …]`). Prefer the individual crates when
+you want fine-grained control. Either way, start lean and add only the adapters
+you need:
 
-- **Default, zero infrastructure** — `firefly-starter-core` boots with
-  the in-process `MemoryAdapter` cache and `InMemoryBroker` event bus.
-  Nothing external is required; a service runs against pure-Rust defaults.
+- **Default, zero infrastructure** — `firefly-starter-core` (or the `firefly`
+  facade) boots with the in-process `MemoryAdapter` cache and `InMemoryBroker`
+  event bus. Nothing external is required; a service runs against pure-Rust
+  defaults.
+- **Pick a database** — code against the `firefly-data` ports and pull in
+  `firefly-data-sqlx` (Postgres / MySQL / SQLite over `sqlx`) or
+  `firefly-data-mongodb` (MongoDB). A *new database is a new adapter, not a
+  rewrite* — the `Specification` / `Filter` / repository call sites don't change.
 - **Pick a cache backend** — drop in `firefly-cache-redis`
   (`RedisAdapter`) wherever an `Arc<dyn cache::Adapter>` is expected.
 - **Pick an event transport** — `firefly-eda-kafka`,
   `-rabbitmq`, `-postgres` (durable outbox), or `-redis` (Streams) each
   implement the same `Broker` port; swap the constructor, keep your
   handlers.
+- **Pick a session registry** — for cluster-wide session concurrency caps,
+  `firefly-session-redis` or `firefly-session-postgres` implement the
+  `firefly-session` `SessionRegistry` port (the in-process
+  `MemorySessionRegistry` is the default).
 - **Pick notification channels / IDP / ECM vendors** — code against the
   parent-port trait (`notifications::Channel`, `idp::Adapter`,
   `ecm::ContentStore`) and pull in the concrete adapter crate at wiring
   time, so the heavy vendor SDKs stay out of services that don't use them.
 - **Add operations** — `firefly-admin` mounts the dashboard;
-  `firefly-cli` installs the `firefly` developer binary.
+  `firefly-cli` installs the `firefly` developer binary
+  (`new`/`generate`/`doctor`/`db`/`openapi`/`completion`/`sbom`/`license`).
 
 ---
 
@@ -275,13 +406,19 @@ Add the starter and the reactive core to a binary crate:
 
 ```toml
 [dependencies]
-firefly-starter-core = "26.6.2"
-firefly-reactive = "26.6.2"
-firefly-web = "26.6.2"
+firefly-starter-core = "26.6.3"
+firefly-reactive = "26.6.3"
+firefly-web = "26.6.3"
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 serde_json = "1"
 ```
+
+> Prefer the new **one-dependency** front door? Replace the three `firefly-*`
+> lines with a single `firefly = "26.6.3"` and `use firefly::prelude::*;` — see
+> [the macro-quickstart sample](samples/macro-quickstart) and the
+> [Declarative Services with Macros](docs/book/src/21-declarative-macros.md)
+> chapter.
 
 Boot a service — one `Core::new` wires the problem renderer,
 correlation propagation, idempotency replay, cache, CQRS bus, event
@@ -338,12 +475,15 @@ graceful shutdown — see
 [`crates/starter-core/README.md`](crates/starter-core/README.md) and the
 [Reactive Model](docs/book/src/05-reactive-model.md) chapter.
 
-Two reference services ship in the workspace: a minimal idempotent
-[`samples/orders/`](samples/orders), and the end-to-end reactive
+Three reference services ship in the workspace: a minimal idempotent
+[`samples/orders/`](samples/orders); the end-to-end reactive
 [`samples/reactive-banking/`](samples/reactive-banking) — reactive CQRS
 (`Bus::send_mono` / `query_mono`), event sourcing, a saga-backed money
 transfer, a `Flux<AccountEvent>` NDJSON/SSE stream, and a `WebClient`
-SDK, running against in-memory defaults or real Postgres/Kafka.
+SDK, running against in-memory defaults or real Postgres/Kafka; and
+[`samples/macro-quickstart/`](samples/macro-quickstart) — the same orders
+behaviour re-expressed through the declarative macros over the single
+`firefly` facade (376 source lines vs 1022, two modules vs seven).
 
 ---
 
@@ -356,6 +496,8 @@ make test        # cargo test --workspace
 make sample      # run the Orders sample
 make cli ARGS="doctor"   # run the firefly developer CLI
 make book        # build the mdBook guide (docs/book)
+make book-pdf    # render the book to docs/book/dist/*.pdf  (pandoc + tectonic)
+make book-epub   # render the book to docs/book/dist/*.epub (pandoc)
 ```
 
 Or plain cargo — the whole repository is a single standard workspace:
@@ -398,19 +540,22 @@ sample — end to end.
 
 ## Status
 
-The framework ships **69 workspace members** — **66 framework crates**
-under `crates/` plus the cross-crate integration suite and two reference
-samples (`samples/orders`, `samples/reactive-banking`). The workspace
-quality gate is `make ci`: `cargo fmt --check`,
+The framework ships **76 workspace members** — **72 framework crates**
+under `crates/` plus the cross-crate integration suite and three reference
+samples (`samples/orders`, `samples/reactive-banking`,
+`samples/macro-quickstart`). The workspace quality gate is `make ci`:
+`cargo fmt --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo build --workspace`, `cargo test --workspace`.
 
 **Every tier is fully implemented and wired.** The reactive core
 (`firefly-reactive`) and its integrations (reactive web responders,
-reactive repositories incl. real Postgres, the reactive `WebClient`,
-reactive EDA and CQRS), the foundational/platform/starter tiers, and the
+reactive repositories incl. real Postgres / `sqlx` / MongoDB, the reactive
+`WebClient`, reactive EDA and CQRS), the foundational/platform/starter tiers,
+the ergonomic front door (`firefly` facade + `firefly-macros`), and the
 PyFly-parity layer (`firefly-container`, `firefly-aop`,
-`firefly-session`, `firefly-shell`, `firefly-websocket`, `firefly-cli`,
+`firefly-session` + the distributed `firefly-session-redis`/`-postgres`
+registries, `firefly-shell`, `firefly-websocket`, `firefly-cli`,
 `firefly-admin`) are all complete.
 
 The infrastructure and vendor adapters ship **real and wired, with no
@@ -433,9 +578,14 @@ See [`MODULES.md`](MODULES.md) for the per-crate catalogue.
 ## Documentation
 
 - **[The Book](docs/book/)** — the canonical guide; build with
-  `mdbook build docs/book` and open `docs/book/book/index.html`. Start
-  with the [Quickstart](docs/book/src/02-quickstart.md) and the keystone
-  [Reactive Model](docs/book/src/05-reactive-model.md) chapter.
+  `mdbook build docs/book` and open `docs/book/book/index.html`, or read the
+  offline editions in
+  [`docs/book/dist/`](docs/book/dist) (`firefly-rust-by-example.pdf` /
+  `.epub`, rendered with `make book-pdf` / `make book-epub`). Start with the
+  [Quickstart](docs/book/src/02-quickstart.md), the keystone
+  [Reactive Model](docs/book/src/05-reactive-model.md), and the
+  [Declarative Services with Macros](docs/book/src/21-declarative-macros.md)
+  chapters.
 - **[`MODULES.md`](MODULES.md)** — the per-crate module index, tier by tier.
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — tiering, the EDA
   transport-adapter pattern, the reactive translation, build waves.

@@ -113,4 +113,4 @@ pub use row::{AnyRow, SqlxRowMapper, TryGetAcross};
 pub use writer::{ColumnValue, RowWriter};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.2";
+pub const VERSION: &str = "26.6.3";

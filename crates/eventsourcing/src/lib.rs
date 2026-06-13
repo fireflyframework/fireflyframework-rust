@@ -92,4 +92,4 @@ pub use sql_store::{parse_occurred_at, SqlEventStore, DDL};
 pub use upcaster::{EventUpcaster, NoOpUpcaster};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.2";
+pub const VERSION: &str = "26.6.3";

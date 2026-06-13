@@ -88,7 +88,8 @@ prefix never appears in your code:
 
 Every macro from `firefly-macros` is re-exported at the crate root **and** in
 the prelude, so `#[command_handler]`, `#[scheduled]`, `#[derive(Component)]`,
-`#[saga]`, … are reachable as `firefly::command_handler` or via the glob.
+`#[rest_controller]`, … are reachable as `firefly::command_handler` or via the
+glob.
 
 Macro-generated code references runtime types through a single hidden module —
 `firefly::__rt`. Each runtime crate appears there under **exactly its crate

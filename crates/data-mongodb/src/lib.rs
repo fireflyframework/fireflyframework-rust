@@ -108,4 +108,4 @@ pub use document::BaseDocument;
 pub use repository::{Audited, MongoRepository};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.2";
+pub const VERSION: &str = "26.6.3";

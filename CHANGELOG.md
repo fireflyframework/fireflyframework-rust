@@ -2,6 +2,125 @@
 
 All notable changes to the Rust port of Firefly Framework.
 
+## v26.6.3 — 2026-06-13
+
+The **ergonomics + pluggable-persistence milestone**. Two headline wins: a
+Spring-Boot-for-Rust developer experience (one `firefly` dependency, a prelude
+glob, and declarative `#[derive(...)]` / `#[...]` macros) and a truly hexagonal
+data layer (one set of `firefly-data` ports, real adapters for Postgres / MySQL
+/ SQLite / MongoDB). Everything here is additive; the Go-parity wire contract is
+unchanged. The workspace grows from 69 to **76 members** (66 → **72** framework
+crates).
+
+### Added
+
+**Hexagonal database adapters (a new DB = a new adapter)**
+
+- `firefly-data` — a `SqlDialect` abstraction (`PostgresDialect` /
+  `MySqlDialect` / `SqliteDialect`) so the `Filter` DSL and `Specification`
+  render the *same* query tree for any relational backend
+  (`Filter::to_sql_with` / `Specification::to_sql_with`, with placeholder style
+  `$n` vs `?`, identifier quoting, `IN`-list shape, and case-insensitive `LIKE`
+  all dialect-correct). `Filter::to_sql` / `Specification::to_sql` stay the
+  PostgreSQL default for back-compat. Also `Specification::to_mongo()` /
+  `Filter::to_mongo()` lower the same tree to a MongoDB `$`-operator filter
+  document, and the `Auditor` gains a `UserProvider` hook.
+- `firefly-data-sqlx` — the **relational** repository adapter implementing the
+  `firefly-data` ports over `sqlx` for **Postgres, MySQL, and SQLite** from one
+  codebase: `SqlxRepository` (blocking-value) and `SqlxReactiveRepository`
+  (streaming reads as a `Flux<T>`) pick the right `SqlDialect` at runtime from
+  the `Db` pool's `Backend`, build dialect-aware `UPSERT`s
+  (`ON CONFLICT … DO UPDATE` for Postgres/SQLite, `ON DUPLICATE KEY UPDATE` for
+  MySQL), and auto-apply auditing + soft-delete. Backend-agnostic row decoding
+  via `SqlxRowMapper`/`AnyRow`; writes via `ColumnValue`/`RowWriter`.
+- `firefly-data-mongodb` — the **document** repository adapter over the official
+  `mongodb` crate: `MongoRepository<T, ID>` implements the *same*
+  `ReactiveCrudRepository` + `ReactiveSpecificationRepository` ports as the
+  relational adapters, lowering `Specification::to_mongo()`, with a
+  `BaseDocument` audit/soft-delete mixin and an `Audited` hook, and cursor-based
+  streaming reads. A service swaps Postgres for Mongo without touching its call
+  sites. All four backends are tested against **real**
+  Postgres/MySQL/SQLite/MongoDB.
+
+**Ergonomic declarative layer (one dependency, macros instead of builders)**
+
+- `firefly-macros` — a `proc-macro` crate of derive/attribute macros (the Rust
+  answer to Spring annotations / pyfly decorators): `#[derive(Command)]` /
+  `#[derive(Query)]` (→ `impl firefly_cqrs::Message`, with `#[firefly(validate)]`
+  / `#[firefly(cache_ttl = "…")]`); `#[command_handler]` / `#[query_handler]`
+  (→ a `register_<fn>(bus)` helper); `#[derive(Component)]` /
+  `#[derive(Service)]` / `#[derive(Repository)]` + the `register_all!` macro
+  (→ DI-container registration); `#[scheduled]` (→ `schedule_<fn>(scheduler)`);
+  `#[rest_controller]` + `#[get/post/put/delete/patch]` (→ a
+  `routes(state) -> axum::Router`); `#[derive(DomainEvent)]` /
+  `#[derive(AggregateRoot)]`; and `#[event_listener]`
+  (→ a `subscribe_<fn>(broker)` helper).
+- `firefly` — the **one-dependency facade**: `use firefly::prelude::*;` pulls in
+  the whole framework (`Bus`, `Container`, `Scheduler`, `Saga`/`Step`,
+  `Application`, `Core`/`CoreConfig`, `WebResult`/`WebError`/`problem_response`,
+  `FireflyError`/`FireflyResult`, `Mono`/`Flux`) plus every macro. Ships
+  ergonomic per-crate aliases (`firefly::cqrs`, `firefly::web`, …) and a hidden,
+  stable `__rt` contract path that macro-generated code targets — so a service
+  depends only on `firefly`. Heavy adapters (`data-sqlx`, `data-mongodb`,
+  `eda-*`, `cache-*`, `admin`, `full`) are opt-in cargo features; a default
+  build pulls in none of them.
+- `samples/macro-quickstart` — `firefly-sample-macro-quickstart`, the same
+  orders behaviour as the `orders` sample re-expressed declaratively over the
+  single `firefly` facade: 376 source lines vs 1022 (−63%), two modules vs
+  seven, with no hand-written `impl Message`, `bus.register(…)`,
+  `Router::new().route(…)`, or scheduler builder.
+
+**Distributed session registries**
+
+- `firefly-session-redis` — `RedisSessionRegistry`, a distributed
+  `firefly_session::SessionRegistry` backed by a Redis sorted set (score =
+  `created_at`, oldest-first via `ZRANGE`; sliding `EXPIRE`), so the
+  per-principal session-concurrency cap holds cluster-wide rather than only
+  within one process.
+- `firefly-session-postgres` — `PostgresSessionRegistry`, a durable, distributed
+  `SessionRegistry` over a Postgres table (idempotent `ON CONFLICT` upsert,
+  `ORDER BY created_at ASC` oldest-first) for relational-only deployments.
+
+**Testkit + CLI**
+
+- `firefly-testkit` — a `TestClient` / `TestResponse` in-process axum-router
+  driver (fluent `assert_status` / `assert_json_eq` / `assert_header` / …),
+  `assert_event_published` / `assert_event_published_with` over the `SpyBroker`,
+  and DI test `Slice` / `BuiltSlice` helpers (the pyfly `slice_context` /
+  `mock_bean` analog, with eager fail-fast resolution).
+- `firefly-cli` — `completion` (shell-completion scripts), `sbom` (dependency
+  SBOM), and `license` (dependency-license report) commands.
+
+**Documentation**
+
+- The book now renders to offline editions:
+  `docs/book/dist/firefly-rust-by-example.pdf` and `.epub` (pandoc + tectonic),
+  via `make book-pdf` / `make book-epub`. A new
+  "Declarative Services with Macros" chapter covers the facade + macros, and the
+  persistence chapter is extended with the MySQL / SQLite / MongoDB adapters.
+
+### Fixed
+
+- **Adversarial-review fixes** (macros + data adapters):
+  - `firefly-data` — `Op::Like` / `Op::ILike` now lower to an **anchored**
+    MongoDB `$regex` (`^…$`, translating SQL `%`/`_`, regex-escaping the rest),
+    so the same `Specification` matches identical rows on Mongo, SQL, and
+    in-memory (an unanchored Mongo `$regex` would have made `name LIKE 'A%'`
+    silently match `"bAr"`).
+  - `firefly-data-sqlx` — `save` resurrects soft-deleted rows (clears
+    `deleted_at` on upsert); timestamp coercion is tag-driven, so
+    RFC3339-looking text is no longer mis-typed as a timestamp.
+  - `firefly-macros` — `#[derive(DomainEvent)]` JSON-encodes through the facade's
+    `__rt::serde_json` (preserving the one-dependency contract);
+    `#[event_listener]` preserves the consumer `group` when given a positional
+    topic; `#[scheduled]` rejects `cron` + `initial_delay` with a compile error.
+- **`serde_json` ordering wire-parity** — linking the `mongodb`/`bson` crate
+  turned on `serde_json/preserve_order` workspace-wide (Cargo feature
+  unification), flipping `serde_json::Map` from sorted-key to insertion-order;
+  restored deterministic sorted-key wire output where it is contractually
+  required (`config-server`, `openapi`, `callbacks`).
+- Stabilized flaky admin SSE timing tests (raised the under-load timeout).
+
 ## v26.6.2 — 2026-06-13
 
 The **reactive milestone**. This release adds a WebFlux-style reactive

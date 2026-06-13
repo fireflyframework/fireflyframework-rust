@@ -44,7 +44,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.2";
+pub const VERSION: &str = "26.6.3";
 
 /// The canonical error returned by every validator when the input is
 /// malformed.
@@ -1130,6 +1130,6 @@ mod tests {
 
     #[test]
     fn version_stamp() {
-        assert_eq!(VERSION, "26.6.2");
+        assert_eq!(VERSION, "26.6.3");
     }
 }

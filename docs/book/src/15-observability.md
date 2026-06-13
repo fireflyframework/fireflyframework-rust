@@ -85,7 +85,7 @@ liveness with the [`EventPublisherHealthIndicator`](./10-eda-messaging.md).
 ## The startup banner
 
 `Core::print_banner()` emits the ASCII Firefly banner — the red script-figlet, a
-`:: Firefly Framework for Rust ::  (v26.6.2)` tagline, the license line, and the
+`:: Firefly Framework for Rust ::  (v26.6.3)` tagline, the license line, and the
 app / starter / runtime / active-profiles metadata. `core.banner()` returns it
 as a `String` for tests.
 

@@ -513,7 +513,7 @@ fn header_names_match_go() {
 
 #[test]
 fn version_is_stamped() {
-    assert_eq!(VERSION, "26.6.2");
+    assert_eq!(VERSION, "26.6.3");
 }
 
 #[test]

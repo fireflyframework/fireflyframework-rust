@@ -4,6 +4,20 @@
 > Each crate ships its own `README.md` describing its public surface,
 > design rationale, and a runnable quick-start snippet — click the
 > crate name to open it.
+>
+> **72 framework crates** under `crates/` plus `tests/integration` and three
+> samples (`samples/orders`, `samples/reactive-banking`,
+> `samples/macro-quickstart`) = **76 workspace members**.
+
+## 00 — Front door (the one-dependency facade + declarative macros)
+
+The Spring-Boot-starter developer experience: one dependency, one prelude,
+declarative macros instead of hand-rolled builder wiring.
+
+| Crate | What it provides |
+|-------|------------------|
+| [`firefly`](crates/firefly/README.md) | The **one-dependency facade**: `use firefly::prelude::*;` brings the whole framework into scope — `Bus`, `Container`, `Scheduler`, `Saga`/`Step`, `Application`/`ShutdownHandle`, `Core`/`CoreConfig`, `WebResult`/`WebError`/`problem_response`, `FireflyError`/`FireflyResult`, `Mono`/`Flux` — plus every macro. Ergonomic per-crate aliases (`firefly::cqrs`, `firefly::web`, …), the hidden `__rt` macro-contract path, and feature-gated heavy adapters (`data-sqlx`, `data-mongodb`, `eda-*`, `cache-*`, `admin`, `full`) |
+| [`firefly-macros`](crates/macros/README.md) | The **declarative service layer** (Spring annotations / pyfly decorators): `#[derive(Command)]` / `#[derive(Query)]` (→ `impl Message`), `#[command_handler]` / `#[query_handler]` (→ `register_<fn>(bus)`), `#[derive(Component)]` / `#[derive(Service)]` / `#[derive(Repository)]` + `register_all!` (→ DI registration), `#[scheduled]` (→ `schedule_<fn>(scheduler)`), `#[rest_controller]` + `#[get/post/put/delete/patch]` (→ `routes(state) -> axum::Router`), `#[derive(DomainEvent)]` / `#[derive(AggregateRoot)]`, `#[event_listener]` (→ `subscribe_<fn>(broker)`). Generated code targets the `firefly` facade's `__rt` path |
 
 ## 01 — Foundational
 
@@ -23,7 +37,7 @@
 |-------|------------------|
 | [`firefly-cache`](crates/cache/README.md) | `Adapter` trait port + Memory (LRU + stats) / NoOp / Fallback + typed `Typed<T>` (Redis/Postgres adapters in `cache-*`) |
 | [`firefly-observability`](crates/observability/README.md) | `tracing` + correlation enrichment, health composite, startup banner, W3C trace-context propagation, log redaction, rolling file appender, console renderer, labeled metrics |
-| [`firefly-data`](crates/data/README.md) | Filter DSL, `Page<T>`, `Repository<T, K>`, `Mapper`/`Projection` object mapper, `QueryMethodParser` derived queries, `Pageable`/`Sort`/`Order`, and the **reactive** `ReactiveCrudRepository<T, ID>` (in-memory `ReactiveMemoryRepository` + real `PostgresReactiveRepository` streaming rows as `Flux<T>`) |
+| [`firefly-data`](crates/data/README.md) | Filter DSL, composable `Specification`, `Page<T>`, `Repository<T, K>`, `Mapper`/`Projection` object mapper, `QueryMethodParser` derived queries, `Pageable`/`Sort`/`Order`, auditing (`Auditor`/`AuditStamps`/`UserProvider`) + soft-delete (`SoftDeletePolicy`), the `SqlDialect` abstraction (`PostgresDialect`/`MySqlDialect`/`SqliteDialect` — `Filter::to_sql_with`/`Specification::to_sql_with`) and `Specification::to_mongo()` document lowering, and the **reactive** `ReactiveCrudRepository<T, ID>` / `ReactiveSpecificationRepository` (in-memory `ReactiveMemoryRepository` + real `PostgresReactiveRepository` streaming rows as `Flux<T>`). The storage-agnostic **ports** the `data-sqlx` / `data-mongodb` adapters implement |
 | [`firefly-cqrs`](crates/cqrs/README.md) | Command + query `Bus` with validation + caching middleware, plus **reactive** `send_mono`/`query_mono` (+ `_with_context`) returning `Mono<R>` |
 | [`firefly-eda`](crates/eda/README.md) | `Event` envelope, `Publisher`/`Subscriber`/`Broker` ports, `InMemoryBroker`, glob topics, consumer groups, `EventFilter` chain, queryable `EdaDeadLetterStore`, `EventPublisherHealthIndicator`, `wrap_listener` retry/DLQ, plus **reactive** `subscribe_reactive` → `Flux<Event>` and `publish_mono` (transports in `eda-*`) |
 | [`firefly-eventsourcing`](crates/eventsourcing/README.md) | Aggregate roots + event store + snapshots + projections, global `stream_all` + cross-aggregate projections, multi-tenancy, `EventSourcedRepository` |
@@ -39,7 +53,7 @@
 | [`firefly-openapi`](crates/openapi/README.md) | OpenAPI 3.1 generator + Swagger-UI shim |
 | [`firefly-sse`](crates/sse/README.md) | Server-Sent Events writer w/ heartbeat + Last-Event-Id |
 | [`firefly-transactional`](crates/transactional/README.md) | `with_tx(ctx, db, f)` over pluggable `Database` / `Transaction` ports |
-| [`firefly-testkit`](crates/testkit/README.md) | HMAC signers, `SpyBroker`, JSON test helpers |
+| [`firefly-testkit`](crates/testkit/README.md) | HMAC signers (Stripe / GitHub / HMAC / Twilio), `SpyBroker` + `assert_event_published`/`assert_event_published_with`, JSON test helpers, a `TestClient`/`TestResponse` in-process axum router driver (fluent `assert_status`/`assert_json_eq`/…), and DI test `Slice`/`BuiltSlice` (the pyfly `slice_context`/`mock_bean` analog) |
 
 ## 03 — Adapters
 
@@ -98,6 +112,8 @@ in only by services that select that backend.
 
 | Crate | Port → backend |
 |-------|----------------|
+| [`firefly-data-sqlx`](crates/data-sqlx/README.md) | `firefly_data` ports → **relational** (Postgres / MySQL / SQLite over `sqlx`): `SqlxRepository` / `SqlxReactiveRepository`, dialect-aware `UPSERT`, streams reads as `Flux<T>`, auto auditing + soft-delete (`Db`/`Backend`, `SqlxRowMapper`/`AnyRow`, `ColumnValue`/`RowWriter`) — **Full** |
+| [`firefly-data-mongodb`](crates/data-mongodb/README.md) | `firefly_data` ports → **document** store (MongoDB via `mongodb`): `MongoRepository<T, ID>` over the *same* `ReactiveCrudRepository` / `ReactiveSpecificationRepository` traits, lowering `Specification::to_mongo()`, `BaseDocument` audit/soft-delete mixin, `Audited` hook — **Full** |
 | [`firefly-cache-redis`](crates/cache-redis/README.md) | `cache::Adapter` → Redis (`RedisAdapter`, RESP via `redis`) — **Full** |
 | [`firefly-cache-postgres`](crates/cache-postgres/README.md) | `cache::Adapter` → Postgres key/value table with TTL (`PostgresCacheAdapter`, real SQL over `tokio-postgres`) — **Full** |
 | [`firefly-eda-kafka`](crates/eda-kafka/README.md) | `eda::Broker` → Apache Kafka (`KafkaBroker`, `new_kafka_broker`, `rdkafka`) — **Full** |
@@ -127,7 +143,9 @@ Go-parity core or the starters require them.
 |-------|------------------|
 | [`firefly-container`](crates/container/README.md) | Opt-in, `TypeId`-keyed DI `Container` (service locator): `register_factory`, `resolve`/`resolve_all`, `bind::<dyn Trait>`, `Scope` (Singleton/Prototype/Request/Session/custom), `Provider<T>`, `RefreshScope` — explicit factory closures (no reflective autowiring) |
 | [`firefly-aop`](crates/aop/README.md) | Spring-style aspect advice: `Pointcut` glob matcher, `JoinPoint`, `Aspect` (5 hooks), `AspectRegistry`/`AdviceBinding`, `intercept` chain executor with `around`/`Proceed` — explicit weaving at the call site |
-| [`firefly-session`](crates/session/README.md) | Server-side HTTP `Session` (typed serde attributes) + async `SessionStore` (`MemorySessionStore` / `CacheSessionStore`) + `SessionLayer` (cookie load/save, id rotation, invalidation, HMAC signing, `SessionRegistry` concurrency control) |
+| [`firefly-session`](crates/session/README.md) | Server-side HTTP `Session` (typed serde attributes) + async `SessionStore` (`MemorySessionStore` / `CacheSessionStore`) + `SessionLayer` (cookie load/save, id rotation, invalidation, HMAC signing, `SessionRegistry` concurrency control via `MemorySessionRegistry`) |
+| [`firefly-session-redis`](crates/session-redis/README.md) | A **distributed** `SessionRegistry` over a Redis sorted set (`RedisSessionRegistry`, `ZADD`/`ZRANGE`/`ZREM`/`ZCARD`, sliding `EXPIRE`): the per-principal concurrency cap holds cluster-wide, not just in one process — **Full** |
+| [`firefly-session-postgres`](crates/session-postgres/README.md) | A **durable, distributed** `SessionRegistry` over a Postgres table (`PostgresSessionRegistry`, idempotent `ON CONFLICT` upsert, `ORDER BY created_at` oldest-first) for relational-only deployments — **Full** |
 | [`firefly-shell`](crates/shell/README.md) | Spring-Shell-style CLI framework: `CommandSpec` builder, typed `CommandArgs`, `StdShell` parser + REPL, `ApplicationArguments`, `CommandLineRunner`/`ApplicationRunner` + `RunnerRegistry` post-startup hooks |
 | [`firefly-websocket`](crates/websocket/README.md) | WebSocket server over axum: `WsSession` (typed send/recv), `WebSocketHandler` lifecycle trait, `ws_route`/`serve_ws` registration, topic `BroadcastHub` fan-out |
 
@@ -141,7 +159,7 @@ Go-parity core or the starters require them.
 
 | Crate | What it provides |
 |-------|------------------|
-| [`firefly-cli`](crates/cli/README.md) | The `firefly` developer binary: `new` (project scaffold), `generate`/`g` (handler / entity / command / saga / migration / …), `info`, `doctor` (toolchain checks), `db` (migrate / upgrade), `openapi` (spec gen), and remote actuator introspection (`actuator` / `routes` / `env` / `health` / `metrics`) |
+| [`firefly-cli`](crates/cli/README.md) | The `firefly` developer binary: `new` (project scaffold), `generate`/`g` (handler / entity / command / saga / migration / …), `info`, `doctor` (toolchain checks), `db` (migrate / upgrade), `openapi` (spec gen), `completion` (shell-completion scripts), `sbom` (dependency SBOM), `license` (dependency-license report), and remote actuator introspection (`actuator` / `routes` / `env` / `health` / `metrics`) |
 
 ## 08 — Tests
 
@@ -155,3 +173,4 @@ Go-parity core or the starters require them.
 |------|---------|
 | [`samples/orders/`](samples/orders) | Reference service demonstrating idempotent POST + cached GET + actuator + lifecycle |
 | [`samples/reactive-banking/`](samples/reactive-banking) | End-to-end **reactive** service (`firefly-sample-reactive-banking`): reactive CQRS (`Bus::send_mono`/`query_mono`), event sourcing, a saga-backed money transfer, a `Flux<AccountEvent>` NDJSON/SSE stream, JWT-secured `starter-web`, and a `WebClient` SDK — running on in-memory defaults or real Postgres/Kafka |
+| [`samples/macro-quickstart/`](samples/macro-quickstart) | The **declarative** one-dependency DX (`firefly-sample-macro-quickstart`): the orders behaviour re-expressed through `firefly-macros` over the single `firefly` facade — `#[derive(Command)]`/`#[query_handler]`/`#[rest_controller]`/`#[derive(Component)]`/`#[scheduled]` instead of hand-rolled wiring (376 source lines vs 1022, two modules vs seven) |

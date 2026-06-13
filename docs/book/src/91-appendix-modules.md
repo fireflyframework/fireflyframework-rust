@@ -1,14 +1,22 @@
 # Appendix: Module Index
 
-The Firefly Rust workspace ships **67 members** — 65 framework crates under
-`crates/`, plus the cross-crate integration suite and the Orders sample. Each
-crate carries its own `README.md` with its full public surface, design
-rationale, and a runnable quick-start.
+The Firefly Rust workspace ships **76 members** — 72 framework crates under
+`crates/`, plus the cross-crate integration suite and three samples
+(`orders`, `reactive-banking`, `macro-quickstart`). Each crate carries its own
+`README.md` with its full public surface, design rationale, and a runnable
+quick-start.
 
 The canonical, always-current catalogue is
 [`MODULES.md`](https://github.com/fireflyframework/fireflyframework-rust/blob/main/MODULES.md)
 in the repository root. This appendix reproduces it tier-by-tier as a navigable
 index.
+
+## Front door
+
+| Crate | What it provides |
+|-------|------------------|
+| `firefly` | The one-dependency facade: `use firefly::prelude::*;`, per-crate aliases, the `__rt` macro contract, feature-gated adapters |
+| `firefly-macros` | Declarative macros: `#[derive(Command/Query/Component/DomainEvent/AggregateRoot)]`, `#[command_handler]`/`#[query_handler]`, `#[scheduled]`, `#[rest_controller]`+verbs, `#[event_listener]` |
 
 ## Foundational
 
@@ -29,7 +37,7 @@ index.
 |-------|------------------|
 | `firefly-cache` | `Adapter` port + Memory/NoOp/Fallback + typed `Typed<T>` memoisation |
 | `firefly-observability` | `tracing` + correlation enrichment, health composite, startup banner, W3C trace-context, metrics |
-| `firefly-data` | Filter DSL, `Page<T>`, `Repository<T, K>`, `ReactiveCrudRepository`, `PostgresReactiveRepository`, derived queries, paging |
+| `firefly-data` | Storage-agnostic ports: Filter DSL + `Specification`, `SqlDialect` (pg/mysql/sqlite) + `Specification::to_mongo()`, `Page<T>`, `Repository<T, K>`, `ReactiveCrudRepository`, `PostgresReactiveRepository`, auditing + soft-delete, derived queries, paging |
 | `firefly-cqrs` | Command/query `Bus` with validation/cache/authorization middleware + reactive `send_mono`/`query_mono` |
 | `firefly-eda` | `Event` envelope, `Publisher`/`Subscriber`/`Broker` ports, `InMemoryBroker`, glob topics, consumer groups, retry/DLQ, reactive `Flux` subscriptions |
 | `firefly-eventsourcing` | Aggregate roots, event store, snapshots, projections, global stream, transactional outbox, multi-tenancy |
@@ -61,8 +69,11 @@ index.
 | `firefly-notifications` + `notifications-smtp` / `-twilio` / `-firebase` / `-sendgrid` / `-resend` | Notification channels |
 | `firefly-callbacks` | Outbound webhook subsystem (HMAC dispatcher + audit + admin) |
 | `firefly-webhooks` | Inbound ingestion (Stripe / GitHub / Twilio / generic HMAC + DLQ) |
-| `firefly-cache-redis` | `cache::Adapter` → Redis (RESP) |
+| `firefly-data-sqlx` | `firefly_data` ports → relational (Postgres / MySQL / SQLite over `sqlx`) |
+| `firefly-data-mongodb` | `firefly_data` ports → document store (MongoDB) |
+| `firefly-cache-redis` / `firefly-cache-postgres` | `cache::Adapter` → Redis (RESP) / Postgres key-value table |
 | `firefly-eda-kafka` / `-rabbitmq` / `-postgres` / `-redis` | `eda::Broker` → Kafka / RabbitMQ / Postgres outbox / Redis Streams |
+| `firefly-session-redis` / `firefly-session-postgres` | distributed `SessionRegistry` → Redis sorted set / Postgres table |
 
 ## Starters
 
@@ -72,6 +83,7 @@ index.
 | `firefly-starter-application` | starter-core + plugins registry |
 | `firefly-starter-domain` | starter-core + in-memory event-sourcing stores |
 | `firefly-starter-data` | starter-core (you supply the DB) |
+| `firefly-starter-web` | `WebStack` — `Core` + CORS + security headers + request metrics + access log |
 | `firefly-backoffice` | starter-application + back-office context middleware |
 
 ## DI / Operations / Tooling
@@ -80,7 +92,7 @@ index.
 |-------|------------------|
 | `firefly-container` | Opt-in `TypeId`-keyed DI container (service locator) |
 | `firefly-admin` | Spring-Boot-Admin-style embedded dashboard + JSON API + SSE |
-| `firefly-cli` | The `firefly` developer binary (`new` / `generate` / `db` / `openapi` / `actuator` / `doctor`) |
+| `firefly-cli` | The `firefly` developer binary (`new` / `generate` / `db` / `openapi` / `actuator` / `doctor` / `completion` / `sbom` / `license`) |
 
 For per-crate detail, open the crate's `README.md` in the
 [repository](https://github.com/fireflyframework/fireflyframework-rust/tree/main/crates),

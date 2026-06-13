@@ -77,14 +77,22 @@ let app: Router = Router::new()
 * **`SessionExt` extractor** — an axum [`SessionExt`] newtype yielding a
   clear `500` when the layer is not installed.
 
-## Backends not yet shipped
+## Distributed registry adapters
 
-A direct `redis`-backed store/registry and a `postgres`-backed registry
-(pyfly's `RedisSessionStore` / `RedisSessionRegistry` /
-`PostgresSessionRegistry`) require `redis` / `sqlx` in the workspace
-dependency catalog behind feature gates. Until then, [`CacheSessionStore`]
-bridges any `firefly_cache::Adapter` (including a future Redis adapter),
-covering the Redis store path without a hard dependency.
+The in-process [`MemorySessionRegistry`] bounds session concurrency within one
+process. For cluster-wide caps, two leaf adapter crates implement the same
+[`SessionRegistry`] port over shared storage (pyfly's `RedisSessionRegistry` /
+`PostgresSessionRegistry`):
+
+* [`firefly-session-redis`](../session-redis) — `RedisSessionRegistry` over a
+  Redis sorted set (score = `created_at`, oldest-first via `ZRANGE`, sliding
+  `EXPIRE`).
+* [`firefly-session-postgres`](../session-postgres) — `PostgresSessionRegistry`
+  over a Postgres table (idempotent `ON CONFLICT` upsert, `ORDER BY created_at`).
+
+For the session *store* (not the registry), pyfly's `RedisSessionStore` is
+covered by [`CacheSessionStore`], which bridges any `firefly_cache::Adapter`
+(including `firefly-cache-redis`) without a hard `redis` dependency.
 
 ## Tests
 
