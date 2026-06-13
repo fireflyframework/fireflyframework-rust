@@ -6,6 +6,26 @@ Rust crate is wire-shape compatible with its Java counterpart but expressed in
 idiomatic Rust: explicit construction, `tower` middleware composition, and
 `async`/`await`.
 
+Everything below is the same surface Lumen — the digital-wallet service this book
+builds — exercises. Where a row maps to a concrete Lumen file, that is the place
+to see it running.
+
+## Lumen at a glance
+
+The fastest way to read this appendix is against Lumen's macros. Each Lumen
+declaration is a Spring annotation in idiomatic Rust:
+
+| Lumen (`samples/lumen`) | Spring / Firefly-Java |
+|-------------------------|------------------------|
+| `#[rest_controller(path = "/api/v1")]` + `#[get]`/`#[post]` (`web.rs`) | `@RestController` + `@GetMapping`/`@PostMapping` |
+| `#[derive(Command)]` / `#[derive(Query)]` + `#[command_handler]` / `#[query_handler]` (`commands.rs`) | `@CommandHandler` / `@QueryHandler` |
+| `#[derive(AggregateRoot)]` / `#[derive(DomainEvent)]` (`domain.rs`) | Axon-style `@Aggregate` / `@EventSourcingHandler` |
+| `#[event_listener(topic = "wallets.events")]` (`ledger.rs`) | `@KafkaListener` / `@RabbitListener` |
+| `Saga::new(...).step(Step::with_compensation(...))` (`transfer.rs`) | `@Saga` + `@SagaOrchestrationStart` / compensation |
+| `JwtService` + `BearerLayer` + `FilterChain` (`security.rs`) | `spring-security` resource server + `@PreAuthorize` |
+| `#[scheduled(fixed_rate = "60s")]` (`housekeeping.rs`) | `@Scheduled(fixedRate = 60000)` |
+| `WebStack::actuator_router(...)` + `InfoContributor` (`main.rs`) | `spring-boot-starter-actuator` + `InfoContributor` |
+
 ## Module mapping
 
 | Java / Spring                          | Rust crate                          |
@@ -74,14 +94,51 @@ operator chain maps almost one-to-one (see
 > subscription disposal, is future-drop in Rust (and a `CancellationToken` for
 > the cooperative orchestration engines).
 
+## Annotation → macro cheat sheet
+
+The declarative layer ([chapter 21](./21-declarative-macros.md)) maps the Spring
+annotation set onto `firefly-macros`. Every macro arrives through
+`use firefly::prelude::*;`:
+
+| Spring / pyfly annotation | Firefly-Rust macro | On |
+|---------------------------|--------------------|----|
+| `@RestController` + `@GetMapping`/`@PostMapping` | `#[rest_controller(path)]` + `#[get]`/`#[post]`/`#[put]`/`#[delete]`/`#[patch]` | an `impl` block |
+| `@CommandHandler` / `@QueryHandler` | `#[command_handler]` / `#[query_handler]` | `async fn(Msg) -> Result<R, CqrsError>` |
+| message + `@Valid` / `@Cacheable` | `#[derive(Command)]` / `#[derive(Query)]` (`#[firefly(validate)]`, `#[firefly(cache_ttl = "…")]`) | a message struct |
+| `@KafkaListener` / `@RabbitListener` | `#[event_listener(topic = "…")]` | `async fn(Event) -> FireflyResult<()>` |
+| `@Scheduled(fixedRate = …)` / `(cron = …)` | `#[scheduled(fixed_rate = "…")]` / `#[scheduled(cron = "…")]` | a zero-arg `async fn` |
+| Axon `@Aggregate` / event payloads | `#[derive(AggregateRoot)]` / `#[derive(DomainEvent)]` | a struct |
+| `@Component` / `@Service` / `@Repository` / `@Configuration` / `@Controller` | `#[derive(Component/Service/Repository/Configuration/Controller)]` | a struct |
+| `@Autowired` field/ctor injection | `#[autowired]` on an `Arc<T>` / `Option<Arc<T>>` / `Vec<Arc<T>>` / `Provider<T>` field | a component field |
+| `@Bean` factory method | `#[bean]` (+ `#[bean(name/scope/primary/profile)]`) | a method on a `#[derive(Configuration)]` `impl` |
+| `@Primary` / `@Order` / `@Qualifier` | `#[firefly(primary)]` / `#[firefly(order = N)]` / `#[firefly(qualifier = "…")]` | a component / field |
+| `@Profile` / `@ConditionalOnProperty` / `@ConditionalOnBean` / `@ConditionalOnMissingBean` | `#[firefly(profile = "…")]` / `condition_on_property` / `condition_on_bean` / `condition_on_missing_bean` | a component |
+| `@PostConstruct` / `@PreDestroy` | `#[firefly(post_construct = "…")]` / `#[firefly(pre_destroy = "…")]` | a component |
+| `@ConfigurationProperties(prefix)` | `#[derive(ConfigProperties)]` `#[firefly(prefix = "…")]` | a `serde::Deserialize` struct |
+| `@ComponentScan` / `@EnableAutoConfiguration` | `Container::scan()` / `firefly::scan(&c)` (link-time `inventory`) | the container |
+| explicit bean list | `register_all!(&c, [A, B, …])` | — |
+
+See the [DI deep-dive](./04a-dependency-injection.md) for the worked examples.
+
+## Service-tier mapping
+
+| Spring estate | Firefly-Rust starter |
+|---------------|----------------------|
+| data/core service (owns the DB) | `firefly-starter-core` / `firefly-starter-data` |
+| domain service (sagas, CQRS, ES) | `firefly-starter-domain` |
+| edge / BFF service (`@Workflow` + `WebClient` aggregation) | `firefly-starter-experience` (`ExperienceStack`, `DomainClients`, `SignalService`) |
+| `@WaitForSignal` workflow gate | `Node::wait_for_signal(...)` + `SignalService::deliver(...)` |
+
+See [The Experience Tier (BFF)](./20a-experience-tier.md).
+
 ## Programming-model mapping
 
 | Spring concept                                | Rust entry point                                                    |
 |-----------------------------------------------|----------------------------------------------------------------------|
 | `@SpringBootApplication` auto-config          | `Core::new(CoreConfig { .. })`                                       |
 | `SpringApplication.run()`                     | `core.new_application().on_server(..).run().await`                   |
-| `@Component` / `@Autowired`                   | explicit `Arc<dyn Trait>` injection; opt-in `Container` for a locator |
-| `@RestController`                             | an axum handler mounted on `core.apply_middleware(router)`           |
+| `@Component` / `@Autowired`                   | explicit `Arc<dyn Trait>` injection; `#[derive(Component)]` + `#[autowired]` for the container |
+| `@RestController`                             | `#[rest_controller]` (or an axum handler on `core.apply_middleware(router)`) |
 | `@RestController` returning `Mono<T>`         | a handler returning `MonoJson(Mono<T>)`                              |
 | `@RestController` returning `Flux<T>` (NDJSON) | a handler returning `NdJson(Flux<T>)` / `Sse(Flux<T>)`              |
 | `@ControllerAdvice` ProblemDetail handler     | `ProblemLayer` + `WebResult<T>` (`?` renders RFC 7807)              |

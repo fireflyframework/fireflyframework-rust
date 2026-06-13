@@ -1,3 +1,8 @@
+# Copyright 2026 Firefly Software Foundation.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+
 [package]
 name = "firefly-sample-lumen"
 version.workspace = true
@@ -9,17 +14,42 @@ rust-version.workspace = true
 description = "Firefly Framework for Rust — Lumen, the digital-wallet & ledger service that the book builds chapter by chapter"
 publish = false
 
+[[bin]]
+name = "lumen"
+path = "src/main.rs"
+
 [dependencies]
+# The one-dependency story: the `firefly` facade re-exports the whole
+# framework AND every `#[derive(...)]` / `#[...]` macro. Generated code
+# resolves runtime types through the facade's `__rt` contract, so Lumen
+# never lists the underlying `firefly-*` crates.
 firefly = { workspace = true }
+
+# The two ecosystem crates a Firefly service still writes against directly:
+# axum (you author the controller handlers) and serde (your messages and
+# event payloads are Serialize/Deserialize). `serde_json` encodes/decodes the
+# event-store payloads, mirroring every other sample.
+axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Async runtime for `#[tokio::main]`, and the id/clock crates the domain uses
+# for wallet ids and event timestamps.
 tokio = { workspace = true }
-axum = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
 
+[features]
+# The reactive streaming endpoint (`GET /api/v1/wallets/:id/events` → NDJSON /
+# SSE) is feature-gated so the teaching baseline stays lean; chapter 18
+# ("production") turns it on. It needs nothing beyond the `firefly` facade
+# (`firefly::reactive::Flux` + `firefly::web::{NdJson, Sse}`).
+default = []
+streaming = []
+
 [dev-dependencies]
+# Drive the macro-generated router in-process, no socket bound.
 tower = { workspace = true }
 http-body-util = { workspace = true }
 reqwest = { workspace = true }

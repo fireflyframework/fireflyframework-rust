@@ -1,20 +1,37 @@
 # CQRS
 
-`firefly-cqrs` provides the framework's **type-dispatched command/query bus**:
-typed handlers registered at startup, dispatched through `Bus::send` /
-`Bus::query`, matched by `std::any::TypeId`. On top of that sits pluggable
-middleware for validation, query caching, and authorization, plus a reactive
-`Mono`-returning surface. This chapter wires a real bus end-to-end.
+Lumen's `Wallet` aggregate enforces its own rules, and the read model has a
+home. But the controller still needs a way to *deliver* an instruction to the
+write side and a *question* to the read side — and to do it without the two
+paths sharing a code path, so reads can be cached and writes can be validated
+independently.
 
-> **Spring parity** — The bus is the framework's command/query dispatcher.
-> `register` ~ a `@CommandHandler`/`@QueryHandler`, `send`/`query` ~ dispatching
-> through the gateway, and the middleware chain ~ Spring's handler interceptors.
+**CQRS** — Command Query Responsibility Segregation — draws that bright line.
+Writes become **commands** (`OpenWallet`, `Deposit`, `Withdraw`); reads become a
+**query** (`GetWallet`). Each travels a typed `Bus`, matched to its handler by
+`std::any::TypeId`, through a middleware chain that validates commands and caches
+queries. This chapter wires Lumen's bus end to end, exactly as `samples/lumen`
+does.
+
+> **By the end of this chapter, Lumen will** have `src/commands.rs`: the
+> `OpenWallet` / `Deposit` / `Withdraw` commands and the `GetWallet` query as
+> `#[derive(Command)]` / `#[derive(Query)]` structs, free-`fn` handlers marked
+> `#[command_handler]` / `#[query_handler]`, the bus wired with validation and
+> query-cache middleware, and the read-after-write cache invalidation that keeps
+> a balance from going stale after a deposit.
+
+> **Spring parity.** The `Bus` is the framework's command/query dispatcher.
+> `#[command_handler]` / `#[query_handler]` are the analog of Axon's
+> `@CommandHandler` / `@QueryHandler` (or Spring Modulith message handlers);
+> `bus.send` / `bus.query` are the gateway dispatch; the middleware chain is the
+> analog of Spring's handler interceptors. The difference: Lumen's handlers are
+> free functions a macro registers, not annotated methods a proxy wraps.
 
 ## Commands, queries, and the `Message` trait
 
-Every command and query implements `Message`. For a plain message that is one
-line; the trait's optional methods (`validate`, `cache_ttl`, `authorize`) are
-overridable defaults that the matching middleware picks up automatically:
+Every command and query implements `Message`. Hand-writing it is one line, but
+the trait's optional methods — `validate`, `cache_ttl` — are overridable
+defaults that the matching middleware picks up automatically:
 
 ```rust,ignore
 pub trait Message: Clone + Serialize + Send + Sync + 'static {
@@ -24,194 +41,480 @@ pub trait Message: Clone + Serialize + Send + Sync + 'static {
 ```
 
 `Clone` stands in for pass-by-value handler invocation; `Serialize` seeds the
-cache key. A message with no special behaviour is `impl Message for MyCommand {}`.
+query cache key. Lumen never writes that impl by hand — it derives it.
 
-## A bus, end-to-end
+## Lumen's commands and query
 
-Register typed async handlers, then dispatch. The handler's input type is the
-dispatch key; its output is the typed result:
+The four messages are plain structs carrying `#[derive(Command)]` /
+`#[derive(Query)]`, which generate the `Message` impl. The `#[firefly(validate)]`
+field attribute makes a field required (the generated `validate()` rejects an
+empty `String` or a non-positive number), and `#[firefly(cache_ttl = "...")]` is
+reflected on the query's generated `cache_ttl`:
 
-```rust
-use std::time::Duration;
-use firefly_cqrs::{Bus, CqrsError, Message, QueryCache, ValidationMiddleware};
-use serde::Serialize;
+```rust,ignore
+// samples/lumen/src/commands.rs
+use firefly::prelude::*;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Serialize)]
-struct CreateUser { name: String }
-
-impl Message for CreateUser {
-    fn validate(&self) -> Result<(), CqrsError> {
-        if self.name.is_empty() {
-            return Err(CqrsError::validation("name required"));
-        }
-        Ok(())
-    }
+/// `POST /api/v1/wallets` command — open a new wallet.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Command)]
+#[serde(default)]
+pub struct OpenWallet {
+    /// The wallet owner's display name — required.
+    #[firefly(validate)]
+    pub owner: String,
+    /// The opening balance, in minor units (cents); must be `>= 0`.
+    #[serde(rename = "openingBalance")]
+    pub opening_balance: i64,
 }
 
-#[derive(Clone, Serialize)]
-struct GetUser { id: String }
-
-impl Message for GetUser {
-    fn cache_ttl(&self) -> Option<Duration> { Some(Duration::from_secs(60)) }
+/// `POST /api/v1/wallets/:id/deposit` command — credit a wallet.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Command)]
+#[serde(default)]
+pub struct Deposit {
+    /// The wallet to credit — required.
+    #[firefly(validate)]
+    #[serde(rename = "walletId")]
+    pub wallet_id: String,
+    /// The amount to credit, in minor units (cents); must be `> 0`.
+    #[firefly(validate)]
+    pub amount: i64,
 }
 
-#[derive(Clone, Debug)]
-struct UserCreated { id: String, name: String }
+/// `POST /api/v1/wallets/:id/withdraw` command — debit a wallet.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Command)]
+#[serde(default)]
+pub struct Withdraw {
+    #[firefly(validate)]
+    #[serde(rename = "walletId")]
+    pub wallet_id: String,
+    #[firefly(validate)]
+    pub amount: i64,
+}
 
-#[tokio::main]
-async fn main() {
-    let bus = Bus::new();
-    bus.use_middleware(ValidationMiddleware::new());
-    let cache = QueryCache::new();
-    bus.use_middleware(cache.middleware());
-
-    bus.register(|c: CreateUser| async move {
-        Ok::<_, CqrsError>(UserCreated { id: "u1".into(), name: c.name })
-    });
-    bus.register(|q: GetUser| async move {
-        Ok::<_, CqrsError>(UserCreated { id: q.id, name: "alice".into() })
-    });
-
-    let created: UserCreated = bus.send(CreateUser { name: "alice".into() }).await.unwrap();
-    let view: UserCreated = bus.query(GetUser { id: created.id }).await.unwrap();
-    assert_eq!(view.name, "alice");
-
-    cache.invalidate_type::<GetUser>(); // after a mutation
+/// `GET /api/v1/wallets/:id` query — cached for 30 seconds.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Query)]
+#[firefly(cache_ttl = "30s")]
+pub struct GetWallet {
+    /// The wallet id to fetch.
+    pub id: String,
 }
 ```
 
-`Bus::query` is a readability synonym for `Bus::send`. An unrouted message is a
-`CqrsError::NoHandler`.
+A few choices echo the domain chapter. The commands carry `i64` cents, not a
+`Money` — the handler constructs the value object, keeping the wire contract a
+bare number and the validation simple. `#[firefly(validate)]` on `amount`
+rejects a zero or negative amount *before* the handler runs, so the aggregate is
+never even called with structurally wrong data. And `#[serde(rename = ...)]`
+keeps the JSON camelCase (`openingBalance`, `walletId`) while the Rust fields
+stay snake_case.
 
-## The middleware chain
+> **Spring parity.** `#[derive(Command)]` + `#[firefly(validate)]` is the
+> declarative analog of a Bean-Validation-annotated command record
+> (`@NotBlank owner`, `@Positive amount`) whose constraints a validating
+> interceptor enforces — except the check is generated by a derive macro, not
+> reflected at runtime. `#[firefly(cache_ttl = "30s")]` mirrors a
+> `@Cacheable(ttl = ...)` on the query path.
 
-Middleware runs first-registered = outermost. Three ship in the box:
+## The free-`fn` handlers
+
+A handler is a free `async fn` marked `#[command_handler]` or `#[query_handler]`.
+The macro reads the argument type as the dispatch key and generates a
+`register_<fn>(bus)` helper that installs it. The handler turns the bus's
+`CqrsError` channel into the precise outcome; the web layer (next) restores the
+HTTP status:
+
+```rust,ignore
+use crate::domain::{DomainError, Wallet, WalletView};
+use crate::ledger::{Ledger, ReadModel};
+use crate::money::Money;
+
+/// Handles `OpenWallet`. `#[command_handler]` generates `register_open_wallet(bus)`.
+#[command_handler]
+pub async fn open_wallet(cmd: OpenWallet) -> Result<WalletView, CqrsError> {
+    if cmd.opening_balance < 0 {
+        return Err(CqrsError::validation("openingBalance must be >= 0"));
+    }
+    state()
+        .ledger
+        .open(&cmd.owner, Money::cents(cmd.opening_balance))
+        .await
+        .map_err(to_cqrs)
+}
+
+/// Handles `Deposit`. Generates `register_deposit(bus)`.
+#[command_handler]
+pub async fn deposit(cmd: Deposit) -> Result<WalletView, CqrsError> {
+    state()
+        .ledger
+        .deposit(&cmd.wallet_id, Money::cents(cmd.amount))
+        .await
+        .map_err(to_cqrs)
+}
+
+/// Handles `Withdraw`. Generates `register_withdraw(bus)`.
+#[command_handler]
+pub async fn withdraw(cmd: Withdraw) -> Result<WalletView, CqrsError> {
+    state()
+        .ledger
+        .withdraw(&cmd.wallet_id, Money::cents(cmd.amount))
+        .await
+        .map_err(to_cqrs)
+}
+
+/// Handles `GetWallet`. Generates `register_get_wallet(bus)`.
+#[query_handler]
+pub async fn get_wallet(q: GetWallet) -> Result<WalletView, CqrsError> {
+    if let Some(view) = state().read_model.find(&q.id) {
+        return Ok(view);
+    }
+    let events = state().ledger.load_events(&q.id).await.map_err(to_cqrs)?;
+    Ok(Wallet::rehydrate(&q.id, &events).view())
+}
+```
+
+Each command handler constructs the `Money` value object from the command's
+`i64`, delegates to the `Ledger` application service (which rehydrates the
+aggregate, runs the domain command, and persists — see
+[Event Sourcing](./11-event-sourcing.md)), and maps a `DomainError` onto the
+bus's `CqrsError` channel:
+
+```rust,ignore
+fn to_cqrs(e: DomainError) -> CqrsError {
+    CqrsError::handler(e.to_string())
+}
+```
+
+The `get_wallet` query is the read-after-write pattern in miniature: it serves
+from the projected `ReadModel` first, and *only* if the projection has not yet
+caught up does it fall back to folding the event stream. That fallback is what
+keeps a read immediately after a write from returning a stale balance under the
+eventual consistency the projection introduces.
+
+> **Why free functions, not handler structs?** Rust free functions cannot
+> capture state, so the resolved collaborators live in a module-local static and
+> the handler reads them through `state()`. That is the next section — and it is
+> the one piece of CQRS wiring Lumen does by hand.
+
+## Publishing collaborators: the `OnceLock` pattern
+
+Because a `#[command_handler]` free function can't own a `Ledger` or a
+`ReadModel`, Lumen publishes the resolved collaborators once at startup into a
+process-global `OnceLock`, and the handlers reach them through `state()`:
+
+```rust,ignore
+use std::sync::{Arc, OnceLock};
+
+/// The collaborators the CQRS handlers need.
+struct HandlerState {
+    ledger: Ledger,
+    read_model: Arc<ReadModel>,
+}
+
+static STATE: OnceLock<HandlerState> = OnceLock::new();
+
+/// Publishes the handlers' collaborators and returns the *effective* state —
+/// the one actually held by the process-global `OnceLock`.
+pub fn bind(ledger: Ledger, read_model: Arc<ReadModel>) -> (Ledger, Arc<ReadModel>) {
+    let effective = STATE.get_or_init(|| HandlerState { ledger, read_model });
+    (effective.ledger.clone(), Arc::clone(&effective.read_model))
+}
+
+fn state() -> &'static HandlerState {
+    STATE.get().expect("commands::bind must run before a handler dispatches")
+}
+```
+
+The subtle part is the return value. The global binds only **once**, so a second
+`build_app()` in the same test binary keeps the *first* ledger and read model.
+`bind` returns the *effective* pair — whichever the `OnceLock` actually holds —
+so the composition root can wire the controller's saga, the event projection,
+and the free-fn handlers all against the **same** collaborators, no matter how
+many times the app is built. (This is why the HTTP test suite can call
+`build_router()` per test and still share one ledger.)
+
+> **Spring parity.** In Spring this problem does not exist: a `@CommandHandler`
+> is a bean, and the container injects its collaborators. Rust free-fn handlers
+> trade that injection for a one-line `bind` at startup — the same
+> macro-quickstart pattern every Firefly-Rust service with free-fn handlers
+> uses. If you prefer constructor injection, the DI container's
+> `#[derive(Component)]` route (see [Dependency Wiring](./04-dependency-wiring.md))
+> gives you the Spring shape; Lumen keeps the explicit `bind` for teachability.
+
+## Wiring the bus
+
+The composition root in `src/web.rs` builds the bus, layers the middleware,
+binds the collaborators, and installs the handlers via the generated
+`register_*` helpers (gathered behind one `register(&bus)` fn):
+
+```rust,ignore
+// samples/lumen/src/commands.rs
+/// Installs every generated handler-registration helper on `bus`.
+pub fn register(bus: &Bus) {
+    register_open_wallet(bus);
+    register_deposit(bus);
+    register_withdraw(bus);
+    register_get_wallet(bus);
+}
+```
+
+```rust,ignore
+// samples/lumen/src/web.rs — build_app(), the relevant slice.
+let bus = Arc::clone(&web.bus);
+let read_model = Arc::new(ReadModel::default());
+
+// Read-side caching on the bus (honours GetWallet's 30s cache_ttl).
+let query_cache = QueryCache::new();
+bus.use_middleware(query_cache.middleware());
+// Validation middleware enforces the `#[firefly(validate)]` checks.
+bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
+
+// Publish the handler collaborators, then install the generated registrations.
+let (ledger, read_model) = crate::commands::bind(
+    Ledger::new(Arc::clone(&store), Arc::clone(&broker)),
+    read_model,
+);
+crate::commands::register(&bus);
+```
+
+Middleware runs first-registered = outermost. Two ship in this chain (a third,
+authorization, arrives with [Security](./14-security.md)):
 
 | Middleware                  | Behaviour                                                      |
 |-----------------------------|---------------------------------------------------------------|
-| `ValidationMiddleware`      | calls `Message::validate` before dispatch, short-circuits on error |
 | `QueryCache::middleware()`  | memoises results for messages whose `cache_ttl` is `Some`     |
-| `AuthorizationMiddleware`   | calls `Message::authorize(ctx)`, denies before the handler runs |
+| `ValidationMiddleware`      | calls `Message::validate` before dispatch, short-circuits on error |
 
 ```text
-                              ┌──────────────┐
-                              │ msg ↦ TypeId  │
-                              └──────────────┘
-                                    │
-                      registered handlers HashMap<TypeId, _>
-                                    │
-   middleware chain  ────────────────┘
-   ┌───┐ ┌───┐ ┌───┐
-   │ V │ │ Q │ │ T │  V = ValidationMiddleware
-   └───┘ └───┘ └───┘  Q = QueryCache::middleware  T = your own
+   send/query a message
+            │
+   ┌──────────────┐
+   │ msg ↦ TypeId  │   matched against registered handlers
+   └──────────────┘
+            │
+   middleware chain
+   ┌───┐ ┌───┐
+   │ Q │ │ V │   Q = QueryCache  V = ValidationMiddleware
+   └───┘ └───┘
+            │
+        your handler
 ```
 
-## Query caching and invalidation
+## Dispatching from the controller
 
-`QueryCache` memoises a query result under a `<type name>:<sha-256 of JSON>`
-key. After a mutation, evict precisely:
-
-- `cache.invalidate_type::<GetUser>()` — every cached result for exactly that
-  query type;
-- `cache.invalidate(prefix)` — every key starting with `prefix`.
-
-For event-driven invalidation, `EdaCacheInvalidationBridge::new(cache)` evicts
-entries when domain events arrive on a `firefly-eda` broker:
-`register(event_type, "order:{order_id}")` maps an event type to cache-key
-patterns whose `{field}` placeholders are resolved from the event payload, and
-`subscribe(&broker, topic)` wires it in.
-
-## Authorization
-
-A message can gate itself. Implement `authorize` (default: always authorized),
-wire the `AuthorizationMiddleware`, and a denial short-circuits dispatch before
-the handler runs:
+The `#[rest_controller]` (built in [First HTTP API](./06-first-http-api.md))
+holds the `Bus` and dispatches through `send` / `query`. `Bus::query` is a
+readability synonym for `send`. A failed dispatch is a `CqrsError`, which the web
+layer maps to the right RFC 9457 status:
 
 ```rust,ignore
-use firefly_cqrs::{AuthorizationMiddleware, Bus};
+// samples/lumen/src/web.rs — WalletApi handlers.
+#[post("/wallets")]
+async fn open(
+    State(api): State<WalletApi>,
+    Json(body): Json<OpenWallet>,
+) -> WebResult<(axum::http::StatusCode, Json<WalletView>)> {
+    let view: WalletView = api.bus.send(body).await.map_err(cqrs_to_web)?;
+    Ok((axum::http::StatusCode::CREATED, Json(view)))
+}
 
-let bus = Bus::new();
-bus.use_middleware(AuthorizationMiddleware::new()); // or ::disabled() to allow all
+#[get("/wallets/:id")]
+async fn get(
+    State(api): State<WalletApi>,
+    Path(id): Path<String>,
+) -> WebResult<Json<WalletView>> {
+    let view: WalletView = api.bus.query(GetWallet { id }).await.map_err(cqrs_to_web)?;
+    Ok(Json(view))
+}
 ```
 
-The hook receives the dispatch's `ExecutionContext` when one is attached. A
-denial becomes `CqrsError::Authorization(result)`, which maps to a 403.
-
-## ExecutionContext
-
-`ExecutionContext` carries the request's identity — user, tenant, organization,
-session, request id, source, client IP, user agent, timestamp, arbitrary
-properties, and feature flags. Build one with the fluent builder and attach it
-to a dispatch; it reaches `authorize`, any middleware reading
-`Envelope::context`, and context-aware handlers:
+`cqrs_to_web` is the seam where a domain failure becomes an HTTP status. It reads
+the `CqrsError` and its detail string — which, recall, is the `DomainError`'s
+stable `Display` text from the previous chapter — and chooses the status:
 
 ```rust,ignore
-use firefly_cqrs::{Bus, ExecutionContext};
-
-let ctx = ExecutionContext::builder()
-    .user("u1")
-    .tenant("acme")
-    .build();
-
-let result: UserCreated = bus
-    .send_with_context(CreateUser { name: "alice".into() }, ctx)
-    .await?;
+fn cqrs_to_web(err: CqrsError) -> WebError {
+    match err {
+        CqrsError::Validation(detail) => WebError::from(FireflyError::validation(detail)),
+        CqrsError::Handler(detail) => {
+            if detail.ends_with("not found") {
+                WebError::from(FireflyError::not_found(detail))            // 404
+            } else if detail == DomainError::InsufficientFunds.to_string()
+                || detail == DomainError::NonPositiveAmount.to_string()
+                || detail == DomainError::OwnerRequired.to_string()
+            {
+                WebError::from(FireflyError::validation(detail))           // 422
+            } else {
+                WebError::from(FireflyError::not_found(detail))
+            }
+        }
+        other => WebError::from(FireflyError::internal(other.to_string())), // 500
+    }
+}
 ```
 
-## Fluent builders
+This is why the domain chapter insisted the `Display` strings be *stable*: they
+are the contract `cqrs_to_web` matches on to recover the precise status.
 
-`CommandBuilder::create(cmd)` / `QueryBuilder::create(q)` accumulate the
-identity fields the message carries — a fresh UUID `message_id`, `correlated_by`,
-`initiated_by`, a timestamp, free-form metadata, an optional context — and
-dispatch via `execute_with(&bus)`. `QueryBuilder` adds cache control:
-`cached_for(ttl)` / `uncached()` override `cache_ttl` for the dispatch, and
-`with_cache_key(key)` replaces the derived key.
+## Read-after-write: invalidating the cache
+
+`GetWallet` is cached for 30 seconds. Without care, a deposit would update the
+balance while a cached `GetWallet` kept serving the old one for up to 30 seconds.
+Lumen closes that gap by invalidating the cached query family after every
+mutation:
+
+```rust,ignore
+// samples/lumen/src/web.rs — deposit handler.
+#[post("/wallets/:id/deposit")]
+async fn deposit(
+    State(api): State<WalletApi>,
+    Path(id): Path<String>,
+    Json(body): Json<AmountBody>,
+) -> WebResult<Json<WalletView>> {
+    let cmd = Deposit { wallet_id: id, amount: body.amount };
+    let view: WalletView = api.bus.send(cmd).await.map_err(cqrs_to_web)?;
+    api.query_cache.invalidate_type::<GetWallet>();   // read-after-write
+    Ok(Json(view))
+}
+```
+
+`QueryCache::invalidate_type::<GetWallet>()` evicts every cached result for
+exactly that query type. The withdraw handler does the same, and the transfer
+saga ([Sagas](./12-sagas.md)) — which touches two wallets — invalidates the
+whole `GetWallet` family. The query cache's backend swap (Redis / Postgres) and
+event-driven invalidation get their own treatment in [Caching](./17-caching.md);
+here, the point is that the *bus* is where read-after-write consistency lives,
+not the handler.
 
 ## The reactive bus
 
-The bus exposes a Reactor / WebFlux-style surface that wraps the eventual result
-in a lazy `Mono<R>` — the same handler lookup, the same middleware chain, run
-only when the `Mono` is subscribed, blocked, or awaited.
+The bus also exposes a Reactor / WebFlux-style surface that wraps the eventual
+result in a lazy `Mono<R>` — the same handler lookup, the same middleware chain,
+run only when the `Mono` is subscribed, blocked, or awaited. The methods take
+`&Arc<Bus>` so the `Mono` can own the bus:
 
-| Method                          | Returns       | Reactor analog        |
-|---------------------------------|---------------|-----------------------|
+| Method                          | Returns       | Reactor analog          |
+|---------------------------------|---------------|-------------------------|
 | `Bus::send_mono(cmd)`           | `Mono<R>`     | `Mono<R> bus.send(cmd)` |
 | `Bus::query_mono(q)`            | `Mono<R>`     | `Mono<R> bus.query(q)`  |
-| `Bus::send_mono_with_context`   | `Mono<R>`     | context-carrying send  |
-| `Bus::query_mono_with_context`  | `Mono<R>`     | context-carrying query |
+| `Bus::send_mono_with_context`   | `Mono<R>`     | context-carrying send   |
+| `Bus::query_mono_with_context`  | `Mono<R>`     | context-carrying query  |
 
-The reactive methods take `&Arc<Bus>` (so the lazy `Mono` can own the bus);
-register handlers on the `Arc<Bus>` exactly as on a `Bus`:
+A reactive `GetWallet`, composing on the `Mono` from
+[The Reactive Model](./05-reactive-model.md):
 
 ```rust,ignore
 use std::sync::Arc;
-use firefly_cqrs::{Bus, CqrsError, Message};
+use firefly::cqrs::Bus;
 
-let bus = Arc::new(Bus::new());
-bus.register(|c: CreateUser| async move {
-    Ok::<_, CqrsError>(UserCreated { id: "u1".into(), name: c.name })
-});
-
-// Compose with Reactor operators, then block / subscribe / await.
-let id = bus
-    .send_mono::<_, UserCreated>(CreateUser { name: "alice".into() })
-    .map(|u| u.id)
+let balance = bus
+    .query_mono::<_, WalletView>(GetWallet { id: wallet_id })
+    .map(|view| view.balance)
     .block()
-    .await?;            // Ok(Some("u1"))
+    .await?;            // Ok(Some(<cents>))
 ```
 
 Because `firefly-reactive` fixes its error channel to `FireflyError`, a failed
-dispatch is mapped from `CqrsError` into a status-faithful `FireflyError` (a
-validation failure → 422, an authorization denial → 403, a missing handler →
-500), with the original `CqrsError` preserved as the error's `source()`. So a
-reactive command flows straight into the RFC 7807 problem stack while staying
-inspectable.
+dispatch is mapped from `CqrsError` into a status-faithful `FireflyError`
+(validation → 422, missing handler → 500), with the original `CqrsError`
+preserved as `source()`. So a reactive command flows straight into the RFC 9457
+problem stack while staying inspectable.
 
-## Listing handlers
+## Proving the bus
 
-`Bus::handler_names()` returns the sorted, fully-qualified type names of every
-registered handler — consumed by the admin actuator to show the CQRS map.
+Lumen's `src/commands.rs` exercises the full dispatch path with no HTTP — the
+test that ships in the crate:
 
-The bus dispatches commands and queries within a service. To communicate
-*between* services, fan out domain events. Continue to
+```rust,ignore
+#[tokio::test]
+async fn handlers_dispatch_through_the_bus() {
+    let ledger = Ledger::new(Arc::new(MemoryEventStore::new()), Arc::new(InMemoryBroker::new()));
+    bind(ledger, Arc::new(ReadModel::default()));
+    let bus = Bus::new();
+    bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
+    register(&bus);
+
+    let opened: WalletView = bus.send(OpenWallet { owner: "alice".into(), opening_balance: 100 }).await.unwrap();
+    assert_eq!(opened.balance, 100);
+
+    let after: WalletView = bus.send(Deposit { wallet_id: opened.id.clone(), amount: 50 }).await.unwrap();
+    assert_eq!(after.balance, 150);
+
+    let fetched: WalletView = bus.query(GetWallet { id: opened.id.clone() }).await.unwrap();
+    assert_eq!(fetched.id, opened.id);
+}
+```
+
+And the validation derive is testable on its own — no bus needed, because
+`#[derive(Command)]` generates `validate()` directly on the type:
+
+```rust,ignore
+#[test]
+fn deposit_validates_required_fields() {
+    assert!(Deposit::default().validate().is_err());
+    assert!(
+        Deposit { wallet_id: "wlt_1".into(), amount: 0 }.validate().is_err(),
+        "zero amount fails the #[firefly(validate)] check"
+    );
+    assert!(Deposit { wallet_id: "wlt_1".into(), amount: 10 }.validate().is_ok());
+}
+
+#[test]
+fn get_wallet_carries_cache_ttl() {
+    assert!(GetWallet::default().cache_ttl().is_some());
+}
+```
+
+## What changed in Lumen
+
+Lumen's read and write paths are now separate, typed, and bus-dispatched:
+
+- **`src/commands.rs`** — `OpenWallet` / `Deposit` / `Withdraw` carry
+  `#[derive(Command)]` with `#[firefly(validate)]` on required fields;
+  `GetWallet` carries `#[derive(Query)]` with `#[firefly(cache_ttl = "30s")]`.
+  The derives generate the `Message` impl, the `validate()` checks, and the
+  query's `cache_ttl`.
+- **Free-`fn` handlers** marked `#[command_handler]` / `#[query_handler]`
+  generate `register_open_wallet` / `register_deposit` / `register_withdraw` /
+  `register_get_wallet`. Command handlers build the `Money` value object and
+  delegate to the `Ledger`; the query serves the `ReadModel` and falls back to
+  folding the stream for read-after-write freshness.
+- **The `OnceLock` bind pattern** publishes the resolved `Ledger` + `ReadModel`
+  once and returns the *effective* pair, so every collaborator across repeated
+  builds shares one ledger and one read model.
+- **The bus** is wired with `QueryCache::middleware()` and `ValidationMiddleware`,
+  dispatched from the `#[rest_controller]` via `bus.send` / `bus.query`, with
+  `cqrs_to_web` mapping a `CqrsError` (carrying the domain `Display` string) to
+  the right RFC 9457 status — 422 for business rules, 404 for not-found.
+- **Read-after-write** is enforced at the bus boundary:
+  `query_cache.invalidate_type::<GetWallet>()` runs after every mutation.
+
+## Exercises
+
+1. **Watch validation short-circuit.** In a test, build a `Bus`, add
+   `ValidationMiddleware::new()`, `register` the handlers, and `bus.send` a
+   `Deposit { wallet_id: "wlt_1".into(), amount: 0 }`. Assert the result is a
+   `CqrsError::Validation` and that the ledger was never touched (open a wallet
+   first, then deposit zero, and confirm its balance is unchanged).
+
+2. **Prove the cache, then bust it.** With the full `build_app()` bus,
+   `query(GetWallet { id })` twice and confirm the second is served from cache
+   (instrument the `ReadModel::find` or trace a counter). Deposit into the
+   wallet, then `query` again — assert the new balance comes back, proving
+   `invalidate_type::<GetWallet>()` did its job.
+
+3. **Add a `CloseWallet` command.** Define `CloseWallet { #[firefly(validate)]
+   wallet_id: String }` with `#[derive(Command)]`, write a `#[command_handler]`
+   `close_wallet` that returns a `WalletView`, add `register_close_wallet(bus)`
+   to `register`, and dispatch it. (You do not need a domain `close` yet —
+   returning the current view is enough to exercise the wiring.)
+
+4. **Reactive compose.** Rewrite the `get` controller handler to use
+   `bus.query_mono::<_, WalletView>(GetWallet { id }).map(|v| v.balance)` and
+   return just the balance as JSON. Note where the `FireflyError` channel takes
+   over from `CqrsError`.
+
+The bus dispatches *within* the service. To propagate what happened *between*
+collaborators — the read-model projection, external subscribers — fan out domain
+events. Continue to
 [Event-Driven Architecture & Messaging](./10-eda-messaging.md).

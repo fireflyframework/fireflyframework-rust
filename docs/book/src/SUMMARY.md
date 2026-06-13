@@ -7,6 +7,7 @@
 - [Why Firefly for Rust](./01-why-firefly.md)
 - [Quickstart](./02-quickstart.md)
 - [Configuration](./03-configuration.md)
+- [Dependency Injection & the Application Context](./04a-dependency-injection.md)
 - [Dependency Wiring](./04-dependency-wiring.md)
 
 # The Reactive Model
@@ -23,6 +24,7 @@
 - [Event Sourcing](./11-event-sourcing.md)
 - [Sagas, Workflows & TCC](./12-sagas.md)
 - [HTTP Clients](./13-http-clients.md)
+- [The Experience Tier: Composing a BFF](./20a-experience-tier.md)
 - [Security](./14-security.md)
 - [Observability](./15-observability.md)
 - [Scheduling & Notifications](./16-scheduling-notifications.md)

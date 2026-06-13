@@ -90,8 +90,11 @@ _ADM_ICON = {
 }
 
 _FENCE_RE = re.compile(r"^```+([^\n`]*)$")
-# leading "**Note**" / "**Spring parity**" possibly followed by "—" / "-" / ":"
-_LEADER_RE = re.compile(r"^\*\*(?P<name>[A-Za-z][A-Za-z ]*?)\*\*\s*(?P<sep>[—–:-])?\s*(?P<rest>.*)$")
+# leading "**Note**" / "**Spring parity.**" / "**Spring parity:**" possibly
+# followed by "—" / "-" / ":". The chapter style ends the bold leader with a
+# sentence-final period ("**Spring parity.**"), so allow a trailing "." or ":"
+# *inside* the bold span and strip it from the captured name.
+_LEADER_RE = re.compile(r"^\*\*(?P<name>[A-Za-z][A-Za-z ]*?)[.:]?\*\*\s*(?P<sep>[—–:-])?\s*(?P<rest>.*)$")
 _INCLUDE_RE = re.compile(r"\{\{#(include|playground|rustdoc_include)[^}]*\}\}")
 
 

@@ -8,6 +8,14 @@ endpoints, reactive repositories, the reactive `WebClient`, reactive EDA and
 CQRS — is built on the two types you will learn here. Read this before the
 service-building chapters.
 
+> **By the end of this chapter, Lumen will** have the vocabulary it leans on
+> twice over: the `Flux<WalletEvent>` that backs its NDJSON / SSE
+> *stream-a-wallet's-events* endpoint (turned on in
+> [Production & Deployment](./20-production.md)), and the lazy `Mono<R>` that
+> `Bus::send_mono` / `Bus::query_mono` return so a wallet command can be composed
+> into a reactive pipeline. No Lumen file lands yet — but every reactive shape in
+> the chapters ahead is one of the two publishers below.
+
 ## Mono and Flux
 
 Two publishers, mirroring Reactor exactly:
@@ -24,7 +32,7 @@ drops directly into an axum handler.
 The error type is fixed to `firefly_kernel::FireflyError`, exactly as WebFlux
 models everything as a `Throwable`. Fixing the error keeps the operator surface
 ergonomic (no error type parameter) and wires straight into the framework's
-RFC 7807 problem responses.
+RFC 9457 problem responses.
 
 ```rust
 use firefly_reactive::{Flux, Mono};
@@ -53,7 +61,7 @@ assert_eq!(xs, vec![10, 30, 50]);
 # }
 ```
 
-> **Reactor parity** — `Mono::block()` here is *not* the thread-parking
+> **Reactor parity.** `Mono::block()` here is *not* the thread-parking
 > `Mono.block()` of the JVM. It is `async` and never parks a Tokio worker; it
 > resolves the publisher in place and returns `Result<Option<T>, FireflyError>`.
 
@@ -212,7 +220,7 @@ assert_eq!(value, Some(2));
 ```
 
 `Mono::timeout` / `Flux::timeout` map a missed deadline to a 504 `FireflyError`
-(code `REACTIVE_TIMEOUT`), which renders as an RFC 7807 problem response.
+(code `REACTIVE_TIMEOUT`), which renders as an RFC 9457 problem response.
 
 ## Imperative emission with `FluxSink`
 
@@ -268,7 +276,7 @@ response is byte-compatible across the ports.
 |----------------------------------------|------------------------------|
 | `Mono<T>` handler return               | `MonoJson(Mono<T>)`          |
 | `Mono<T>` empty → `404`                | `Ok(None)` → 404 problem+json |
-| `Mono<T>` error → problem              | `Err(FireflyError)` → that error's RFC 7807 response |
+| `Mono<T>` error → problem              | `Err(FireflyError)` → that error's RFC 9457 response |
 | `Flux<T>` + `APPLICATION_NDJSON_VALUE` | `NdJson(Flux<T>)`            |
 | `Flux<ServerSentEvent<T>>`             | `Sse(Flux<T>)` / `SseEvents(Flux<Event>)` |
 
@@ -317,6 +325,47 @@ The responders, precisely:
 > producer; nothing is buffered up front. This is what lets a `NdJson` endpoint
 > stream a million rows without the response landing fully in memory.
 
+### How Lumen will use this
+
+Lumen's optional `GET /api/v1/wallets/:id/events` endpoint is exactly this
+shape. It replays a wallet's persisted event stream as a `Flux<WalletEvent>` and
+hands it to `NdJson` (or `Sse` with `?format=sse`). The whole handler — drawn
+verbatim from `samples/lumen/src/web.rs`, feature-gated behind `streaming` — is
+the responders above applied to the wallet domain:
+
+```rust,ignore
+// samples/lumen/src/web.rs — the reactive streaming handler (feature `streaming`).
+use firefly::reactive::Flux;
+use firefly::web::{NdJson, Sse};
+
+async fn stream_events(
+    State(api): State<WalletApi>,
+    Path(id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<StreamParams>,
+) -> Response {
+    // A missing wallet is decided before the streaming head is committed.
+    let events = match api.ledger.load_events(&id).await {
+        Ok(events) => events,
+        Err(e) => return WebError::from(domain_to_web(e)).into_response(),
+    };
+    let items: Vec<WalletEvent> = events.iter().map(WalletEvent::from_domain).collect();
+    let flux = Flux::just(items);
+    if params.format.as_deref() == Some("sse") {
+        Sse(flux).into_response()
+    } else {
+        NdJson(flux).into_response()
+    }
+}
+```
+
+Two details worth carrying forward. First, the *not-found* decision happens
+**before** the `Flux` is built, so a 404 still renders as a clean problem
+response rather than a half-open stream. Second, Lumen reaches the reactive
+types through the one-dependency facade — `firefly::reactive::Flux` and
+`firefly::web::{NdJson, Sse}` — never the underlying `firefly-reactive` /
+`firefly-web` crates. The full endpoint, including the route wiring, returns in
+[Production & Deployment](./20-production.md).
+
 ## The reactive `WebClient`
 
 The reactive HTTP client — the Rust analog of WebFlux's `WebClient` — hands its
@@ -353,22 +402,47 @@ let _ticks: firefly_reactive::Flux<Tick> = client
 # }
 ```
 
-> **Reactor parity** — Like WebFlux, the `WebClient` has **no baked-in retry**.
+> **Reactor parity.** Like WebFlux, the `WebClient` has **no baked-in retry**.
 > Compose `Mono::retry` / `Mono::retry_backoff` on the returned publisher, just
 > as WebFlux composes `retryWhen(..)` rather than baking retry into the client.
 
 ## Reactive repositories, EDA, and CQRS
 
-The same two types thread through the rest of the framework:
+The same two types thread through the rest of the framework — and through Lumen:
 
 - **Repositories** — `ReactiveCrudRepository<T, ID>` returns `Mono`/`Flux`; the
-  Postgres adapter streams rows out of `find_all()` as a `Flux` so a huge table
+  SQL adapters stream rows out of `find_all()` as a `Flux` so a huge table
   never lands fully in memory. See [Persistence](./07-persistence.md).
 - **EDA** — `InMemoryBroker::subscribe_reactive(topic)` yields a `Flux<Event>`,
-  and `publish_mono(event)` is a cold reactive publish. See [EDA](./10-eda-messaging.md).
+  and `publish_mono(event)` is a cold reactive publish. Lumen's ledger publishes
+  every wallet event to a `Broker`; see [EDA](./10-eda-messaging.md).
 - **CQRS** — `Bus::send_mono` / `Bus::query_mono` wrap the dispatch in a lazy
-  `Mono<R>`, running the same handler lookup and middleware chain. See
-  [CQRS](./09-cqrs.md).
+  `Mono<R>`, running the same handler lookup and middleware chain. Lumen's
+  wallet commands ride this bus; see [CQRS](./09-cqrs.md).
+
+A taste of the reactive bus, the shape a Lumen `OpenWallet` could take when
+composed reactively (it dispatches the same handler the controller's
+`bus.send(..)` does, only lazily):
+
+```rust,ignore
+use std::sync::Arc;
+use firefly::cqrs::Bus;
+
+// `send_mono` / `query_mono` take `&Arc<Bus>` so the lazy Mono can own the bus.
+let bus: Arc<Bus> = /* the WebStack's bus */;
+let balance = bus
+    .query_mono::<_, WalletView>(GetWallet { id: wallet_id })
+    .map(|view| view.balance)
+    .block()
+    .await?;            // Ok(Some(<cents>))
+```
+
+> **Reactor parity.** Because `firefly-reactive` fixes its error channel to
+> `FireflyError`, a failed dispatch is mapped from the bus's `CqrsError` into a
+> status-faithful `FireflyError` (validation → 422, authorization → 403, missing
+> handler → 500) with the original error preserved as `source()` — so a reactive
+> command flows straight into the RFC 9457 problem stack, exactly as a WebFlux
+> `Mono` flows into Spring's problem handler.
 
 ## Interop with raw `Stream` / `Future`
 
@@ -379,6 +453,43 @@ The reactive types are not a walled garden. Convert in and out at the edges:
   `Mono::from_result_future`.
 - **Out:** `Flux::to_stream` / `Flux::into_stream`, `Mono::into_future` (or just
   `.await` the `Mono`).
+
+## What changed in Lumen
+
+No Lumen source file lands in this chapter — but Lumen now has the two
+publishers every reactive surface it touches is built from:
+
+- **`Flux<T>`** is the engine behind the `GET /api/v1/wallets/:id/events`
+  streaming endpoint: a wallet's events replay through `Flux::just(items)` and
+  stream out as `NdJson` (or `Sse`), with the not-found check resolved *before*
+  the stream head is committed. Lumen reaches it as `firefly::reactive::Flux` +
+  `firefly::web::{NdJson, Sse}` — one dependency, no crate sprawl.
+- **`Mono<R>`** is the lazy result of `Bus::send_mono` / `Bus::query_mono`, the
+  reactive face of the wallet command/query bus you wire in
+  [CQRS](./09-cqrs.md). Its `FireflyError` channel is the same one the RFC 9457
+  problem responses render from.
+
+## Exercises
+
+1. **Map a balance.** Build `Mono::just(1_250_i64)` (a balance in cents),
+   `map` it to a major-unit `f64` (`cents as f64 / 100.0`), and `block().await`
+   it. Confirm you get `Some(12.5)`.
+
+2. **Stream wallet events as a `Flux`.** Make a `Vec<i64>` of signed
+   balance deltas (`[1000, 50, -25]`), wrap it with `Flux::just`, `scan` a
+   running balance, and `collect_list` it. Verify the running balances are
+   `[1000, 1050, 1025]` — a hand-rolled version of what the Lumen streaming
+   endpoint emits per event.
+
+3. **Recover from a flaky source.** Write a `Mono::from_callable` that returns
+   `Err(FireflyError::internal("flaky"))` the first two times and `Ok(Some(n))`
+   afterward, then wrap it in `Mono::retry_backoff(factory, Backoff::new(5,
+   Duration::from_millis(10)))`. Assert it resolves to a value — the retry
+   factory pattern Lumen's HTTP client would use against an external FX provider.
+
+4. **Pick a responder.** Given a `Flux<WalletEvent>`, decide which responder a
+   real-time dashboard wants (`Sse`) versus a bulk export (`NdJson`), and explain
+   in one sentence why backpressure matters for the export case.
 
 You now have the vocabulary the rest of the book builds on. Next, put it to work
 in [Your First HTTP API](./06-first-http-api.md).

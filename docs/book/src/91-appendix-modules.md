@@ -1,10 +1,11 @@
 # Appendix: Module Index
 
-The Firefly Rust workspace ships **76 members** — 72 framework crates under
-`crates/`, plus the cross-crate integration suite and three samples
-(`orders`, `reactive-banking`, `macro-quickstart`). Each crate carries its own
-`README.md` with its full public surface, design rationale, and a runnable
-quick-start.
+The Firefly Rust workspace ships **78 members** — 73 framework crates under
+`crates/`, plus the cross-crate integration suite and four samples: the book's
+running example [`lumen`](https://github.com/fireflyframework/fireflyframework-rust/tree/main/samples/lumen),
+alongside `orders`, `reactive-banking`, and `macro-quickstart`. Each crate
+carries its own `README.md` with its full public surface, design rationale, and a
+runnable quick-start.
 
 The canonical, always-current catalogue is
 [`MODULES.md`](https://github.com/fireflyframework/fireflyframework-rust/blob/main/MODULES.md)
@@ -84,6 +85,7 @@ index.
 | `firefly-starter-domain` | starter-core + in-memory event-sourcing stores |
 | `firefly-starter-data` | starter-core (you supply the DB) |
 | `firefly-starter-web` | `WebStack` — `Core` + CORS + security headers + request metrics + access log |
+| `firefly-starter-experience` | `ExperienceStack` (alias `Bff`) — `WebStack` + `DomainClients` (the `ClientFactory`) + `SignalService` gates + Redis-capable `WorkflowState` + `WorkflowQueryService` + `ChildWorkflowService` — the experience (BFF) tier |
 | `firefly-backoffice` | starter-application + back-office context middleware |
 
 ## DI / Operations / Tooling

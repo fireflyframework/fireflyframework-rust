@@ -28,7 +28,7 @@ parts:
       - {id: ch01, file: 01-why-firefly.md,          num: 1, title: "Why Firefly for Rust?",                       opener: art/openers/ch01.svg}
       - {id: ch02, file: 02-quickstart.md,           num: 2, title: "Quickstart: Zero to a Running Service",        opener: art/openers/ch02.svg}
       - {id: ch03, file: 03-configuration.md,        num: 3, title: "Configuration, Profiles & Secrets",            opener: art/openers/ch03.svg}
-      - {id: ch04, file: 04-dependency-injection.md, num: 4, title: "Dependency Injection & the Application Context", opener: art/openers/ch04.svg}
+      - {id: ch04, file: 04a-dependency-injection.md, num: 4, title: "Dependency Injection & the Application Context", opener: art/openers/ch04.svg}
       - {id: ch05, file: 04-dependency-wiring.md,    num: 5, title: "Dependency Wiring & Composition",               opener: art/openers/ch05.svg}
       - {id: ch06, file: 05-reactive-model.md,       num: 6, title: "The Reactive Model — Mono & Flux",              opener: art/openers/ch06.svg}
   - title: "Part II — Modeling & Persisting the Domain"
@@ -44,7 +44,7 @@ parts:
   - title: "Part IV — Into Microservices"
     chapters:
       - {id: ch13, file: 13-http-clients.md,         num: 13, title: "HTTP Clients & Calling Other Services", opener: art/openers/ch13.svg}
-      - {id: ch14, file: 13b-experience-tier.md,     num: 14, title: "The Experience Tier: Composing a BFF",  opener: art/openers/ch14.svg}
+      - {id: ch14, file: 20a-experience-tier.md,      num: 14, title: "The Experience Tier: Composing a BFF",  opener: art/openers/ch14.svg}
       - {id: ch15, file: 12-sagas.md,                num: 15, title: "Distributed Transactions: Sagas, Workflows & TCC", opener: art/openers/ch15.svg}
   - title: "Part V — Secure, Observe & Ship"
     chapters:

@@ -22,20 +22,62 @@ The consistency boundary in DDD. The non-event-sourced variant holds a
 an `AggregateRoot` whose state is rebuilt by replaying its `DomainEvent`s
 (`firefly-eventsourcing`).
 
+### Autowired
+A component field the DI container resolves and injects by type
+(`#[autowired]`, `firefly-container`). The field type sets the shape: `Arc<T>`
+(required), `Option<Arc<T>>` (optional), `Vec<Arc<T>>` (all implementations),
+`Provider<T>` (deferred). The Rust analog of Spring's `@Autowired`.
+
 ### Backpressure
 A slow consumer throttling a fast producer. Firefly's reactive `Flux` streams
 (NDJSON/SSE responders, `WebClient::body_to_flux`, Postgres row streams) honour
 backpressure end-to-end so a large stream never lands fully in memory.
+
+### Bean
+Any value the DI `Container` builds, wires, and owns. Declared with a
+**stereotype** derive (`#[derive(Component/Service/Repository/Configuration/
+Controller)]`) or produced by a `#[bean]` factory method on a
+`#[derive(Configuration)]` holder. Keyed by `TypeId`; resolvable with
+`resolve::<T>()`.
+
+### BFF (Backend-for-Frontend)
+See **Experience tier**.
 
 ### Bus
 The CQRS command/query dispatcher (`firefly_cqrs::Bus`). Handlers register by
 input type; dispatch is keyed on `std::any::TypeId`. `send`/`query` are async;
 `send_mono`/`query_mono` are the reactive twins.
 
+### Compensation
+The undo step a **saga** runs in reverse order when a later step fails
+(`Step::with_compensation`). In Lumen's transfer saga, the debit's compensation
+is a refund deposit on the source wallet.
+
 ### CompensationPolicy
 How a saga/workflow rolls back on failure: `BestEffort` (continue compensating
 even if one compensation fails) or `StopOnError` (abort at the first
 compensation failure).
+
+### Component scanning
+Link-time bean discovery (`Container::scan()` / `firefly::scan`): every
+non-generic stereotype derive submits an `inventory` thunk, and `scan` collects
+them across the crate graph, applies **conditions** and **profiles**, and
+registers the survivors. The Rust analog of Spring's `@ComponentScan` (link-time,
+not reflective). Generic beans use the `register_all!` fallback.
+
+### Conditional bean
+A bean registered only when the environment matches — `#[firefly(profile = "…",
+condition_on_property = "k=v", condition_on_bean = "T",
+condition_on_missing_bean = "T", condition_on_class = "label",
+condition_on_single_candidate = "T")]`. Evaluated by `scan` in two passes
+(config/profile facts first, registry-dependent checks second). Spring's
+`@Profile` / `@ConditionalOn*`.
+
+### Container
+The opt-in, `TypeId`-keyed DI service locator (`firefly-container`): registers
+beans, resolves by type or name, supports scopes, trait-object bindings,
+`primary`/`order` disambiguation, deferred `Provider<T>`, lifecycle hooks, and
+component scanning. Distinct from **Core** (the wired infrastructure bundle).
 
 ### Core
 The wired infrastructure bundle returned by `Core::new(CoreConfig)`
@@ -56,6 +98,14 @@ Its JSON is byte-compatible across the ports.
 The envelope every `firefly-eda` event flows through — `id`, `type`, `source`,
 `topic`, `correlationId`, `time`, `headers`, `payload`, `key`. Constructed with
 `Event::new`, wire-compatible across the ports.
+
+### Experience tier (BFF)
+The top service tier (`firefly-starter-experience`, `ExperienceStack` / `Bff`): a
+Backend-for-Frontend that composes several **domain** SDKs into journey-specific,
+atomic REST endpoints. It owns no database and calls only domain services
+(`channel → experience → domain → core`). Built from `DomainClients` (the
+`ClientFactory`), `SignalService` gates, Redis-capable `WorkflowState`, and
+`WorkflowQueryService`.
 
 ### FireflyError
 The framework's error type (`firefly_kernel::FireflyError`). It renders as an
@@ -95,15 +145,33 @@ An object-safe `async_trait` trait defining an integration point —
 `cache::Adapter`, `eda::Broker`, `notifications::Channel`, `idp::Adapter`. Code
 depends on the port; an **adapter** implements it.
 
-### Problem (RFC 7807)
+### Primary
+The disambiguator (`#[firefly(primary)]`) that picks one bean when several
+implementations are bound to the same port. Resolving with no primary among
+multiple candidates is a `NoUniqueBean` error naming every candidate. Spring's
+`@Primary`.
+
+### Problem (RFC 7807 / 9457)
 The `application/problem+json` error envelope (`type`, `title`, `status`,
 `detail`) that every Firefly service renders for errors and panics, identical
-across the ports.
+across the ports. RFC 9457 obsoletes and is wire-compatible with RFC 7807; the
+book uses both numbers interchangeably.
+
+### Profile
+A named environment (`prod`, `dev`, `test`) that gates conditional beans
+(`#[firefly(profile = "expr")]`). The expression grammar supports `&`, `|`, `!`,
+comma-as-OR, and parentheses (Spring Boot 2.4+). Active profiles live on the
+`ApplicationContext` / `ConditionContext`.
 
 ### Projection
 A read-side handler that builds a read model from events
 (`firefly_eventsourcing::Projection`), driven per-aggregate (`replay`) or over
 the global stream (`drive_once` / `replay_all`).
+
+### Qualifier
+A name used to select a specific bean when several share a type
+(`#[firefly(qualifier = "replica")]` → `resolve_named`). Spring's
+`@Qualifier`.
 
 ### Reactive
 The `Mono`/`Flux` programming model (`firefly-reactive`) and everything built on
@@ -118,6 +186,18 @@ reverse-order compensation on failure. See also `Workflow` (DAG) and `Tcc`.
 The task runner (`firefly_scheduling::Scheduler`) owning Cron, FixedRate, and
 FixedDelay triggers, each on its own tokio task with panic recovery.
 
+### Scope
+A bean's lifecycle (`#[firefly(scope = "…")]`): `singleton` (one cached
+instance, the default), `transient` (fresh per resolve), `request`, or `session`
+(both driven by a `ScopeHandler`). Spring's `singleton` / `prototype` (Firefly:
+`transient`) / `request` / `session`.
+
+### Signal
+An external event that satisfies a parked workflow gate in the **experience
+tier** (`SignalService::deliver` / `Node::wait_for_signal`). Delivery is
+buffered, so a signal that arrives before the gate parks is not lost. Spring's
+`@WaitForSignal`.
+
 ### SSE (Server-Sent Events)
 A one-way streaming protocol (`text/event-stream`). The `Sse(Flux<T>)` responder
 and `firefly-sse`'s `SseWriter` emit it; `WebClient::body_to_flux` decodes it.
@@ -128,12 +208,25 @@ combined with `.and()`, `.or()`, `.not()`. Any `Fn(&T) -> bool` is one.
 
 ### Starter
 A crate that bundles a sensible default stack so a service depends on one crate.
-`firefly-starter-core` is the common starting point.
+`firefly-starter-core` is the common starting point; `firefly-starter-domain`
+and `firefly-starter-experience` add the domain and BFF tiers.
+
+### Stereotype
+The architectural-role label a DI bean carries (`component`, `service`,
+`repository`, `configuration`, `controller`, `bean`), set by which derive
+declared it. Functionally equivalent; the differences are the documented intent
+and the grouping shown in the admin `/beans` view. Spring's `@Component` family.
 
 ### TCC (Try-Confirm-Cancel)
 A two-phase distributed-transaction engine (`firefly_orchestration::Tcc`): Try
 all participants, Confirm all on success, Cancel the tried participants on any
 Try failure.
+
+### Value object
+A domain type defined entirely by its attributes (no identity) and **immutable**:
+every operation returns a new value. Lumen's `Money` is the canonical example —
+exact integer-cent arithmetic, closed under `add`/`subtract`. The DDD counterpart
+of an **aggregate root** (which has identity).
 
 ### Verifier
 The async port (`firefly_security::Verifier`) that validates a bearer token and
@@ -148,4 +241,11 @@ analog of WebFlux's `WebClient`.
 ### Workflow
 A DAG distributed-transaction engine (`firefly_orchestration::Workflow`):
 independent nodes run concurrently within a wave, with reverse-order
-compensation under a configurable `CompensationPolicy`.
+compensation under a configurable `CompensationPolicy`. In the **experience
+tier**, a node may park on a **signal** gate.
+
+### WorkflowState
+Redis-capable persisted journey state in the **experience tier**
+(`firefly_starter_experience::WorkflowState`): round-trips a workflow run's
+`StepContext` snapshot through the cache `Adapter`, keyed by correlation id, so a
+parked journey survives a client disconnect (`save` / `load` / `delete`).
