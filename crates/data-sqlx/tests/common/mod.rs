@@ -22,9 +22,9 @@
 use std::sync::Arc;
 
 use firefly_data::{
-    Auditor, Direction, Op, Order, Pageable, Predicate, ReactiveCrudRepository,
-    ReactiveSpecificationRepository, Repository, RequestSort, SoftDeletePolicy, Specification,
-    TableConfig, UserProvider,
+    Auditor, ColumnProjection, CustomQuery, Direction, Op, Order, Pageable, Predicate,
+    ReactiveCrudRepository, ReactiveSpecificationRepository, Repository, RequestSort,
+    SoftDeletePolicy, Specification, TableConfig, UserProvider,
 };
 use firefly_data_sqlx::{AnyRow, ColumnValue, Db, SqlxReactiveRepository, SqlxRepository};
 use firefly_kernel::FireflyError;
@@ -220,6 +220,9 @@ pub async fn run_full_suite(db: Db) {
 
     create_table(&db).await;
     rfc3339_text_value_round_trips(db.clone()).await;
+
+    create_table(&db).await;
+    derived_and_custom_queries(db.clone()).await;
 }
 
 /// Full reactive CRUD: save / find_by_id / exists / save_all / find_all /
@@ -388,6 +391,185 @@ pub async fn specification_queries(db: Db) {
         .unwrap();
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|u| !u.active));
+}
+
+/// Derived query methods + `@query` custom queries + DB-level projections,
+/// all executed **end-to-end** against the live backend — the parity proof
+/// for the data gaps closed in this crate.
+pub async fn derived_and_custom_queries(db: Db) {
+    let repo = reactive_repo(db.clone());
+    repo.save_all(vec![
+        User::new("u1", "alice", 10, true),
+        User::new("u2", "bob", 20, true),
+        User::new("u3", "carol", 30, false),
+        User::new("u4", "dave", 40, false),
+    ])
+    .collect_list()
+    .block()
+    .await
+    .unwrap();
+
+    // --- Derived find_by_active (a single eq predicate). ---
+    let active = repo
+        .find_by_derived("find_by_active", &[serde_json::json!(true)])
+        .collect_list()
+        .block()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.len(), 2, "two active users");
+    assert!(active.iter().all(|u| u.active));
+
+    // --- Derived find_by_active_and_score_greater_than with order_by. ---
+    let mut combo = repo
+        .find_by_derived(
+            "find_by_active_and_score_greater_than_order_by_score_desc",
+            &[serde_json::json!(true), serde_json::json!(5)],
+        )
+        .collect_list()
+        .block()
+        .await
+        .unwrap()
+        .unwrap();
+    // active=true AND score>5 -> u1(10), u2(20); ordered by score DESC.
+    assert_eq!(combo.len(), 2);
+    assert_eq!(combo.remove(0).id, "u2");
+    assert_eq!(combo.remove(0).id, "u1");
+
+    // --- Derived OR query (renders a parenthesised OR fragment). ---
+    let mut either = repo
+        .find_by_derived(
+            "find_by_score_less_than_or_score_greater_than",
+            &[serde_json::json!(15), serde_json::json!(35)],
+        )
+        .collect_list()
+        .block()
+        .await
+        .unwrap()
+        .unwrap();
+    either.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(either.len(), 2);
+    assert_eq!(either[0].id, "u1");
+    assert_eq!(either[1].id, "u4");
+
+    // --- Derived count_by / exists_by. ---
+    assert_eq!(
+        repo.count_by_derived("count_by_active", &[serde_json::json!(true)])
+            .block()
+            .await
+            .unwrap()
+            .unwrap(),
+        2
+    );
+    assert!(repo
+        .exists_by_derived("exists_by_name", &[serde_json::json!("alice")])
+        .block()
+        .await
+        .unwrap()
+        .unwrap());
+    assert!(!repo
+        .exists_by_derived("exists_by_name", &[serde_json::json!("ghost")])
+        .block()
+        .await
+        .unwrap()
+        .unwrap());
+
+    // --- @query custom native SQL (named :param binding, list shape). ---
+    let mut params = std::collections::BTreeMap::new();
+    params.insert("min".to_string(), serde_json::json!(20));
+    let q = CustomQuery::native(
+        "SELECT id, name, score, active, created_at, updated_at, created_by, updated_by, deleted_at \
+         FROM users WHERE score >= :min ORDER BY score",
+    );
+    let mut rows = repo
+        .query_list(&q, "User", &params)
+        .collect_list()
+        .block()
+        .await
+        .unwrap()
+        .unwrap();
+    rows.sort_by_key(|u| u.score);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].id, "u2");
+    assert_eq!(rows[2].id, "u4");
+
+    // --- @query custom count + exists shapes. ---
+    let count_q = CustomQuery::native("SELECT COUNT(*) FROM users WHERE active = :flag");
+    let mut cparams = std::collections::BTreeMap::new();
+    cparams.insert("flag".to_string(), serde_json::json!(true));
+    assert_eq!(
+        repo.query_count(&count_q, "User", &cparams)
+            .block()
+            .await
+            .unwrap()
+            .unwrap(),
+        2
+    );
+
+    let exists_q = CustomQuery::native("SELECT EXISTS(SELECT 1 FROM users WHERE name = :name)");
+    let mut eparams = std::collections::BTreeMap::new();
+    eparams.insert("name".to_string(), serde_json::json!("carol"));
+    assert!(repo
+        .query_exists(&exists_q, "User", &eparams)
+        .block()
+        .await
+        .unwrap()
+        .unwrap());
+
+    // --- @query custom mutating execute (returns affected rows). ---
+    let upd = CustomQuery::native("UPDATE users SET score = :v WHERE id = :id");
+    let mut uparams = std::collections::BTreeMap::new();
+    uparams.insert("v".to_string(), serde_json::json!(99));
+    uparams.insert("id".to_string(), serde_json::json!("u1"));
+    let affected = repo
+        .query_execute(&upd, "User", &uparams)
+        .block()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(affected, 1);
+    assert_eq!(
+        repo.find_by_id("u1".into())
+            .block()
+            .await
+            .unwrap()
+            .unwrap()
+            .score,
+        99
+    );
+
+    // --- DB-level projection: only id + name selected. ---
+    let proj = ColumnProjection::new("UserSummary", ["id", "name"]);
+    let mut projected = repo
+        .project_by_spec(
+            &proj,
+            Specification::pred(Predicate::new("active", Op::Eq, true)),
+        )
+        .collect_list()
+        .block()
+        .await
+        .unwrap()
+        .unwrap();
+    projected.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    assert_eq!(projected.len(), 2);
+    // Each projected row has exactly the two projected fields.
+    for row in &projected {
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj.len(), 2, "only id + name projected: {row}");
+        assert!(obj.contains_key("id") && obj.contains_key("name"));
+    }
+    assert_eq!(projected[0]["id"], serde_json::json!("u1"));
+    assert_eq!(projected[0]["name"], serde_json::json!("alice"));
+
+    // --- Derived delete_by (physical). ---
+    let deleted = repo
+        .delete_by_derived("delete_by_active", &[serde_json::json!(false)])
+        .block()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(deleted, 2, "two inactive users deleted");
+    assert_eq!(repo.count().block().await.unwrap(), Some(2));
 }
 
 /// Pageable specification queries: ORDER BY + LIMIT/OFFSET windows.

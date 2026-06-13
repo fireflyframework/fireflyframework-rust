@@ -25,11 +25,13 @@
 //! | JSON             | [`must_encode`] / [`must_decode`]                                   | *(default)* |
 //! | HTTP test client | [`TestClient`] / [`TestResponse`] (in-process over an axum `Router`) | `web`       |
 //! | DI test slices   | [`Slice`] / [`BuiltSlice`] (subset + `Arc` overrides, eager resolve) | `container` |
+//! | Testcontainers   | [`containers::ServiceContainer`] / [`containers::config_for`] / [`containers::docker_available`] | `testcontainers` |
 //!
 //! The default surface carries no heavy dependencies; the richer
-//! migration-ergonomics helpers (the analogs of pyfly's `PyFlyTestClient` and
-//! `slice_context`/`mock_bean`) are opt-in behind the `web` and `container`
-//! features so a service that only needs the signers gets a lean build.
+//! migration-ergonomics helpers (the analogs of pyfly's `PyFlyTestClient`,
+//! `slice_context`/`mock_bean`, and `testcontainers`) are opt-in behind the
+//! `web`, `container`, and `testcontainers` features so a service that only
+//! needs the signers gets a lean build.
 //!
 //! Every signer matches the wire shape of its corresponding `webhooks`
 //! validator — drop them into a test handler and a real Stripe / GitHub /
@@ -64,6 +66,9 @@ mod signers;
 mod client;
 #[cfg(feature = "container")]
 mod slice;
+
+#[cfg(feature = "testcontainers")]
+pub mod containers;
 
 pub use assertions::{
     assert_event_published, assert_event_published_with, assert_no_events_published,

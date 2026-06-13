@@ -284,7 +284,8 @@ pub struct MemoryRuleSetRepository;   // RwLock-backed, keyed by RuleSet.name
 
 pub struct RuleEngineService;         // RuleEngineService::in_memory()
 impl RuleEngineService {
-    fn with_mode(self, EvaluationMode) -> Self;   // ALL (default) | FIRST_MATCH
+    fn with_mode(self, EvaluationMode) -> Self;       // ALL (default) | FIRST_MATCH
+    fn with_metrics(self, &MetricsRegistry) -> Self;  // opt-in Prometheus counters
     async fn register(&self, ruleset: RuleSet);
     async fn evaluate(&self, &RuleSet, &Fact) -> Result<EvaluationOutcome, EvalError>;
     async fn evaluate_by_name(&self, name, &Fact) -> Result<EvaluationOutcome, ServiceError>;
@@ -303,6 +304,29 @@ the post-execution `facts` alongside the verdict. The service honours its
 of rules up to and including the first match are executed. Matched rules'
 `then` and non-matched rules' `otherwise` actions both run; disabled
 rules are skipped.
+
+#### Metrics (`with_metrics`)
+
+Calling `with_metrics(&registry)` (the
+`firefly_observability::MetricsRegistry`) enables four `ruleset`-labelled
+counters, recorded after every `evaluate` / `evaluate_by_name` — the Rust
+spelling of pyfly's `RuleEngineService(metrics=...)`, so the same
+dashboards port across the Python and Rust runtimes:
+
+| Counter                            | Incremented …                                  |
+|------------------------------------|------------------------------------------------|
+| `firefly_rule_evaluations_total`   | once per evaluation call                       |
+| `firefly_rules_matched_total`      | when at least one rule matched                 |
+| `firefly_rule_actions_fired_total` | by the number of actions executed successfully |
+| `firefly_rule_errors_total`        | when the outcome carries an error              |
+
+Metrics are entirely opt-in: a service built without `with_metrics`
+records nothing (matching pyfly, where omitting the recorder is a no-op).
+
+```rust,ignore
+use firefly_observability::MetricsRegistry;
+let service = RuleEngineService::in_memory().with_metrics(&MetricsRegistry::new());
+```
 
 ### `validation` — `validate_ruleset` / `RuleSetValidator`
 

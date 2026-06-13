@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Sidebar Navigation Component.
+ * Firefly Admin — Sidebar Navigation Component.
  *
  * Renders the navigation sidebar with SVG icons.
  * Built entirely with safe DOM construction (no innerHTML with data).
@@ -97,13 +97,13 @@ export function renderSidebar(container, currentRoute, options = {}) {
     // Clear previous content
     container.textContent = '';
 
-    // Brand header — the pyfly wordmark logo (no secondary label).
+    // Brand header — the Firefly wordmark logo (no secondary label).
     const brand = document.createElement('div');
     brand.className = 'admin-sidebar-brand';
 
     const logo = document.createElement('img');
-    logo.src = 'static/assets/pyfly-logo.png';
-    logo.alt = 'PyFly';
+    logo.src = 'static/assets/firefly-logo.png';
+    logo.alt = 'Firefly';
     brand.appendChild(logo);
 
     container.appendChild(brand);

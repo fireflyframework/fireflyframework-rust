@@ -23,12 +23,13 @@ base path (default `/admin`):
 | `GET {base}/api/scheduled` | Scheduled-task listing |
 | `GET {base}/api/caches` + `POST …/{name}/evict` | Cache listing + eviction |
 | `GET {base}/api/cqrs` | CQRS handler listing |
+| `GET {base}/api/beans` + `/api/beans/{name}` + `/api/beans/graph` | DI bean listing / detail / dependency graph (backed by the optional `firefly-container`) |
 | `GET {base}/api/transactions` | Saga / workflow / TCC definition listing |
 | `GET {base}/api/traces` | HTTP-trace ring buffer (cap 500) |
 | `GET {base}/api/logfile` + `POST …/clear` | In-memory log ring buffer (cap 2000) |
 | `GET {base}/api/runtime` / `server` | tokio worker/task counts + process RSS |
 | `GET {base}/api/views[/{id}]` | Custom `AdminView` plugin listing + payloads |
-| `GET {base}/api/sse/*` | Live streams: `health` / `metrics` / `traces` / `logfile` / `runtime` / `server` |
+| `GET {base}/api/sse/*` | Live streams: `beans` / `health` / `metrics` / `traces` / `logfile` / `runtime` / `server` |
 | `GET/POST/DELETE {base}/api/instances` | Multi-instance server mode (when enabled) |
 
 Bind the dashboard on a separate admin port, or guard it with
@@ -56,11 +57,18 @@ Three adaptations from pyfly:
   `tracing_subscriber::Layer`; logger-level mutation rewrites an `EnvFilter`
   directive through a `reload::Handle` (via `firefly-actuator`'s
   `LoggersState`).
-- **Omitted Python-runtime introspection.** Bean / bean-graph / conditions /
-  autowired views (DI-container reflection), Python GC/thread stats, and ASGI
-  server specifics have no Rust analogue and are dropped. `GET /api/views`
-  returns the `AdminView`-driven plugin list in their place; `runtime`
-  reports tokio task/worker counts + process RSS via `sysinfo`.
+- **DI introspection via `firefly-container`.** The Beans view
+  (`/api/beans`, `/api/beans/{name}`, `/api/beans/graph`, the `/api/sse/beans`
+  stream, and the overview `beans`/`wiring` blocks) is backed by the optional
+  `AdminDeps::container` — when wired it reports each registered bean's
+  name/type/scope/stereotype/primary plus its `initialized` flag and
+  resolution count, sourced from `Container::beans()` / `bean_stats()`. The
+  reflection-only fields pyfly fills via runtime type-hint inspection
+  (constructor `dependencies`/dependency-graph `edges`, `conditions`,
+  `creation_time_ms`, lifecycle methods) have no zero-cost Rust analogue and
+  carry empty/`null` defaults, so the bean graph is nodes-only. Python
+  GC/thread stats and ASGI server specifics remain dropped; `runtime` reports
+  tokio task/worker counts + process RSS via `sysinfo`.
 
 ## Public surface
 
@@ -92,6 +100,7 @@ pub struct AdminDeps {
     pub cache: Option<Arc<dyn CacheOps>>,        // firefly-actuator
     pub loggers: Option<Arc<LoggersState>>,      // firefly-actuator reload handle
     pub instances: Option<Arc<InstanceRegistry>>,// Some ⇒ server mode
+    pub container: Option<Arc<Container>>,       // firefly-container, drives the Beans view
     pub views: Vec<Arc<dyn AdminView>>,
 }
 impl AdminDeps { pub fn new(app_name, app_version, health, metrics, traces, logs) -> Self; }
@@ -201,7 +210,10 @@ surface 401s from the API.
 | `AdminLogHandler` | `LogBuffer` (a `tracing` Layer) |
 | `InstanceRegistry` / `StaticDiscovery` | `InstanceRegistry` (+ `discover_static`) |
 | `AdminClientRegistration` | `AdminClient` |
-| bean / conditions / autowired views | *omitted (no DI container)* |
+| `BeansProvider.get_beans` / `get_bean_detail` / `get_bean_graph` | `/api/beans` / `/api/beans/{name}` / `/api/beans/graph` (via `AdminDeps::container`) |
+| `OverviewProvider` `beans`/`wiring` blocks | overview `beans` (`Container::bean_stats`) + `wiring` (live `cqrs_handlers`/`scheduled` counts) |
+| `beans_stream` (SSE `beans`) | `/api/sse/beans` (resolution-count deltas) |
+| conditions / autowired / dependency-edge reflection | *empty/`null` defaults (no runtime type-hint reflection)* |
 | Python GC/thread runtime, ASGI server info | tokio task/worker + RSS runtime, axum/tokio server info |
 
 [`firefly-actuator`]: ../actuator/README.md

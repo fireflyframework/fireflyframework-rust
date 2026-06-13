@@ -51,6 +51,31 @@
 //!   [`WorkflowQueryService`] and durable suspend/resume
 //!   ([`DurableWorkflowState`]).
 //!
+//! # pyfly parity — observability
+//!
+//! The crate ports pyfly's `pyfly.transactional.core.{events,metrics,tracer}`:
+//! an [`OrchestrationEvents`] async listener trait with the full lifecycle
+//! hook set, a [`CompositeOrchestrationEvents`] fan-out, a `tracing`-backed
+//! [`LoggerOrchestrationEvents`] default, an in-memory [`OrchestrationMetrics`]
+//! listener (counters + p50/p95 latency histograms with a JSON
+//! [`OrchestrationMetrics::snapshot`]), and an [`OrchestrationTracer`] span
+//! facade. The saga / workflow / TCC engines fire the hooks when run through
+//! their additive `run_with_listener` methods; the base `run` methods are
+//! unchanged. An [`OrchestrationHealthIndicator`] surfaces persistence
+//! liveness on `/actuator/health`, and TCC's
+//! [`TccParticipant::with_context`] threads the try phase's result into
+//! confirm / cancel (pyfly's `@FromTry`).
+//!
+//! # pyfly parity — saga composition
+//!
+//! [`SagaCompositor`] (+ [`SagaCompositionBuilder`] / [`SagaComposition`] /
+//! [`CompositionEntry`] / [`SagaDataFlow`] / [`DataFlowManager`] /
+//! [`CompositionValidator`] / [`CompositionContext`]) ports pyfly's
+//! `pyfly.transactional.saga.composition` subpackage: orchestrate several
+//! registered sagas as a DAG, running same-layer sagas concurrently, wiring
+//! each saga's output into downstream sagas' input, and compensating all
+//! completed sagas in reverse on a failure.
+//!
 //! # Quick start
 //!
 //! ```rust
@@ -78,6 +103,7 @@
 
 mod cancel;
 mod saga;
+mod saga_composition;
 mod tcc;
 mod workflow;
 
@@ -85,7 +111,9 @@ mod workflow;
 mod condition;
 mod dlq;
 mod gateway;
+mod health;
 mod model;
+mod observability;
 mod persistence;
 mod recovery;
 mod registry;
@@ -104,6 +132,19 @@ pub use cancel::CancellationToken;
 pub use saga::{CompensationPolicy, Outcome, Saga, SagaError, SagaFailure, SagaStatus, Step};
 pub use tcc::{ConfirmError, Tcc, TccError, TccParticipant};
 pub use workflow::{Node, Workflow, WorkflowError};
+
+// Observability: lifecycle event listeners, metrics, tracing.
+pub use observability::{
+    CompositeOrchestrationEvents, LoggerOrchestrationEvents, NoOpOrchestrationEvents,
+    OrchestrationEvents, OrchestrationMetrics, OrchestrationTracer, SpanGuard,
+};
+// Persistence-backed health indicator.
+pub use health::{OrchestrationHealthIndicator, ORCHESTRATION_HEALTH_INDICATOR_NAME};
+// Multi-saga composition (DAG of sagas + cross-saga data flow + compensation).
+pub use saga_composition::{
+    CompositionContext, CompositionEntry, CompositionError, CompositionValidator, DataFlowManager,
+    SagaComposition, SagaCompositionBuilder, SagaCompositor, SagaDataFlow,
+};
 
 // Durable model + value types.
 pub use model::{

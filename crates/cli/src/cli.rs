@@ -25,6 +25,7 @@ use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
 use crate::actuator::ActuatorClient;
+use crate::build::{build_image, write_build_info, ImageBuilder};
 use crate::completion::write_completion;
 use crate::db::{self, db_downgrade, db_init, db_migrate, db_status, db_upgrade};
 use crate::diagnostics::{run_doctor, run_info};
@@ -33,6 +34,7 @@ use crate::generate::{plan_artifacts, write_artifacts, Action, ArtifactKind};
 use crate::license::LicenseReport;
 use crate::openapi::{meta_for_project, render_spec, OpenApiFormat};
 use crate::project::detect_project;
+use crate::run::{run as run_app, RunOptions};
 use crate::sbom::Sbom;
 use crate::scaffold::{scaffold_new, NewOptions};
 use crate::templates::{Archetype, DepSource, AVAILABLE_FEATURES};
@@ -62,6 +64,11 @@ pub enum Commands {
     /// Alias for `generate`.
     #[command(subcommand)]
     G(GenerateCommand),
+    /// Run the application via Cargo, mapping profile/override flags to env.
+    Run(RunArgs),
+    /// Build the application: stamp build-info, or build an OCI image.
+    #[command(subcommand)]
+    Build(BuildCommand),
     /// Display framework and environment information.
     Info,
     /// Check the development environment and toolchain.
@@ -181,6 +188,71 @@ pub struct GenArgs {
     /// Show what would be created without writing.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// Arguments for `firefly run`.
+///
+/// Port of pyfly's `run` flags adapted to a compiled Cargo binary: the
+/// profile/override flags map to `FIREFLY_*` environment variables (mirroring
+/// pyfly's `_to_env_key` / `_build_launch_env`), then `cargo run` is exec'd.
+/// pyfly's ASGI-server selection (`--server`/`--workers`/`--reload`/`--app`)
+/// has no analog for a single compiled binary and is intentionally omitted.
+#[derive(Debug, clap::Args)]
+pub struct RunArgs {
+    /// Active profile(s); repeatable or comma-separated (`-p dev -p test` or
+    /// `-p dev,test`). Sets `FIREFLY_PROFILES_ACTIVE`.
+    #[arg(long = "profile", short = 'p')]
+    pub profiles: Vec<String>,
+    /// Override a config value: `-D key=value` -> `FIREFLY_<KEY>=value`.
+    #[arg(short = 'D', value_name = "KEY=VALUE")]
+    pub defines: Vec<String>,
+    /// Set a raw environment variable for the app process (`--env KEY=VALUE`).
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    pub env_vars: Vec<String>,
+    /// Enable debug logging (sets `FIREFLY_LOGGING_LEVEL_ROOT=DEBUG`).
+    #[arg(long)]
+    pub debug: bool,
+    /// Build/run the optimized Cargo profile (`cargo run --release`).
+    #[arg(long)]
+    pub release: bool,
+    /// Run a specific binary target (`cargo run --bin <name>`).
+    #[arg(long)]
+    pub bin: Option<String>,
+    /// Print the resolved environment and Cargo command without executing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// `firefly build <subcommand>` — packaging and image helpers.
+///
+/// Plain compilation is `cargo build` (the wheel/sdist analog); this group
+/// ports pyfly's `build info` (the `/actuator/info` build stamp) and
+/// `build image` (OCI image via Buildpacks/Docker).
+#[derive(Debug, Subcommand)]
+pub enum BuildCommand {
+    /// Write `build-info.json` (git SHA + UTC build time) for `/actuator/info`.
+    Info(BuildInfoArgs),
+    /// Build an OCI image via Cloud Native Buildpacks (`pack`) or Docker.
+    Image(BuildImageArgs),
+}
+
+/// Arguments for `firefly build info`.
+#[derive(Debug, clap::Args)]
+pub struct BuildInfoArgs {
+    /// Output path (relative to the project root unless absolute).
+    #[arg(long, short = 'o', default_value = "build-info.json")]
+    pub output: PathBuf,
+}
+
+/// Arguments for `firefly build image`.
+#[derive(Debug, clap::Args)]
+pub struct BuildImageArgs {
+    /// Image tag (default: `firefly-app:latest`).
+    #[arg(long, short = 't')]
+    pub tag: Option<String>,
+    /// Image builder backend.
+    #[arg(long, default_value = "pack", value_parser = ["pack", "docker"])]
+    pub builder: String,
 }
 
 /// `firefly actuator <endpoint> --url ...` subcommands.
@@ -319,6 +391,8 @@ pub fn run(cli: Cli) -> i32 {
     let result = match cli.command {
         Commands::New(args) => cmd_new(args),
         Commands::Generate(cmd) | Commands::G(cmd) => cmd_generate(cmd),
+        Commands::Run(args) => cmd_run(args),
+        Commands::Build(cmd) => cmd_build(cmd),
         Commands::Info => {
             print_info();
             Ok(())
@@ -438,6 +512,45 @@ fn cmd_generate(cmd: GenerateCommand) -> Result<(), CliError> {
     println!("{verb}:");
     print_actions(&actions, &info.root);
     Ok(())
+}
+
+/// `firefly run` — map the launch flags to `FIREFLY_*` env vars and exec
+/// `cargo run` from the detected project root (current dir when not inside a
+/// project, so a plain Cargo crate works too).
+fn cmd_run(args: RunArgs) -> Result<(), CliError> {
+    let root = detect_project(None)
+        .map(|info| info.root)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let opts = RunOptions {
+        profiles: args.profiles,
+        defines: args.defines,
+        env_vars: args.env_vars,
+        debug: args.debug,
+        release: args.release,
+        bin: args.bin,
+        dry_run: args.dry_run,
+    };
+    run_app(&root, &opts)
+}
+
+/// `firefly build <info|image>` — stamp build metadata or build an OCI image
+/// from the detected project root.
+fn cmd_build(cmd: BuildCommand) -> Result<(), CliError> {
+    let root = detect_project(None)
+        .map(|info| info.root)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    match cmd {
+        BuildCommand::Info(args) => {
+            let path = write_build_info(&root, &args.output)?;
+            println!("\u{2713} Wrote {}", path.display());
+            Ok(())
+        }
+        BuildCommand::Image(args) => {
+            let builder = ImageBuilder::parse(&args.builder)?;
+            build_image(&root, args.tag.as_deref(), builder)?;
+            Ok(())
+        }
+    }
 }
 
 fn cmd_doctor() {
@@ -921,6 +1034,97 @@ mod tests {
             }
             _ => panic!("expected metrics"),
         }
+    }
+
+    // --- run command (pyfly test run.py parity) ---
+
+    #[test]
+    fn run_parses_profile_define_env_and_flags() {
+        let cli = Cli::try_parse_from([
+            "firefly",
+            "run",
+            "-p",
+            "dev,test",
+            "-D",
+            "web.port=9000",
+            "--env",
+            "RUST_LOG=info",
+            "--debug",
+            "--release",
+            "--bin",
+            "svc",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Run(a) => {
+                assert_eq!(a.profiles, vec!["dev,test".to_string()]);
+                assert_eq!(a.defines, vec!["web.port=9000".to_string()]);
+                assert_eq!(a.env_vars, vec!["RUST_LOG=info".to_string()]);
+                assert!(a.debug);
+                assert!(a.release);
+                assert_eq!(a.bin.as_deref(), Some("svc"));
+                assert!(a.dry_run);
+            }
+            _ => panic!("expected run"),
+        }
+    }
+
+    #[test]
+    fn run_dry_run_exits_zero() {
+        // --dry-run never spawns Cargo; run from the workspace (a Cargo project).
+        let cli = Cli::try_parse_from(["firefly", "run", "--dry-run", "-p", "dev"]).unwrap();
+        assert_eq!(run(cli), 0);
+    }
+
+    // --- build command (pyfly test build.py parity) ---
+
+    #[test]
+    fn build_subcommands_parse() {
+        let cli = Cli::try_parse_from(["firefly", "build", "info", "-o", "bi.json"]).unwrap();
+        match cli.command {
+            Commands::Build(BuildCommand::Info(a)) => {
+                assert_eq!(a.output, std::path::Path::new("bi.json"));
+            }
+            _ => panic!("expected build info"),
+        }
+        let cli = Cli::try_parse_from([
+            "firefly",
+            "build",
+            "image",
+            "-t",
+            "svc:1",
+            "--builder",
+            "docker",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Build(BuildCommand::Image(a)) => {
+                assert_eq!(a.tag.as_deref(), Some("svc:1"));
+                assert_eq!(a.builder, "docker");
+            }
+            _ => panic!("expected build image"),
+        }
+    }
+
+    #[test]
+    fn build_image_rejects_unknown_builder_at_parse() {
+        let res = Cli::try_parse_from(["firefly", "build", "image", "--builder", "podman"]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn build_info_writes_file_and_exits_zero() {
+        // Write into a temp dir via an absolute --output so the run is hermetic.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let out = tmp.path().join("build-info.json");
+        let cli =
+            Cli::try_parse_from(["firefly", "build", "info", "-o", out.to_str().unwrap()]).unwrap();
+        assert_eq!(run(cli), 0);
+        assert!(out.exists());
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert!(doc["build"]["time"].as_str().is_some());
     }
 
     // --- completion command (pyfly test_completion.py parity) ---

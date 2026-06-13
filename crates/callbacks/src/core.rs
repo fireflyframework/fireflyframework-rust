@@ -51,6 +51,31 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 /// Default first-retry delay (200 ms, doubling), matching the Go port.
 const DEFAULT_INITIAL_DELAY: Duration = Duration::from_millis(200);
+/// Exponential-backoff ceiling (5 min) — a single retry delay never grows
+/// past this, matching pyfly's `min(backoff_ms * 2**(attempt-1), 300_000)`
+/// (pyfly audit #194) and the Java port.
+const BACKOFF_CAP: Duration = Duration::from_secs(300);
+
+/// HTTP statuses worth retrying — transient timeout / rate-limit / server
+/// errors only. The set is pyfly's `_RETRYABLE_STATUS` (`{408, 429, 500,
+/// 502, 503, 504}`); together with the `>= 500` rule in [`is_retryable`]
+/// this means every 5xx is retried, while a 4xx other than `408`/`429` is a
+/// permanent client error that stops retrying immediately (pyfly audit
+/// #194).
+const RETRYABLE_STATUS: [u16; 6] = [408, 429, 500, 502, 503, 504];
+
+/// Reports whether an HTTP `status` is worth retrying — the Rust spelling
+/// of pyfly's `_is_retryable`.
+///
+/// A status is retryable when it is in [`RETRYABLE_STATUS`] **or** is any
+/// server error (`>= 500`). Consequently a 4xx other than `408` (Request
+/// Timeout) and `429` (Too Many Requests) is permanent: the dispatcher
+/// stops retrying it at once rather than burning the whole attempt budget
+/// against a target that returns a deterministic `400`/`401`/`403`/`404`/
+/// `422` (pyfly audit #194).
+fn is_retryable(status: u16) -> bool {
+    RETRYABLE_STATUS.contains(&status) || status >= 500
+}
 
 /// Tunes [`HmacDispatcher`] — the Rust spelling of Go's `core.Config`.
 ///
@@ -136,8 +161,15 @@ impl HmacDispatcher {
     }
 
     /// Delivers `ev` to one target: up to `max_attempts` tries with the
-    /// delay doubling between them, recording an [`Attempt`] audit row
-    /// per try regardless of outcome.
+    /// delay doubling between them (capped at [`BACKOFF_CAP`]), recording
+    /// an [`Attempt`] audit row per try regardless of outcome.
+    ///
+    /// A **permanent** failure — a non-2xx response whose status is not
+    /// retryable (a 4xx other than `408`/`429`; see [`is_retryable`]) —
+    /// stops retrying immediately and returns [`CallbackError::DeliveryFailed`]
+    /// without burning the rest of the attempt budget (pyfly audit #194).
+    /// Transport errors (no response) and retryable statuses (`408`/`429`/
+    /// 5xx) are retried up to `max_attempts`.
     async fn deliver(&self, target: &Target, ev: &CallbackEvent) -> Result<(), CallbackError> {
         let mut delay = self.initial_delay;
         for attempt in 1..=self.max_attempts {
@@ -162,11 +194,20 @@ impl HmacDispatcher {
             if error.is_none() && (200..300).contains(&status) {
                 return Ok(());
             }
+            // A non-2xx *response* (no transport error) with a permanent
+            // status is not worth retrying — return at once (#194). A
+            // transport error (status 0, `error` set) is always retryable.
+            if error.is_none() && !is_retryable(status) {
+                return Err(CallbackError::DeliveryFailed { status, error });
+            }
             if attempt == self.max_attempts {
                 return Err(CallbackError::DeliveryFailed { status, error });
             }
             tokio::time::sleep(delay).await;
-            delay *= 2;
+            // Double the delay for the next attempt, capped at BACKOFF_CAP
+            // so a long retry budget cannot produce an unbounded sleep
+            // (pyfly's `min(..., 300_000)`).
+            delay = (delay * 2).min(BACKOFF_CAP);
         }
         Ok(())
     }
@@ -428,6 +469,25 @@ mod tests {
             got,
             "sha256=f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
         );
+    }
+
+    #[test]
+    fn is_retryable_matches_pyfly_status_set() {
+        // pyfly's _RETRYABLE_STATUS, all retryable.
+        for s in [408, 429, 500, 502, 503, 504] {
+            assert!(is_retryable(s), "status {s} should be retryable");
+        }
+        // Every 5xx is retryable (the >= 500 rule), even ones not in the set.
+        assert!(is_retryable(501));
+        assert!(is_retryable(599));
+        // Permanent 4xx are NOT retryable.
+        for s in [400, 401, 403, 404, 409, 422] {
+            assert!(!is_retryable(s), "status {s} should be permanent");
+        }
+        // 2xx/3xx are not retryable either (success/redirect, never reached
+        // as a failure path but defensively classified as permanent).
+        assert!(!is_retryable(200));
+        assert!(!is_retryable(301));
     }
 
     #[test]

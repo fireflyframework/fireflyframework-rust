@@ -107,6 +107,22 @@ impl FilterChain {
     pub fn require(self, prefix, roles: &[&str]) -> Self;
     pub fn layer(self) -> FilterChainLayer;
 }
+
+// Standalone symmetric (HMAC) JWT primitive — pyfly JWTService.
+pub struct JwtService;                    // JwtService::new(secret) → HS256
+impl JwtService {
+    pub fn algorithm(self, alg: Algorithm) -> Result<Self, SecurityError>; // HMAC only
+    pub fn expiration_seconds(self, secs: u64) -> Self;
+    pub fn encode(&self, payload: serde_json::Value) -> Result<String, SecurityError>;
+    pub fn decode(&self, token: &str) -> Result<Map<String, Value>, SecurityError>; // exp required
+    pub fn to_authentication(&self, token: &str) -> Result<Authentication, SecurityError>;
+}
+// + impl Verifier for JwtService
+
+// Session-backed auth restore — pyfly OAuth2SessionSecurityFilter.
+pub struct SessionAuthenticationLayer;    // ::new(); .anonymous_fallback(bool)
+// Cookie-keyed firefly-session bridge for the OAuth2 login flow.
+pub struct SessionLoginSessionStore;      // ::new(store) / ::from_config(cfg, store)
 ```
 
 ## Wiring with the IDP crates
@@ -212,6 +228,34 @@ strings → typed predicates).
   → username, flat `roles` **or** Keycloak `realm_access.roles`
   → roles, `permissions` **or** space-separated `scope` → authorities.
   `claims_to_authentication` is reused for OIDC id-tokens.
+* **`JwtService`** (pyfly `pyfly.security.jwt.JWTService`) — a
+  standalone **symmetric** (HMAC) JWT primitive, the reusable
+  counterpart to the RS256, verify-only `JwksVerifier`: HS256 default
+  (HS384/HS512 configurable), `expiration_seconds` injecting an `exp`
+  claim on `encode` when one is absent, `exp` **required** on `decode`
+  (a never-expiring token is rejected), and `to_authentication`
+  (pyfly's `to_security_context`: `sub` → principal,
+  `roles`/`permissions` → roles/authorities). It satisfies the
+  `Verifier` port, so it drops straight into `BearerLayer` for
+  symmetric-token APIs, workers, CLIs, and inter-service tokens
+  without any IdP. Errors carry pyfly's `Invalid token: <detail>`
+  message shape; an asymmetric algorithm is rejected at construction.
+* **`SessionAuthenticationLayer`** (pyfly
+  `OAuth2SessionSecurityFilter`) — a tower layer that restores the
+  `Authentication` stored on login from the request's
+  `firefly_session::Session` (the `SECURITY_CONTEXT` attribute) into
+  the request extensions, so `BearerLayer` / `FilterChain` / `guards`
+  see the session-established principal. Inserts an anonymous context
+  when no authenticated context is stored (toggle with
+  `anonymous_fallback(false)`), closing the browser-login →
+  authenticated-request loop. Mount it after `firefly_session::SessionLayer`.
+* **`SessionLoginSessionStore`** — the production, cookie-keyed
+  `LoginSessionStore` that resolves a per-browser
+  `firefly_session::Session` from the session cookie and backs the
+  OAuth2 login flow onto a real `firefly_session::SessionStore`
+  (memory/Redis/Postgres). The multi-user replacement for the
+  in-memory `FixedLoginSessionStore`; OAuth2 login and the subsequent
+  authenticated requests share one distributed session.
 * **`Authentication::authorities`** — fine-grained permissions/scopes,
   distinct from `roles`; `has_authority` accepts a role name or a
   permission (pyfly semantics).
@@ -247,7 +291,14 @@ strings → typed predicates).
     id-token validation against the provider JWKS, userinfo fallback,
     session-fixation-safe id rotation. Session state plugs in through
     the local `LoginSession` / `LoginSessionStore` traits so
-    `firefly-session` (or any cookie store) can back it.
+    `firefly-session` (or any cookie store) can back it
+    (`SessionLoginSessionStore` is the production bridge). With
+    `OAuth2LoginHandler::with_concurrency(...)` it enforces a
+    per-principal session cap (`maximumSessions`) at the login binding
+    point — after the anti-fixation rotation it calls
+    `SessionConcurrencyController::on_login`, returning `401 max_sessions`
+    when the reject-new cap is reached and deregistering on
+    `POST /logout` — matching pyfly's `OAuth2LoginAutoConfiguration`.
   * `AuthorizationServer` — `client_credentials` + `refresh_token`
     grants issuing HS256 JWTs with refresh-token rotation and
     constant-time client authentication. RFC-6749 error codes match
@@ -278,6 +329,13 @@ strings → typed predicates).
 * `oauth2_login_test.rs` — the full login flow against an in-process
   OAuth2 provider mock (token + userinfo + JWKS endpoints): PKCE, state
   mismatch, provider errors, verified-id-token vs userinfo paths.
+* `session_auth_test.rs` — the `SessionAuthenticationLayer` restore loop
+  end-to-end through `firefly_session::SessionLayer` (login stores a
+  context, a later cookie-carrying request sees the restored principal;
+  anonymous fallback on/off), the cookie-keyed `SessionLoginSessionStore`
+  bridge resolving the same session by cookie across store instances, and
+  the OAuth2 login → `SessionConcurrencyController` enforcement
+  (reject-new `401 max_sessions`, admit-under-cap, logout deregistration).
 * `persistent_token_store_test.rs` — `RedisTokenStore` round-trip with
   TTL against an in-process fake RESP server; `PostgresTokenStore`
   store / find / revoke round-trip env-gated on `FIREFLY_TEST_POSTGRES_URL`

@@ -111,3 +111,96 @@ pub trait Subscriber: Send + Sync {
 pub trait Broker: Publisher + Subscriber {}
 
 impl<T: Publisher + Subscriber + ?Sized> Broker for T {}
+
+/// Ergonomic publish helpers layered over the object-safe [`Publisher`]
+/// port. Blanket-implemented for every `Publisher`, including
+/// `dyn Publisher` / `Arc<dyn Publisher>`, so it is available without
+/// extra wiring — the Rust convenience for the common "publish this
+/// payload to this topic" call that otherwise spells out
+/// [`Event::new`] every time.
+///
+/// ```
+/// use firefly_eda::{InMemoryBroker, Publisher, PublisherExt};
+///
+/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+/// let broker = InMemoryBroker::new();
+/// // One call instead of `Event::new(..)` + `publish(..)`.
+/// broker
+///     .publish_bytes("orders.created", "OrderCreated", "orders-svc", Some(br#"{"id":"o1"}"#.to_vec()))
+///     .await
+///     .unwrap();
+/// broker.close().unwrap();
+/// # });
+/// ```
+#[async_trait]
+pub trait PublisherExt: Publisher {
+    /// Builds an [`Event`] from `topic` / `event_type` / `source` /
+    /// `payload` (via [`Event::new`], so the correlation id is stamped
+    /// from the ambient scope) and publishes it. The raw-bytes
+    /// convenience over [`Publisher::publish`].
+    async fn publish_bytes(
+        &self,
+        topic: impl Into<String> + Send,
+        event_type: impl Into<String> + Send,
+        source: impl Into<String> + Send,
+        payload: Option<Vec<u8>>,
+    ) -> EdaResult<()> {
+        self.publish(Event::new(topic, event_type, source, payload))
+            .await
+    }
+}
+
+#[async_trait]
+impl<T: Publisher + ?Sized> PublisherExt for T {}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::InMemoryBroker;
+
+    #[tokio::test]
+    async fn publish_bytes_builds_and_delivers_an_event() {
+        let broker = InMemoryBroker::new();
+        let seen = Arc::new(AtomicU32::new(0));
+        let s = Arc::clone(&seen);
+        broker
+            .subscribe(
+                "orders.created",
+                handler(move |ev: Event| {
+                    let s = Arc::clone(&s);
+                    async move {
+                        assert_eq!(ev.event_type, "OrderCreated");
+                        assert_eq!(ev.source, "orders-svc");
+                        assert_eq!(ev.payload.as_deref(), Some(&b"{\"id\":\"o1\"}"[..]));
+                        s.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                }),
+            )
+            .unwrap();
+
+        broker
+            .publish_bytes(
+                "orders.created",
+                "OrderCreated",
+                "orders-svc",
+                Some(br#"{"id":"o1"}"#.to_vec()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        // Inherent (synchronous) close on the concrete broker.
+        broker.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn publish_bytes_available_through_arc_dyn_publisher() {
+        let broker: Arc<dyn Publisher> = Arc::new(InMemoryBroker::new());
+        // The extension is reachable on a trait object too.
+        broker.publish_bytes("t", "T", "s", None).await.unwrap();
+    }
+}

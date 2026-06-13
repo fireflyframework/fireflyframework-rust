@@ -408,6 +408,201 @@ impl TestResponse {
         assert_eq!(&actual, expected, "JSON body mismatch");
         self
     }
+
+    /// Select the single value at a JSONPath `path` in the JSON body, returning
+    /// `None` when nothing matches.
+    ///
+    /// The Rust analog of pyfly's `jsonpath-ng`-backed selector restricted to
+    /// the **single-result subset** real tests use: a leading `$`, dotted member
+    /// access (`$.user.name`), bracketed member access (`$['user']['name']`),
+    /// and array indexing (`$[0]`, `$.items[2].id`). It is a self-contained
+    /// parser — no extra dependency — so partial-document assertions port
+    /// directly from pyfly without pulling in a JSONPath crate.
+    ///
+    /// `$` alone selects the whole document.
+    ///
+    /// # Panics
+    /// Panics (failing the test) if the body is not valid JSON, or if `path` is
+    /// not a supported JSONPath expression (e.g. wildcards / filters / recursive
+    /// descent, which this subset does not implement).
+    #[must_use]
+    pub fn json_path(&self, path: &str) -> Option<serde_json::Value> {
+        let root: serde_json::Value = self.json();
+        let segments = parse_json_path(path);
+        let mut current = &root;
+        for segment in &segments {
+            match segment {
+                PathSegment::Key(key) => {
+                    current = current.as_object()?.get(key)?;
+                }
+                PathSegment::Index(idx) => {
+                    current = current.as_array()?.get(*idx)?;
+                }
+            }
+        }
+        Some(current.clone())
+    }
+
+    /// Assert a JSONPath `path` resolves and equals `expected`. Returns `self`
+    /// for chaining.
+    ///
+    /// The single-field analog of pyfly's
+    /// `assert_json_path(path, value=...)` — assert one field deep in the body
+    /// without over-specifying the whole document the way [`assert_json_eq`]
+    /// requires. `expected` is any value convertible into a
+    /// [`serde_json::Value`] (a `&str`, `i64`, `bool`, `serde_json::json!` tree,
+    /// …).
+    ///
+    /// See [`json_path`](TestResponse::json_path) for the supported path grammar.
+    ///
+    /// # Panics
+    /// Panics if the path does not resolve or the value differs (or the body is
+    /// not valid JSON / the path is unsupported).
+    pub fn assert_json_path(&self, path: &str, expected: impl Into<serde_json::Value>) -> &Self {
+        let expected = expected.into();
+        match self.json_path(path) {
+            None => panic!("no match for JSON path {path:?}; body: {}", self.text()),
+            Some(actual) => assert_eq!(
+                actual, expected,
+                "JSON path {path:?}: expected {expected}, got {actual}"
+            ),
+        }
+        self
+    }
+
+    /// Assert a JSONPath `path` resolves to *some* value. Returns `self` for
+    /// chaining.
+    ///
+    /// The analog of pyfly's `assert_json_path(path, exists=True)` with no value
+    /// constraint.
+    ///
+    /// # Panics
+    /// Panics if the path does not resolve (or the body is not valid JSON / the
+    /// path is unsupported).
+    pub fn assert_json_path_exists(&self, path: &str) -> &Self {
+        assert!(
+            self.json_path(path).is_some(),
+            "expected a match for JSON path {path:?}; body: {}",
+            self.text()
+        );
+        self
+    }
+
+    /// Assert a JSONPath `path` resolves to *nothing*. Returns `self` for
+    /// chaining.
+    ///
+    /// The analog of pyfly's `assert_json_path(path, exists=False)`.
+    ///
+    /// # Panics
+    /// Panics if the path resolves (or the body is not valid JSON / the path is
+    /// unsupported).
+    pub fn assert_json_path_absent(&self, path: &str) -> &Self {
+        assert!(
+            self.json_path(path).is_none(),
+            "expected no match for JSON path {path:?}; got {:?}",
+            self.json_path(path)
+        );
+        self
+    }
+}
+
+/// One resolved step of a parsed JSONPath: an object key or an array index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathSegment {
+    /// Object member access (`.name` or `['name']`).
+    Key(String),
+    /// Array element access (`[3]`).
+    Index(usize),
+}
+
+/// Parse the supported JSONPath subset into a flat segment list.
+///
+/// Grammar (single-result subset): a leading `$`, then any sequence of
+/// `.member`, `['member']` / `["member"]`, and `[<index>]`. A bare member name
+/// (no leading `$`) is tolerated for ergonomics. Panics on unsupported
+/// constructs so a mistyped path fails the test loudly rather than silently
+/// matching nothing.
+fn parse_json_path(path: &str) -> Vec<PathSegment> {
+    let mut chars = path.chars().peekable();
+    // Optional leading `$`.
+    if chars.peek() == Some(&'$') {
+        chars.next();
+    }
+    let mut segments = Vec::new();
+    loop {
+        match chars.peek().copied() {
+            None => break,
+            Some('.') => {
+                chars.next();
+                // `..` (recursive descent) is unsupported.
+                assert!(
+                    chars.peek() != Some(&'.'),
+                    "unsupported JSON path {path:?}: recursive descent ('..') is not supported"
+                );
+                let mut name = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c == '.' || c == '[' {
+                        break;
+                    }
+                    assert!(
+                        c != '*',
+                        "unsupported JSON path {path:?}: wildcards are not supported"
+                    );
+                    name.push(c);
+                    chars.next();
+                }
+                assert!(
+                    !name.is_empty(),
+                    "invalid JSON path {path:?}: empty member after '.'"
+                );
+                segments.push(PathSegment::Key(name));
+            }
+            Some('[') => {
+                chars.next();
+                let mut inner = String::new();
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == ']' {
+                        closed = true;
+                        break;
+                    }
+                    inner.push(c);
+                }
+                assert!(closed, "invalid JSON path {path:?}: unterminated '['");
+                let inner = inner.trim();
+                if (inner.starts_with('\'') && inner.ends_with('\''))
+                    || (inner.starts_with('"') && inner.ends_with('"'))
+                {
+                    segments.push(PathSegment::Key(inner[1..inner.len() - 1].to_string()));
+                } else {
+                    let idx: usize = inner.parse().unwrap_or_else(|_| {
+                        panic!(
+                            "unsupported JSON path {path:?}: '[{inner}]' is neither a quoted key \
+                             nor a numeric index"
+                        )
+                    });
+                    segments.push(PathSegment::Index(idx));
+                }
+            }
+            Some(c) => {
+                // A bare leading member name (no `$.`): read until `.`/`[`.
+                let mut name = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c == '.' || c == '[' {
+                        break;
+                    }
+                    name.push(c);
+                    chars.next();
+                }
+                assert!(
+                    !name.is_empty(),
+                    "invalid JSON path {path:?}: unexpected character {c:?}"
+                );
+                segments.push(PathSegment::Key(name));
+            }
+        }
+    }
+    segments
 }
 
 #[cfg(test)]
@@ -464,6 +659,24 @@ mod tests {
             .route(
                 "/remove",
                 axum::routing::delete(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/users",
+                get(|| async {
+                    Json(serde_json::json!([
+                        { "name": "Alice", "roles": ["admin", "user"] },
+                        { "name": "Bob", "roles": ["user"] }
+                    ]))
+                }),
+            )
+            .route(
+                "/nested",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "user": { "id": 7, "active": true, "name": "Carol" },
+                        "items": [{ "id": 100 }, { "id": 200 }]
+                    }))
+                }),
             )
     }
 
@@ -624,6 +837,91 @@ mod tests {
             .assert_status(200);
         client.delete_blocking("/remove").assert_status(204);
         client.post_empty_blocking("/created").assert_status(201);
+    }
+
+    // --- assert_json_path (pyfly TestResponse.assert_json_path parity) ---
+
+    #[tokio::test]
+    async fn json_path_selects_array_and_nested_members() {
+        let client = TestClient::new(app());
+        let users = client.get("/users").await;
+        // `$[0].name` -> "Alice" (pyfly's canonical example).
+        users
+            .assert_status(200)
+            .assert_json_path("$[0].name", "Alice")
+            .assert_json_path("$[1].name", "Bob")
+            .assert_json_path("$[0].roles[0]", "admin")
+            .assert_json_path_exists("$[1]")
+            .assert_json_path_absent("$[2]");
+
+        let nested = client.get("/nested").await;
+        nested
+            .assert_json_path("$.user.id", 7)
+            .assert_json_path("$.user.active", true)
+            .assert_json_path("$.user.name", "Carol")
+            .assert_json_path("$.items[1].id", 200)
+            // bracketed member access is equivalent to dotted.
+            .assert_json_path("$['user']['name']", "Carol")
+            .assert_json_path_absent("$.user.missing");
+    }
+
+    #[tokio::test]
+    async fn json_path_dollar_selects_whole_document() {
+        let client = TestClient::new(app());
+        let res = client.get("/ping").await;
+        assert_eq!(res.json_path("$"), Some(serde_json::json!({ "ok": true })));
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "no match for JSON path")]
+    async fn assert_json_path_missing_panics() {
+        let client = TestClient::new(app());
+        let _ = client
+            .get("/nested")
+            .await
+            .assert_json_path("$.user.nope", 1);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "expected no match for JSON path")]
+    async fn assert_json_path_absent_failure() {
+        let client = TestClient::new(app());
+        let _ = client
+            .get("/nested")
+            .await
+            .assert_json_path_absent("$.user.id");
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "recursive descent")]
+    async fn json_path_recursive_descent_unsupported() {
+        let client = TestClient::new(app());
+        let _ = client.get("/nested").await.json_path("$..id");
+    }
+
+    #[test]
+    fn parse_json_path_handles_grammar() {
+        assert_eq!(parse_json_path("$"), vec![]);
+        assert_eq!(
+            parse_json_path("$.a.b"),
+            vec![PathSegment::Key("a".into()), PathSegment::Key("b".into())]
+        );
+        assert_eq!(
+            parse_json_path("$[0].name"),
+            vec![PathSegment::Index(0), PathSegment::Key("name".into())]
+        );
+        assert_eq!(
+            parse_json_path("$['user'][\"id\"]"),
+            vec![
+                PathSegment::Key("user".into()),
+                PathSegment::Key("id".into())
+            ]
+        );
+        // bare leading member (no `$.`) is tolerated.
+        assert_eq!(
+            parse_json_path("name"),
+            vec![PathSegment::Key("name".into())]
+        );
     }
 
     #[test]

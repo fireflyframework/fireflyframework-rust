@@ -18,10 +18,14 @@
 //! optional auth guard.
 //!
 //! This is the Rust rendering of pyfly's `AdminRouteBuilder.build_routes()`.
-//! DI-container-introspection endpoints (`beans` / `conditions` / `configprops`
-//! / `mappings`) are intentionally omitted — Rust has no DI container — and
-//! `GET /admin/api/views` returns the [`AdminView`](crate::AdminView)-driven
-//! list instead.
+//! The Beans view (`GET /api/beans`, `/api/beans/{name}`, `/api/beans/graph`,
+//! and the `/api/sse/beans` stream) is backed by the optional DI
+//! [`Container`](firefly_container::Container) wired into
+//! [`AdminDeps::container`](crate::AdminDeps::container) — when no container is
+//! present the listing is empty rather than 404. The remaining DI-introspection
+//! endpoints (`conditions` / `configprops`) and the route table (`mappings`)
+//! are reported as empty stubs, and `GET /admin/api/views` returns the
+//! [`AdminView`](crate::AdminView)-driven list.
 
 use std::sync::Arc;
 
@@ -108,6 +112,9 @@ pub fn mount(cfg: AdminConfig, deps: AdminDeps) -> Router {
         .route("/caches/keys", get(cache_keys))
         .route("/caches/:name/evict", post(cache_evict))
         .route("/cqrs", get(cqrs))
+        .route("/beans", get(beans))
+        .route("/beans/graph", get(bean_graph))
+        .route("/beans/:name", get(bean_detail))
         .route("/transactions", get(transactions))
         .route("/traces", get(traces))
         .route("/logfile", get(logfile))
@@ -117,6 +124,7 @@ pub fn mount(cfg: AdminConfig, deps: AdminDeps) -> Router {
         .route("/views", get(views))
         .route("/views/:id", get(view_detail))
         .route("/settings", get(settings))
+        .route("/sse/beans", get(sse_beans))
         .route("/sse/health", get(sse_health))
         .route("/sse/metrics", get(sse_metrics))
         .route("/sse/traces", get(sse_traces))
@@ -250,8 +258,9 @@ async fn scheduled(State(st): State<AdminState>) -> Json<Value> {
 }
 
 async fn mappings(State(_st): State<AdminState>) -> Json<Value> {
-    // No central route registry in this wiring; report an empty mapping list
-    // (the DI-introspection analogue is intentionally omitted).
+    // No central HTTP route registry is wired here, so report an empty mapping
+    // list. (Bean introspection IS available via the `/beans` routes when a
+    // container is wired; only the route table remains a stub.)
     Json(json!({ "mappings": [], "total": 0 }))
 }
 
@@ -287,6 +296,25 @@ async fn cache_evict(State(st): State<AdminState>, Path(name): Path<String>) -> 
 
 async fn cqrs(State(st): State<AdminState>) -> Json<Value> {
     Json(data::cqrs(st.deps.bus.as_ref()))
+}
+
+async fn beans(State(st): State<AdminState>) -> Json<Value> {
+    Json(data::beans(st.deps.container.as_ref()))
+}
+
+async fn bean_graph(State(st): State<AdminState>) -> Json<Value> {
+    Json(data::bean_graph(st.deps.container.as_ref()))
+}
+
+async fn bean_detail(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
+    match data::bean_detail(st.deps.container.as_ref(), &name) {
+        Some(body) => Json(body).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Bean not found" })),
+        )
+            .into_response(),
+    }
 }
 
 async fn transactions(State(st): State<AdminState>) -> Json<Value> {
@@ -405,6 +433,10 @@ async fn instances_deregister(State(st): State<AdminState>, Path(name): Path<Str
 }
 
 // ── SSE handlers ────────────────────────────────────────────────────────────
+
+async fn sse_beans(State(st): State<AdminState>) -> Response {
+    sse::beans_stream(Arc::clone(&st.deps)).into_response()
+}
 
 async fn sse_health(State(st): State<AdminState>) -> Response {
     sse::health_stream(Arc::clone(&st.deps), st.cfg.refresh_interval).into_response()

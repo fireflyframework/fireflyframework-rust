@@ -128,6 +128,24 @@
 //! [`CqrsError::Validation`] channel via
 //! [`ValidationResult::into_cqrs_error`] — so the unchanged
 //! [`ValidationMiddleware`] keeps working untouched.
+//!
+//! ## Domain-event publishing, metrics, and health
+//!
+//! The crate ports pyfly's `pyfly.cqrs.event` outbound pipeline: a
+//! [`CommandEventPublisher`] port with an [`EdaCommandEventPublisher`] over
+//! [`firefly_eda::Publisher`] and a [`NoOpEventPublisher`] default, an
+//! [`EventFailureStrategy`], and a [`DomainEventMiddleware`] that harvests a
+//! command's [`Message::domain_events`] and forwards each to the broker
+//! after a successful dispatch (plus
+//! [`Bus::send_publishing`] for result-side events) — the Rust spelling of
+//! `@publish_domain_event` + `DefaultCommandBus._try_publish_events`.
+//!
+//! It also ports pyfly's `CqrsMetricsService` as [`CqrsMetrics`] (+
+//! [`MetricsMiddleware`]) recording command/query processed / failed /
+//! validation-failed counters and a processing-time histogram into a
+//! [`firefly_observability::MetricsRegistry`], and pyfly's
+//! `CqrsHealthIndicator` as [`CqrsHealthIndicator`] (UP when the bus has at
+//! least one registered handler, else UNKNOWN).
 
 //! ## Reactive surface
 //!
@@ -152,7 +170,10 @@ mod cache;
 mod context;
 mod eda_bridge;
 mod error;
+mod event;
 mod fluent;
+mod health;
+mod metrics;
 mod reactive;
 mod validation;
 
@@ -169,7 +190,13 @@ pub use eda_bridge::{
     resolve_pattern, CacheInvalidationEvent, EdaCacheInvalidationBridge, CACHE_INVALIDATION_TOPIC,
 };
 pub use error::CqrsError;
+pub use event::{
+    publish_domain_events, CommandEventPublisher, DomainEvent, DomainEventMiddleware, DomainEvents,
+    EdaCommandEventPublisher, EventFailureStrategy, NoOpEventPublisher, DEFAULT_EVENT_DESTINATION,
+};
 pub use fluent::{CommandBuilder, MessageMetadata, QueryBuilder};
+pub use health::{CqrsHealthIndicator, CQRS_HEALTH_INDICATOR_NAME};
+pub use metrics::{CqrsMetrics, MetricsMiddleware};
 pub use reactive::cqrs_error_to_firefly;
 pub use validation::{
     StructuredValidate, ValidationError, ValidationResult, ValidationSeverity,

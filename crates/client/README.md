@@ -326,6 +326,60 @@ can inspect `status()` / `problem()` and decide.
 > as WebFlux composes `retryWhen(..)` rather than baking it into the
 > client.
 
+## `RetryPolicy` — standalone retry (pyfly `client.RetryPolicy`)
+
+`RetryPolicy` is the Rust port of pyfly's public `client.RetryPolicy`: a
+free-standing, cloneable value you build once and wrap around **any**
+fallible async operation, not just one HTTP client. It retries with
+exponential backoff (`base_delay * 2^attempt`), matching pyfly's
+`base_delay * (2 ** attempt)`.
+
+```rust,ignore
+use std::time::Duration;
+use firefly_client::RetryPolicy;
+
+let policy = RetryPolicy::new()          // pyfly defaults: 3 attempts, 1s base
+    .with_max_attempts(5)
+    .with_base_delay(Duration::from_millis(200))
+    // optional: only retry a chosen error class (pyfly's retry_on=(...))
+    .with_retry_on(|e: &ClientError| e.is_retryable());
+
+let charge = policy
+    .execute(|| async { client.send(Method::POST, "/charge", Some(&req)).await })
+    .await?;
+```
+
+| Knob                  | pyfly equivalent              | Default        |
+|-----------------------|-------------------------------|----------------|
+| `with_max_attempts`   | `max_attempts`                | 3              |
+| `with_base_delay`     | `base_delay`                  | 1 s (doubling) |
+| `with_retry_on`       | `retry_on=(Exception, ...)`   | retry all      |
+
+The `op` closure produces a fresh future on every attempt, so the call is
+re-issued cleanly; on exhaustion the last error is returned.
+
+## `ClientError` status predicates (pyfly exception hierarchy)
+
+Rather than a separate typed-exception class per status (pyfly's
+`ServiceNotFoundException`, `ServiceConflictException`, …), `ClientError`
+exposes convenience predicates so callers branch on a decoded upstream
+status idiomatically:
+
+```rust,ignore
+match client.send(Method::GET, "/orders/1", NO_BODY).await {
+    Ok(bytes) => { /* … */ }
+    Err(e) if e.is_not_found()  => { /* 404 */ }
+    Err(e) if e.is_conflict()   => { /* 409 */ }
+    Err(e) if e.is_retryable()  => { /* transport / 429 / 5xx */ }
+    Err(e) => return Err(e),
+}
+```
+
+`is_validation` (400), `is_unauthorized` (401/403), `is_not_found` (404),
+`is_conflict` (409), `is_unprocessable_entity` (422), `is_rate_limited`
+(429), `is_server_error` (5xx), and `is_retryable` (transport / 429 / 5xx)
+map onto pyfly's `Service*Exception` types and their `retryable` flag.
+
 ## Composition with `firefly-resilience`
 
 The client is deliberately small; wrap calls in resilience decorators

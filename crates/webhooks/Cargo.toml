@@ -26,6 +26,14 @@ http = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
+redis = { workspace = true, optional = true }
+
+[features]
+# Enables the Redis-backed idempotency `EventStore` adapter
+# (`RedisEventStore`) for cross-process webhook dedupe, mirroring pyfly's
+# `RedisWebhookEventStore`. Off by default so the core crate stays
+# dependency-lean.
+redis = ["dep:redis"]
 
 [dev-dependencies]
 firefly-testkit = { workspace = true }

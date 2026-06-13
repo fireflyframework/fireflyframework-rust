@@ -128,6 +128,8 @@ async fn full_api_route_set_is_present() {
         "/admin/api/caches",
         "/admin/api/caches/keys",
         "/admin/api/cqrs",
+        "/admin/api/beans",
+        "/admin/api/beans/graph",
         "/admin/api/transactions",
         "/admin/api/traces",
         "/admin/api/logfile",
@@ -148,6 +150,51 @@ async fn metrics_route_lists_registered_meters() {
     assert_eq!(status, StatusCode::OK);
     let names = body["names"].as_array().unwrap();
     assert!(names.iter().any(|n| n == "orders_total"));
+}
+
+#[tokio::test]
+async fn beans_route_empty_without_container() {
+    let router = mount(AdminConfig::default(), base_deps());
+    let (status, body) = get(&router, "/admin/api/beans").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 0);
+    assert!(body["beans"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn beans_routes_backed_by_wired_container() {
+    let container = Arc::new(firefly_container::Container::new());
+    container.register_instance(7_i32);
+    container.register_instance("hi".to_string());
+    let deps = AdminDeps {
+        container: Some(container),
+        ..base_deps()
+    };
+    let router = mount(AdminConfig::default(), deps);
+
+    // Listing.
+    let (status, body) = get(&router, "/admin/api/beans").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 2);
+
+    // Detail (found) and detail (404).
+    let (status, body) = get(&router, "/admin/api/beans/i32").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["type"], "i32");
+    assert_eq!(body["module"], "");
+    let status = status_of(&router, "GET", "/admin/api/beans/does-not-exist").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Graph: nodes-only.
+    let (status, body) = get(&router, "/admin/api/beans/graph").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["nodes"].as_array().unwrap().len(), 2);
+    assert!(body["edges"].as_array().unwrap().is_empty());
+
+    // Overview beans/wiring blocks reflect the wired container.
+    let (_status, body) = get(&router, "/admin/api/overview").await;
+    assert_eq!(body["beans"]["total"], 2);
+    assert!(body["wiring"]["cqrs_handlers"].is_number());
 }
 
 #[tokio::test]
@@ -477,7 +524,7 @@ async fn set_logger_level_via_http() {
 
 // ── SSE framing (binds an ephemeral port to read the first frame) ───────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sse_traces_stream_frames_each_trace() {
     let traces = Arc::new(TraceBuffer::new());
     // Pre-seed a trace so the first incremental tick has something to push.
@@ -529,7 +576,7 @@ async fn sse_traces_stream_frames_each_trace() {
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sse_health_stream_emits_initial_frame() {
     let router = mount(AdminConfig::default(), base_deps());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

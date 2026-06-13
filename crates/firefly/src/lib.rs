@@ -87,6 +87,20 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 
+mod context;
+pub use context::{ApplicationContext, ApplicationContextBuilder};
+
+/// Component-scan a container: register every stereotype-annotated bean
+/// discovered across the crate graph, honoring conditionals/profiles.
+///
+/// The free-function form of
+/// [`Container::scan`](firefly_container::Container::scan), so
+/// `firefly::scan(&container)` reads as the pyfly `scan_package` analog.
+/// Returns the number of beans registered.
+pub fn scan(container: &firefly_container::Container) -> usize {
+    container.scan()
+}
+
 // ---------------------------------------------------------------------------
 // 1. The `__rt` contract: EVERY runtime crate re-exported under its crate name.
 // ---------------------------------------------------------------------------
@@ -110,6 +124,10 @@ pub mod __rt {
     pub use ::firefly_cache;
     pub use ::firefly_client;
     pub use ::firefly_config;
+    // `firefly_container` re-exports `inventory`, so macro-generated
+    // `firefly_container::inventory::submit!` thunks (component scan + route
+    // metadata) resolve through the facade contract without the user crate
+    // depending on `inventory` directly.
     pub use ::firefly_container;
     pub use ::firefly_cqrs;
     pub use ::firefly_data;
@@ -248,8 +266,11 @@ pub mod prelude {
     pub use firefly_cqrs::{Bus, CqrsError, Message};
 
     // ---- Dependency-injection container --------------------------------
-    /// The DI container and its bean scopes.
-    pub use firefly_container::{Container, Scope};
+    /// The `ApplicationContext` orchestrator (scan + conditions + lifecycle).
+    pub use crate::ApplicationContext;
+    /// The DI container, its bean scopes, deferred [`Provider`], and the
+    /// scan/condition surface.
+    pub use firefly_container::{ConditionContext, Container, Provider, Scope};
 
     // ---- Scheduling -----------------------------------------------------
     /// The task scheduler (cron / fixed-rate / fixed-delay).

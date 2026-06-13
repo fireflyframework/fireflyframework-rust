@@ -28,6 +28,11 @@ use crate::model::{ExecutionPattern, ExecutionStatus, StepStatus};
 use crate::saga::{Outcome, SagaStatus};
 
 /// Per-step summary inside an [`ExecutionReport`] — pyfly's `StepReport`.
+///
+/// The per-step timing fields (`started_at` / `completed_at` / `latency_ms`)
+/// mirror pyfly's `StepReport` and are omitted from the wire when absent
+/// (they're populated only when the engine captured per-step timestamps), so
+/// existing report consumers see an unchanged shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepReport {
     /// The step / node / participant id.
@@ -40,10 +45,22 @@ pub struct StepReport {
     pub result: serde_json::Value,
     /// Rendered error message when the step failed.
     pub error: Option<String>,
+    /// UTC instant the step started, if captured — pyfly's
+    /// `StepReport.started_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    /// UTC instant the step finished, if captured — pyfly's
+    /// `StepReport.completed_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+    /// Step wall-clock latency in milliseconds, if captured — pyfly's
+    /// `StepReport.latency_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
 }
 
 impl StepReport {
-    /// A `DONE` step report with one attempt and no result.
+    /// A `DONE` step report with one attempt and no result or timings.
     pub fn done(step_id: impl Into<String>) -> Self {
         Self {
             step_id: step_id.into(),
@@ -51,7 +68,20 @@ impl StepReport {
             attempts: 1,
             result: serde_json::Value::Null,
             error: None,
+            started_at: None,
+            completed_at: None,
+            latency_ms: None,
         }
+    }
+
+    /// Attaches per-step timestamps and derives `latency_ms` from them —
+    /// pyfly's `ExecutionReportBuilder` populating the timing fields.
+    #[must_use]
+    pub fn with_timing(mut self, started_at: DateTime<Utc>, completed_at: DateTime<Utc>) -> Self {
+        self.started_at = Some(started_at);
+        self.completed_at = Some(completed_at);
+        self.latency_ms = Some((completed_at - started_at).num_milliseconds().max(0) as f64);
+        self
     }
 }
 
@@ -235,6 +265,28 @@ mod tests {
         assert_eq!(report.status, ExecutionStatus::Completed);
         assert!(report.completed_at.is_some());
         assert_eq!(report.variables["amount"], serde_json::json!(100));
+    }
+
+    // Per-step timing fields are derived and present when set, omitted when
+    // absent (additive wire shape).
+    #[test]
+    fn step_report_timing_is_optional_and_derived() {
+        let plain = StepReport::done("a");
+        assert!(plain.started_at.is_none());
+        assert!(plain.latency_ms.is_none());
+        // Omitted from the wire when absent.
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("latency_ms").is_none());
+        assert!(json.get("started_at").is_none());
+
+        let start = Utc::now();
+        let end = start + chrono::Duration::milliseconds(42);
+        let timed = StepReport::done("b").with_timing(start, end);
+        assert_eq!(timed.latency_ms, Some(42.0));
+        assert_eq!(timed.started_at, Some(start));
+        assert_eq!(timed.completed_at, Some(end));
+        let json = serde_json::to_value(&timed).unwrap();
+        assert_eq!(json["latency_ms"], 42.0);
     }
 
     // Wire field names match pyfly's controller output.

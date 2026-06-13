@@ -8,10 +8,17 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Firefly Framework for Rust — document repository adapter over MongoDB"
 
+[features]
+# Opt-in actuator integration: a `db` HealthIndicator (ping). Off by default
+# so the base adapter pulls in no observability stack; enable it from a
+# starter that wires `/actuator/health`.
+actuator = ["dep:firefly-actuator"]
+
 [dependencies]
 firefly-data = { workspace = true }
 firefly-reactive = { workspace = true }
 firefly-kernel = { workspace = true }
+firefly-actuator = { workspace = true, optional = true }
 mongodb = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }

@@ -13,6 +13,7 @@ compose around any async Rust operation:
 | `RateLimiter`    | Outbound rate cap (token bucket)             | `ResilienceError::RateLimited`         |
 | `Bulkhead`       | Resource exhaustion via runaway concurrency  | `ResilienceError::BulkheadFull` (or block) |
 | `Timeout`        | Stuck calls                                  | `ResilienceError::Timeout`             |
+| `Retry`          | Transient failures (re-run with backoff)     | the operation's own error after exhaustion |
 
 `Chain` composes them into a single guarded call. Error messages are
 byte-identical to the Go port's sentinels (`firefly/resilience: circuit
@@ -161,6 +162,57 @@ let result = to.execute(|| async { slow_call().await }).await;
 // err.is_timeout() on budget exceeded
 ```
 
+## Retry
+
+`Retry` is the declarative retry combinator — the port of pyfly's `@retry`
+decorator (Spring Retry / Resilience4j `@Retry`). It re-runs a **re-runnable**
+async closure (`Fn() -> Future`) up to `max_attempts` times while the failure
+is retryable, sleeping `delay * backoff^attempt` (capped at `max_delay`, with
+optional ±`jitter`) between attempts, then surfacing the last error. Unlike the
+other primitives the operation is `Fn` (not `FnOnce`) because each attempt must
+produce a fresh future.
+
+```rust,ignore
+use firefly_resilience::{Retry, ResilienceError, retry};
+
+// Fluent builder (all fields match pyfly's keyword arguments):
+let policy = Retry::new()
+    .max_attempts(5)                          // pyfly max_attempts (default 3)
+    .delay(Duration::from_millis(100))        // pyfly delay (default 0)
+    .backoff(2.0)                             // pyfly backoff (default 1.0)
+    .max_delay(Duration::from_secs(2))        // pyfly max_delay (optional cap)
+    .jitter(0.1)                              // pyfly jitter, ±10% (default 0)
+    .retry_on(|e| !e.is_circuit_open());      // pyfly exceptions=(...) filter
+
+let out = policy.execute(|| async { charge(amount).await }).await;
+
+// The `retry(n)` free function keeps pyfly's `retry(...)` call shape:
+let out = retry(3).delay(Duration::from_millis(50)).execute(|| async {
+    fetch().await
+}).await;
+```
+
+`retry_on` decides which failures trigger a retry (pyfly's `exceptions=`);
+errors it rejects propagate immediately without consuming further attempts. By
+default **every** error is retried. The backoff schedule is exact —
+`delay_for(attempt)` returns the deterministic per-attempt wait — and jitter is
+drawn from an injectable sampler (`with_jitter_fn`) so tests are deterministic
+(the `Clock`-injection analogue for retry timing).
+
+### Composing retry with a `Chain`
+
+Because retry must re-run the guarded call, it wraps a re-runnable closure
+rather than the single-shot `Operation` a `Chain` decorator receives. To retry
+a whole guarded chain, wrap the chain's execution in `Retry::execute` — each
+attempt drives a fresh pass through the chain:
+
+```rust,ignore
+let chain = Chain::new().with(Timeout::new(Duration::from_secs(1)));
+let out = retry(3)
+    .execute(|| chain.execute(|| async { call().await }))
+    .await;
+```
+
 ## Chain
 
 ```rust,ignore
@@ -222,6 +274,13 @@ firefly:
       db-pool: { max-concurrent: 5 }                      # default 10
     time-limiter:
       slow-report: { timeout: 30s }                       # default 30s
+    retry:
+      payment-api:
+        max-attempts: 5            # default 3
+        delay: 100ms               # default 0s
+        backoff: 2.0               # default 1.0
+        max-delay: 2s              # optional cap
+        jitter: 0.1                # default 0.0
 ```
 
 ```rust,ignore
@@ -231,6 +290,7 @@ let rl = registry.rate_limiter("search-api")?;      // Arc<RateLimiter>
 let bh = registry.bulkhead("db-pool")?;             // Arc<Bulkhead>
 let d  = registry.time_limiter("slow-report")?;     // Duration
 let to = registry.timeout("slow-report")?;          // ready-made Timeout decorator
+let rt = registry.retry("payment-api")?;            // ready-made Retry policy
 ```
 
 Unknown names return `RegistryError::NotFound` with pyfly's `KeyError`
@@ -294,6 +354,30 @@ impl Timeout {
     pub async fn execute<T, F, Fut>(&self, op: F) -> Result<T, ResilienceError>;
 }
 
+pub struct RetryConfig {
+    pub max_attempts: usize,        // < 1 clamped to 1 (pyfly raises); default 3
+    pub delay: Duration,            // base delay; default ZERO
+    pub backoff: f64,               // delay * backoff^attempt; default 1.0
+    pub max_delay: Option<Duration>,// per-attempt cap; default None
+    pub jitter: f64,                // ±jitter * wait, clamped 0..=1; default 0
+}
+impl Default for RetryConfig;       // pyfly defaults
+impl Retry {
+    pub fn new() -> Self;                                  // pyfly defaults
+    pub fn from_config(cfg: RetryConfig) -> Self;
+    pub fn config(&self) -> RetryConfig;
+    pub fn max_attempts(self, n: usize) -> Self;           // fluent setters
+    pub fn delay(self, d: Duration) -> Self;
+    pub fn backoff(self, b: f64) -> Self;
+    pub fn max_delay(self, d: Duration) -> Self;
+    pub fn jitter(self, j: f64) -> Self;
+    pub fn retry_on(self, pred) -> Self;                   // pyfly exceptions=(...)
+    pub fn with_jitter_fn(self, sampler) -> Self;          // deterministic tests
+    pub fn delay_for(&self, attempt: usize) -> Duration;   // deterministic schedule
+    pub async fn execute<T, F: Fn, Fut>(&self, op: F) -> Result<T, ResilienceError>;
+}
+pub fn retry(max_attempts: usize) -> Retry;                // pyfly retry(...) call shape
+
 #[async_trait]
 pub trait Decorator: Send + Sync {
     async fn call(&self, op: Operation<'_>) -> Result<(), ResilienceError>;
@@ -307,7 +391,8 @@ impl Decorator for Fallback;
 
 pub struct ResilienceRegistry;     // ::from_config(&Layered) | ::from_sources(v) | ::from_map(&flat)
                                    // .circuit_breaker(n) .rate_limiter(n) .bulkhead(n)
-                                   // .time_limiter(n) .timeout(n) .register_*(n, v) .*_names()
+                                   // .time_limiter(n) .timeout(n) .retry(n)
+                                   // .register_*(n, v) .*_names()
 pub fn parse_duration(raw: &str) -> Result<Duration, RegistryError>;
 pub enum RegistryError { NotFound, InvalidDuration, InvalidValue, Config(ConfigError) }
 
@@ -331,6 +416,11 @@ The pyfly-parity layer ports pyfly's test suites: failure-rate window
 trip/partial-window/sliding semantics and the half-open probe budget
 (`tests/resilience/test_resilience_tuning.py`), registry duration
 parsing, config materialisation, relaxed binding, unknown-name errors,
-and direct construction (`test_resilience_registry.py`), and the
+and direct construction (`test_resilience_registry.py`), the
 fallback behaviors — success bypass, handler receives the error,
-predicate filtering, async handlers (`test_fallback.py`).
+predicate filtering, async handlers (`test_fallback.py`) — and the
+retry combinator: first-try success, retry-until-success,
+attempt-exhaustion-resurfaces-last-error, single-attempt-no-retry,
+non-retryable-error-propagates-immediately, the `delay * backoff^attempt`
+schedule, `max_delay` capping, jittered-wait bounds and zero-floor, and
+chain composition (`test_retry.py`).

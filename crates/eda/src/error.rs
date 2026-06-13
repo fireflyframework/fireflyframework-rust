@@ -64,6 +64,20 @@ pub enum EdaError {
     /// transparently).
     #[error(transparent)]
     Handler(#[from] FireflyError),
+
+    /// An [`EventSerializer`](crate::EventSerializer) failed to encode or
+    /// decode an [`Event`](crate::Event), or was a not-yet-implemented
+    /// codec (Avro / Protobuf). The message names the serializer and the
+    /// cause, mirroring pyfly's `NotImplementedError` / `json` decode
+    /// failures.
+    #[error("firefly/eda: serialization ({serializer}): {message}")]
+    Serialization {
+        /// The serializer [`name`](crate::EventSerializer::name) that
+        /// produced the failure.
+        serializer: String,
+        /// Human-readable cause.
+        message: String,
+    },
 }
 
 impl From<EdaError> for FireflyError {

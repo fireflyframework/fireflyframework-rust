@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — SPA Entry Point.
+ * Firefly Admin — SPA Entry Point.
  *
  * Hash-based router that dynamically imports view modules,
  * manages the sidebar active state, persists theme preference,
@@ -38,7 +38,7 @@ const routes = {
 /* ── Application State ────────────────────────────────────────── */
 
 let settings = {
-    title: 'PyFly Admin',
+    title: 'Firefly Admin',
     theme: 'dark',
     refreshInterval: 10000,
     serverMode: false,

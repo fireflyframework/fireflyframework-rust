@@ -144,6 +144,20 @@ additionally mints/echoes `X-Request-Id`, propagates `X-Tenant-Id` and
 | `JsonMessageConverter`, `XmlMessageConverter` (quick-xml) | Read/write JSON and XML; `value_to_xml`/`xml_to_value` for dict↔XML |
 | `Negotiate<T>` | Responder that serialises `T` to the negotiated media type |
 
+### Exception handlers — `exception_handler.rs`
+
+The Rust analog of pyfly's `@controller_advice` + `@exception_handler`
+(Spring's `@ExceptionHandler`). The default RFC 7807 path is unchanged;
+this is an opt-in hook for translating a *specific* domain error into a
+*custom* status + body.
+
+| Symbol | Behaviour |
+|--------|-----------|
+| `ExceptionHandlerRegistry::on_type(type, fn)` | Map errors whose problem `type` matches (the analog of pyfly keying by exception class) through a `ProblemDetail` transform |
+| `ExceptionHandlerRegistry::on_status(code, fn)` | Coarser by-status catch-all; by-`type` handlers are always tried first |
+| `ExceptionHandlerRegistry::with_overrides(local)` | Layer controller-local rules over global advice — local wins, global fills the gaps (pyfly's local-overrides-global precedence) |
+| `ExceptionHandlerRegistry::map(&WebError)` / `handle(&WebError)` | Resolve to a transformed `ProblemDetail`, or render the custom RFC 7807 `Response` directly (falls through to the default when nothing matches) |
+
 ### Server bootstrap — `server.rs`
 
 | Symbol | Behaviour |

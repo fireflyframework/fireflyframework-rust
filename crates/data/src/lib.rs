@@ -72,8 +72,21 @@
 //! - **[`QueryMethodParser`]** — Spring-Data derived query methods:
 //!   parses `find_by_x_and_y_order_by_z`-style names into a
 //!   [`ParsedQuery`] that lowers (with bound arguments) to the
-//!   [`Filter`] / [`Specification`] DSL and executes against an
-//!   in-memory collection.
+//!   [`Filter`] / [`Specification`] DSL, renders a *complete*
+//!   dialect-aware SQL statement per prefix
+//!   ([`ParsedQuery::to_sql`] → `find` / `count` / `exists` /
+//!   `delete`), and executes against an in-memory collection. The sqlx /
+//!   MongoDB adapters run these end-to-end via their
+//!   `query_method` / `derived_query` helpers.
+//! - **[`CustomQuery`] + [`transpile_jpql`] + [`substitute_named_params`]**
+//!   — the `@query` custom-query path: a raw SQL / JPQL string with `:param`
+//!   named placeholders (relational, bound to positional placeholders with
+//!   [`QueryShape`] return-shape inference) and a JSON filter /
+//!   aggregation-pipeline string with `":param"` placeholders (document).
+//! - **[`ColumnProjection`]** — DB-level interface projections: a
+//!   column-subset that narrows the `SELECT` list (or Mongo projection
+//!   document) so only the projected columns cross the wire, the DB-side
+//!   complement of [`Mapper::project`].
 //!
 //! # Quick start
 //!
@@ -105,11 +118,13 @@
 #![warn(missing_docs)]
 
 mod auditing;
+mod custom_query;
 mod dialect;
 mod filter;
 mod mapper;
 mod page;
 mod pageable;
+mod projection;
 mod query_parser;
 mod reactive;
 mod repository;
@@ -118,14 +133,18 @@ mod soft_delete;
 mod specification;
 
 pub use auditing::{AuditStamps, Auditor, UserProvider};
+pub use custom_query::{
+    substitute_named_params, transpile_jpql, BoundQuery, CustomQuery, CustomQueryError, QueryShape,
+};
 pub use dialect::{MySqlDialect, PostgresDialect, SqlDialect, SqliteDialect};
 pub use filter::{Direction, Filter, Op, Predicate, Sort};
 pub use mapper::{MapError, Mapper, Mapping, Projection};
 pub use page::Page;
 pub use pageable::{Order, Pageable, PageableError, RequestSort, UNPAGED_SIZE};
+pub use projection::ColumnProjection;
 pub use query_parser::{
-    FieldPredicate, OrderClause, ParsedQuery, QueryBindError, QueryMethodParser, QueryOperator,
-    QueryParseError, QueryPrefix,
+    DerivedSql, FieldPredicate, OrderClause, ParsedQuery, QueryBindError, QueryMethodParser,
+    QueryOperator, QueryParseError, QueryPrefix,
 };
 pub use reactive::{
     PostgresReactiveRepository, ReactiveCrudRepository, ReactiveMemoryRepository,

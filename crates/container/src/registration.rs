@@ -33,6 +33,14 @@ use crate::ContainerError;
 pub type Factory =
     Box<dyn Fn(&crate::Container) -> Result<SharedInstance, ContainerError> + Send + Sync>;
 
+/// A `#[pre_destroy]` hook: receives the shared instance and runs teardown.
+///
+/// Invoked by [`Container::destroy`](crate::Container::destroy) (the
+/// `ApplicationContext` shutdown path) in reverse construction order. Ported
+/// from pyfly's `_call_pre_destroy`. Errors are swallowed-and-logged by the
+/// caller, never propagated, so one failing teardown cannot abort shutdown.
+pub type DestroyHook = Box<dyn Fn(&SharedInstance) + Send + Sync>;
+
 /// Metadata for a single registered bean.
 ///
 /// Mirrors pyfly's `Registration` dataclass. Each registration carries the
@@ -58,6 +66,12 @@ pub struct Registration {
     pub(crate) instance: Mutex<Option<SharedInstance>>,
     /// Per-bean runtime metrics.
     pub(crate) metrics: Mutex<BeanMetrics>,
+    /// The stereotype label (`service`, `repository`, …) when this bean came
+    /// through a stereotype derive or [`Container::scan`](crate::Container::scan).
+    /// `None` for hand-registered factory beans.
+    pub(crate) stereotype: Mutex<Option<String>>,
+    /// An optional `#[pre_destroy]` teardown hook, invoked on shutdown.
+    pub(crate) destroy: Mutex<Option<DestroyHook>>,
 }
 
 impl Registration {
@@ -94,6 +108,15 @@ impl Registration {
     #[must_use]
     pub fn impl_type(&self) -> TypeId {
         self.impl_type
+    }
+
+    /// The stereotype label (`service`, …) recorded for this bean, if any.
+    #[must_use]
+    pub fn stereotype(&self) -> Option<String> {
+        self.stereotype
+            .lock()
+            .expect("stereotype mutex poisoned")
+            .clone()
     }
 }
 

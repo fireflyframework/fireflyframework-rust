@@ -149,6 +149,34 @@ pub fn logfile_stream(deps: Arc<AdminDeps>) -> Sse<impl Stream<Item = Result<Eve
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// `GET /admin/api/sse/beans` — every ~10s, samples each bean's
+/// `resolution_count` from the wired DI container and pushes a `beans` event
+/// carrying only the rows whose count changed since the last sample (pyfly's
+/// `beans_stream` `last_counts` diff). The event payload is
+/// `{"updates": [{"name", "resolution_count"}]}`; ticks with no change emit
+/// nothing. Without a wired container the stream stays open and idle.
+pub fn beans_stream(deps: Arc<AdminDeps>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let ticker = IntervalStream::new(tokio::time::interval(Duration::from_secs(10)));
+    let stream = ticker
+        .scan(
+            std::collections::BTreeMap::<String, u64>::new(),
+            move |last_counts, _| {
+                let current = data::bean_resolution_counts(deps.container.as_ref());
+                let updates: Vec<Value> = current
+                    .iter()
+                    .filter(|(name, count)| last_counts.get(*name) != Some(*count))
+                    .map(|(name, count)| serde_json::json!({ "name": name, "resolution_count": count }))
+                    .collect();
+                *last_counts = current;
+                let item = (!updates.is_empty())
+                    .then(|| Ok(event("beans", &serde_json::json!({ "updates": updates }))));
+                futures::future::ready(Some(item))
+            },
+        )
+        .filter_map(futures::future::ready);
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 /// `GET /admin/api/sse/runtime` — pushes the runtime snapshot every tick
 /// (pyfly's `runtime_stream`).
 pub fn runtime_stream(refresh_ms: u64) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {

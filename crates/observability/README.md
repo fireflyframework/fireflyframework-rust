@@ -62,6 +62,13 @@ enclosing `tracing` spans are merged into each event — the analog of
 Go's `logger.With(...)`. `tracing`'s extra `TRACE` level maps to `DEBUG`
 so the level vocabulary stays `DEBUG`/`INFO`/`WARN`/`ERROR` everywhere.
 
+**Log ↔ trace correlation.** When a W3C trace context is in scope (set by
+`TraceContextLayer` / `with_trace_context`), every record also carries
+`trace_id` (32-hex) and `span_id` (16-hex), sourced from the active
+`traceparent` — the Rust analog of pyfly's `_add_trace_ids` structlog
+processor (the SLF4J MDC equivalent), so logs and traces join in the same
+pipeline. A no-op when no trace context is set.
+
 ### Health
 
 ```rust,ignore
@@ -253,7 +260,25 @@ pub async fn counted(®istry, name, fut) -> T;          // pyfly @counted
 pub async fn counted_result(®istry, name, fut) -> Result<T, E>;
 pub struct Timed;   // builder: .description() .class() .method() .tag() .record()/.record_result()
 pub struct Counted; // builder: same, counting result=success|failure + exception
+
+// Metrics-recording PORT (pyfly observability/ports.py) — write
+// instrumentation against the abstraction, not the Prometheus adapter:
+pub trait MetricsRecorder: Send + Sync {    // pyfly: MetricsRecorder Protocol
+    fn counter(&self, name, desc, labels: &[&str]) -> Arc<Counter>;
+    fn gauge(&self, name, desc, labels: &[&str]) -> Arc<Gauge>;
+    fn histogram(&self, name, desc, labels: &[&str], buckets: Option<&[f64]>) -> Arc<Histogram>;
+}
+impl MetricsRecorder for MetricsRegistry;    // the default (Prometheus) adapter
+pub struct NoOpMetricsRecorder;              // pyfly: NoOpMetricsRecorder — discards everything
 ```
+
+`MetricsRecorder` is the port instrumentation depends on so it is not
+hard-coupled to Prometheus; `MetricsRegistry` is the default adapter and
+`NoOpMetricsRecorder` is a dependency-free one for tests / metrics-disabled
+deployments (so code can hold a recorder instead of guarding an `Option`). The
+no-op recorder is backed by a private isolated registry whose data is never
+exposed, yet still enforces the same label-arity contract — surfacing wiring
+mistakes in tests.
 
 Micrometer naming is preserved: `orders.process` → histogram
 `orders_process_seconds` with `class`/`method`/`exception` labels;
@@ -288,7 +313,9 @@ wire format natively (lowercase hex, version `ff` and all-zero ids
 rejected, future versions tolerated, `tracestate` capped at 32
 members). The kernel task-local carries the correlation id; the
 trace-context pair lives in this crate's own task-locals (pyfly
-contextvars → tokio `task_local!`).
+contextvars → tokio `task_local!`). When a trace context is in scope, the
+logging layer also stamps `trace_id`/`span_id` onto every record (see
+[Logging](#logging)), matching pyfly's `_add_trace_ids`.
 
 ### Process metrics (pyfly `observability/process_metrics.py`)
 
@@ -450,8 +477,12 @@ cargo test -p firefly-observability
 Covers JSON-format correlation-id emission (sync and async task-local
 scopes), the `degraded ⊕ up` overall computation, banner content and
 overrides, plus Rust-specific cases: level filtering, text format, span
-field merging, the Go JSON wire shape of `HealthResult` (nanosecond
-`duration`, omitted empty `message`/`details`), and Send/Sync bounds.
+field merging, log↔trace correlation (`trace_id`/`span_id` injected from
+the W3C trace context, omitted with no context in scope), the Go JSON wire
+shape of `HealthResult` (nanosecond `duration`, omitted empty
+`message`/`details`), the `MetricsRecorder` port + `NoOpMetricsRecorder`
+adapter (recording, discard semantics, trait-object use, label-arity
+enforcement), and Send/Sync bounds.
 
 The pyfly-parity surface is covered by `tests/pyfly_parity_test.rs`,
 porting pyfly's `tests/observability/` (metric idempotency across

@@ -128,7 +128,7 @@ fn compile_glob(pattern: &str) -> GlobMatcher {
 /// # Deny-by-default (fail-closed)
 ///
 /// Once **any** rule is declared, requests that match **no** rule are
-/// rejected with 403 — pyfly's [`HttpSecurity`] deny-by-default
+/// rejected with 403 — pyfly's `HttpSecurity` deny-by-default
 /// (Spring Security 6) semantics. To allow unmatched paths, declare a
 /// catch-all last via [`any_request_permit`](Self::any_request_permit)
 /// (pyfly `any_request().permit_all()`). A chain with **no** rules at

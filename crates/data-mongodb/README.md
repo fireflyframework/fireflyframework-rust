@@ -45,6 +45,19 @@ Plus, beyond the shared ports:
 - `with_auditor(Auditor)` — wire automatic audit stamping on writes.
 - `with_soft_delete(SoftDeletePolicy)` — wire automatic soft-delete
   filtering on reads and turn `delete_by_id` into a logical delete.
+- **Derived & custom queries executed end-to-end** — the document analogue
+  of pyfly's repository bean post-processor:
+  - `find_by_derived` / `count_by_derived` / `exists_by_derived` /
+    `delete_by_derived` parse a `find_by_status_and_role`-style method name
+    and lower it (through the shared `Specification` tree) to a
+    `$`-operator filter, executed against the collection.
+  - `query_find(filter_json, params)` runs a `@query` JSON filter document
+    with `":param"` substitution; `query_aggregate(pipeline_json, params)`
+    runs a `@query` aggregation pipeline (results stream as
+    `serde_json::Value`).
+  - `project_by_spec(projection, spec)` applies a DB-level
+    `ColumnProjection` (a Mongo projection document) so only the projected
+    fields are returned.
 
 Reads **stream lazily** off the driver's cursor as a `Flux<T>`; nothing
 is buffered before the first row.
@@ -150,13 +163,28 @@ set, and skips cleanly otherwise so `cargo test` stays green on a bare
 machine.
 
 ```bash
-# Offline: the round-trip test skips, everything else runs.
+# Offline: the round-trip tests skip, everything else runs.
 cargo test -p firefly-data-mongodb
 
-# Against a live mongod:
+# Against a live mongod (also exercises the derived/custom/projection paths):
 FIREFLY_TEST_MONGODB_URL=mongodb://localhost:27017 \
   cargo test -p firefly-data-mongodb
 ```
+
+## Actuator integration (feature `actuator`)
+
+Enable the `actuator` feature for a database health component, the Rust port
+of pyfly's database health probe:
+
+```toml
+firefly-data-mongodb = { version = "26.6.3", features = ["actuator"] }
+```
+
+`MongoHealthIndicator` implements `firefly_actuator::HealthIndicator`: it
+issues the server `ping` command and reports `UP` (with the database name on
+`details.database`) — the `db` component on `GET /actuator/health`.
+`MongoHealthIndicator::named(db, "db-reporting")` probes a named database
+under its own component name.
 
 ## License
 

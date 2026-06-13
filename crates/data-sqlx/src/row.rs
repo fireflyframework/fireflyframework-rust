@@ -103,6 +103,37 @@ impl<'r> AnyRow<'r> {
         self.try_get::<Option<DateTime<Utc>>>(column)
     }
 
+    /// Reads a column by name as a best-effort [`serde_json::Value`],
+    /// trying the common scalar decodes in turn (`bool` → `i64` → `f64` →
+    /// `String`), and falling back to `null` when the column is `NULL` or
+    /// decodes to none of them.
+    ///
+    /// This is the column accessor an *interface projection*
+    /// ([`ColumnProjection`](firefly_data::ColumnProjection)) uses: a
+    /// projected read selects only a column subset and decodes each into a
+    /// JSON value, so the projected row is a `serde_json::Value` object keyed
+    /// by the projected columns rather than a full typed entity.
+    pub fn get_json(&self, column: &str) -> serde_json::Value {
+        use serde_json::Value;
+        // An explicit NULL (typed as Option<String>) -> JSON null.
+        if let Ok(None) = self.try_get::<Option<String>>(column) {
+            return Value::Null;
+        }
+        if let Ok(b) = self.try_get::<bool>(column) {
+            return Value::Bool(b);
+        }
+        if let Ok(i) = self.try_get::<i64>(column) {
+            return Value::from(i);
+        }
+        if let Ok(f) = self.try_get::<f64>(column) {
+            return Value::from(f);
+        }
+        if let Ok(s) = self.try_get::<String>(column) {
+            return Value::String(s);
+        }
+        Value::Null
+    }
+
     /// Reads a column by name as any sqlx-decodable type, dispatching to
     /// the concrete backend row. This is the single point every typed
     /// accessor funnels through, and the escape hatch for column types not

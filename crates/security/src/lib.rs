@@ -48,6 +48,10 @@
 //! 10. [`PasswordEncoder`] + [`BcryptPasswordEncoder`] — a standalone,
 //!     reusable credential hash/verify primitive (pyfly's
 //!     `pyfly.security.password`), usable independently of any IdP.
+//! 11. [`JwtService`] — a standalone symmetric (HMAC, HS256 default) JWT
+//!     encode/decode/`to_authentication` primitive (pyfly's
+//!     `pyfly.security.jwt.JWTService`), reusable for symmetric-token
+//!     APIs, workers, and CLIs without any IdP; satisfies [`Verifier`].
 //!
 //! ## Mental model
 //!
@@ -137,10 +141,12 @@ mod csrf;
 mod filter_chain;
 pub mod guards;
 mod jwks;
+mod jwt;
 pub mod oauth2;
 mod password;
 mod problem;
 mod role_hierarchy;
+mod session_auth;
 
 pub use authentication::{
     authentication_from, must_auth_from, with_authentication, Authentication, SecurityError,
@@ -154,8 +160,13 @@ pub use csrf::{
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
 pub use guards::{require, AuthorizationGuard};
 pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier};
+pub use jwt::{authentication_from_claims, JwtService, DEFAULT_EXPIRATION_SECONDS};
 pub use password::{BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
 pub use role_hierarchy::RoleHierarchy;
+pub use session_auth::{
+    SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,
+    SessionLoginSessionStore,
+};
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.3";

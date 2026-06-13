@@ -93,6 +93,9 @@
 //! - **Runtime reload** — [`ReloadableConfig`] replays the source chain
 //!   on [`reload`](ReloadableConfig::reload) and reports changed top-level
 //!   keys; the [`Refresher`] trait is the `/actuator/refresh` hook.
+//!   [`reload_and_publish`](ReloadableConfig::reload_and_publish) additionally
+//!   fires a [`RefreshScopeRefreshedEvent`] onto an [`ApplicationEventBus`]
+//!   after a successful reload — pyfly's `ContextRefresher.refresh()`.
 //! - **Introspection** — [`Layered::property_sources`] returns ordered,
 //!   origin-attributed property sources with sensitive values masked via
 //!   the [`mask`] module (Spring `Sanitizer` parity).
@@ -104,8 +107,8 @@
 //! - **In-process events** — [`ApplicationEventBus`] is a synchronous,
 //!   `TypeId`-dispatched, `@order`-sorted pub/sub for the lifecycle
 //!   events [`ContextRefreshedEvent`] / [`ApplicationReadyEvent`] /
-//!   [`ContextClosedEvent`] and arbitrary in-VM domain events (distinct
-//!   from the async `firefly-eda` broker).
+//!   [`ContextClosedEvent`] / [`RefreshScopeRefreshedEvent`] and arbitrary
+//!   in-VM domain events (distinct from the async `firefly-eda` broker).
 //! - **Remote config** — [`ConfigClient`] fetches a Spring-Cloud-Config
 //!   `/{app}/{profile}/{label}` document and flattens it into a
 //!   [`StaticSource`].
@@ -130,7 +133,7 @@ pub use client::ConfigClient;
 pub use error::ConfigError;
 pub use events::{
     ApplicationEvent, ApplicationEventBus, ApplicationEventPublisher, ApplicationReadyEvent,
-    ContextClosedEvent, ContextRefreshedEvent,
+    ContextClosedEvent, ContextRefreshedEvent, RefreshScopeRefreshedEvent,
 };
 pub use introspect::{
     PropertySourceView, PropertyView, SYSTEM_ENVIRONMENT_ORIGIN, SYSTEM_ENVIRONMENT_SOURCE,

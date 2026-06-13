@@ -1,10 +1,11 @@
 # firefly-cli
 
 The `firefly` developer CLI for the **Firefly Framework for Rust**: scaffold new
-projects that *actually compile*, generate code artifacts into them, export an
-OpenAPI document, manage SQLite migrations, introspect a running app's actuator,
-generate shell completions, report a Software Bill of Materials and licenses,
-and diagnose your toolchain and project.
+projects that *actually compile*, generate code artifacts into them, run the app
+with profile/override env mapping, stamp build metadata and build OCI images,
+export an OpenAPI document, manage SQLite migrations, introspect a running app's
+actuator, generate shell completions, report a Software Bill of Materials and
+licenses, and diagnose your toolchain and project.
 
 ```bash
 cargo install --path crates/cli   # installs the `firefly` binary
@@ -17,6 +18,8 @@ firefly --help
 | --- | --- |
 | `firefly new <name>` | Scaffold a new firefly-rust project (compiles out of the box). |
 | `firefly generate <kind> <name>` (alias `g`) | Generate a code artifact into the current project. |
+| `firefly run [flags]` | Run the app via Cargo, mapping `--profile`/`-D`/`--env`/`--debug` to `FIREFLY_*`. |
+| `firefly build <info\|image>` | Stamp `build-info.json` for `/actuator/info`, or build an OCI image. |
 | `firefly info` | Framework + environment + project information. |
 | `firefly doctor` | Toolchain + project health checks. |
 | `firefly db <init\|migrate\|upgrade\|downgrade\|status>` | SQLite migration management (firefly-migrations). |
@@ -118,6 +121,58 @@ highest existing file in `migrations/`.
 > Generated artifacts are written as files; wire them into your module tree
 > (`mod handlers;` etc.) to compile them. The crate's tests verify that, once
 > wired, every artifact kind compiles against the real framework.
+
+---
+
+### `firefly run`
+
+Runs the application via Cargo from the detected project root, mapping pyfly's
+launch flags to the framework's environment variables (the Rust analog of
+pyfly's `_to_env_key` / `_build_launch_env`):
+
+```bash
+firefly run -p dev,test                 # FIREFLY_PROFILES_ACTIVE=dev,test
+firefly run -D web.port=9000            # FIREFLY_WEB_PORT=9000
+firefly run --env RUST_LOG=info         # raw passthrough
+firefly run --debug                     # FIREFLY_LOGGING_LEVEL_ROOT=DEBUG
+firefly run --release --bin svc         # cargo run --release --bin svc
+firefly run --dry-run -p dev            # print the env + command, run nothing
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--profile`, `-p <p[,q]>` | Active profile(s); repeatable or comma-separated → `FIREFLY_PROFILES_ACTIVE`. |
+| `-D <key=value>` | Config override → `FIREFLY_<KEY>=value` (`.`/`-` → `_`, `firefly.` stripped). |
+| `--env <KEY=VALUE>` | Raw environment variable for the app process (verbatim). |
+| `--debug` | Sets `FIREFLY_LOGGING_LEVEL_ROOT=DEBUG`. |
+| `--release` | `cargo run --release` (optimized profile). |
+| `--bin <name>` | `cargo run --bin <name>` (specific binary target). |
+| `--dry-run` | Print the resolved environment + Cargo command without executing. |
+
+pyfly's ASGI-server selection (`--server`/`--workers`/`--reload`/`--app`) has no
+analog for a single compiled binary and is intentionally omitted — a Firefly
+app is a normal Cargo binary.
+
+---
+
+### `firefly build`
+
+Packaging helpers. Plain compilation is `cargo build` (the wheel/sdist analog);
+this group ports the two pyfly `build` commands with a direct Rust counterpart:
+
+```bash
+firefly build info                      # write build-info.json (git SHA + UTC time)
+firefly build info -o target/bi.json    # custom output path
+firefly build image -t svc:1            # OCI image via Cloud Native Buildpacks (pack)
+firefly build image --builder docker    # OCI image via `docker build .`
+```
+
+`build info` writes `{"git": {"sha": …}, "build": {"time": …}}`,
+**byte-shape-identical** to pyfly/Go/Java so the same file feeds every runtime's
+`/actuator/info` build contributor (register it as an info contributor in your
+app). The SHA is the empty string when git is unavailable; the time is RFC 3339
+UTC. `build image` requires `pack` (default) or `docker` on `PATH` and uses the
+`Dockerfile` already scaffolded by `firefly new`.
 
 ---
 
@@ -295,9 +350,15 @@ test-case for test-case from `tests/cli/`.
 Deliberate divergences (a compiled tool cannot do everything an interpreter can):
 
 - The `fastapi-api` archetype is dropped (Rust has a single web stack, Axum).
-- The interactive `questionary` wizard and Python-runtime-only commands
-  (`run`/`shell`/quality wrappers/`upgrade`) and the entry-point plugin
-  mechanism are out of scope.
+- The interactive `questionary` wizard and the truly Python-runtime-only
+  commands (`shell`'s booted-context REPL, quality wrappers, `upgrade`) and the
+  entry-point plugin mechanism are out of scope. (`shell`'s introspection story
+  is covered by `firefly actuator`/`routes`/`env`/`health` against a running
+  app.)
+- `firefly run` maps pyfly's launch flags to `FIREFLY_*` env vars and execs
+  `cargo run`; pyfly's ASGI-server selection has no single-binary analog.
+- `firefly build info`/`image` port pyfly's build stamp + OCI image; plain
+  `cargo build` is the wheel/sdist analog.
 - `firefly db` drives the **forward-only** `firefly-migrations` runner instead
   of Alembic; `db downgrade` is unsupported; pyfly's
   `current`/`history`/`heads`/… collapse to `db status`; only SQLite is wired.

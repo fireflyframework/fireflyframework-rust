@@ -349,7 +349,7 @@ export async function render(container, api) {
     const appMeta = [];
     if (app.name) appMeta.push(['Application', app.name]);
     if (app.version) appMeta.push(['Version', app.version]);
-    if (app.framework_version) appMeta.push(['Framework', `PyFly ${app.framework_version}`]);
+    if (app.framework_version) appMeta.push(['Framework', `Firefly ${app.framework_version}`]);
     if (app.python_version) appMeta.push(['Python', app.python_version]);
     if (app.platform) appMeta.push(['Platform', app.platform]);
     if (app.description) appMeta.push(['Description', app.description]);

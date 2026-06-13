@@ -43,13 +43,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use firefly_data::{
-    Auditor, DataError, Filter, Page, Pageable, Repository, SoftDeletePolicy, Specification,
-    SqlDialect, TableConfig,
+    Auditor, CustomQuery, DataError, DerivedSql, Filter, Page, Pageable, QueryMethodParser,
+    QueryPrefix, QueryShape, Repository, SoftDeletePolicy, Specification, SqlDialect, TableConfig,
 };
 use firefly_data::{ReactiveCrudRepository, ReactiveSpecificationRepository};
 use firefly_kernel::FireflyError;
 use firefly_reactive::{Flux, Mono};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::binding::timestamp_value;
 use crate::db::{Backend, Db};
@@ -377,6 +378,85 @@ fn stream_sqlite<T: Send + 'static>(
             yield mapper.map_row(&any)?;
         }
     })
+}
+
+/// Streams the rows of a projected `SELECT` (only `columns` selected),
+/// decoding each row into a [`serde_json::Value`] object keyed by `columns`
+/// — the projection execution path. Each column is read best-effort via
+/// [`AnyRow::get_json`].
+fn stream_projected<T: Send + Sync + 'static>(
+    inner: Arc<Inner<T>>,
+    sql: String,
+    args: Vec<Value>,
+    columns: Vec<String>,
+) -> Flux<Value> {
+    match inner.backend() {
+        #[cfg(feature = "postgres")]
+        Backend::Postgres => {
+            use futures::StreamExt;
+            let Db::Postgres(pool) = inner.db.clone() else {
+                return Flux::error(no_backend_err());
+            };
+            Flux::from_stream(async_stream::try_stream! {
+                let mut query = sqlx::query(&sql);
+                for a in &args {
+                    query = crate::binding::bind_pg(query, a);
+                }
+                let mut rows = query.fetch(&pool);
+                while let Some(row) = rows.next().await {
+                    let row = row.map_err(map_sqlx_err)?;
+                    yield project_row(&AnyRow::Postgres(&row), &columns);
+                }
+            })
+        }
+        #[cfg(feature = "mysql")]
+        Backend::MySql => {
+            use futures::StreamExt;
+            let Db::MySql(pool) = inner.db.clone() else {
+                return Flux::error(no_backend_err());
+            };
+            Flux::from_stream(async_stream::try_stream! {
+                let mut query = sqlx::query(&sql);
+                for a in &args {
+                    query = crate::binding::bind_mysql(query, a);
+                }
+                let mut rows = query.fetch(&pool);
+                while let Some(row) = rows.next().await {
+                    let row = row.map_err(map_sqlx_err)?;
+                    yield project_row(&AnyRow::MySql(&row), &columns);
+                }
+            })
+        }
+        #[cfg(feature = "sqlite")]
+        Backend::Sqlite => {
+            use futures::StreamExt;
+            let Db::Sqlite(pool) = inner.db.clone() else {
+                return Flux::error(no_backend_err());
+            };
+            Flux::from_stream(async_stream::try_stream! {
+                let mut query = sqlx::query(&sql);
+                for a in &args {
+                    query = crate::binding::bind_sqlite(query, a);
+                }
+                let mut rows = query.fetch(&pool);
+                while let Some(row) = rows.next().await {
+                    let row = row.map_err(map_sqlx_err)?;
+                    yield project_row(&AnyRow::Sqlite(&row), &columns);
+                }
+            })
+        }
+        #[allow(unreachable_patterns)]
+        _ => Flux::error(no_backend_err()),
+    }
+}
+
+/// Decodes the projected `columns` of `row` into a JSON object in order.
+fn project_row(row: &AnyRow<'_>, columns: &[String]) -> Value {
+    let mut map = serde_json::Map::new();
+    for c in columns {
+        map.insert(c.clone(), row.get_json(c));
+    }
+    Value::Object(map)
 }
 
 /// Fetches the single row with `id` (honouring the soft-delete guard) and
@@ -827,6 +907,312 @@ where
                 }
             },
         )
+    }
+}
+
+/// Maps a query-name / argument-binding / custom-query error into a 400
+/// [`FireflyError`] so a malformed derived query or unbound `:param` fails
+/// the reactive stream with a clear client-error message rather than a 500.
+fn map_query_err(msg: impl std::fmt::Display) -> FireflyError {
+    FireflyError::new(
+        "FIREFLY_DATA_SQLX_QUERY",
+        "Invalid query",
+        400,
+        format!("firefly/data-sqlx: {msg}"),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Derived & custom (@query) query execution — end-to-end.
+// ---------------------------------------------------------------------------
+
+impl<T, ID> SqlxReactiveRepository<T, ID>
+where
+    T: Send + Sync + 'static,
+    ID: Into<Value> + Clone + Send + Sync + 'static,
+{
+    /// Executes a Spring-Data **derived query method** end-to-end against
+    /// the backend, the Rust analogue of pyfly's `RepositoryBeanPostProcessor`
+    /// turning a `find_by_status_and_role` *method name* into a live query.
+    ///
+    /// `method_name` is parsed by [`QueryMethodParser`] into a
+    /// [`ParsedQuery`](firefly_data::ParsedQuery); the parsed query plus the
+    /// bound `args` are rendered to a complete dialect-aware SQL statement
+    /// via [`ParsedQuery::to_sql`](firefly_data::ParsedQuery::to_sql) and run
+    /// against this repository's pool. The result is dispatched by prefix:
+    ///
+    /// - `find_by_…` → a streamed [`Flux<T>`] of matching rows (the soft-delete
+    ///   guard is **not** auto-injected here; derived queries express their own
+    ///   predicates, matching pyfly's compiler);
+    /// - `count_by_…` / `exists_by_…` / `delete_by_…` are served by the
+    ///   `count`/`exists`/`delete` variants below — for those prefixes this
+    ///   method returns an error stream directing the caller to the right one.
+    ///
+    /// A `find_by_…` query streams via the same [`stream_query`](Self::stream_query)
+    /// path as every other read, so rows decode lazily through the
+    /// [`SqlxRowMapper`].
+    pub fn find_by_derived(&self, method_name: &str, args: &[Value]) -> Flux<T> {
+        let parsed = match QueryMethodParser::new().parse(method_name) {
+            Ok(p) => p,
+            Err(e) => return Flux::error(map_query_err(e)),
+        };
+        if parsed.prefix != QueryPrefix::Find {
+            return Flux::error(map_query_err(format!(
+                "method '{method_name}' is a {:?} query; use the matching count/exists/delete helper",
+                parsed.prefix
+            )));
+        }
+        let dialect = self.inner.dialect();
+        match parsed.to_sql(dialect.as_ref(), &self.inner.config.table, args) {
+            Ok(DerivedSql { sql, args, .. }) => self.stream_query(sql, args),
+            Err(e) => Flux::error(map_query_err(e)),
+        }
+    }
+
+    /// Executes a `count_by_…` derived query end-to-end, returning the row
+    /// count. Errors when `method_name` is not a `count_by_…` query.
+    pub fn count_by_derived(&self, method_name: &str, args: &[Value]) -> Mono<i64> {
+        let inner = Arc::clone(&self.inner);
+        let method = method_name.to_string();
+        let args = args.to_vec();
+        Mono::from_result_future(async move {
+            let parsed = QueryMethodParser::new()
+                .parse(&method)
+                .map_err(map_query_err)?;
+            if parsed.prefix != QueryPrefix::Count {
+                return Err(map_query_err(format!(
+                    "method '{method}' is not a count_by_ query"
+                )));
+            }
+            let dialect = inner.dialect();
+            let d = parsed
+                .to_sql(dialect.as_ref(), &inner.config.table, &args)
+                .map_err(map_query_err)?;
+            scalar_i64(&inner, d.sql, d.args).await
+        })
+    }
+
+    /// Executes an `exists_by_…` derived query end-to-end, returning whether
+    /// any row matched. Errors when `method_name` is not an `exists_by_…`
+    /// query.
+    pub fn exists_by_derived(&self, method_name: &str, args: &[Value]) -> Mono<bool> {
+        let inner = Arc::clone(&self.inner);
+        let method = method_name.to_string();
+        let args = args.to_vec();
+        Mono::from_result_future(async move {
+            let parsed = QueryMethodParser::new()
+                .parse(&method)
+                .map_err(map_query_err)?;
+            if parsed.prefix != QueryPrefix::Exists {
+                return Err(map_query_err(format!(
+                    "method '{method}' is not an exists_by_ query"
+                )));
+            }
+            let dialect = inner.dialect();
+            let d = parsed
+                .to_sql(dialect.as_ref(), &inner.config.table, &args)
+                .map_err(map_query_err)?;
+            let n = scalar_i64(&inner, d.sql, d.args).await?;
+            Ok(n != 0)
+        })
+    }
+
+    /// Executes a `delete_by_…` derived query end-to-end, returning the
+    /// number of affected rows. Errors when `method_name` is not a
+    /// `delete_by_…` query. This is always a **physical** `DELETE` (a derived
+    /// `delete_by_` matches Spring Data's `deleteBy…`, which does not consult
+    /// the soft-delete policy).
+    pub fn delete_by_derived(&self, method_name: &str, args: &[Value]) -> Mono<u64> {
+        let inner = Arc::clone(&self.inner);
+        let method = method_name.to_string();
+        let args = args.to_vec();
+        Mono::from_result_future(async move {
+            let parsed = QueryMethodParser::new()
+                .parse(&method)
+                .map_err(map_query_err)?;
+            if parsed.prefix != QueryPrefix::Delete {
+                return Err(map_query_err(format!(
+                    "method '{method}' is not a delete_by_ query"
+                )));
+            }
+            let dialect = inner.dialect();
+            let d = parsed
+                .to_sql(dialect.as_ref(), &inner.config.table, &args)
+                .map_err(map_query_err)?;
+            execute_write(&inner, d.sql, d.args).await
+        })
+    }
+
+    /// Streams the rows of a Spring-Data **`@query` custom query** end-to-end
+    /// — the Rust analogue of pyfly's `QueryExecutor.compile_query_method`
+    /// for a list-returning query.
+    ///
+    /// `query` is a [`CustomQuery`] (native SQL or JPQL-like); `entity_name`
+    /// is the JPQL `FROM <Entity>` class name (ignored for a native query);
+    /// `params` maps each `:name` placeholder to its value. The query is
+    /// transpiled (when JPQL), its `:param` placeholders are rewritten to the
+    /// dialect's positional placeholders, and the rows stream through the
+    /// [`SqlxRowMapper`] exactly like a derived `find`.
+    pub fn query_list(
+        &self,
+        query: &CustomQuery,
+        entity_name: &str,
+        params: &BTreeMap<String, Value>,
+    ) -> Flux<T> {
+        let dialect = self.inner.dialect();
+        match query.bind(
+            dialect.as_ref(),
+            entity_name,
+            &self.inner.config.table,
+            params,
+        ) {
+            Ok(bound) => self.stream_query(bound.sql, bound.args),
+            Err(e) => Flux::error(map_query_err(e)),
+        }
+    }
+
+    /// Executes a `SELECT COUNT(...)` **`@query` custom query** end-to-end,
+    /// returning the scalar count. Mirrors pyfly's count return-shape branch.
+    pub fn query_count(
+        &self,
+        query: &CustomQuery,
+        entity_name: &str,
+        params: &BTreeMap<String, Value>,
+    ) -> Mono<i64> {
+        let inner = Arc::clone(&self.inner);
+        let query = query.clone();
+        let entity = entity_name.to_string();
+        let params = params.clone();
+        Mono::from_result_future(async move {
+            let dialect = inner.dialect();
+            let bound = query
+                .bind(dialect.as_ref(), &entity, &inner.config.table, &params)
+                .map_err(map_query_err)?;
+            scalar_i64(&inner, bound.sql, bound.args).await
+        })
+    }
+
+    /// Executes an `EXISTS(...)`-shaped **`@query` custom query** end-to-end,
+    /// returning whether the scalar result is greater than zero. Mirrors
+    /// pyfly's exists return-shape branch.
+    pub fn query_exists(
+        &self,
+        query: &CustomQuery,
+        entity_name: &str,
+        params: &BTreeMap<String, Value>,
+    ) -> Mono<bool> {
+        let inner = Arc::clone(&self.inner);
+        let query = query.clone();
+        let entity = entity_name.to_string();
+        let params = params.clone();
+        Mono::from_result_future(async move {
+            let dialect = inner.dialect();
+            let bound = query
+                .bind(dialect.as_ref(), &entity, &inner.config.table, &params)
+                .map_err(map_query_err)?;
+            let n = scalar_i64(&inner, bound.sql, bound.args).await?;
+            Ok(n > 0)
+        })
+    }
+
+    /// Executes a **mutating** native `@query` custom query (an `INSERT` /
+    /// `UPDATE` / `DELETE`) end-to-end, returning the number of affected
+    /// rows. The escape hatch for the custom-write half of Spring Data's
+    /// `@Modifying @Query`.
+    pub fn query_execute(
+        &self,
+        query: &CustomQuery,
+        entity_name: &str,
+        params: &BTreeMap<String, Value>,
+    ) -> Mono<u64> {
+        let inner = Arc::clone(&self.inner);
+        let query = query.clone();
+        let entity = entity_name.to_string();
+        let params = params.clone();
+        Mono::from_result_future(async move {
+            let dialect = inner.dialect();
+            let bound = query
+                .bind(dialect.as_ref(), &entity, &inner.config.table, &params)
+                .map_err(map_query_err)?;
+            execute_write(&inner, bound.sql, bound.args).await
+        })
+    }
+
+    /// Executes a **DB-level interface projection** — selects only the
+    /// projection's columns and streams the narrowed rows as
+    /// [`serde_json::Value`] objects, the Rust analogue of pyfly's
+    /// `_compile_find` projection branch (which `SELECT`s the projection's
+    /// columns and returns projected rows instead of full entities).
+    ///
+    /// Unlike [`Mapper::project`](firefly_data::Mapper::project) — which
+    /// projects an *already-fetched* full entity object-to-object — this
+    /// narrows the `SELECT` list so only the projected columns cross the
+    /// wire. `spec` restricts the rows (use
+    /// [`Specification::all`](firefly_data::Specification::all) for no
+    /// restriction); each emitted [`Value`] is an object keyed by the
+    /// projection's columns in declaration order. The soft-delete guard is
+    /// AND-ed in when a policy is configured.
+    pub fn project_by_spec(
+        &self,
+        projection: &firefly_data::ColumnProjection,
+        spec: Specification,
+    ) -> Flux<Value> {
+        if projection.is_empty() {
+            return Flux::error(map_query_err("projection declares no columns"));
+        }
+        let dialect = self.inner.dialect();
+        let guarded = match &self.inner.soft_delete {
+            Some(policy) => policy.apply_spec(spec),
+            None => spec,
+        };
+        let (frag, args) = guarded.to_sql_with(dialect.as_ref());
+        let where_sql = if frag.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {frag}")
+        };
+        let select_list = projection.select_list(|c| dialect.quote_ident(c));
+        let table_q = dialect.quote_ident(&self.inner.config.table);
+        let sql = format!("SELECT {select_list} FROM {table_q}{where_sql}");
+        let columns: Vec<String> = projection.columns().to_vec();
+        stream_projected(Arc::clone(&self.inner), sql, args, columns)
+    }
+
+    /// The inferred [`QueryShape`] of a custom `query` for `entity_name` —
+    /// the count / exists / list return-shape pyfly's `QueryExecutor` detects
+    /// from the (transpiled) statement, exposed so a caller can pick the
+    /// matching `query_count` / `query_exists` / `query_list` helper.
+    pub fn query_shape(
+        &self,
+        query: &CustomQuery,
+        entity_name: &str,
+    ) -> Result<QueryShape, FireflyError> {
+        let dialect = self.inner.dialect();
+        // Bind with an empty param map only to read the shape; a missing
+        // param does not affect the leading verb, so ignore that error.
+        let empty = BTreeMap::new();
+        match query.bind(
+            dialect.as_ref(),
+            entity_name,
+            &self.inner.config.table,
+            &empty,
+        ) {
+            Ok(bound) => Ok(bound.shape),
+            // The shape is derivable from the statement text even when a
+            // :param is unbound, so recover the shape from the transpiled SQL.
+            Err(_) => {
+                let sql = if query.is_native() {
+                    query.value().to_string()
+                } else {
+                    firefly_data::transpile_jpql(
+                        query.value(),
+                        entity_name,
+                        &self.inner.config.table,
+                    )
+                };
+                Ok(QueryShape::infer(&sql))
+            }
+        }
     }
 }
 

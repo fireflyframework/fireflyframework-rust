@@ -63,33 +63,89 @@ let bus = Bus::new();
 register_handle_create_user(&bus);
 ```
 
-### Dependency injection
+### Dependency injection — the headline surface
 
 | Macro | On | Generates |
 |-------|----|-----------|
-| `#[derive(Component)]` / `Service` / `Repository` | a struct | `T::firefly_register(container)` |
-| `register_all!(c, [A, B, …])` | — | calls each type's `firefly_register` in order |
+| `#[derive(Component)]` / `Service` / `Repository` / `Configuration` / `Controller` | a struct | `T::firefly_register(container)` + an `inventory` scan thunk |
+| `#[derive(ConfigProperties)]` | a `Deserialize` struct | config-bound injectable bean (Spring `@ConfigurationProperties`) |
+| `#[bean]` | an `impl` block of a `Configuration` | `T::firefly_register_beans(container)` — `@Bean` factories |
+| `register_all!(c, [A, B, …])` | — | calls each type's `firefly_register` (the generic fallback to `scan()`) |
+
+Every stereotype derive also submits an [`inventory`] thunk, so
+`Container::scan()` (or `firefly::scan(&container)`, or
+`ApplicationContext`) discovers and registers it across the whole crate graph —
+the Rust analog of pyfly's `scan_package`. *Generic* types can't be inventoried;
+register those with `register_all!`.
 
 ```rust,ignore
 #[derive(Repository, Default)]
 struct OrderRepo { /* … */ }
 
 #[derive(Service)]
-#[firefly(scope = "singleton", primary)]
+#[firefly(scope = "singleton", primary, order = 10, profile = "prod",
+          condition_on_property = "orders.enabled=true",
+          provides = "dyn OrderPort",          // also binds the trait object
+          post_construct = "warm", pre_destroy = "drain")]
 struct OrderService {
-    #[autowired]                   // resolved via Container::resolve::<OrderRepo>()
-    repo: std::sync::Arc<OrderRepo>,
+    #[autowired] repo: Arc<OrderRepo>,          // resolve::<OrderRepo>()
+    #[autowired] plugins: Vec<Arc<Plugin>>,     // resolve_all::<Plugin>()
+    #[autowired] cache: Option<Arc<Cache>>,     // resolve(..).ok() (required=false)
+    #[autowired] tickets: Provider<Ticket>,     // deferred provider::<Ticket>()
+    #[firefly(qualifier = "primary_db")] db: Arc<DataSource>,
+    #[firefly(value = "${orders.batch:50}")] batch: usize,   // @Value config injection
 }
+impl OrderService { fn warm(&mut self) {} fn drain(&self) {} }
 
-let container = Container::new();
-firefly::register_all!(&container, [OrderRepo, OrderService]);
-let svc = container.resolve::<OrderService>()?;
+// Component scan registers everything, honoring conditionals/profiles:
+let ctx = firefly::ApplicationContext::builder().profiles(["prod"]).build();
+let svc = ctx.resolve::<OrderService>()?;
+ctx.close();                                    // runs #[pre_destroy] in reverse
 ```
 
-`#[autowired]` fields must be typed `Arc<Dep>` (the container resolves beans as
-`Arc<T>`); a `#[autowired(qualifier = "name")]` resolves by bean name. Struct
-options: `scope = "singleton" | "transient" | "request" | "session"`,
-`name = "…"`, `primary`.
+**Field injection forms** (selected by the field type): `Arc<T>`,
+`Vec<Arc<T>>`, `Option<Arc<T>>`, `Provider<T>`,
+`#[firefly(qualifier = "name")]` (resolve by name), and
+`#[firefly(value = "${key:default}")]` (config value parsed via `FromStr`); any
+other field is `Default`-built.
+
+**Struct `#[firefly(...)]` options:** `scope`, `name`, `primary`, `order = N`,
+`lazy`, `profile = "expr"`, `condition_on_property = "k=v"`,
+`condition_on_class = "label"`, `condition_on_bean = "Type"`,
+`condition_on_missing_bean = "Type"`, `condition_on_single_candidate = "Type"`,
+`provides = "dyn Port"`, `post_construct = "method"`, `pre_destroy = "method"`.
+
+**`#[bean]` factories** on a `#[derive(Configuration)]` holder register one bean
+per method, keyed by the method's return type; method `Arc<Dep>` arguments are
+resolved from the container. Per-method options:
+`#[bean(name = "...", scope = "...", primary, profile = "...")]`.
+
+```rust,ignore
+#[derive(Configuration, Default)] struct AppConfig;
+
+#[firefly::bean]
+impl AppConfig {
+    #[bean(name = "clock", primary)]
+    fn clock(&self) -> SystemClock { SystemClock::new() }   // concrete return type
+    #[bean]
+    fn repo(&self, db: Arc<DataSource>) -> SqlRepo { SqlRepo::new(db) }
+}
+AppConfig::firefly_register(&c);
+AppConfig::firefly_register_beans(&c);
+```
+
+A `#[bean]` method returns a **concrete (sized) type** — that is the bean's key.
+To expose it behind a trait, give the *holder* `#[firefly(provides = "dyn T")]`
+or call `container.bind::<dyn T, Concrete>(|a| a)` after registration.
+
+**`#[derive(ConfigProperties)]`** binds a struct from config under a prefix and
+registers it as an injectable singleton (Spring `@EnableConfigurationProperties`):
+
+```rust,ignore
+#[derive(serde::Deserialize, ConfigProperties)]
+#[firefly(prefix = "app.db")]
+struct DbProperties { url: String, pool_size: u32 }
+```
 
 ### Scheduling
 
@@ -142,6 +198,11 @@ let router = OrderApi::routes(OrderApi { /* … */ });
 The `state` defaults to the controller (`Self`); override with
 `#[rest_controller(path = "…", state = "MyState")]`.
 
+`#[rest_controller]` also emits **route metadata** — a `Controller::ROUTES`
+const slice of `RouteDescriptor { controller, method, path, handler }` and an
+`inventory` submission — so the OpenAPI generator can enumerate every route via
+`firefly::container::routes()` without re-parsing source.
+
 ### Event sourcing
 
 | Macro | On | Generates |
@@ -177,11 +238,19 @@ subscribe_on_order_created(&broker).await?;          // group via topic = / grou
 - `tests/behavioral.rs`, `tests/scheduling.rs`, `tests/web.rs`, `tests/eda.rs`
   drive each macro's generated code against the real `firefly` facade (a router
   via `tower::oneshot`, a CQRS round-trip on a `Bus`, a scheduler tick, a
-  container resolve, a broker delivery).
-- `tests/trybuild.rs` runs the `tests/ui/pass/*` compile-pass cases and the
-  `tests/ui/fail/*` compile-fail cases (pinned diagnostics for no/two
-  `#[scheduled]` triggers, a controller with no routes, a bad handler arity).
-  Regenerate the `.stderr` snapshots with `TRYBUILD=overwrite cargo test`.
+  container resolve, a broker delivery, the `ROUTES` metadata).
+- `tests/di.rs` proves the full DI surface end-to-end: `scan()` registers all
+  stereotypes; `#[bean]` factories resolve; primary/order/qualifier
+  disambiguation; `Vec`/`Provider`/`Option` injection; `#[post_construct]` /
+  `#[pre_destroy]` ordering; conditional/profile gating; interface auto-binding;
+  `@Value` and `#[derive(ConfigProperties)]` binding.
+- `tests/trybuild.rs` runs the `tests/ui/pass/*` compile-pass cases (every macro,
+  incl. the full DI surface) and the `tests/ui/fail/*` compile-fail cases (pinned
+  diagnostics for no/two `#[scheduled]` triggers, a controller with no routes, a
+  bad handler arity, a bad `#[autowired]` field type, a `#[bean]` impl with no
+  methods). Regenerate the `.stderr` snapshots with `TRYBUILD=overwrite cargo test`.
+
+[`inventory`]: https://docs.rs/inventory
 
 ## License
 

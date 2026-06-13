@@ -595,6 +595,133 @@ impl MetricsRegistry {
     }
 }
 
+// ---------------------------------------------------------------------------
+// MetricsRecorder port + no-op adapter (pyfly.observability.ports)
+// ---------------------------------------------------------------------------
+
+/// The metrics-recording **port** — the abstraction instrumentation code
+/// depends on so it is not hard-coupled to the Prometheus adapter. The Rust
+/// port of pyfly's `MetricsRecorder` Protocol.
+///
+/// [`MetricsRegistry`] is the default (Prometheus) adapter;
+/// [`NoOpMetricsRecorder`] is a dependency-free adapter for tests and for
+/// deployments that disable metrics. A downstream crate can hold an
+/// `Arc<dyn MetricsRecorder>` and always record into a handle instead of
+/// guarding an `Option` — pyfly's "instrumentation always has a recorder"
+/// model.
+///
+/// All three methods get-or-create a meter, mirroring the registry's own
+/// idempotent registration, and return the same concrete handle types
+/// ([`Counter`] / [`Gauge`] / [`Histogram`]) the registry exposes, so swapping
+/// the backend requires no changes at the call site.
+///
+/// ```
+/// use std::sync::Arc;
+/// use firefly_observability::{MetricsRecorder, NoOpMetricsRecorder};
+///
+/// // Instrumentation written against the port works with any backend.
+/// fn instrument(recorder: &dyn MetricsRecorder) {
+///     recorder.counter("requests", "Total requests", &["route"])
+///         .labels(&["/health"])
+///         .inc();
+/// }
+///
+/// // The no-op recorder discards everything — zero config, no exposition.
+/// let recorder: Arc<dyn MetricsRecorder> = Arc::new(NoOpMetricsRecorder::new());
+/// instrument(recorder.as_ref());
+/// ```
+pub trait MetricsRecorder: Send + Sync {
+    /// Gets or creates a counter handle (pyfly's `counter`).
+    fn counter(&self, name: &str, description: &str, labels: &[&str]) -> Arc<Counter>;
+
+    /// Gets or creates a gauge handle (pyfly's `gauge`).
+    fn gauge(&self, name: &str, description: &str, labels: &[&str]) -> Arc<Gauge>;
+
+    /// Gets or creates a histogram handle (pyfly's `histogram`). `buckets`
+    /// defaults to [`DEFAULT_BUCKETS`] when `None`.
+    fn histogram(
+        &self,
+        name: &str,
+        description: &str,
+        labels: &[&str],
+        buckets: Option<&[f64]>,
+    ) -> Arc<Histogram>;
+}
+
+impl MetricsRecorder for MetricsRegistry {
+    fn counter(&self, name: &str, description: &str, labels: &[&str]) -> Arc<Counter> {
+        MetricsRegistry::counter(self, name, description, labels)
+    }
+
+    fn gauge(&self, name: &str, description: &str, labels: &[&str]) -> Arc<Gauge> {
+        MetricsRegistry::gauge(self, name, description, labels)
+    }
+
+    fn histogram(
+        &self,
+        name: &str,
+        description: &str,
+        labels: &[&str],
+        buckets: Option<&[f64]>,
+    ) -> Arc<Histogram> {
+        MetricsRegistry::histogram(self, name, description, labels, buckets)
+    }
+}
+
+/// A dependency-free [`MetricsRecorder`] whose meters discard every
+/// observation — the Rust port of pyfly's `NoOpMetricsRecorder`.
+///
+/// Useful in tests and for deployments that disable metrics: instrumentation
+/// code can hold a recorder unconditionally instead of branching on whether
+/// metrics are enabled. The returned handles are real [`Counter`] /
+/// [`Gauge`] / [`Histogram`] values (so `.labels(..).inc()` etc. type-check
+/// and run), but they live in a private, isolated registry that is never
+/// exposed — nothing is ever rendered to Prometheus text.
+///
+/// Unlike pyfly's single shared no-op handle, each meter name still maps to
+/// its own (discarded) handle, so the recorder enforces the same label-arity
+/// contract as the real backend, surfacing wiring mistakes in tests.
+#[derive(Debug, Clone)]
+pub struct NoOpMetricsRecorder {
+    inner: MetricsRegistry,
+}
+
+impl Default for NoOpMetricsRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NoOpMetricsRecorder {
+    /// Creates a no-op recorder backed by a private, isolated registry whose
+    /// data is never exposed.
+    pub fn new() -> Self {
+        Self {
+            inner: MetricsRegistry::isolated(),
+        }
+    }
+}
+
+impl MetricsRecorder for NoOpMetricsRecorder {
+    fn counter(&self, name: &str, description: &str, labels: &[&str]) -> Arc<Counter> {
+        self.inner.counter(name, description, labels)
+    }
+
+    fn gauge(&self, name: &str, description: &str, labels: &[&str]) -> Arc<Gauge> {
+        self.inner.gauge(name, description, labels)
+    }
+
+    fn histogram(
+        &self,
+        name: &str,
+        description: &str,
+        labels: &[&str],
+        buckets: Option<&[f64]>,
+    ) -> Arc<Histogram> {
+        self.inner.histogram(name, description, labels, buckets)
+    }
+}
+
 /// Formats a sample value like prometheus_client: integral floats keep a
 /// trailing `.0` (`1.0`), everything else uses the shortest representation.
 fn render_value(v: f64) -> String {
@@ -961,6 +1088,62 @@ mod tests {
         let registry = MetricsRegistry::isolated();
         let c = registry.counter("arity", "c", &["route"]);
         c.inc();
+    }
+
+    #[test]
+    fn metrics_registry_implements_recorder_port() {
+        // Instrumentation written against the port records into the registry.
+        let registry = MetricsRegistry::isolated();
+        fn instrument(recorder: &dyn MetricsRecorder) {
+            recorder
+                .counter("port_hits", "Hits", &["route"])
+                .labels(&["/x"])
+                .inc();
+            recorder.gauge("port_inflight", "Inflight", &[]).set(3.0);
+            recorder
+                .histogram("port_latency", "Latency", &[], None)
+                .observe(0.5);
+        }
+        instrument(&registry);
+        assert_eq!(
+            registry
+                .counter("port_hits", "", &["route"])
+                .value_with(&["/x"]),
+            1.0
+        );
+        assert_eq!(registry.gauge("port_inflight", "", &[]).value(), 3.0);
+        assert_eq!(registry.histogram("port_latency", "", &[], None).count(), 1);
+    }
+
+    #[test]
+    fn noop_recorder_discards_everything() {
+        let recorder = NoOpMetricsRecorder::new();
+        // Operations type-check and run, but are discarded.
+        recorder.counter("noop_c", "c", &["k"]).labels(&["v"]).inc();
+        recorder.gauge("noop_g", "g", &[]).set(9.0);
+        recorder.histogram("noop_h", "h", &[], None).observe(1.0);
+        // The values are stored only in the recorder's private registry, never
+        // in the global one.
+        let global = MetricsRegistry::new();
+        assert!(!global.prometheus_text().contains("noop_c"));
+        assert!(!global.prometheus_text().contains("noop_g"));
+        assert!(!global.prometheus_text().contains("noop_h"));
+    }
+
+    #[test]
+    fn noop_recorder_is_usable_as_trait_object() {
+        let recorder: Arc<dyn MetricsRecorder> = Arc::new(NoOpMetricsRecorder::new());
+        recorder.counter("obj", "o", &[]).inc();
+        // Same handle name returns the same (discarded) series.
+        assert_eq!(recorder.counter("obj", "o", &[]).value(), 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "expects 1 label value")]
+    fn noop_recorder_enforces_label_arity() {
+        let recorder = NoOpMetricsRecorder::new();
+        // Like the real backend, the no-op recorder surfaces wiring mistakes.
+        recorder.counter("noop_arity", "c", &["route"]).inc();
     }
 
     #[test]

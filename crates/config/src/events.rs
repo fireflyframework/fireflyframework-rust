@@ -83,9 +83,53 @@ pub struct ApplicationReadyEvent;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ContextClosedEvent;
 
+/// Published after a Spring-Cloud-style runtime refresh
+/// (`POST /actuator/refresh`) evicts refresh-scoped beans / re-reads the
+/// configuration sources — the Rust port of pyfly's
+/// `RefreshScopeRefreshedEvent` (Spring Cloud's `RefreshScopeRefreshedEvent`).
+///
+/// `refreshed` carries the keys that changed as a result of the refresh —
+/// in pyfly the cache keys of the evicted refresh-scoped beans, and in the
+/// Rust port the sorted top-level configuration keys
+/// [`ReloadableConfig::reload`](crate::ReloadableConfig::reload) reports as
+/// changed (added, removed, or modified). Listeners subscribe to it via
+/// [`ApplicationEventBus::subscribe`] to react to a live configuration
+/// change without polling.
+///
+/// ```
+/// use std::cell::RefCell;
+/// use std::rc::Rc;
+/// use firefly_config::{ApplicationEventBus, RefreshScopeRefreshedEvent};
+///
+/// let bus = ApplicationEventBus::new();
+/// let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+/// let s = seen.clone();
+/// bus.subscribe::<RefreshScopeRefreshedEvent, _>(move |e| {
+///     s.borrow_mut().extend(e.refreshed.iter().cloned());
+/// });
+/// bus.publish(&RefreshScopeRefreshedEvent::new(vec!["web".to_string()]));
+/// assert_eq!(*seen.borrow(), vec!["web".to_string()]);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RefreshScopeRefreshedEvent {
+    /// The keys that changed as a result of the refresh (pyfly's evicted
+    /// refresh-scoped bean cache keys; here the changed top-level
+    /// configuration keys reported by the reload).
+    pub refreshed: Vec<String>,
+}
+
+impl RefreshScopeRefreshedEvent {
+    /// Builds the event carrying `refreshed` — the changed/evicted keys.
+    #[must_use]
+    pub fn new(refreshed: Vec<String>) -> Self {
+        Self { refreshed }
+    }
+}
+
 impl ApplicationEvent for ContextRefreshedEvent {}
 impl ApplicationEvent for ApplicationReadyEvent {}
 impl ApplicationEvent for ContextClosedEvent {}
+impl ApplicationEvent for RefreshScopeRefreshedEvent {}
 
 /// An erased dispatcher: downcasts the `&dyn Any` event to the
 /// listener's concrete type and invokes the typed closure.
@@ -247,6 +291,21 @@ mod tests {
         bus.subscribe::<ApplicationReadyEvent, _>(move |_| l2.borrow_mut().push("second"));
         bus.publish(&ApplicationReadyEvent);
         assert_eq!(*log.borrow(), vec!["first", "second"]);
+    }
+
+    #[test]
+    fn refresh_scope_refreshed_event_carries_keys() {
+        let bus = ApplicationEventBus::new();
+        let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let s = seen.clone();
+        bus.subscribe::<RefreshScopeRefreshedEvent, _>(move |e| {
+            *s.borrow_mut() = e.refreshed.clone();
+        });
+        bus.publish(&RefreshScopeRefreshedEvent::new(vec![
+            "cache".to_string(),
+            "web".to_string(),
+        ]));
+        assert_eq!(*seen.borrow(), vec!["cache".to_string(), "web".to_string()]);
     }
 
     #[test]

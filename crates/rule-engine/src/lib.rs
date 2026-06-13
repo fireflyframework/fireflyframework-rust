@@ -131,7 +131,8 @@ pub use crate::interfaces::{Evaluator, Fact, Verdict};
 pub use crate::models::{Action, Condition, DslError, Logic, Op, Rule, RuleSet};
 pub use crate::sdk::{HttpTransport, ReqwestTransport, RuleEngineClient, SdkError};
 pub use crate::service::{
-    EvaluationOutcome, MemoryRuleSetRepository, RuleEngineService, RuleSetRepository, ServiceError,
+    EvaluationOutcome, MemoryRuleSetRepository, RuleEngineMetrics, RuleEngineService,
+    RuleSetRepository, ServiceError,
 };
 pub use crate::validation::{validate_ruleset, RuleSetValidator, RuleValidationError};
 pub use crate::web::{

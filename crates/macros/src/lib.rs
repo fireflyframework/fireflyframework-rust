@@ -46,7 +46,9 @@
 
 #![forbid(unsafe_code)]
 
+mod bean;
 mod common;
+mod config_properties;
 mod container;
 mod cqrs;
 mod eda;
@@ -153,17 +155,38 @@ pub fn query_handler(args: TokenStream, item: TokenStream) -> TokenStream {
 /// Derives a DI registration for a managed component.
 ///
 /// Generates a `firefly_register(container)` method that registers the type on
-/// a `firefly_container::Container`, constructor-injecting every `#[autowired]`
-/// field (typed `Arc<Dep>`) via `Container::resolve`; non-autowired fields are
-/// built from `Default`. Type-level options:
-/// `#[firefly(scope = "singleton" | "transient" | "request" | "session", name = "...", primary)]`.
+/// a `firefly_container::Container`, injecting each field, *and* submits an
+/// `inventory` thunk so [`Container::scan()`](firefly_container) discovers the
+/// type across the whole crate graph (the Rust analog of pyfly's
+/// `scan_package`).
+///
+/// ## Field injection
+/// - `#[autowired]` resolves the field from the container. The field type
+///   selects the form: `Arc<T>` → `resolve::<T>()`, `Vec<Arc<T>>` →
+///   `resolve_all::<T>()`, `Option<Arc<T>>` → `resolve(..).ok()` (the
+///   `required=false` analog), `Provider<T>` → a deferred `provider::<T>()`.
+/// - `#[firefly(qualifier = "name")]` resolves a specific named bean.
+/// - `#[firefly(value = "${key:default}")]` injects a config value (parsed via
+///   `FromStr`).
+/// - any other field is built from `Default`.
+///
+/// ## Type-level `#[firefly(...)]` options
+/// `scope = "singleton" | "transient" | "request" | "session"`, `name = "..."`,
+/// `primary`, `order = N`, `lazy`, `profile = "expr"`,
+/// `condition_on_property = "k=v"`, `condition_on_class = "label"`,
+/// `condition_on_bean = "Type"`, `condition_on_missing_bean = "Type"`,
+/// `condition_on_single_candidate = "Type"`, `provides = "dyn Port"`
+/// (auto-binds the trait object), and lifecycle hooks
+/// `post_construct = "method"` / `pre_destroy = "method"`.
 ///
 /// ```ignore
 /// #[derive(Component)]
-/// #[firefly(scope = "singleton")]
+/// #[firefly(scope = "singleton", profile = "prod", provides = "dyn Notifier")]
 /// struct OrderService {
 ///     #[autowired]
 ///     repo: Arc<OrderRepository>,
+///     #[firefly(value = "${order.batch:50}")]
+///     batch: usize,
 /// }
 /// ```
 #[proc_macro_derive(Component, attributes(firefly, autowired))]
@@ -173,7 +196,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
 }
 
 /// Derives a DI registration for a service-layer bean — a [`macro@Component`]
-/// alias documenting business-logic intent.
+/// alias documenting business-logic intent. Same options.
 #[proc_macro_derive(Service, attributes(firefly, autowired))]
 pub fn derive_service(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -181,17 +204,100 @@ pub fn derive_service(input: TokenStream) -> TokenStream {
 }
 
 /// Derives a DI registration for a repository-layer bean — a [`macro@Component`]
-/// alias documenting data-access intent.
+/// alias documenting data-access intent. Same options.
 #[proc_macro_derive(Repository, attributes(firefly, autowired))]
 pub fn derive_repository(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     emit(container::derive_component(input, Stereotype::Repository))
 }
 
-/// Registers every listed `#[derive(Component)]` type on a container in order.
+/// Derives a DI registration for a configuration-holder bean — a
+/// [`macro@Component`] alias whose role is to hold `#[bean]` factory methods
+/// (Spring/pyfly `@Configuration`). Pair it with `#[bean]` on an `impl` block.
 ///
-/// Rust has no global bean scan, so the framework's explicit-list spelling
-/// calls each type's generated `firefly_register`:
+/// ```ignore
+/// #[derive(Configuration)]
+/// struct AppConfig;
+///
+/// #[firefly::bean]
+/// impl AppConfig {
+///     #[bean]
+///     fn clock(&self) -> SystemClock { SystemClock::new() }
+/// }
+/// ```
+#[proc_macro_derive(Configuration, attributes(firefly, autowired))]
+pub fn derive_configuration(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    emit(container::derive_component(
+        input,
+        Stereotype::Configuration,
+    ))
+}
+
+/// Derives a DI registration for a controller bean — a [`macro@Component`]
+/// alias documenting web-controller intent (distinct from the `#[rest_controller]`
+/// *routing* attribute, which wires axum routes).
+#[proc_macro_derive(Controller, attributes(firefly, autowired))]
+pub fn derive_controller(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    emit(container::derive_component(input, Stereotype::Controller))
+}
+
+/// Derives a config-bound injectable bean (Spring `@ConfigurationProperties` /
+/// `@EnableConfigurationProperties`).
+///
+/// Binds a `serde::Deserialize` struct from the container's active config under
+/// a key prefix and registers it as a resolvable singleton, so a component can
+/// `#[autowired]` it by type.
+///
+/// ```ignore
+/// #[derive(Deserialize, ConfigProperties)]
+/// #[firefly(prefix = "app.db")]
+/// struct DbProperties {
+///     url: String,
+///     pool_size: u32,
+/// }
+/// ```
+#[proc_macro_derive(ConfigProperties, attributes(firefly))]
+pub fn derive_config_properties(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    emit(config_properties::derive_config_properties(input))
+}
+
+/// Marks the factory methods of a `#[derive(Configuration)]` type as beans
+/// (Spring/pyfly `@Bean`).
+///
+/// Applied to an `impl` block; every method inside carrying a `#[bean(...)]`
+/// marker becomes a bean factory keyed by its return type. Method arguments are
+/// resolved from the container (`Arc<Dep>`), so a `@bean` method can depend on
+/// other beans. Generates `firefly_register_beans(&Container)`.
+///
+/// Per-method options: `#[bean(name = "...", scope = "...", primary, profile = "...")]`
+/// (`profile` gates the bean on the active profiles, Spring `@Bean @Profile`).
+///
+/// ```ignore
+/// #[firefly::bean]
+/// impl AppConfig {
+///     #[bean(primary)]
+///     fn repo(&self, db: Arc<Db>) -> SqlRepo { SqlRepo::new(db) }
+/// }
+/// // generated: fn AppConfig::firefly_register_beans(&Container)
+/// ```
+///
+/// A `#[bean]` method returns a **concrete (sized) type** — that is the bean's
+/// key. Expose it behind a trait via the holder's `#[firefly(provides = ...)]`
+/// or a `Container::bind` after registration.
+#[proc_macro_attribute]
+pub fn bean(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemImpl);
+    emit(bean::bean_impl(args.into(), item))
+}
+
+/// Registers every listed stereotype type on a container in order.
+///
+/// The explicit-list fallback to [`Container::scan()`](firefly_container) for
+/// **generic** beans (which cannot be inventoried) — calls each type's
+/// generated `firefly_register`:
 ///
 /// ```ignore
 /// firefly::register_all!(&container, [OrderRepository, OrderService]);

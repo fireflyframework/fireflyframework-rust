@@ -478,6 +478,9 @@ impl ParsedQuery {
     pub fn arg_count(&self) -> usize;
     pub fn to_specification(&self, args: &[Value]) -> Result<Specification, QueryBindError>;
     pub fn to_filter(&self, args: &[Value]) -> Result<Option<Filter>, QueryBindError>; // None for OR
+    pub fn to_mongo(&self, args: &[Value]) -> Result<Value, QueryBindError>;           // $-operator filter
+    pub fn to_sql(&self, dialect: &dyn SqlDialect, table: &str, args: &[Value])
+        -> Result<DerivedSql, QueryBindError>;  // complete per-prefix statement
     pub fn evaluate<'a, T: Serialize>(&self, entities: &'a [T], args: &[Value]) -> Result<Vec<&'a T>, QueryBindError>;
     pub fn count<T: Serialize>(&self, entities: &[T], args: &[Value]) -> Result<usize, QueryBindError>;
     pub fn exists<T: Serialize>(&self, entities: &[T], args: &[Value]) -> Result<bool, QueryBindError>;
@@ -497,6 +500,67 @@ executes against any in-memory `serde`-serialisable collection via
 `evaluate` / `count` / `exists`. `_between` lowers to two predicates
 (`>=` and `<=`), `_containing` to `LIKE %value%`, `_is_not_null` to
 `NOT (… IS NULL)`.
+
+For **end-to-end** execution against a database, `to_sql` renders a
+complete dialect-aware statement per prefix — `SELECT * … [ORDER BY …]`
+(find), `SELECT COUNT(*) …` (count), `SELECT CASE WHEN EXISTS(…) THEN 1
+ELSE 0 END` (exists), `DELETE …` (delete) — and `to_mongo` lowers to a
+`$`-operator filter document. The `firefly-data-sqlx` and
+`firefly-data-mongodb` adapters call these from their
+`find_by_derived` / `count_by_derived` / `exists_by_derived` /
+`delete_by_derived` helpers, so a `find_by_email` method name runs as a
+real query (the Rust analogue of pyfly's repository bean
+post-processor).
+
+### `CustomQuery` (the `@query` custom-query path)
+
+```rust,ignore
+pub struct CustomQuery { /* value + native flag */ }
+impl CustomQuery {
+    pub fn native(value: impl Into<String>) -> Self;  // raw SQL
+    pub fn jpql(value: impl Into<String>) -> Self;     // JPQL-like, transpiled
+    pub fn bind(&self, dialect: &dyn SqlDialect, entity_name: &str, table: &str,
+                params: &BTreeMap<String, Value>) -> Result<BoundQuery, CustomQueryError>;
+}
+pub struct BoundQuery { pub sql: String, pub args: Vec<Value>, pub shape: QueryShape }
+pub enum QueryShape { Count, Exists, List }  // inferred from the statement
+
+pub fn transpile_jpql(jpql: &str, entity_name: &str, table: &str) -> String;
+pub fn substitute_named_params(value: &Value, params: &BTreeMap<String, Value>) -> Value;
+```
+
+The Rust port of pyfly's `@query` decorator + `QueryExecutor` /
+`MongoQueryExecutor`. A relational `CustomQuery` carries raw SQL
+(`native`) or a JPQL-like string (`jpql`, transpiled by `transpile_jpql`
+— `FROM Entity alias` → `FROM table`, `SELECT alias`/`COUNT(alias)` →
+`SELECT *`/`COUNT(*)`, `alias.field` → `field`, `= true`/`= false` →
+`= 1`/`= 0`); `bind` rewrites every `:param` to the dialect's positional
+placeholder and infers the return `QueryShape`. For document stores,
+`substitute_named_params` substitutes `":param"` placeholders in a parsed
+JSON filter / aggregation pipeline (typed for an exact `":param"`,
+stringified for an embedded one). The adapters execute these via
+`query_list` / `query_count` / `query_exists` / `query_execute` (sqlx)
+and `query_find` / `query_aggregate` (mongodb).
+
+### `ColumnProjection` (DB-level interface projections)
+
+```rust,ignore
+pub struct ColumnProjection { /* name + ordered columns */ }
+impl ColumnProjection {
+    pub fn new(name: impl Into<String>, columns: impl IntoIterator<Item = impl Into<String>>) -> Self;
+    pub fn columns(&self) -> &[String];
+    pub fn select_list(&self, quote: impl Fn(&str) -> String) -> String;  // SQL SELECT list
+    pub fn to_mongo(&self) -> Value;                                       // {col: 1, …}
+    pub fn project<T: Serialize>(&self, entity: &T) -> Value;              // in-memory narrow
+}
+```
+
+The DB-side complement of `Mapper::project`: where the mapper projects an
+*already-fetched* full entity object-to-object, a `ColumnProjection`
+narrows the `SELECT` list (or Mongo projection document) so **only** the
+projected columns cross the wire — the missing half of pyfly's
+projection-aware query compiler. The adapters run it via
+`project_by_spec`.
 
 ## Reactive
 

@@ -243,6 +243,49 @@ with no rule registration.
 every registered handler — pyfly's `HandlerRegistry.get_registered_*_types()`,
 consumed later by the admin actuator.
 
+### Domain-event publishing
+
+A command surfaces the events it produced by overriding
+`Message::domain_events()` (pyfly's `command.domain_events`). Install a
+`DomainEventMiddleware` built from a `CommandEventPublisher` and, after a
+successful dispatch, the middleware publishes each event:
+
+```rust
+let publisher = Arc::new(EdaCommandEventPublisher::new(broker)); // over firefly-eda
+bus.use_middleware(
+    DomainEventMiddleware::new(publisher).with_destination("orders.events"),
+);
+```
+
+`EdaCommandEventPublisher` adapts each `DomainEvent` (an `event_type` + JSON
+payload) to a canonical `firefly_eda::Event` and publishes it to the resolved
+topic (default `cqrs.events`); `NoOpEventPublisher` silently drops events when
+no EDA integration is wired. `EventFailureStrategy::{Log, Raise}` controls
+whether a publish failure is logged (the command still succeeds) or surfaced
+as a `CqrsError::EventPublish`. Result-side events (pyfly's
+`result.domain_events`) are published via `Bus::send_publishing`, which runs
+the full middleware chain and then publishes the events a result type exposes
+through the `DomainEvents` trait. This ports pyfly's `@publish_domain_event` +
+`DefaultCommandBus._try_publish_events`.
+
+### Metrics
+
+`CqrsMetrics::new(registry)` registers the pyfly metric family
+(`firefly_cqrs_command_processed` / `_failed` / `_validation_failed` /
+`_processing_time_seconds` and the query equivalents) on a
+`firefly_observability::MetricsRegistry`. Install a `MetricsMiddleware` to
+time and count every dispatch automatically (`MetricsMiddleware::for_queries`
+on a query-only bus); a `CqrsError::Validation` failure also bumps the
+validation-failed counter. This ports pyfly's `CqrsMetricsService`.
+
+### Health
+
+`CqrsHealthIndicator::new(bus)` is a `firefly_observability::Indicator`
+reporting `UP` (with a `handlers` count detail) when the bus has at least one
+registered handler, else `UNKNOWN` — pyfly's `CqrsHealthIndicator`. Register
+it with the framework health composite so CQRS contributes a `cqrs` component
+to `/actuator/health`.
+
 ## Reactive
 
 Alongside the async `Bus::send` / `Bus::query`, the bus exposes a

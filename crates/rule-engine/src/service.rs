@@ -50,6 +50,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use firefly_observability::{Counter, MetricsRegistry};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -157,6 +158,91 @@ pub struct EvaluationOutcome {
     pub error: Option<String>,
 }
 
+/// The four `ruleset`-labelled counters [`RuleEngineService`] emits after
+/// every evaluation — the Rust counterpart of pyfly's
+/// `RuleEngineService` metrics, registered against a
+/// [`firefly_observability::MetricsRegistry`].
+///
+/// | Counter                            | Incremented …                                          |
+/// |------------------------------------|--------------------------------------------------------|
+/// | `firefly_rule_evaluations_total`   | once per [`evaluate`](RuleEngineService::evaluate) / [`evaluate_by_name`](RuleEngineService::evaluate_by_name) call |
+/// | `firefly_rules_matched_total`      | once when the evaluation matched at least one rule     |
+/// | `firefly_rule_actions_fired_total` | by the number of actions that executed without error   |
+/// | `firefly_rule_errors_total`        | once when the outcome carries a non-`None` error       |
+///
+/// The metric names are the cross-runtime Firefly spelling of pyfly's
+/// `pyfly_rule_*` counters, so dashboards port across the Python and Rust
+/// runtimes. Every counter carries a single `ruleset` label set to the
+/// [`RuleSet::name`] being evaluated.
+///
+/// Metrics are entirely opt-in: a [`RuleEngineService`] built without
+/// [`with_metrics`](RuleEngineService::with_metrics) records nothing
+/// (matching pyfly, where omitting the recorder is a no-op).
+#[derive(Clone)]
+pub struct RuleEngineMetrics {
+    evaluations: Arc<Counter>,
+    matched: Arc<Counter>,
+    actions_fired: Arc<Counter>,
+    errors: Arc<Counter>,
+}
+
+impl RuleEngineMetrics {
+    /// Registers (idempotently) the four `ruleset`-labelled counters against
+    /// `registry` and returns the handle [`RuleEngineService`] uses to record
+    /// them.
+    pub fn new(registry: &MetricsRegistry) -> Self {
+        Self {
+            evaluations: registry.counter(
+                "firefly_rule_evaluations_total",
+                "Total number of rule-set evaluation calls",
+                &["ruleset"],
+            ),
+            matched: registry.counter(
+                "firefly_rules_matched_total",
+                "Total number of evaluations that matched at least one rule",
+                &["ruleset"],
+            ),
+            actions_fired: registry.counter(
+                "firefly_rule_actions_fired_total",
+                "Total number of actions successfully executed across all evaluations",
+                &["ruleset"],
+            ),
+            errors: registry.counter(
+                "firefly_rule_errors_total",
+                "Total number of evaluations carrying an error",
+                &["ruleset"],
+            ),
+        }
+    }
+
+    /// Records one evaluation outcome under the `ruleset` label `name`,
+    /// mirroring pyfly's `_record_metrics`: bumps the evaluation counter
+    /// once, the matched counter when any rule matched, the actions-fired
+    /// counter by the number of executed actions, and the error counter when
+    /// the outcome carries an error.
+    fn record(&self, name: &str, outcome: &EvaluationOutcome) {
+        let label = [name];
+        self.evaluations.labels(&label).inc();
+        if !outcome.verdict.matched.is_empty() {
+            self.matched.labels(&label).inc();
+        }
+        if !outcome.actions_executed.is_empty() {
+            self.actions_fired
+                .labels(&label)
+                .inc_by(outcome.actions_executed.len() as f64);
+        }
+        if outcome.error.is_some() {
+            self.errors.labels(&label).inc();
+        }
+    }
+}
+
+impl std::fmt::Debug for RuleEngineMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuleEngineMetrics").finish_non_exhaustive()
+    }
+}
+
 /// Facade wiring a [`RuleSetRepository`], an [`Evaluator`], and an
 /// [`ActionRegistry`] — the Rust counterpart of pyfly's `RuleEngineService`.
 ///
@@ -171,6 +257,7 @@ pub struct RuleEngineService {
     evaluator: Arc<dyn Evaluator>,
     registry: Arc<ActionRegistry>,
     mode: EvaluationMode,
+    metrics: Option<RuleEngineMetrics>,
 }
 
 impl RuleEngineService {
@@ -186,6 +273,7 @@ impl RuleEngineService {
             evaluator,
             registry,
             mode: EvaluationMode::All,
+            metrics: None,
         }
     }
 
@@ -204,6 +292,29 @@ impl RuleEngineService {
     /// Returns the service's [`EvaluationMode`].
     pub fn mode(&self) -> EvaluationMode {
         self.mode
+    }
+
+    /// Enables Prometheus-compatible metrics, builder-style — the Rust
+    /// counterpart of pyfly's `RuleEngineService(metrics=...)`.
+    ///
+    /// After this call every [`evaluate`](Self::evaluate) /
+    /// [`evaluate_by_name`](Self::evaluate_by_name) records the four
+    /// `ruleset`-labelled counters documented on [`RuleEngineMetrics`]. The
+    /// `registry` is typically the process-global
+    /// [`firefly_observability::MetricsRegistry`] so the counters surface on
+    /// `/actuator/prometheus`. Omitting this call leaves the service a metrics
+    /// no-op (the default), matching pyfly.
+    #[must_use]
+    pub fn with_metrics(mut self, registry: &MetricsRegistry) -> Self {
+        self.metrics = Some(RuleEngineMetrics::new(registry));
+        self
+    }
+
+    /// Returns the service's [`RuleEngineMetrics`] handle when metrics are
+    /// enabled (via [`with_metrics`](Self::with_metrics)), or `None`
+    /// otherwise.
+    pub fn metrics(&self) -> Option<&RuleEngineMetrics> {
+        self.metrics.as_ref()
     }
 
     /// Builds a service backed by a fresh [`MemoryRuleSetRepository`], the
@@ -266,12 +377,16 @@ impl RuleEngineService {
             .await?;
         let mut facts = fact.clone();
         let outcome = self.registry.execute(&verdict.actions, &mut facts);
-        Ok(EvaluationOutcome {
+        let outcome = EvaluationOutcome {
             verdict,
             facts,
             actions_executed: outcome.executed,
             error: outcome.error,
-        })
+        };
+        if let Some(metrics) = &self.metrics {
+            metrics.record(&ruleset.name, &outcome);
+        }
+        Ok(outcome)
     }
 
     /// Loads the ruleset registered under `name` and evaluates it against
@@ -554,6 +669,88 @@ mod tests {
         let outcome = service.evaluate(&rs, &Fact::new()).await.unwrap();
         assert!(outcome.verdict.matched.is_empty());
         assert!(!outcome.facts.contains_key("x"));
+    }
+
+    // ----- metrics (ports pyfly RuleEngineService metrics) ----------------
+
+    #[tokio::test]
+    async fn metrics_count_evaluations_matches_actions_and_errors() {
+        let registry = MetricsRegistry::isolated();
+        let service = RuleEngineService::in_memory().with_metrics(&registry);
+        assert!(service.metrics().is_some());
+        service.register(simple_ruleset("orders")).await;
+
+        // A matching evaluation: 1 evaluation, 1 matched, 1 action fired, 0 errors.
+        service
+            .evaluate_by_name("orders", &fact(json!({"active": true})))
+            .await
+            .unwrap();
+        // A non-matching evaluation: 1 evaluation, 0 matched, 0 actions, 0 errors.
+        service
+            .evaluate_by_name("orders", &fact(json!({"active": false})))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .counter("firefly_rule_evaluations_total", "", &["ruleset"])
+                .value_with(&["orders"]),
+            2.0
+        );
+        assert_eq!(
+            registry
+                .counter("firefly_rules_matched_total", "", &["ruleset"])
+                .value_with(&["orders"]),
+            1.0
+        );
+        assert_eq!(
+            registry
+                .counter("firefly_rule_actions_fired_total", "", &["ruleset"])
+                .value_with(&["orders"]),
+            1.0
+        );
+        assert_eq!(
+            registry
+                .counter("firefly_rule_errors_total", "", &["ruleset"])
+                .value_with(&["orders"]),
+            0.0
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_record_action_errors() {
+        let registry = MetricsRegistry::isolated();
+        let service = RuleEngineService::in_memory().with_metrics(&registry);
+        let rs = RuleSet::new("err-rs").with_rule(
+            Rule::new("bad", Logic::default()).with_action(Action::new("nonexistent_action")),
+        );
+        let outcome = service.evaluate(&rs, &Fact::new()).await.unwrap();
+        assert!(outcome.error.is_some());
+
+        assert_eq!(
+            registry
+                .counter("firefly_rule_evaluations_total", "", &["ruleset"])
+                .value_with(&["err-rs"]),
+            1.0
+        );
+        assert_eq!(
+            registry
+                .counter("firefly_rule_errors_total", "", &["ruleset"])
+                .value_with(&["err-rs"]),
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn without_metrics_is_a_no_op() {
+        // The default service records nothing and still evaluates correctly.
+        let service = RuleEngineService::in_memory();
+        assert!(service.metrics().is_none());
+        let outcome = service
+            .evaluate(&simple_ruleset("rs"), &fact(json!({"active": true})))
+            .await
+            .unwrap();
+        assert_eq!(outcome.verdict.matched, ["r1"]);
     }
 
     // ----- passthrough -----------------------------------------------------

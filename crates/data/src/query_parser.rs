@@ -66,6 +66,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::dialect::SqlDialect;
 use crate::filter::{Direction, Filter, Op, Predicate, Sort};
 use crate::specification::Specification;
 
@@ -205,6 +206,22 @@ pub struct ParsedQuery {
     pub connectors: Vec<String>,
     /// The order-by clauses.
     pub order_clauses: Vec<OrderClause>,
+}
+
+/// A derived query rendered to a complete SQL statement plus its bound
+/// arguments — the output of [`ParsedQuery::to_sql`], ready for a relational
+/// adapter to bind and run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DerivedSql {
+    /// The operation kind the statement performs (drives how the adapter
+    /// reads the result: stream rows / read a scalar count / read the
+    /// `0`/`1` exists flag / read the affected-row count).
+    pub prefix: QueryPrefix,
+    /// The complete SQL statement, with the dialect's positional
+    /// placeholders.
+    pub sql: String,
+    /// The bound argument values in placeholder order.
+    pub args: Vec<Value>,
 }
 
 /// The error returned when a method name cannot be parsed.
@@ -469,6 +486,81 @@ impl ParsedQuery {
             map.insert(o.field.clone(), Value::from(dir));
         }
         Value::Object(map)
+    }
+
+    /// Renders this derived query, with bound `args`, into a **complete**
+    /// dialect-aware SQL statement against `table` plus the bound argument
+    /// vector — the relational execution path, mirroring pyfly's
+    /// `QueryMethodCompiler._compile_find` / `_compile_count` /
+    /// `_compile_exists` / `_compile_delete`.
+    ///
+    /// The statement shape is chosen by [`ParsedQuery::prefix`]:
+    ///
+    /// - [`Find`](QueryPrefix::Find) →
+    ///   `SELECT * FROM <table>[ WHERE …][ ORDER BY …]`,
+    /// - [`Count`](QueryPrefix::Count) →
+    ///   `SELECT COUNT(*) FROM <table>[ WHERE …]`,
+    /// - [`Exists`](QueryPrefix::Exists) →
+    ///   `SELECT CASE WHEN EXISTS(SELECT 1 FROM <table>[ WHERE …]) THEN 1
+    ///   ELSE 0 END` (an integer `0`/`1` on every backend),
+    /// - [`Delete`](QueryPrefix::Delete) →
+    ///   `DELETE FROM <table>[ WHERE …]`.
+    ///
+    /// The WHERE fragment is rendered through the **same** [`Specification`]
+    /// tree as the in-memory and Mongo paths
+    /// ([`ParsedQuery::to_specification`] → [`Specification::to_sql_with`]),
+    /// so `OR` connectors, `BETWEEN`, `_containing`, and the null tests all
+    /// render correctly for the chosen dialect. The `find` statement also
+    /// projects the order-by clauses onto an `ORDER BY` using the dialect's
+    /// identifier quoting; the other prefixes drop ordering.
+    ///
+    /// Returns [`QueryBindError::ArgumentCount`] when the supplied argument
+    /// count does not match [`ParsedQuery::arg_count`].
+    pub fn to_sql(
+        &self,
+        dialect: &dyn SqlDialect,
+        table: &str,
+        args: &[Value],
+    ) -> Result<DerivedSql, QueryBindError> {
+        let spec = self.to_specification(args)?;
+        let (frag, args) = spec.to_sql_with(dialect);
+        let where_clause = if frag.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {frag}")
+        };
+        let table_q = dialect.quote_ident(table);
+        let sql = match self.prefix {
+            QueryPrefix::Find => {
+                let mut s = format!("SELECT * FROM {table_q}{where_clause}");
+                if !self.order_clauses.is_empty() {
+                    let orders: Vec<String> = self
+                        .order_clauses
+                        .iter()
+                        .map(|o| {
+                            let dir = match o.direction {
+                                Direction::Asc => "ASC",
+                                Direction::Desc => "DESC",
+                            };
+                            format!("{} {dir}", dialect.quote_ident(&o.field))
+                        })
+                        .collect();
+                    s.push_str(" ORDER BY ");
+                    s.push_str(&orders.join(", "));
+                }
+                s
+            }
+            QueryPrefix::Count => format!("SELECT COUNT(*) FROM {table_q}{where_clause}"),
+            QueryPrefix::Exists => format!(
+                "SELECT CASE WHEN EXISTS(SELECT 1 FROM {table_q}{where_clause}) THEN 1 ELSE 0 END"
+            ),
+            QueryPrefix::Delete => format!("DELETE FROM {table_q}{where_clause}"),
+        };
+        Ok(DerivedSql {
+            prefix: self.prefix,
+            sql,
+            args,
+        })
     }
 
     /// The order-by clauses lowered to the filter DSL's [`Sort`].
@@ -1169,6 +1261,104 @@ mod tests {
             .parse("find_by_status_order_by_name_asc_price_desc")
             .unwrap();
         assert_eq!(parsed.mongo_sort(), json!({ "name": 1, "price": -1 }));
+    }
+
+    // ----- Derived-query SQL rendering (port of QueryMethodCompiler) ----
+
+    use crate::dialect::{MySqlDialect, PostgresDialect};
+
+    #[test]
+    fn test_to_sql_find_conjunction_with_order() {
+        let parsed = parser()
+            .parse("find_by_status_and_role_order_by_name_desc")
+            .unwrap();
+        let d = parsed
+            .to_sql(
+                &PostgresDialect,
+                "users",
+                &[json!("active"), json!("admin")],
+            )
+            .unwrap();
+        assert_eq!(d.prefix, QueryPrefix::Find);
+        assert_eq!(
+            d.sql,
+            r#"SELECT * FROM "users" WHERE ("status" = $1 AND "role" = $2) ORDER BY "name" DESC"#
+        );
+        assert_eq!(d.args, vec![json!("active"), json!("admin")]);
+    }
+
+    #[test]
+    fn test_to_sql_find_or_query() {
+        let parsed = parser().parse("find_by_status_or_role").unwrap();
+        let d = parsed
+            .to_sql(
+                &PostgresDialect,
+                "users",
+                &[json!("inactive"), json!("admin")],
+            )
+            .unwrap();
+        assert_eq!(
+            d.sql,
+            r#"SELECT * FROM "users" WHERE ("status" = $1 OR "role" = $2)"#
+        );
+    }
+
+    #[test]
+    fn test_to_sql_count() {
+        let parsed = parser().parse("count_by_active").unwrap();
+        let d = parsed
+            .to_sql(&PostgresDialect, "users", &[json!(true)])
+            .unwrap();
+        assert_eq!(d.prefix, QueryPrefix::Count);
+        // A single predicate renders with no outer parentheses.
+        assert_eq!(d.sql, r#"SELECT COUNT(*) FROM "users" WHERE "active" = $1"#);
+    }
+
+    #[test]
+    fn test_to_sql_exists_wraps_in_case() {
+        let parsed = parser().parse("exists_by_email").unwrap();
+        let d = parsed
+            .to_sql(&PostgresDialect, "users", &[json!("a@b.com")])
+            .unwrap();
+        assert_eq!(d.prefix, QueryPrefix::Exists);
+        assert_eq!(
+            d.sql,
+            r#"SELECT CASE WHEN EXISTS(SELECT 1 FROM "users" WHERE "email" = $1) THEN 1 ELSE 0 END"#
+        );
+    }
+
+    #[test]
+    fn test_to_sql_delete() {
+        let parsed = parser().parse("delete_by_status").unwrap();
+        let d = parsed
+            .to_sql(&PostgresDialect, "users", &[json!("inactive")])
+            .unwrap();
+        assert_eq!(d.prefix, QueryPrefix::Delete);
+        assert_eq!(d.sql, r#"DELETE FROM "users" WHERE "status" = $1"#);
+    }
+
+    #[test]
+    fn test_to_sql_mysql_placeholders_and_quoting() {
+        let parsed = parser().parse("find_by_status").unwrap();
+        let d = parsed
+            .to_sql(&MySqlDialect, "users", &[json!("active")])
+            .unwrap();
+        assert_eq!(d.sql, "SELECT * FROM `users` WHERE `status` = ?");
+    }
+
+    #[test]
+    fn test_to_sql_arg_count_mismatch_errors() {
+        let parsed = parser().parse("find_by_age_between").unwrap();
+        let err = parsed
+            .to_sql(&PostgresDialect, "u", &[json!(1)])
+            .unwrap_err();
+        assert_eq!(
+            err,
+            QueryBindError::ArgumentCount {
+                expected: 2,
+                got: 1
+            }
+        );
     }
 
     #[test]

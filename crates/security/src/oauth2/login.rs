@@ -85,6 +85,16 @@ pub trait LoginSession: Send + Sync {
     async fn rotate_id(&self);
     /// Invalidates the session: drops all attributes and the id.
     async fn invalidate(&self);
+    /// The current session id, when the implementation tracks one — used to
+    /// bind the session to a principal for concurrency control
+    /// (`maximumSessions`). The default returns `None` (no id exposed), so
+    /// adding this method is backward-compatible for external implementors;
+    /// stores that key sessions by id (the cookie-backed
+    /// [`SessionLoginSessionStore`](crate::SessionLoginSessionStore) and the
+    /// in-memory store) override it.
+    async fn id(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Resolves the [`LoginSession`] for an incoming request — the
@@ -140,6 +150,10 @@ impl LoginSession for InMemoryLoginSession {
     async fn invalidate(&self) {
         self.attributes.write().await.clear();
         *self.id.write().await = random_urlsafe(16);
+    }
+
+    async fn id(&self) -> Option<String> {
+        Some(self.id.read().await.clone())
     }
 }
 
@@ -218,6 +232,7 @@ struct LoginState {
     clients: Arc<dyn ClientRegistrationRepository>,
     sessions: Arc<dyn LoginSessionStore>,
     http: reqwest::Client,
+    concurrency: Option<Arc<firefly_session::SessionConcurrencyController>>,
 }
 
 /// Creates the axum routes for the OAuth2 authorization_code login
@@ -255,8 +270,48 @@ impl OAuth2LoginHandler {
                 clients,
                 sessions,
                 http: reqwest::Client::new(),
+                concurrency: None,
             }),
         }
+    }
+
+    /// Enforces a per-principal session cap (`maximumSessions`) at the
+    /// login binding point, mirroring pyfly's
+    /// `OAuth2LoginHandler._handle_callback` call to
+    /// `SessionConcurrencyController.on_login` after the post-rotation
+    /// session id is known.
+    ///
+    /// On a successful callback, after the anti-fixation
+    /// [`LoginSession::rotate_id`], the new `(principal, session_id)`
+    /// binding is registered; when the controller rejects it (the
+    /// [`Strategy::RejectNew`](firefly_session::Strategy) cap is reached) the
+    /// session is invalidated and the callback returns `401` with the pyfly
+    /// `max_sessions` JSON envelope. On `POST /logout` the binding is
+    /// deregistered via `on_logout`.
+    ///
+    /// Has no effect when the controller is configured with an unlimited cap
+    /// (the default), or when the session exposes no id (see
+    /// [`LoginSession::id`]).
+    #[must_use]
+    pub fn with_concurrency(
+        mut self,
+        controller: Arc<firefly_session::SessionConcurrencyController>,
+    ) -> Self {
+        // The state is freshly built and not yet shared, so `Arc::get_mut`
+        // succeeds; fall back to rebuilding if it is ever pre-shared.
+        match Arc::get_mut(&mut self.state) {
+            Some(state) => state.concurrency = Some(controller),
+            None => {
+                let old = Arc::clone(&self.state);
+                self.state = Arc::new(LoginState {
+                    clients: Arc::clone(&old.clients),
+                    sessions: Arc::clone(&old.sessions),
+                    http: old.http.clone(),
+                    concurrency: Some(controller),
+                });
+            }
+        }
+        self
     }
 
     /// Returns the login flow routes:
@@ -465,6 +520,28 @@ async fn handle_callback(
     // Rotate the session id on successful authentication to prevent
     // session fixation.
     session.rotate_id().await;
+
+    // Enforce the per-principal session cap (`maximumSessions`) at the one
+    // correct point: after rotation, when the new session id is known.
+    if let Some(concurrency) = &state.concurrency {
+        if let Some(session_id) = session.id().await {
+            let created_at = chrono_now_millis();
+            let admitted = concurrency
+                .on_login(&authentication.principal, &session_id, created_at)
+                .await;
+            if !admitted {
+                // Over the cap under reject-new: drop the just-created
+                // session and refuse the login (pyfly: 401 max_sessions).
+                session.invalidate().await;
+                return error_json(
+                    StatusCode::UNAUTHORIZED,
+                    "max_sessions",
+                    "Maximum number of concurrent sessions reached",
+                );
+            }
+        }
+    }
+
     let serialized =
         serde_json::to_string(&authentication).expect("Authentication serializes to JSON");
     session
@@ -482,8 +559,41 @@ async fn handle_callback(
 /// `POST /logout` — invalidate the session and redirect to the root.
 async fn handle_logout(State(state): State<Arc<LoginState>>, headers: HeaderMap) -> Response {
     let session = state.sessions.session(&headers).await;
+
+    // Deregister the session from the per-principal cap before invalidating
+    // (pyfly: `on_logout(user_id, session.id)`). Read the principal from the
+    // stored security context while it is still present.
+    if let Some(concurrency) = &state.concurrency {
+        if let Some(session_id) = session.id().await {
+            if let Some(principal) = logged_in_principal(session.as_ref()).await {
+                concurrency.on_logout(&principal, &session_id).await;
+            }
+        }
+    }
+
     session.invalidate().await;
     redirect("/")
+}
+
+/// Reads the principal from a session's stored `SECURITY_CONTEXT` attribute
+/// (the JSON-serialized [`Authentication`]), or `None` when absent/anonymous.
+async fn logged_in_principal(session: &dyn LoginSession) -> Option<String> {
+    let serialized = session.get_attribute(SESSION_KEY_SECURITY_CONTEXT).await?;
+    let auth: Authentication = serde_json::from_str(&serialized).ok()?;
+    if auth.principal.is_empty() {
+        None
+    } else {
+        Some(auth.principal)
+    }
+}
+
+/// The current wall-clock time in epoch milliseconds (matches the
+/// `created_at` units the [`firefly_session::SessionRegistry`] expects).
+fn chrono_now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Exchanges an authorization code for tokens via the token endpoint;

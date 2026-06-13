@@ -32,6 +32,11 @@
 //! firefly.resilience.rate-limiter.<name>.refill-rate               float    (default 10.0)
 //! firefly.resilience.bulkhead.<name>.max-concurrent                int      (default 10)
 //! firefly.resilience.time-limiter.<name>.timeout                   duration (default 30s)
+//! firefly.resilience.retry.<name>.max-attempts                     int      (default 3)
+//! firefly.resilience.retry.<name>.delay                            duration (default 0s)
+//! firefly.resilience.retry.<name>.backoff                          float    (default 1.0)
+//! firefly.resilience.retry.<name>.max-delay                        duration (optional)
+//! firefly.resilience.retry.<name>.jitter                           float    (default 0.0)
 //! ```
 //!
 //! Relaxed binding mirrors pyfly (and `firefly-config`'s merge
@@ -51,6 +56,7 @@ use firefly_config::{ConfigError, Layered, Source};
 use crate::bulkhead::Bulkhead;
 use crate::circuit_breaker::{CircuitBreaker, CircuitConfig};
 use crate::rate_limiter::RateLimiter;
+use crate::retry::{Retry, RetryConfig};
 use crate::timeout::Timeout;
 
 /// Errors produced while materialising or querying a [`ResilienceRegistry`].
@@ -172,6 +178,7 @@ pub struct ResilienceRegistry {
     rate_limiters: HashMap<String, Arc<RateLimiter>>,
     bulkheads: HashMap<String, Arc<Bulkhead>>,
     time_limiters: HashMap<String, Duration>,
+    retries: HashMap<String, Retry>,
 }
 
 impl ResilienceRegistry {
@@ -259,6 +266,11 @@ impl ResilienceRegistry {
             };
             registry.time_limiters.insert(name.clone(), timeout);
         }
+        for (name, params) in sections.get("retry").unwrap_or(&empty) {
+            registry
+                .retries
+                .insert(name.clone(), Retry::from_config(retry_config(params)?));
+        }
         Ok(registry)
     }
 
@@ -289,6 +301,12 @@ impl ResilienceRegistry {
     /// write wins).
     pub fn register_time_limiter(&mut self, name: impl Into<String>, timeout: Duration) {
         self.time_limiters.insert(relaxed(&name.into()), timeout);
+    }
+
+    /// Registers a [`Retry`] policy under `name` (relaxed-bound; last write
+    /// wins).
+    pub fn register_retry(&mut self, name: impl Into<String>, retry: Retry) {
+        self.retries.insert(relaxed(&name.into()), retry);
     }
 
     // ------------------------------------------------------------------
@@ -339,6 +357,17 @@ impl ResilienceRegistry {
         Ok(Timeout::new(self.time_limiter(name)?))
     }
 
+    /// Returns the [`Retry`] policy registered under `name` (relaxed-bound),
+    /// or a [`RegistryError::NotFound`] listing the available names. `Retry`
+    /// is cheaply cloneable (its config is `Copy` and predicates are shared
+    /// behind `Arc`), so callers receive an independent owned policy.
+    pub fn retry(&self, name: &str) -> Result<Retry, RegistryError> {
+        self.retries
+            .get(&relaxed(name))
+            .cloned()
+            .ok_or_else(|| not_found("retry", name, self.retries.keys()))
+    }
+
     // ------------------------------------------------------------------
     // Name listings
     // ------------------------------------------------------------------
@@ -361,6 +390,11 @@ impl ResilienceRegistry {
     /// Sorted list of registered time-limiter names.
     pub fn time_limiter_names(&self) -> Vec<String> {
         sorted(self.time_limiters.keys())
+    }
+
+    /// Sorted list of registered retry-policy names.
+    pub fn retry_names(&self) -> Vec<String> {
+        sorted(self.retries.keys())
     }
 }
 
@@ -386,6 +420,29 @@ fn circuit_config(params: &Params) -> Result<CircuitConfig, RegistryError> {
         failure_rate_threshold,
         window_size,
         half_open_max_calls,
+    })
+}
+
+/// Builds a [`RetryConfig`] from a property map, applying pyfly's defaults:
+/// 3 attempts, no base delay, constant (`1.0`) backoff, no cap, no jitter.
+fn retry_config(params: &Params) -> Result<RetryConfig, RegistryError> {
+    let max_attempts = get_usize(params, "max_attempts", crate::DEFAULT_MAX_ATTEMPTS)?;
+    let delay = match params.get("delay") {
+        Some(raw) => parse_duration(raw)?,
+        None => Duration::ZERO,
+    };
+    let backoff = get_f64(params, "backoff", 1.0)?;
+    let max_delay = match params.get("max_delay") {
+        Some(raw) => Some(parse_duration(raw)?),
+        None => None,
+    };
+    let jitter = get_f64(params, "jitter", 0.0)?;
+    Ok(RetryConfig {
+        max_attempts,
+        delay,
+        backoff,
+        max_delay,
+        jitter,
     })
 }
 
@@ -605,6 +662,54 @@ mod tests {
     }
 
     #[test]
+    fn retry_materialised() {
+        let registry = registry_from(&[
+            ("firefly.resilience.retry.payment-api.max-attempts", "5"),
+            ("firefly.resilience.retry.payment-api.delay", "100ms"),
+            ("firefly.resilience.retry.payment-api.backoff", "2.0"),
+            ("firefly.resilience.retry.payment-api.max-delay", "2s"),
+            ("firefly.resilience.retry.payment-api.jitter", "0.1"),
+        ]);
+        let policy = registry.retry("payment-api").unwrap();
+        let cfg = policy.config();
+        assert_eq!(cfg.max_attempts, 5);
+        assert_eq!(cfg.delay, Duration::from_millis(100));
+        assert!((cfg.backoff - 2.0).abs() < 1e-9);
+        assert_eq!(cfg.max_delay, Some(Duration::from_secs(2)));
+        assert!((cfg.jitter - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn retry_applies_defaults_when_unset() {
+        let registry = registry_from(&[("firefly.resilience.retry.bare.max-attempts", "4")]);
+        let cfg = registry.retry("bare").unwrap().config();
+        assert_eq!(cfg.max_attempts, 4);
+        assert_eq!(cfg.delay, Duration::ZERO);
+        assert!((cfg.backoff - 1.0).abs() < 1e-9);
+        assert_eq!(cfg.max_delay, None);
+        assert!((cfg.jitter).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unknown_retry_errors() {
+        let registry = registry_from(&[]);
+        let err = registry.retry("missing").unwrap_err();
+        assert!(
+            err.to_string().contains("No retry named 'missing'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn retry_names_listed_and_direct_registration() {
+        let mut registry = ResilienceRegistry::new();
+        registry.register_retry("zebra", crate::retry(2));
+        registry.register_retry("alpha", crate::retry(3));
+        assert_eq!(registry.retry_names(), vec!["alpha", "zebra"]);
+        assert_eq!(registry.retry("alpha").unwrap().config().max_attempts, 3);
+    }
+
+    #[test]
     fn multiple_named_instances() {
         let registry = registry_from(&[
             ("firefly.resilience.rate-limiter.default.max-tokens", "100"),
@@ -636,6 +741,7 @@ mod tests {
         assert!(registry.rate_limiter_names().is_empty());
         assert!(registry.bulkhead_names().is_empty());
         assert!(registry.time_limiter_names().is_empty());
+        assert!(registry.retry_names().is_empty());
     }
 
     #[test]

@@ -23,6 +23,7 @@
 use std::sync::Arc;
 
 use firefly_actuator::{CacheOps, HealthComposite, LoggersState, MetricRegistry};
+use firefly_container::Container;
 use firefly_cqrs::Bus;
 use firefly_orchestration::OrchestrationRegistry;
 use firefly_scheduling::Scheduler;
@@ -76,6 +77,13 @@ pub struct AdminDeps {
     /// Optional instance registry — present iff **server mode** is enabled.
     /// Drives `/admin/api/instances` and the `serverMode` settings flag.
     pub instances: Option<Arc<InstanceRegistry>>,
+    /// Optional DI [`Container`] behind the Beans view (`/admin/api/beans`,
+    /// `/admin/api/beans/{name}`, `/admin/api/beans/graph`, the
+    /// `/admin/api/sse/beans` stream, and the overview `beans`/`wiring`
+    /// blocks). A missing container yields an empty bean listing and a
+    /// `{total: 0}` overview block, matching pyfly's lazily-resolved
+    /// `BeansProvider`.
+    pub container: Option<Arc<Container>>,
     /// Custom dashboard views, surfaced under `/admin/api/views`.
     pub views: Vec<Arc<dyn AdminView>>,
 }
@@ -121,6 +129,7 @@ impl AdminDeps {
             cache: None,
             loggers: None,
             instances: None,
+            container: None,
             views: Vec::new(),
         }
     }

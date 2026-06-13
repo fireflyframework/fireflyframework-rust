@@ -22,6 +22,8 @@
 //! - [`project`] — current-project detection from `Cargo.toml` + `firefly.yaml`.
 //! - [`templates`] — `firefly new` archetype scaffolding (minijinja + `include_str!`).
 //! - [`generate`] — `firefly generate` per-artifact code generators.
+//! - [`run`] — `firefly run` Cargo-native launch with profile/override env mapping.
+//! - [`build`] — `firefly build info`/`image` (build-info stamp + OCI image).
 //! - [`scaffold`] — the high-level `firefly new` flow (validation, git init).
 //! - [`actuator`] — the remote `/actuator/*` introspection client.
 //! - [`db`] — the `firefly db` migration command group (firefly-migrations).
@@ -50,6 +52,7 @@
 #![forbid(unsafe_code)]
 
 pub mod actuator;
+pub mod build;
 pub mod cli;
 pub mod completion;
 pub mod db;
@@ -60,6 +63,7 @@ pub mod license;
 pub mod naming;
 pub mod openapi;
 pub mod project;
+pub mod run;
 pub mod sbom;
 pub mod scaffold;
 pub mod templates;

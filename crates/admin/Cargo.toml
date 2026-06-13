@@ -10,6 +10,7 @@ description = "Firefly Framework for Rust — Spring-Boot-Admin-style embedded d
 
 [dependencies]
 firefly-actuator = { workspace = true }
+firefly-container = { workspace = true }
 firefly-scheduling = { workspace = true }
 firefly-orchestration = { workspace = true }
 firefly-cqrs = { workspace = true }
@@ -40,3 +41,4 @@ http-body-util = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 firefly-security = { workspace = true }
+firefly-container = { workspace = true }

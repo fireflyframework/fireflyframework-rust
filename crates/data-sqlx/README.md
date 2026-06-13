@@ -47,6 +47,48 @@ placeholders (`$n` vs `?`), identifier quoting (`"id"` vs `` `id` ``),
   `.with_soft_delete(..)`) hides soft-deleted rows from **every** read path
   and turns `delete` into a `deleted_at` stamp instead of a physical `DELETE`.
 
+### Derived & custom queries (executed end-to-end)
+
+The adapter runs Spring-Data **derived query methods** and **`@query`
+custom queries** against the live pool — the Rust analogue of pyfly's
+repository bean post-processor (Rust has no runtime reflection, so the query
+is named/described at the call site rather than via a stub method):
+
+```rust,ignore
+use firefly_data::CustomQuery;
+use std::collections::BTreeMap;
+
+// Derived query method names, parsed + rendered + executed:
+let active = repo.find_by_derived("find_by_active", &[json!(true)]);            // Flux<T>
+let n      = repo.count_by_derived("count_by_active", &[json!(true)]);          // Mono<i64>
+let any    = repo.exists_by_derived("exists_by_email", &[json!("a@b.com")]);    // Mono<bool>
+let gone   = repo.delete_by_derived("delete_by_status", &[json!("expired")]);   // Mono<u64>
+// Connectors, operators, and order_by all work:
+let combo  = repo.find_by_derived(
+    "find_by_active_and_score_greater_than_order_by_score_desc",
+    &[json!(true), json!(5)],
+);
+
+// @query custom queries with :param named binding + return-shape inference:
+let mut params = BTreeMap::new();
+params.insert("min".into(), json!(20));
+let q = CustomQuery::native("SELECT * FROM users WHERE score >= :min ORDER BY score");
+let rows = repo.query_list(&q, "User", &params);                                // Flux<T>
+let cnt  = repo.query_count(&CustomQuery::native("SELECT COUNT(*) FROM users WHERE active = :f"),
+                            "User", &params);                                    // Mono<i64>
+let upd  = repo.query_execute(&CustomQuery::native("UPDATE users SET x = :v WHERE id = :id"),
+                              "User", &params);                                  // Mono<u64>
+// JPQL is transpiled to SQL first:
+let jpql = CustomQuery::jpql("SELECT u FROM User u WHERE u.email = :email");
+let list = repo.query_list(&jpql, "User", &params);
+
+// DB-level interface projection — only the projected columns cross the wire:
+use firefly_data::{ColumnProjection, Specification, Predicate, Op};
+let proj = ColumnProjection::new("UserSummary", ["id", "name"]);
+let summaries = repo.project_by_spec(&proj, Specification::pred(Predicate::new("active", Op::Eq, true)));
+// -> Flux<serde_json::Value>, each value an object of just {id, name}.
+```
+
 ## Quick start (SQLite — runs on a bare machine)
 
 ```rust,ignore
@@ -120,6 +162,26 @@ export FIREFLY_TEST_MYSQL_URL="mysql://firefly:firefly@localhost:3307/firefly"
 cargo test -p firefly-data-sqlx
 ```
 
+## Actuator integration (feature `actuator`)
+
+Enable the `actuator` feature to get a database health component and per-query
+metrics, the Rust port of pyfly's `SqlAlchemyHealthIndicator` /
+`SqlAlchemyQueryMetrics`:
+
+```toml
+firefly-data-sqlx = { version = "26.6.3", features = ["actuator"] }
+```
+
+- `SqlxHealthIndicator` implements `firefly_actuator::HealthIndicator`: it
+  runs `SELECT 1` and reports `UP` (with the backend kind on
+  `details.database`) — the `db` component on `GET /actuator/health`.
+  `SqlxHealthIndicator::named(db, "db-reporting")` probes a named datasource
+  under its own component name.
+- `SqlxQueryMetrics` records `pyfly_db_query_duration_seconds` /
+  `pyfly_db_queries_total` / `pyfly_db_query_errors_total`, all labelled by a
+  **bounded** `operation` (`SELECT` / `INSERT` / `UPDATE` / `DELETE` /
+  `OTHER`), matching pyfly's metric names for cross-port dashboards.
+
 ## Cargo features
 
 All three backends are enabled by default. Disable the ones you do not need
@@ -128,6 +190,9 @@ for a smaller build, e.g. a SQLite-only repository:
 ```toml
 firefly-data-sqlx = { version = "26.6.3", default-features = false, features = ["sqlite"] }
 ```
+
+The `actuator` feature (off by default) adds the health/metrics integration
+above.
 
 ## License
 

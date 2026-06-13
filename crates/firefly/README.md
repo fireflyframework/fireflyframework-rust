@@ -56,6 +56,40 @@ let scheduler = Scheduler::new();
 let _ok: FireflyResult<()> = Ok(());
 ```
 
+### Dependency injection + `ApplicationContext`
+
+The facade is the front door to the framework's **best-in-class
+dependency-injection** experience (Spring/pyfly parity). Annotate beans with the
+stereotype derives, then let the `ApplicationContext` scan, gate, wire, and
+warm them:
+
+```rust,ignore
+use firefly::prelude::*;
+use std::sync::Arc;
+
+#[derive(Repository, Default)]
+struct OrderRepo;
+
+#[derive(Service)]
+#[firefly(profile = "prod", post_construct = "warm")]
+struct OrderService { #[autowired] repo: Arc<OrderRepo> }
+impl OrderService { fn warm(&mut self) {} }
+
+// Scans the crate graph via `inventory`, evaluates conditionals/profiles,
+// eagerly warms non-lazy singletons (running #[post_construct]), and is
+// resolvable. `close()` runs #[pre_destroy] in reverse order.
+let ctx = ApplicationContext::builder().profiles(["prod"]).build();
+let svc = ctx.resolve::<OrderService>()?;
+ctx.close();
+```
+
+`firefly::scan(&container)` is the free-function form of `Container::scan()` for
+when you manage the container yourself. The prelude exports `Container`,
+`Scope`, `Provider`, `ConditionContext`, and `ApplicationContext`; see the
+[`firefly-macros`](../macros) README for the full derive/attribute surface
+(`#[bean]` factory methods, `#[derive(ConfigProperties)]`,
+`#[firefly(value = …)]`, conditionals, interface auto-bind, lifecycle hooks).
+
 ### Module aliases
 
 Every runtime crate is re-exported under a short alias, so the `firefly_`

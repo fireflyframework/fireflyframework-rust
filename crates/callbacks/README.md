@@ -45,10 +45,28 @@ unchanged.
 ## Retry policy
 
 `DispatcherConfig { max_attempts, initial_delay }` — defaults:
-3 attempts, 200 ms initial delay, doubling. Each attempt records an
-`Attempt` audit row regardless of outcome. Per-target delivery failures
-are best-effort: they are audited and the dispatcher continues with the
-next matching target, exactly as in the Go port.
+3 attempts, 200 ms initial delay, doubling, **capped at 5 min** per
+retry (pyfly's `min(backoff_ms * 2**(attempt-1), 300_000)`). Each
+attempt records an `Attempt` audit row regardless of outcome. Per-target
+delivery failures are best-effort: they are audited and the dispatcher
+continues with the next matching target, exactly as in the Go port.
+
+**Retryable vs permanent (pyfly #194).** A non-2xx *response* is retried
+only when its status is transient — `408`, `429`, or any `5xx`. A 4xx
+other than `408`/`429` (a deterministic `400`/`401`/`403`/`404`/`422`) is
+a **permanent** client error: the dispatcher stops retrying it
+immediately rather than burning the whole attempt budget against a target
+that will keep rejecting it. Transport errors (no response) are always
+retried. This matches pyfly's `_is_retryable` exactly.
+
+> Retry tuning is **dispatcher-global** (`DispatcherConfig`), not
+> per-`Target`. The wire shape of `Target` is byte-for-byte the Go port's
+> struct (camelCase, `omitempty`, `secret` never serialised), so adding
+> per-target `max_attempts`/`backoff_ms`/`tenant` fields — and the
+> per-tenant `dispatch(tenant_id, …)` fan-out pyfly offers — is a
+> deliberate divergence kept out to preserve that wire contract and the
+> single-tenant Go model. Run one dispatcher per tenant/policy for the
+> same effect.
 
 ## Public surface
 

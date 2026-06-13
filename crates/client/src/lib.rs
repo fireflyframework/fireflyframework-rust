@@ -152,6 +152,7 @@
 mod error;
 mod graphql;
 mod rest;
+mod retry;
 mod scaffold;
 mod soap;
 mod webclient;
@@ -164,6 +165,7 @@ mod websocket;
 pub use error::ClientError;
 pub use graphql::{no_variables, GraphQlBuilder, GraphQlClient};
 pub use rest::{new_rest, RestBuilder, RestClient, NO_BODY};
+pub use retry::RetryPolicy;
 pub use scaffold::{
     new_grpc, new_soap, new_websocket, GrpcPlaceholder, SoapPlaceholder, WebSocketPlaceholder,
 };

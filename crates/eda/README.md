@@ -126,6 +126,52 @@ async fn main() {
 `messaging` and `eda` packages (the transports themselves live in the
 dedicated `firefly-eda-kafka` / `firefly-eda-rabbitmq` crates):
 
+### Raw-bytes publish convenience
+
+`PublisherExt::publish_bytes(topic, type, source, payload)` is a one-call
+helper over any `Publisher` — it builds the `Event` (stamping the
+correlation id from the ambient scope) and publishes it, so the common
+"send this payload to this topic" call needn't spell out `Event::new`:
+
+```rust,ignore
+use firefly_eda::{InMemoryBroker, PublisherExt};
+
+broker
+    .publish_bytes("orders.created", "OrderCreated", "orders-svc", Some(payload))
+    .await?;
+```
+
+It is blanket-implemented for every publisher, including
+`Arc<dyn Publisher>`.
+
+### Pluggable event serializer
+
+`EventSerializer` is the codec port a transport uses to turn an `Event`
+into wire bytes and back — pyfly's `EventSerializer` protocol. The
+built-in `JsonEventSerializer` encodes via the **canonical `Event` JSON
+codec**, so its bytes are byte-for-byte wire-compatible with every sibling
+port and the in-memory broker; selecting it is a zero-behaviour-change
+default. `AvroEventSerializer` / `ProtobufEventSerializer` are the
+failing-loud, not-yet-implemented sentinels pyfly ships (construct them,
+but `serialize`/`deserialize` return `EdaError::Serialization` until a
+Schema-Registry / descriptor adapter is wired in). `serializer_for(name)`
+selects one by name for a `serialization-format` config key:
+
+```rust,ignore
+use firefly_eda::{serializer_for, EventSerializer, JsonEventSerializer};
+
+let codec = JsonEventSerializer::new();
+let bytes = codec.serialize(&event)?;        // canonical Event JSON
+let back = codec.deserialize(&bytes)?;
+
+let chosen = serializer_for("avro")?;          // by config string ("json"|"avro"|"protobuf")
+assert_eq!(chosen.name(), "avro");
+```
+
+A transport that adopts the port serializes via `serialize` on publish and
+reconstructs via `deserialize` on receipt; one that does not keeps using
+the canonical `Event` JSON codec directly (the identical bytes).
+
 ### Partition / routing key on `Event`
 
 `Event` carries an optional `key: Option<Vec<u8>>` — pyfly's

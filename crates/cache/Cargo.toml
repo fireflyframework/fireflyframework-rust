@@ -9,6 +9,7 @@ rust-version.workspace = true
 description = "Firefly Framework for Rust — Cache Adapter port + Memory / NoOp / Fallback + typed facade"
 
 [dependencies]
+firefly-observability = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -52,6 +52,38 @@
 //!   [`SoftDeletePolicy`](firefly_data::SoftDeletePolicy) hides soft-deleted
 //!   rows from every read and turns `delete` into a `deleted_at` stamp.
 //!
+//! ## Derived & custom queries (executed end-to-end)
+//!
+//! The adapter runs Spring-Data **derived query methods** and **`@query`
+//! custom queries** against the live pool — the Rust analogue of pyfly's
+//! repository bean post-processor:
+//!
+//! - [`find_by_derived`](SqlxReactiveRepository::find_by_derived) /
+//!   [`count_by_derived`](SqlxReactiveRepository::count_by_derived) /
+//!   [`exists_by_derived`](SqlxReactiveRepository::exists_by_derived) /
+//!   [`delete_by_derived`](SqlxReactiveRepository::delete_by_derived) take a
+//!   `find_by_status_and_role`-style method name plus the bound arguments,
+//!   parse it with [`QueryMethodParser`](firefly_data::QueryMethodParser),
+//!   render the dialect-aware SQL, and execute it.
+//! - [`query_list`](SqlxReactiveRepository::query_list) /
+//!   [`query_count`](SqlxReactiveRepository::query_count) /
+//!   [`query_exists`](SqlxReactiveRepository::query_exists) /
+//!   [`query_execute`](SqlxReactiveRepository::query_execute) run a
+//!   [`CustomQuery`](firefly_data::CustomQuery) (native SQL or JPQL-like)
+//!   with `:param` named-parameter binding and count/exists/list
+//!   return-shape inference.
+//! - [`project_by_spec`](SqlxReactiveRepository::project_by_spec) runs a
+//!   DB-level [`ColumnProjection`](firefly_data::ColumnProjection): it
+//!   `SELECT`s only the projected columns and streams the narrowed rows.
+//!
+//! ## Actuator integration (feature `actuator`)
+//!
+//! With the `actuator` feature enabled, [`SqlxHealthIndicator`] contributes a
+//! `db` component to `GET /actuator/health` (`SELECT 1`, reporting the
+//! backend kind) and [`SqlxQueryMetrics`] records the
+//! `pyfly_db_query_duration_seconds` / `pyfly_db_queries_total` /
+//! `pyfly_db_query_errors_total` metrics with a bounded `operation` label.
+//!
 //! # Quick start (SQLite, runs on a bare machine)
 //!
 //! ```
@@ -102,6 +134,8 @@
 
 mod binding;
 mod db;
+#[cfg(feature = "actuator")]
+mod observe;
 mod repository;
 mod row;
 mod sql;
@@ -111,6 +145,12 @@ pub use db::{Backend, Db};
 pub use repository::{SqlxReactiveRepository, SqlxRepository};
 pub use row::{AnyRow, SqlxRowMapper, TryGetAcross};
 pub use writer::{ColumnValue, RowWriter};
+
+#[cfg(feature = "actuator")]
+pub use observe::{
+    operation_label, SqlxHealthIndicator, SqlxQueryMetrics, DB_QUERIES_TOTAL, DB_QUERY_DURATION,
+    DB_QUERY_ERRORS_TOTAL,
+};
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.3";

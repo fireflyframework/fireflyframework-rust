@@ -313,6 +313,56 @@ pub struct ExecutionReport;          // from_saga_outcome(cid, &Outcome) / from_
 `Workflow::graph()` lowers a workflow to the `node -> [deps]` shape the
 validator lints for empty graphs, unknown dependencies, and cycles.
 
+### Observability (events, metrics, tracing)
+
+```rust,ignore
+#[async_trait] pub trait OrchestrationEvents { /* ~25 lifecycle hooks, all default no-op */ }
+pub struct CompositeOrchestrationEvents;  // fan-out to many listeners (.with / .add)
+pub struct LoggerOrchestrationEvents;     // tracing-backed default
+pub struct OrchestrationMetrics;          // in-memory counters + p50/p95 histograms; .snapshot()
+pub struct OrchestrationTracer;           // tracing-span facade; .span(name) / .is_enabled()
+pub struct OrchestrationHealthIndicator;  // firefly_observability::Indicator over PersistenceProvider
+```
+
+Ports pyfly's `pyfly.transactional.core.{events,metrics,tracer}`. The
+`OrchestrationEvents` trait carries the full lifecycle hook set (`on_start`,
+`on_step_*`, `on_compensation_started` / `on_step_compensated`, TCC
+`on_phase_*` / `on_participant_*`, `on_workflow_suspended` / `_resumed`,
+`on_signal_delivered`, `on_timer_fired`, `on_child_workflow_*`,
+`on_continue_as_new`, `on_dead_lettered`); every method defaults to a no-op.
+The engines fire the hooks through additive `run_with_listener` methods on
+`Saga` / `Workflow` / `Tcc` — the base `run` methods run with a
+`NoOpOrchestrationEvents` listener, so existing behaviour and wire output are
+unchanged:
+
+```rust,ignore
+let metrics = Arc::new(OrchestrationMetrics::new());
+let listener = Arc::new(CompositeOrchestrationEvents::new().with(metrics.clone()));
+let outcome = saga.run_with_listener(listener).await?;
+let snap = metrics.snapshot();   // { executions: {..}, steps: {..}, tcc_phases: {..}, dead_letters }
+```
+
+`TccParticipant::with_context` threads the try phase's `StepContext` result
+into confirm / cancel — pyfly's `@FromTry`. `OrchestrationHealthIndicator`
+reports persistence liveness (`UP`/`DOWN` with a `persistence` detail) on
+`/actuator/health`.
+
+### Saga composition (DAG of sagas)
+
+```rust,ignore
+pub struct SagaCompositionBuilder;  // .saga(name).depends_on([..]).data_flow(src, step, key).add().build()
+pub struct SagaComposition;         // validated multi-saga definition
+pub struct SagaCompositor;          // .register(name, saga) / .register_with_undo(..) / .execute(comp, input)
+pub struct CompositionContext;      // saga_results / completed / compensated / error
+```
+
+Ports pyfly's `pyfly.transactional.saga.composition`: run several registered
+sagas as a DAG (same-layer sagas concurrently), wire each saga's step output
+into downstream sagas' input via `SagaDataFlow`, and compensate all completed
+sagas in reverse on a failure (via per-saga `register_with_undo` closures).
+`CompositionValidator` rejects unknown dependencies, dangling data-flow
+sources, and dependency cycles.
+
 ### REST router
 
 ```rust,ignore

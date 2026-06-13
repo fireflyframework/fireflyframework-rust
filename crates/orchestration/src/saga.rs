@@ -24,13 +24,16 @@
 //! from the run's [`StepContext`](crate::StepContext) — pyfly's
 //! `StepInvoker` + `Annotated[..., FromStep/Input]` argument injection.
 
+use crate::observability::{NoOpOrchestrationEvents, OrchestrationEvents};
 use crate::step_context::StepContext;
 use crate::step_invoker::invoke_with_policy;
-use crate::{boxed_action, ActionFn, BoxError, CancellationToken, RetryPolicy};
+use crate::{boxed_action, ActionFn, BoxError, CancellationToken, ExecutionPattern, RetryPolicy};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::future::Future;
+use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
 
 /// Controls how a saga handles compensation failures.
@@ -372,14 +375,16 @@ impl Saga {
     /// [`SagaStatus::Failed`]; no compensation is attempted, mirroring the
     /// Go port's `ctx.Err()` handling.
     pub async fn run_cancellable(&self, token: &CancellationToken) -> Result<Outcome, SagaFailure> {
-        self.run_inner(token, &StepContext::new()).await
+        self.run_inner(token, &StepContext::new(), &NoOpOrchestrationEvents)
+            .await
     }
 
     /// Executes the saga threading `ctx` through every context-aware step
     /// ([`Step::with_context`]) so later steps can consume earlier results —
     /// inter-step data passing.
     pub async fn run_with_context(&self, ctx: &StepContext) -> Result<Outcome, SagaFailure> {
-        self.run_inner(&CancellationToken::new(), ctx).await
+        self.run_inner(&CancellationToken::new(), ctx, &NoOpOrchestrationEvents)
+            .await
     }
 
     /// Executes the saga with both an explicit cancellation token and a
@@ -389,15 +394,49 @@ impl Saga {
         token: &CancellationToken,
         ctx: &StepContext,
     ) -> Result<Outcome, SagaFailure> {
-        self.run_inner(token, ctx).await
+        self.run_inner(token, ctx, &NoOpOrchestrationEvents).await
+    }
+
+    /// Executes the saga, firing lifecycle hooks on `listener` —
+    /// pyfly's `OrchestrationEvents` wiring. The listener observes
+    /// `on_start`, per-step `on_step_started` / `on_step_success` /
+    /// `on_step_failed`, `on_compensation_started` / `on_step_compensated`,
+    /// and `on_completed`. Behaviour and wire output are otherwise identical
+    /// to [`Saga::run`].
+    pub async fn run_with_listener(
+        &self,
+        listener: Arc<dyn OrchestrationEvents>,
+    ) -> Result<Outcome, SagaFailure> {
+        self.run_inner(
+            &CancellationToken::new(),
+            &StepContext::new(),
+            listener.as_ref(),
+        )
+        .await
+    }
+
+    /// Executes the saga with an explicit [`StepContext`] and lifecycle
+    /// `listener` — the most general saga run.
+    pub async fn run_with_context_and_listener(
+        &self,
+        token: &CancellationToken,
+        ctx: &StepContext,
+        listener: &dyn OrchestrationEvents,
+    ) -> Result<Outcome, SagaFailure> {
+        self.run_inner(token, ctx, listener).await
     }
 
     async fn run_inner(
         &self,
         token: &CancellationToken,
         ctx: &StepContext,
+        listener: &dyn OrchestrationEvents,
     ) -> Result<Outcome, SagaFailure> {
         let started_at = Utc::now();
+        let cid = ctx.correlation_id();
+        listener
+            .on_start(&self.name, ExecutionPattern::Saga, &cid)
+            .await;
         let mut steps_executed: Vec<String> = Vec::new();
         let mut executed: Vec<usize> = Vec::new();
 
@@ -413,17 +452,30 @@ impl Saga {
                     started_at,
                     finished_at: Utc::now(),
                 };
+                listener
+                    .on_completed(
+                        &self.name,
+                        ExecutionPattern::Saga,
+                        &cid,
+                        false,
+                        duration_ms(started_at, outcome.finished_at),
+                    )
+                    .await;
                 return Err(SagaFailure {
                     outcome: Box::new(outcome),
                     error,
                 });
             }
+            listener.on_step_started(&self.name, &cid, &step.name).await;
             // Apply the per-step RetryPolicy (max attempts, exponential
             // backoff, jitter, per-attempt timeout) — pyfly's StepInvoker.
+            let step_start = Instant::now();
             let exec_result =
                 invoke_with_policy(&step.name, &step.retry, ctx, |ctx| step.execute.call(ctx))
                     .await;
+            let latency_ms = step_start.elapsed().as_secs_f64() * 1000.0;
             if let Err(invoke_err) = exec_result {
+                let attempts = invoke_err.attempts();
                 // Preserve the historical `step "name": <cause>` message
                 // shape: a single-attempt failure unwraps to its original
                 // cause, so the wrapping is identical to the pre-retry
@@ -435,7 +487,18 @@ impl Saga {
                     source: cause,
                 };
                 let step_message = step_error.to_string();
-                let (steps_rolled, compensation_failure) = self.compensate(ctx, &executed).await;
+                listener
+                    .on_step_failed(
+                        &self.name,
+                        &cid,
+                        &step.name,
+                        &step_message,
+                        attempts,
+                        latency_ms,
+                    )
+                    .await;
+                let (steps_rolled, compensation_failure) =
+                    self.compensate(ctx, &executed, listener, &cid).await;
                 let outcome = Outcome {
                     saga: self.name.clone(),
                     status: SagaStatus::Compensated,
@@ -455,15 +518,37 @@ impl Saga {
                     }
                     _ => step_error,
                 };
+                listener
+                    .on_completed(
+                        &self.name,
+                        ExecutionPattern::Saga,
+                        &cid,
+                        false,
+                        duration_ms(started_at, outcome.finished_at),
+                    )
+                    .await;
                 return Err(SagaFailure {
                     outcome: Box::new(outcome),
                     error,
                 });
             }
+            listener
+                .on_step_success(&self.name, &cid, &step.name, 1, latency_ms)
+                .await;
             executed.push(i);
             steps_executed.push(step.name.clone());
         }
 
+        let finished_at = Utc::now();
+        listener
+            .on_completed(
+                &self.name,
+                ExecutionPattern::Saga,
+                &cid,
+                true,
+                duration_ms(started_at, finished_at),
+            )
+            .await;
         Ok(Outcome {
             saga: self.name.clone(),
             status: SagaStatus::Completed,
@@ -471,7 +556,7 @@ impl Saga {
             steps_rolled: Vec::new(),
             error: None,
             started_at,
-            finished_at: Utc::now(),
+            finished_at,
         })
     }
 
@@ -483,7 +568,12 @@ impl Saga {
         &self,
         ctx: &StepContext,
         executed: &[usize],
+        listener: &dyn OrchestrationEvents,
+        cid: &str,
     ) -> (Vec<String>, Option<BoxError>) {
+        if !executed.is_empty() {
+            listener.on_compensation_started(&self.name, cid).await;
+        }
         let mut rolled = Vec::new();
         let mut first_err: Option<BoxError> = None;
         for &i in executed.iter().rev() {
@@ -492,8 +582,16 @@ impl Saga {
                 continue;
             };
             match compensate.call(ctx).await {
-                Ok(()) => rolled.push(step.name.clone()),
+                Ok(()) => {
+                    listener
+                        .on_step_compensated(&self.name, cid, &step.name, None)
+                        .await;
+                    rolled.push(step.name.clone());
+                }
                 Err(err) => {
+                    listener
+                        .on_step_compensated(&self.name, cid, &step.name, Some(&err.to_string()))
+                        .await;
                     if self.policy == CompensationPolicy::StopOnError {
                         return (rolled, Some(err));
                     }
@@ -505,6 +603,12 @@ impl Saga {
         }
         (rolled, first_err)
     }
+}
+
+/// Wall-clock milliseconds between two timestamps, clamped at zero — the
+/// duration unit the [`OrchestrationEvents`] hooks report.
+fn duration_ms(start: DateTime<Utc>, end: DateTime<Utc>) -> f64 {
+    (end - start).num_milliseconds().max(0) as f64
 }
 
 impl fmt::Debug for Saga {

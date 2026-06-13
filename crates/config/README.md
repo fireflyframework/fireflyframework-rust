@@ -182,6 +182,21 @@ previous snapshot. The object-safe `Refresher` trait
 actuator `POST /actuator/refresh` endpoint wires up —
 `Arc<ReloadableConfig<T>>` coerces to `Arc<dyn Refresher>`.
 
+`reload_and_publish(&bus)` reloads and then fires a
+`RefreshScopeRefreshedEvent { refreshed }` onto an `ApplicationEventBus`
+carrying the changed top-level keys — the Rust port of pyfly's
+`ContextRefresher.refresh()` (Spring Cloud's `RefreshScopeRefreshedEvent`).
+The event is published on **every** successful reload (an empty list when
+nothing changed); a failed reload publishes nothing:
+
+```rust,ignore
+let bus = ApplicationEventBus::new();
+bus.subscribe::<RefreshScopeRefreshedEvent, _>(|e| {
+    // react to the refreshed keys, e.refreshed: Vec<String>
+});
+let changed = cfg.reload_and_publish(&bus)?;
+```
+
 ### Property-source introspection + masking
 
 `Layered::property_sources()` returns ordered `PropertySourceView`s
@@ -240,10 +255,11 @@ let publisher = ApplicationEventPublisher::new(Rc::new(bus));
 ```
 
 Lifecycle events: `ContextRefreshedEvent`, `ApplicationReadyEvent`,
-`ContextClosedEvent`. Any `'static` type can be published as a domain
-event. Dispatch is keyed on the concrete `TypeId` (Rust has no runtime
-subclass relationship, so a listener receives exactly the type it
-subscribed to).
+`ContextClosedEvent`, `RefreshScopeRefreshedEvent` (published by
+`ReloadableConfig::reload_and_publish`). Any `'static` type can be
+published as a domain event. Dispatch is keyed on the concrete `TypeId`
+(Rust has no runtime subclass relationship, so a listener receives exactly
+the type it subscribed to).
 
 ### Spring-Cloud-Config client
 
@@ -275,6 +291,8 @@ failures raise `ConfigError::Remote`.
 | `accepts_profiles(&active, &exprs)` | Spring Boot 2.4+ profile-expression evaluator (`!`/`&`/`\|`/grouping/comma-OR) |
 | `ApplicationEventBus` / `ApplicationEventPublisher` | Synchronous in-process `TypeId`-dispatched, `@order`-sorted pub/sub |
 | `ContextRefreshedEvent` / `ApplicationReadyEvent` / `ContextClosedEvent` | Lifecycle event types |
+| `RefreshScopeRefreshedEvent` | Published by `reload_and_publish` after a refresh (Spring Cloud parity) |
+| `ReloadableConfig::reload_and_publish(&bus)` | Reload + publish `RefreshScopeRefreshedEvent` (pyfly `ContextRefresher.refresh`) |
 | `ConfigClient` | Spring-Cloud-Config `/{app}/{profile}/{label}` fetch → `StaticSource` |
 | `ConfigError::{Placeholder, Remote}` | New failure shapes |
 

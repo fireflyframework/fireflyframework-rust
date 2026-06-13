@@ -67,6 +67,49 @@ where
         self.adapter.set(key, &raw, ttl).await
     }
 
+    /// Always writes `value` under `key` for `ttl` and returns it — the
+    /// always-execute-then-store path pyfly's `@cache_put` decorator
+    /// takes. Unlike [`get_or_set`](Typed::get_or_set), no read happens
+    /// first and any existing entry is overwritten; the write error
+    /// surfaces (the value is not returned on failure).
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use std::time::Duration;
+    /// use firefly_cache::{MemoryAdapter, Typed};
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), firefly_cache::CacheError> {
+    /// let typed: Typed<u32> = Typed::new(Arc::new(MemoryAdapter::new()));
+    /// let stored = typed.put("counter", 7, Some(Duration::from_secs(60))).await?;
+    /// assert_eq!(stored, 7);
+    /// assert_eq!(typed.get("counter").await?, 7);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn put(&self, key: &str, value: T, ttl: Option<Duration>) -> Result<T, CacheError> {
+        self.set(key, &value, ttl).await?;
+        Ok(value)
+    }
+
+    /// Removes the entry at `key` — the single-key form of pyfly's
+    /// `@cache_evict`. A missing key is a no-op (returns `Ok`), matching
+    /// the [`Adapter::delete`](crate::Adapter) contract. A typed
+    /// convenience passthrough so call sites that hold a [`Typed`] need
+    /// not reach for `self.adapter`.
+    pub async fn delete(&self, key: &str) -> Result<(), CacheError> {
+        self.adapter.delete(key).await
+    }
+
+    /// Removes every entry whose key starts with `prefix`, returning the
+    /// number removed — the prefix (`all_entries`-style) form of pyfly's
+    /// `@cache_evict`, delegating to
+    /// [`Adapter::delete_prefix`](crate::Adapter). Backends without prefix
+    /// support surface [`CacheError::Backend`].
+    pub async fn delete_prefix(&self, prefix: &str) -> Result<u64, CacheError> {
+        self.adapter.delete_prefix(prefix).await
+    }
+
     /// Returns the cached value or, on miss, computes it via `loader`,
     /// caches it for `ttl` and returns it. A miss is signalled by
     /// [`CacheError::NotFound`]; any other read error surfaces unchanged.
@@ -92,5 +135,43 @@ where
         // Caching failure should not mask successful load.
         let _ = self.set(key, &loaded, ttl).await;
         Ok(loaded)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MemoryAdapter;
+
+    #[tokio::test]
+    async fn put_always_stores_and_overwrites() {
+        let typed: Typed<u32> = Typed::new(Arc::new(MemoryAdapter::new()));
+        assert_eq!(typed.put("k", 1, None).await.unwrap(), 1);
+        assert_eq!(typed.get("k").await.unwrap(), 1);
+        // Overwrites unconditionally (no read-first), unlike get_or_set.
+        assert_eq!(typed.put("k", 2, None).await.unwrap(), 2);
+        assert_eq!(typed.get("k").await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_entry_and_is_noop_when_absent() {
+        let typed: Typed<String> = Typed::new(Arc::new(MemoryAdapter::new()));
+        typed.set("k", &"v".to_string(), None).await.unwrap();
+        typed.delete("k").await.unwrap();
+        assert!(typed.get("k").await.unwrap_err().is_not_found());
+        // Deleting a missing key is a no-op.
+        typed.delete("missing").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_prefix_evicts_matching_entries() {
+        let typed: Typed<u32> = Typed::new(Arc::new(MemoryAdapter::new()));
+        typed.set("user:1", &1, None).await.unwrap();
+        typed.set("user:2", &2, None).await.unwrap();
+        typed.set("order:1", &9, None).await.unwrap();
+        let removed = typed.delete_prefix("user:").await.unwrap();
+        assert_eq!(removed, 2);
+        assert!(typed.get("user:1").await.unwrap_err().is_not_found());
+        assert_eq!(typed.get("order:1").await.unwrap(), 9);
     }
 }

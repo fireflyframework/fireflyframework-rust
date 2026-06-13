@@ -1,14 +1,18 @@
 # `firefly-container`
 
-> **Tier:** Platform · **Status:** Full (service-locator surface) · **pyfly original:** `pyfly.container`
+> **Tier:** Platform · **Status:** Full (service-locator + component-scan surface) · **pyfly original:** `pyfly.container` + `pyfly.context`
 
 ## Overview
 
 `firefly-container` is an **opt-in, TypeId-keyed dependency-injection
-container** ported from pyfly's `container` package. It mirrors the
-*service-locator* half of pyfly's surface faithfully and adapts the
-*reflective-autowiring* half (which has no Rust analog) to explicit factory
-closures.
+container** ported from pyfly's `container` package and the DI half of
+`pyfly.context`. It mirrors the *service-locator* surface faithfully and now
+also delivers the *component-scan* surface — stereotype discovery via
+[`inventory`], conditional/profile gating, bean lifecycle hooks, `@Value`
+config injection, and bean introspection — paired with the
+`#[derive(Component)]` / `Service` / `Repository` / `Configuration` /
+`Controller` / `ConfigProperties` derives and the `#[bean]` attribute in
+`firefly-macros`.
 
 ```rust
 use firefly_container::{Container, Scope};
@@ -58,18 +62,56 @@ is a valid registry key.
 | `ContainerError::{NoSuchBean, NoUniqueBean, CircularDependency}` | Error taxonomy | `NoSuchBeanError` / `NoUniqueBeanError` / `BeanCurrentlyInCreationError` |
 | `HIGHEST_PRECEDENCE`, `LOWEST_PRECEDENCE` | Ordering constants | same |
 
+### Component scan + conditions + lifecycle (new)
+
+| Symbol | Purpose | pyfly equivalent |
+|--------|---------|------------------|
+| `Container::shared()` / `install_shared_handle` | Arc-wrapped container with a self-handle (needed for `Provider<T>` autowiring) | — |
+| `scan()` / `scan_with(ctx)` | Register every `inventory`-submitted stereotype, two-pass conditional gating | `scan_package` / `scan_module_classes` |
+| `ComponentRegistration` | A link-time scan thunk (one per stereotype derive) | `__pyfly_injectable__` classes |
+| `discovered()` / `routes()` | Iterate every scan thunk / `#[rest_controller]` route | — / route table |
+| `set_condition_context` / `condition_context` | Install/read the active profiles + config map | `Environment` / `Config` |
+| `ConditionContext` + `Condition` | Profile + `@ConditionalOn*` evaluation inputs | `context.conditions` / `condition_evaluator` |
+| `config_properties(prefix)` | Prefix-stripped config map for `#[derive(ConfigProperties)]` | `@config_properties` binding |
+| `resolve_value::<T>(c, "${k:default}")` | `@Value` config-field injection | `core.value.Value` |
+| `provider_for::<T>()` | Build a `Provider<T>` from a borrowed container (autowiring) | `Provider[T]` |
+| `set_stereotype` / `set_destroy_hook` | Record stereotype / `#[pre_destroy]` hook | `__pyfly_stereotype__` / `@pre_destroy` |
+| `beans()` / `bean_stats()` / `bean_count()` | Bean introspection for the admin `/beans` view | `BeansProvider` / `OverviewProvider` |
+| `destroy()` | Run `#[pre_destroy]` hooks in reverse order, evict singletons | `_call_pre_destroy` |
+| `BeanDescriptor` / `BeanStats` / `RouteDescriptor` | Introspection + route-metadata records | `get_beans` / overview / `RequestMapping` |
+| `resolve_named_erased(name)` | Type-erased warm of a named singleton (eager init) | eager singleton pass |
+
 ## pyfly parity
 
 This crate is the Rust expression of pyfly's `Container`. Adaptation decisions:
 
-- **Reflective autowiring → explicit factory closures.** pyfly parses
-  `__init__` type hints to wire constructor dependencies; Rust has no runtime
-  reflection, so a `register_factory` closure resolves its own dependencies by
-  calling `resolve`. `Optional[T]` becomes `resolve().ok()`, `list[T]` becomes
-  `resolve_all()`, and `Qualifier("name")` becomes `resolve_named("name")`.
-- **`Autowired` field injection → dropped** (constructor-only is the idiom).
-- **Package scanning + stereotype decorators → dropped** (no `importlib`);
-  registration is explicit.
+- **Reflective autowiring → derive-generated factory closures.** pyfly parses
+  `__init__` type hints to wire dependencies; Rust has no runtime reflection, so
+  the stereotype derives in `firefly-macros` generate a `firefly_register`
+  factory that resolves each field. The field *type* selects the form, matching
+  pyfly: `Arc<T>` → `resolve()`, `Vec<Arc<T>>` → `resolve_all()`, `Option<Arc<T>>`
+  → `resolve().ok()` (`required=false`), `Provider<T>` → `provider()`, and
+  `#[firefly(qualifier = "name")]` → `resolve_named()`. You can still hand-write
+  a `register_factory` closure for full control.
+- **Package scanning → link-time `inventory`.** Rust cannot walk a package at
+  runtime, so each stereotype derive emits an `inventory::submit!`; `scan()`
+  collects them across the whole crate graph (the `scan_package` analog) and
+  registers each survivor, two-pass-evaluating conditions/profiles. *Generic*
+  types cannot be inventoried — register those with `register_all!`.
+- **`@ConditionalOn*` / `@Profile` → `ConditionContext` + two-pass scan.**
+  Property/class/profile conditions evaluate in pass 1; `on_bean` /
+  `on_missing_bean` / `on_single_candidate` evaluate in pass 2 against the
+  populated registry, exactly like pyfly's `ConditionEvaluator`.
+- **`@post_construct` / `@pre_destroy` → derive hooks.**
+  `#[firefly(post_construct = "method")]` runs after construction;
+  `#[firefly(pre_destroy = "method")]` registers a teardown hook run by
+  `destroy()` in reverse construction order.
+- **`@Value` → `resolve_value`.** `#[firefly(value = "${key:default}")]` resolves
+  the placeholder against the condition-context config map and parses via
+  `FromStr`. The `#{...}` SpEL form is out of scope for the typed-Rust idiom.
+- **`_auto_bind_interfaces` → `#[firefly(provides = "dyn Port")]`.** A stereotype
+  derive can additionally bind the trait object to itself, so `dyn Port`
+  resolves to the impl.
 - **Trait-object bindings.** `bind::<dyn Trait, Impl>(|a| a)` registers the
   implementation's registration under `TypeId::of::<dyn Trait>()` together with
   a caster that views the stored `Arc<Impl>` as `Arc<dyn Trait>`. `primary` /
@@ -90,4 +132,9 @@ This crate is the Rust expression of pyfly's `Container`. Adaptation decisions:
 The integration tests under `tests/` port pyfly's `tests/container/` semantics:
 `container_basics`, `named_beans`, `di_errors`, `custom_scope` (incl. request
 scope), `ordering` (incl. same-type beans), `public_spi` (incl. display name),
-and `provider_and_refresh`.
+`provider_and_refresh`, and `scan_introspection` (beans introspection,
+reverse-order `destroy`, condition context, prefix-stripped config properties,
+`provider_for`). The full macro-driven scan + `#[bean]` + conditional + lifecycle
+behavior is exercised end-to-end in `firefly-macros/tests/di.rs`.
+
+[`inventory`]: https://docs.rs/inventory

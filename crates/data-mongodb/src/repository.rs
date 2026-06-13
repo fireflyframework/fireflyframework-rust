@@ -29,17 +29,22 @@
 
 use std::marker::PhantomData;
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use firefly_data::{
-    Auditor, Pageable, ReactiveCrudRepository, ReactiveSpecificationRepository, SoftDeletePolicy,
+    substitute_named_params, Auditor, ColumnProjection, Pageable, ParsedQuery, QueryMethodParser,
+    QueryPrefix, ReactiveCrudRepository, ReactiveSpecificationRepository, SoftDeletePolicy,
     Specification,
 };
+use firefly_kernel::FireflyError;
 use firefly_reactive::{Flux, Mono};
 use mongodb::bson::{doc, to_bson, to_document, Bson, Document};
 use mongodb::options::{FindOptions, ReplaceOptions};
 use mongodb::Collection;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::error::{map_de_err, map_mongo_err, map_ser_err};
 
@@ -307,6 +312,283 @@ where
     }
 }
 
+/// Maps a query-name / argument-binding error into a 400 [`FireflyError`].
+fn map_query_err(msg: impl std::fmt::Display) -> FireflyError {
+    FireflyError::new(
+        "FIREFLY_DATA_MONGODB_QUERY",
+        "Invalid query",
+        400,
+        format!("firefly/data-mongodb: {msg}"),
+    )
+}
+
+/// Converts a `serde_json::Value` filter / pipeline element into a BSON
+/// [`Document`]; a non-object lowers to an empty document (a no-op match).
+fn json_to_document(v: &Value) -> Result<Document, FireflyError> {
+    match to_bson(v).map_err(map_ser_err)? {
+        Bson::Document(d) => Ok(d),
+        _ => Ok(Document::new()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Derived & custom (@query) query execution — end-to-end.
+// ---------------------------------------------------------------------------
+
+impl<T, ID> MongoRepository<T, ID>
+where
+    T: Serialize + DeserializeOwned + Send + Sync + Unpin + 'static,
+    ID: Serialize + Send + Sync + 'static,
+{
+    /// Executes a Spring-Data **derived query method** end-to-end against the
+    /// collection — the document-store analogue of pyfly's
+    /// `MongoRepositoryBeanPostProcessor` wiring a `find_by_status_and_role`
+    /// *method name* onto a Beanie model.
+    ///
+    /// `method_name` is parsed by
+    /// [`QueryMethodParser`](firefly_data::QueryMethodParser) and lowered —
+    /// through the **same** [`Specification`] tree as the SQL path — to a
+    /// Mongo `$`-operator filter document via
+    /// [`ParsedQuery::to_mongo`](firefly_data::ParsedQuery::to_mongo). The
+    /// result is dispatched by prefix: `find_by_…` streams matching documents
+    /// (sorted by any `order_by` clause), and the other prefixes are served
+    /// by the count / exists / delete variants below.
+    pub fn find_by_derived(&self, method_name: &str, args: &[Value]) -> Flux<T> {
+        let parsed = match self.parse_find(method_name, QueryPrefix::Find) {
+            Ok(p) => p,
+            Err(e) => return Flux::error(e),
+        };
+        let filter = match self.derived_filter(&parsed, args) {
+            Ok(f) => f,
+            Err(e) => return Flux::error(e),
+        };
+        let options = derived_find_options(&parsed);
+        self.stream_find(filter, options)
+    }
+
+    /// Executes a `count_by_…` derived query end-to-end, returning the
+    /// matching-document count.
+    pub fn count_by_derived(&self, method_name: &str, args: &[Value]) -> Mono<u64> {
+        let parsed = match self.parse_find(method_name, QueryPrefix::Count) {
+            Ok(p) => p,
+            Err(e) => return Mono::error(e),
+        };
+        match self.derived_filter(&parsed, args) {
+            Ok(filter) => self.count_filter(filter),
+            Err(e) => Mono::error(e),
+        }
+    }
+
+    /// Executes an `exists_by_…` derived query end-to-end, returning whether
+    /// any document matched.
+    pub fn exists_by_derived(&self, method_name: &str, args: &[Value]) -> Mono<bool> {
+        let parsed = match self.parse_find(method_name, QueryPrefix::Exists) {
+            Ok(p) => p,
+            Err(e) => return Mono::error(e),
+        };
+        let filter = match self.derived_filter(&parsed, args) {
+            Ok(f) => f,
+            Err(e) => return Mono::error(e),
+        };
+        let collection = self.collection.clone();
+        Mono::from_result_future(async move {
+            let n = collection
+                .count_documents(filter)
+                .await
+                .map_err(map_mongo_err)?;
+            Ok(n > 0)
+        })
+    }
+
+    /// Executes a `delete_by_…` derived query end-to-end, returning the
+    /// number of removed documents. This is a **physical** `delete_many`
+    /// (Spring Data's `deleteBy…` does not consult the soft-delete policy).
+    pub fn delete_by_derived(&self, method_name: &str, args: &[Value]) -> Mono<u64> {
+        let parsed = match self.parse_find(method_name, QueryPrefix::Delete) {
+            Ok(p) => p,
+            Err(e) => return Mono::error(e),
+        };
+        // Lower without the soft-delete guard — a derived delete is physical.
+        let filter = match parsed
+            .to_mongo(args)
+            .map_err(map_query_err)
+            .and_then(|json| json_to_document(&json))
+        {
+            Ok(f) => f,
+            Err(e) => return Mono::error(e),
+        };
+        let collection = self.collection.clone();
+        Mono::from_result_future(async move {
+            let r = collection
+                .delete_many(filter)
+                .await
+                .map_err(map_mongo_err)?;
+            Ok(r.deleted_count)
+        })
+    }
+
+    /// Parses `method_name`, asserting it carries `expected` prefix.
+    fn parse_find(
+        &self,
+        method_name: &str,
+        expected: QueryPrefix,
+    ) -> Result<ParsedQuery, FireflyError> {
+        let parsed = QueryMethodParser::new()
+            .parse(method_name)
+            .map_err(map_query_err)?;
+        if parsed.prefix != expected {
+            return Err(map_query_err(format!(
+                "method '{method_name}' is a {:?} query; expected {expected:?}",
+                parsed.prefix
+            )));
+        }
+        Ok(parsed)
+    }
+
+    /// Lowers a parsed derived query to a guarded BSON filter document.
+    fn derived_filter(
+        &self,
+        parsed: &ParsedQuery,
+        args: &[Value],
+    ) -> Result<Document, FireflyError> {
+        let json = parsed.to_mongo(args).map_err(map_query_err)?;
+        let filter = json_to_document(&json)?;
+        Ok(self.guarded(filter))
+    }
+
+    /// Streams the documents of a **`@query` custom find filter** end-to-end —
+    /// the Rust port of pyfly's `MongoQueryExecutor._compile_find`.
+    ///
+    /// `filter_json` is a JSON filter-document string (e.g.
+    /// `{"email": ":email", "active": true}`) with `":param"` placeholders;
+    /// `params` supplies the values. The placeholders are substituted (typed
+    /// for an exact `":param"`, stringified for an embedded one), the
+    /// soft-delete guard is AND-ed in, and the matching documents stream
+    /// through the decoder.
+    pub fn query_find(&self, filter_json: &str, params: &BTreeMap<String, Value>) -> Flux<T> {
+        let template: Value = match serde_json::from_str(filter_json) {
+            Ok(v) => v,
+            Err(e) => return Flux::error(map_query_err(format!("invalid filter JSON: {e}"))),
+        };
+        let substituted = substitute_named_params(&template, params);
+        let filter = match json_to_document(&substituted) {
+            Ok(f) => self.guarded(f),
+            Err(e) => return Flux::error(e),
+        };
+        self.stream_find(filter, None)
+    }
+
+    /// Runs a **`@query` aggregation pipeline** end-to-end, streaming the raw
+    /// result documents as [`serde_json::Value`]s — the Rust port of pyfly's
+    /// `MongoQueryExecutor._compile_aggregate`.
+    ///
+    /// `pipeline_json` is a JSON array string of pipeline stages (e.g.
+    /// `[{"$match": {"status": ":status"}}, {"$group": {"_id": "$category"}}]`)
+    /// with `":param"` placeholders; `params` supplies the values. Aggregation
+    /// results are arbitrary shapes (not the document type `T`), so each stage
+    /// output is emitted as a `serde_json::Value`.
+    pub fn query_aggregate(
+        &self,
+        pipeline_json: &str,
+        params: &BTreeMap<String, Value>,
+    ) -> Flux<Value> {
+        let template: Value = match serde_json::from_str(pipeline_json) {
+            Ok(v) => v,
+            Err(e) => return Flux::error(map_query_err(format!("invalid pipeline JSON: {e}"))),
+        };
+        let Value::Array(stages_json) = substitute_named_params(&template, params) else {
+            return Flux::error(map_query_err("aggregation pipeline must be a JSON array"));
+        };
+        let stages: Result<Vec<Document>, _> = stages_json.iter().map(json_to_document).collect();
+        let stages = match stages {
+            Ok(s) => s,
+            Err(e) => return Flux::error(e),
+        };
+        let collection = self.collection.clone();
+        Flux::from_stream(async_stream::try_stream! {
+            let mut cursor = collection.aggregate(stages).await.map_err(map_mongo_err)?;
+            while let Some(next) = futures::StreamExt::next(&mut cursor).await {
+                let raw = next.map_err(map_mongo_err)?;
+                yield bson_doc_to_json(raw)?;
+            }
+        })
+    }
+
+    /// Executes a **DB-level interface projection** — applies the projection
+    /// document so only the projected fields are returned, streaming the
+    /// narrowed documents as [`serde_json::Value`] objects. The document-store
+    /// analogue of pyfly's `_compile_find` projection branch.
+    ///
+    /// `spec` restricts the documents (guarded by soft-delete when wired);
+    /// each emitted value carries only the projection's columns.
+    pub fn project_by_spec(
+        &self,
+        projection: &ColumnProjection,
+        spec: Specification,
+    ) -> Flux<Value> {
+        if projection.is_empty() {
+            return Flux::error(map_query_err("projection declares no columns"));
+        }
+        let filter = match Self::spec_to_filter(&spec) {
+            Ok(f) => self.guarded(f),
+            Err(e) => return Flux::error(e),
+        };
+        let proj_doc = match json_to_document(&projection.to_mongo()) {
+            Ok(d) => d,
+            Err(e) => return Flux::error(e),
+        };
+        let columns: Vec<String> = projection.columns().to_vec();
+        let collection = self.collection.clone();
+        Flux::from_stream(async_stream::try_stream! {
+            let mut options = FindOptions::default();
+            options.projection = Some(proj_doc);
+            let mut cursor = collection
+                .find(filter)
+                .with_options(options)
+                .await
+                .map_err(map_mongo_err)?;
+            while let Some(next) = futures::StreamExt::next(&mut cursor).await {
+                let raw = next.map_err(map_mongo_err)?;
+                let value = bson_doc_to_json(raw)?;
+                yield projection_pick(&value, &columns);
+            }
+        })
+    }
+}
+
+/// Builds [`FindOptions`] for a derived `find` — only the order-by sort
+/// (asc = `1`, desc = `-1`); derived queries carry no skip/limit.
+fn derived_find_options(parsed: &ParsedQuery) -> Option<FindOptions> {
+    let sort = parsed.mongo_sort();
+    let map = sort.as_object()?;
+    if map.is_empty() {
+        return None;
+    }
+    let mut sort_doc = Document::new();
+    for (k, v) in map {
+        sort_doc.insert(k.clone(), v.as_i64().unwrap_or(1) as i32);
+    }
+    let mut options = FindOptions::default();
+    options.sort = Some(sort_doc);
+    Some(options)
+}
+
+/// Converts a BSON [`Document`] into a `serde_json::Value` (for aggregation /
+/// projection results that are not the document type `T`).
+fn bson_doc_to_json(doc: Document) -> Result<Value, FireflyError> {
+    mongodb::bson::from_document(doc).map_err(map_de_err)
+}
+
+/// Narrows a JSON object to just `columns`, in order, filling missing fields
+/// with `null` (the projected-row shape).
+fn projection_pick(value: &Value, columns: &[String]) -> Value {
+    let mut out = serde_json::Map::new();
+    for c in columns {
+        out.insert(c.clone(), value.get(c).cloned().unwrap_or(Value::Null));
+    }
+    Value::Object(out)
+}
+
 /// The soft-delete guard clause `{"<column>": null}` for a policy, or
 /// `None` when soft-delete is off. Free function so it is testable
 /// without a live [`Collection`].
@@ -558,6 +840,75 @@ mod tests {
         assert_eq!(guarded(None, Document::new()), Document::new());
     }
 
+    // ---- Derived & custom query lowering (no MongoDB needed) ----
+
+    /// A parsed derived find lowers to the matching BSON filter document
+    /// through the shared Specification tree, and its order_by maps to a sort.
+    #[test]
+    fn derived_lowers_to_bson_filter_and_sort() {
+        let parsed = QueryMethodParser::new()
+            .parse("find_by_status_and_role_order_by_name_desc")
+            .unwrap();
+        let json = parsed
+            .to_mongo(&[serde_json::json!("active"), serde_json::json!("admin")])
+            .unwrap();
+        assert_eq!(
+            json_to_document(&json).unwrap(),
+            doc! { "$and": [ { "status": { "$eq": "active" } }, { "role": { "$eq": "admin" } } ] }
+        );
+        let opts = derived_find_options(&parsed).unwrap();
+        assert_eq!(opts.sort, Some(doc! { "name": -1 }));
+    }
+
+    /// A find with no order_by has no sort option.
+    #[test]
+    fn derived_no_order_has_no_sort() {
+        let parsed = QueryMethodParser::new().parse("find_by_status").unwrap();
+        assert!(derived_find_options(&parsed).is_none());
+    }
+
+    /// A custom @query JSON filter substitutes typed :param placeholders.
+    #[test]
+    fn custom_filter_substitutes_typed_params() {
+        let template: Value =
+            serde_json::from_str(r#"{"email": ":email", "active": ":active"}"#).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("email".to_string(), serde_json::json!("a@b.com"));
+        params.insert("active".to_string(), serde_json::json!(true));
+        let substituted = substitute_named_params(&template, &params);
+        assert_eq!(
+            json_to_document(&substituted).unwrap(),
+            doc! { "email": "a@b.com", "active": true }
+        );
+    }
+
+    /// `json_to_document` lowers a non-object to an empty (no-op) document.
+    #[test]
+    fn json_to_document_non_object_is_empty() {
+        assert_eq!(
+            json_to_document(&serde_json::json!([1, 2, 3])).unwrap(),
+            Document::new()
+        );
+    }
+
+    /// `projection_pick` narrows a row to just the projected fields, filling
+    /// missing ones with null.
+    #[test]
+    fn projection_pick_narrows_and_fills() {
+        let row = serde_json::json!({ "id": "o1", "status": "PAID", "extra": 1 });
+        assert_eq!(
+            projection_pick(
+                &row,
+                &[
+                    "id".to_string(),
+                    "status".to_string(),
+                    "missing".to_string()
+                ]
+            ),
+            serde_json::json!({ "id": "o1", "status": "PAID", "missing": null })
+        );
+    }
+
     /// A Specification lowers to the matching BSON filter document.
     #[test]
     fn spec_lowers_to_bson_filter() {
@@ -780,6 +1131,132 @@ mod tests {
         );
 
         // Cleanup.
+        collection.drop().await.expect("drop");
+    }
+
+    /// Env-gated real round-trip for the derived-query, `@query`
+    /// custom-query, and DB-level projection paths added in this crate.
+    /// Skips cleanly when `FIREFLY_TEST_MONGODB_URL` is unset.
+    #[tokio::test]
+    async fn mongodb_derived_and_custom_queries() {
+        let Ok(url) =
+            std::env::var("FIREFLY_TEST_MONGODB_URL").or_else(|_| std::env::var("MONGODB_URL"))
+        else {
+            eprintln!(
+                "skipping mongodb_derived_and_custom_queries: set FIREFLY_TEST_MONGODB_URL to run"
+            );
+            return;
+        };
+
+        let client = mongodb::Client::with_uri_str(&url).await.expect("connect");
+        let collection = client
+            .database("firefly_test")
+            .collection::<Document>("data_mongodb_queries");
+        collection.drop().await.expect("drop");
+
+        let repo: MongoRepository<UserDoc, String> =
+            MongoRepository::new(collection.clone(), |u: &UserDoc| Bson::String(u.id.clone()));
+
+        repo.save_all(vec![
+            UserDoc::new("u1", "alice", "admin"),
+            UserDoc::new("u2", "bob", "user"),
+            UserDoc::new("u3", "carol", "admin"),
+        ])
+        .collect_list()
+        .block()
+        .await
+        .unwrap();
+
+        // Derived find_by_role with order_by name.
+        let admins = repo
+            .find_by_derived(
+                "find_by_role_order_by_name_asc",
+                &[serde_json::json!("admin")],
+            )
+            .collect_list()
+            .block()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(admins.len(), 2);
+        assert_eq!(admins[0].name, "alice");
+        assert_eq!(admins[1].name, "carol");
+
+        // Derived count_by / exists_by.
+        assert_eq!(
+            repo.count_by_derived("count_by_role", &[serde_json::json!("admin")])
+                .block()
+                .await
+                .unwrap()
+                .unwrap(),
+            2
+        );
+        assert!(repo
+            .exists_by_derived("exists_by_name", &[serde_json::json!("bob")])
+            .block()
+            .await
+            .unwrap()
+            .unwrap());
+
+        // @query JSON filter with a typed :param.
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("role".to_string(), serde_json::json!("user"));
+        let users = repo
+            .query_find(r#"{"role": ":role"}"#, &params)
+            .collect_list()
+            .block()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].name, "bob");
+
+        // @query aggregation pipeline: group by role, count.
+        let mut agg_params = std::collections::BTreeMap::new();
+        agg_params.insert("role".to_string(), serde_json::json!("admin"));
+        let grouped = repo
+            .query_aggregate(
+                r#"[{"$match": {"role": ":role"}}, {"$count": "n"}]"#,
+                &agg_params,
+            )
+            .collect_list()
+            .block()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0]["n"], serde_json::json!(2));
+
+        // DB-level projection: only _id + name.
+        let proj = ColumnProjection::new("UserSummary", ["_id", "name"]);
+        let mut projected = repo
+            .project_by_spec(
+                &proj,
+                Specification::pred(Predicate::new("role", Op::Eq, "admin")),
+            )
+            .collect_list()
+            .block()
+            .await
+            .unwrap()
+            .unwrap();
+        projected.sort_by(|a, b| a["_id"].as_str().cmp(&b["_id"].as_str()));
+        assert_eq!(projected.len(), 2);
+        for row in &projected {
+            let obj = row.as_object().unwrap();
+            assert_eq!(obj.len(), 2, "only _id + name projected: {row}");
+            assert!(obj.contains_key("_id") && obj.contains_key("name"));
+        }
+
+        // Derived delete_by (physical).
+        let deleted = repo
+            .delete_by_derived("delete_by_role", &[serde_json::json!("user")])
+            .block()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(repo.count().block().await.unwrap(), Some(2));
+
         collection.drop().await.expect("drop");
     }
 }

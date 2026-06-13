@@ -20,11 +20,15 @@
 
 mod event_store;
 mod mime;
+#[cfg(feature = "redis")]
+mod redis_event_store;
 mod sha1;
 mod util;
 mod validators;
 
 pub use event_store::{EventStore, MemoryEventStore};
+#[cfg(feature = "redis")]
+pub use redis_event_store::{RedisEventStore, DEFAULT_KEY_PREFIX, DEFAULT_TTL_SECONDS};
 pub use validators::{GitHubValidator, HmacValidator, StripeValidator, TwilioValidator};
 
 use std::collections::HashMap;

@@ -18,11 +18,17 @@ default = ["postgres", "mysql", "sqlite"]
 postgres = []
 mysql = []
 sqlite = []
+# Opt-in actuator integration: a `db` HealthIndicator (`SELECT 1`) and a
+# per-query metrics recorder. Off by default so the base adapter pulls in no
+# observability stack; enable it from a starter that wires `/actuator/health`.
+actuator = ["dep:firefly-actuator", "dep:firefly-observability"]
 
 [dependencies]
 firefly-data = { workspace = true }
 firefly-reactive = { workspace = true }
 firefly-kernel = { workspace = true }
+firefly-actuator = { workspace = true, optional = true }
+firefly-observability = { workspace = true, optional = true }
 sqlx = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

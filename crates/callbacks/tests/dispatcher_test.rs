@@ -704,6 +704,131 @@ async fn empty_allowlist_preserves_unrestricted_delivery() {
     assert_eq!(hits.load(Ordering::SeqCst), 1, "unrestricted by default");
 }
 
+// --- pyfly parity: permanent-4xx short-circuit (#194) ------------------------
+
+#[tokio::test]
+async fn permanent_4xx_stops_retrying_immediately() {
+    // A 404 is a permanent client error: the dispatcher must NOT burn the
+    // whole attempt budget against it (pyfly audit #194). Exactly one
+    // request is made even though max_attempts is 5.
+    let hits = Arc::new(AtomicU32::new(0));
+    let app = {
+        let hits = hits.clone();
+        Router::new().route(
+            "/",
+            post(move || {
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::NOT_FOUND
+                }
+            }),
+        )
+    };
+    let url = spawn_receiver(app).await;
+
+    let store = Arc::new(MemoryStore::new());
+    store
+        .upsert_target(Target {
+            id: "perm".into(),
+            url,
+            active: true,
+            ..Target::default()
+        })
+        .await
+        .unwrap();
+
+    let dispatcher = HmacDispatcher::new(
+        store.clone(),
+        DispatcherConfig {
+            initial_delay: FAST_DELAY,
+            max_attempts: 5,
+            ..DispatcherConfig::default()
+        },
+    );
+    dispatcher
+        .dispatch(CallbackEvent {
+            id: "e-perm".into(),
+            event_type: "x".into(),
+            payload: b"{}".to_vec(),
+            ..CallbackEvent::default()
+        })
+        .await
+        .expect("dispatch is best-effort");
+
+    // Only the first attempt ran; the permanent 404 short-circuited the rest.
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "permanent 4xx must not be retried"
+    );
+    let attempts = store.list_attempts("e-perm").await.unwrap();
+    assert_eq!(attempts.len(), 1, "exactly one audit row");
+    assert_eq!(attempts[0].status, 404);
+    assert_eq!(attempts[0].attempt, 1);
+}
+
+#[tokio::test]
+async fn retryable_429_and_408_consume_the_full_budget() {
+    // 408 (Request Timeout) and 429 (Too Many Requests) are the only 4xx
+    // statuses pyfly treats as retryable. A 429 must therefore retry up to
+    // max_attempts, unlike a permanent 4xx.
+    for status in [StatusCode::TOO_MANY_REQUESTS, StatusCode::REQUEST_TIMEOUT] {
+        let hits = Arc::new(AtomicU32::new(0));
+        let app = {
+            let hits = hits.clone();
+            Router::new().route(
+                "/",
+                post(move || {
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        status
+                    }
+                }),
+            )
+        };
+        let url = spawn_receiver(app).await;
+
+        let store = Arc::new(MemoryStore::new());
+        store
+            .upsert_target(Target {
+                id: "retry".into(),
+                url,
+                active: true,
+                ..Target::default()
+            })
+            .await
+            .unwrap();
+
+        let dispatcher = HmacDispatcher::new(
+            store.clone(),
+            DispatcherConfig {
+                initial_delay: FAST_DELAY,
+                max_attempts: 3,
+                ..DispatcherConfig::default()
+            },
+        );
+        dispatcher
+            .dispatch(CallbackEvent {
+                id: "e-retry".into(),
+                event_type: "x".into(),
+                payload: b"{}".to_vec(),
+                ..CallbackEvent::default()
+            })
+            .await
+            .expect("dispatch is best-effort");
+
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            3,
+            "{status} must retry the full budget"
+        );
+        let attempts = store.list_attempts("e-retry").await.unwrap();
+        assert_eq!(attempts.len(), 3, "{status}: one row per attempt");
+    }
+}
+
 /// The dispatcher is usable through the object-safe [`Dispatcher`] port.
 #[tokio::test]
 async fn dispatcher_is_object_safe() {

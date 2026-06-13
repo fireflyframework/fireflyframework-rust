@@ -25,6 +25,14 @@ web = ["dep:axum", "dep:tower", "dep:http", "dep:http-body-util", "dep:tokio"]
 # analog of pyfly's `slice_context` + `mock_bean`.
 container = ["dep:firefly-container"]
 
+# Testcontainers-style integration-test fixtures: map a started backing
+# service's connection details to canonical `firefly.*` config keys (the
+# `@ServiceConnection` / `pyfly_config_for` analog) plus a `docker_available()`
+# skip guard. Pulls in `firefly-config` so the overrides convert to a real
+# `StaticSource`. No container-runtime dependency: it takes the connection URL /
+# `(host, port)` handle any container library already hands you.
+testcontainers = ["dep:firefly-config"]
+
 [dependencies]
 hmac = { workspace = true }
 sha2 = { workspace = true }
@@ -42,6 +50,9 @@ tokio = { workspace = true, optional = true }
 
 # `container` feature
 firefly-container = { workspace = true, optional = true }
+
+# `testcontainers` feature
+firefly-config = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

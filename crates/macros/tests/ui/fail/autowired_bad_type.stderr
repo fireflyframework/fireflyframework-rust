@@ -1,0 +1,5 @@
+error: #[autowired] fields must be `Arc<T>`, `Vec<Arc<T>>`, `Option<Arc<T>>`, or `Provider<T>` — the container resolves beans as `Arc<T>`
+ --> tests/ui/fail/autowired_bad_type.rs:9:10
+  |
+9 |     dep: String,
+  |          ^^^^^^

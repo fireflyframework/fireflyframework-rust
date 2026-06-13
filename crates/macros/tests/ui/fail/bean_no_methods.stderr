@@ -1,0 +1,5 @@
+error: #[bean] on an impl block found no `#[bean]`-marked methods inside
+  --> tests/ui/fail/bean_no_methods.rs:10:6
+   |
+10 | impl EmptyCfg {
+   |      ^^^^^^^^

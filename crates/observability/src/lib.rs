@@ -104,8 +104,8 @@ pub use logging::{
 };
 pub use metrics::{
     counted, counted_result, sanitize_metric_name, timed, timed_result, Counted, Counter, Gauge,
-    Histogram, LabeledCounter, LabeledGauge, LabeledHistogram, MetricsRegistry, Timed,
-    DEFAULT_BUCKETS,
+    Histogram, LabeledCounter, LabeledGauge, LabeledHistogram, MetricsRecorder, MetricsRegistry,
+    NoOpMetricsRecorder, Timed, DEFAULT_BUCKETS,
 };
 pub use process_metrics::{
     ProcessMetricsCollector, PROCESS_START_TIME_SECONDS, PROCESS_UPTIME_SECONDS, SYSTEM_CPU_COUNT,
@@ -139,6 +139,7 @@ mod tests {
         assert_send_sync::<BannerMode>();
         // pyfly-parity surface
         assert_send_sync::<MetricsRegistry>();
+        assert_send_sync::<NoOpMetricsRecorder>();
         assert_send_sync::<Counter>();
         assert_send_sync::<Gauge>();
         assert_send_sync::<Histogram>();

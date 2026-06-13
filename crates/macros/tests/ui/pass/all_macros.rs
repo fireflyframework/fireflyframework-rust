@@ -42,15 +42,71 @@ struct Repo {
 }
 
 #[derive(Service)]
-#[firefly(scope = "singleton", primary)]
+#[firefly(scope = "singleton", primary, order = 5, provides = "dyn Port")]
 struct Svc {
     #[autowired]
     repo: Arc<Repo>,
+    #[autowired]
+    siblings: Vec<Arc<Repo>>,
+    #[autowired]
+    maybe: Option<Arc<Repo>>,
+    #[firefly(value = "${svc.batch:10}")]
+    batch: usize,
 }
+
+trait Port: Send + Sync {}
+impl Port for Svc {}
 
 #[derive(Component, Default)]
 #[firefly(scope = "transient", name = "plain")]
 struct Plain;
+
+// ---- Conditional + profile + lifecycle ----
+#[derive(Service, Default)]
+#[firefly(
+    profile = "prod & !test",
+    condition_on_property = "feature.x=on",
+    condition_on_missing_bean = "Other",
+    post_construct = "init",
+    pre_destroy = "shutdown"
+)]
+struct Gated {
+    started: bool,
+}
+
+impl Gated {
+    fn init(&mut self) {
+        self.started = true;
+    }
+    fn shutdown(&self) {}
+}
+
+// ---- Configuration + #[bean] ----
+#[derive(Configuration, Default)]
+struct Cfg;
+
+struct Widget {
+    label: &'static str,
+}
+
+#[firefly::bean]
+impl Cfg {
+    #[bean(name = "widget", primary)]
+    fn widget(&self) -> Widget {
+        Widget { label: "w" }
+    }
+}
+
+// ---- ConfigProperties + Controller ----
+#[derive(serde::Deserialize, ConfigProperties, Default)]
+#[firefly(prefix = "app")]
+struct AppProps {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Controller, Default)]
+struct HomeController;
 
 // ---- Scheduled ----
 #[scheduled(cron = "0 2 * * *", zone = "UTC")]
@@ -115,6 +171,19 @@ fn main() {
 
     let container = Container::new();
     firefly::register_all!(&container, [Repo, Svc, Plain]);
+
+    // New stereotype + factory surfaces expand and are callable.
+    Cfg::firefly_register(&container);
+    Cfg::firefly_register_beans(&container);
+    AppProps::firefly_register(&container);
+    HomeController::firefly_register(&container);
+    let _ = Gated::firefly_register;
+    let _routes = HomeController::firefly_register; // controller registers as a bean
+    let _ = AppProps::firefly_register;
+
+    // The ApplicationContext + scan free-function exist on the facade.
+    let _scan: fn(&Container) -> usize = firefly::scan;
+    let _ctx_builder = firefly::ApplicationContext::builder;
 
     let scheduler = Scheduler::new();
     schedule_nightly(&scheduler);

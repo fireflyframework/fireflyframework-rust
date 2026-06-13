@@ -128,6 +128,32 @@ async fn rest_controller_routes_post() {
     assert_eq!(view.id, "order-1");
 }
 
+#[test]
+fn rest_controller_emits_route_metadata() {
+    // The macro emits a `ROUTES` const describing every mapped method, for the
+    // OpenAPI generator (phase 2).
+    let routes = OrderApi::ROUTES;
+    assert_eq!(routes.len(), 2);
+    let get = routes
+        .iter()
+        .find(|r| r.method == "GET")
+        .expect("GET route descriptor");
+    assert_eq!(get.path, "/api/v1/orders/:id");
+    assert_eq!(get.handler, "get_order");
+    assert_eq!(get.controller, "OrderApi");
+    let post = routes
+        .iter()
+        .find(|r| r.method == "POST")
+        .expect("POST route descriptor");
+    assert_eq!(post.path, "/api/v1/orders");
+
+    // The same routes are discoverable across the crate graph via inventory.
+    let discovered: Vec<_> = firefly::container::routes()
+        .filter(|r| r.controller == "OrderApi")
+        .collect();
+    assert_eq!(discovered.len(), 2);
+}
+
 #[tokio::test]
 async fn rest_controller_error_renders_as_problem() {
     let res = router()

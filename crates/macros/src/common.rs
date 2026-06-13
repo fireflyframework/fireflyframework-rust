@@ -56,6 +56,13 @@ impl Facade {
         quote!(#rt::firefly_container)
     }
 
+    /// `#facade::__rt::firefly_config` — the config crate, used by
+    /// `#[derive(ConfigProperties)]` to bind a prefix-scoped struct.
+    pub(crate) fn config(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::firefly_config)
+    }
+
     /// `#facade::__rt::firefly_scheduling`.
     pub(crate) fn scheduling(&self) -> TokenStream {
         let rt = self.rt();

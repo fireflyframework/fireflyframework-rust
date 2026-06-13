@@ -566,6 +566,20 @@ where
         if let Some(id) = firefly_kernel::correlation_id() {
             record.insert("correlationId", Value::from(id));
         }
+        // Inject the active span's trace_id / span_id so logs and traces
+        // correlate in the same pipeline — the Rust analog of pyfly's
+        // `_add_trace_ids` structlog processor (the SLF4J MDC equivalent).
+        // Sourced from the W3C `traceparent` task-local
+        // (`firefly_observability::current_traceparent`): the trace-id is the
+        // 32-hex trace identifier and the span-id is the current parent-id
+        // (16-hex). A no-op when no trace context is in scope, so it stays
+        // zero-overhead without tracing.
+        if let Some(raw) = crate::trace_context::current_traceparent() {
+            if let Ok(tp) = crate::trace_context::TraceParent::parse(&raw) {
+                record.insert("trace_id", Value::from(tp.trace_id));
+                record.insert("span_id", Value::from(tp.parent_id));
+            }
+        }
         // Merge fields from enclosing spans, root first — the analog of
         // Go's logger.With(...) handler attributes.
         if let Some(scope) = ctx.event_scope(event) {

@@ -89,7 +89,11 @@
 //! `traceparent`/`tracestate`), `Accept`-driven content negotiation
 //! ([`MessageConverterRegistry`], [`Negotiate`],
 //! [`ContentNegotiationLayer`]) and the config-driven [`server`]
-//! bootstrap ([`server::ServerProperties`] / [`server::serve`]).
+//! bootstrap ([`server::ServerProperties`] / [`server::serve`]). The
+//! [`ExceptionHandlerRegistry`] is the `@controller_advice` /
+//! `@exception_handler` equivalent: it maps a domain error (by problem
+//! `type` or status) to a custom RFC 7807 response, with
+//! controller-local rules overriding global advice.
 //!
 //! ## Reactive (WebFlux/Reactor) surface
 //!
@@ -105,6 +109,7 @@ mod content_negotiation;
 mod correlation;
 mod cors;
 mod csrf;
+mod exception_handler;
 mod globs;
 mod headers;
 mod idempotency;
@@ -130,6 +135,7 @@ pub use csrf::{
     generate_csrf_token, validate_csrf_token, CsrfLayer, CsrfService, CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME, CSRF_SAFE_METHODS,
 };
+pub use exception_handler::ExceptionHandlerRegistry;
 pub use headers::{SecurityHeadersConfig, SecurityHeadersLayer, SecurityHeadersService};
 pub use idempotency::{
     IdempotencyConfig, IdempotencyLayer, IdempotencyRecord, IdempotencyService, IdempotencyStore,

@@ -87,6 +87,8 @@ pub use self::core::{
     Dlq, DlqEntry, EventStore, GitHubValidator, HmacValidator, MemoryDlq, MemoryEventStore,
     Pipeline, StripeValidator, TwilioValidator, DEFAULT_IDEMPOTENCY_HEADER,
 };
+#[cfg(feature = "redis")]
+pub use self::core::{RedisEventStore, DEFAULT_KEY_PREFIX, DEFAULT_TTL_SECONDS};
 pub use error::WebhookError;
 pub use interfaces::{Inbound, Processor, Validator};
 pub use sdk::Client;

@@ -15,7 +15,7 @@
 //! firefly-resilience — Resilience4j-equivalent decorators that compose
 //! around any async operation.
 //!
-//! The crate ports the Go module `resilience` and provides four primitives
+//! The crate ports the Go module `resilience` and provides five primitives
 //! plus a combinator:
 //!
 //! | Primitive          | Failure mode it shields against             | Error variant                          |
@@ -24,6 +24,7 @@
 //! | [`RateLimiter`]    | Outbound rate cap (token bucket)            | [`ResilienceError::RateLimited`]       |
 //! | [`Bulkhead`]       | Resource exhaustion via runaway concurrency | [`ResilienceError::BulkheadFull`] (or block) |
 //! | [`Timeout`]        | Stuck calls                                 | [`ResilienceError::Timeout`]           |
+//! | [`Retry`]          | Transient failures (re-run with backoff)    | the operation's own error after exhaustion |
 //!
 //! [`Chain`] composes them into a single guarded call: decorators run
 //! left-to-right, leftmost outermost — `Chain::new().with(timeout)
@@ -43,11 +44,16 @@
 //!   [`on_success`](CircuitBreaker::on_success),
 //!   [`on_failure`](CircuitBreaker::on_failure)).
 //! * [`Fallback`] is the graceful-degradation decorator for [`Chain`].
+//! * [`Retry`] is the declarative retry combinator (port of pyfly's `@retry`):
+//!   re-runs a re-runnable async closure with exponential backoff, optional
+//!   jitter, a per-attempt delay cap, and a [`retry_on`](Retry::retry_on)
+//!   predicate (pyfly's `exceptions=`). The free function [`retry`] mirrors
+//!   pyfly's `retry(...)` call shape.
 //! * [`ResilienceRegistry`] materialises named breakers / limiters /
-//!   bulkheads / time-limiters from `firefly.resilience.*` configuration
-//!   keys ([`ResilienceRegistry::from_config`]), with [`parse_duration`]
-//!   accepting pyfly-style values (`"500ms"`, `"2.5"`, `"1m"`) plus anything
-//!   `humantime` understands.
+//!   bulkheads / time-limiters / **retries** from `firefly.resilience.*`
+//!   configuration keys ([`ResilienceRegistry::from_config`]), with
+//!   [`parse_duration`] accepting pyfly-style values (`"500ms"`, `"2.5"`,
+//!   `"1m"`) plus anything `humantime` understands.
 //!
 //! Error messages are byte-identical to the Go port's sentinels
 //! (`firefly/resilience: circuit open`, …), so logs and dashboards stay
@@ -86,6 +92,7 @@ mod error;
 mod fallback;
 mod rate_limiter;
 mod registry;
+mod retry;
 mod timeout;
 
 pub use bulkhead::Bulkhead;
@@ -95,6 +102,7 @@ pub use error::{BoxError, ResilienceError};
 pub use fallback::Fallback;
 pub use rate_limiter::RateLimiter;
 pub use registry::{parse_duration, RegistryError, ResilienceRegistry};
+pub use retry::{retry, JitterFn, Retry, RetryConfig, DEFAULT_MAX_ATTEMPTS};
 pub use timeout::Timeout;
 
 /// Framework version stamp.
@@ -114,6 +122,8 @@ mod tests {
         assert_send_sync::<Chain>();
         assert_send_sync::<ResilienceError>();
         assert_send_sync::<Fallback>();
+        assert_send_sync::<Retry>();
+        assert_send_sync::<RetryConfig>();
         assert_send_sync::<ResilienceRegistry>();
         assert_send_sync::<RegistryError>();
     }

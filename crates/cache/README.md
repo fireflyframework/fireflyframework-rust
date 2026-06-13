@@ -84,6 +84,11 @@ impl<T: Serialize + DeserializeOwned> Typed<T> {
     pub async fn get(&self, key: &str) -> Result<T, CacheError>;
     pub async fn set(&self, key: &str, value: &T, ttl: Option<Duration>) -> Result<(), CacheError>;
     pub async fn get_or_set(&self, key, ttl, loader) -> Result<T, CacheError>;
+
+    // declarative-cache conveniences (pyfly @cache_put / @cache_evict):
+    pub async fn put(&self, key: &str, value: T, ttl: Option<Duration>) -> Result<T, CacheError>;
+    pub async fn delete(&self, key: &str) -> Result<(), CacheError>;
+    pub async fn delete_prefix(&self, prefix: &str) -> Result<u64, CacheError>;
 }
 ```
 
@@ -92,6 +97,12 @@ the loader on miss, persists, and returns the loaded value. Caching
 errors do **not** mask successful loader results. Values are stored as
 `serde_json` bytes, wire-compatible with the Go port's `encoding/json`
 output for equivalently-tagged types.
+
+The remaining methods mirror pyfly's declarative caching decorators:
+`get_or_set` = `@cacheable`, `put` = `@cache_put` (always store, then
+return), and `delete` / `delete_prefix` = `@cache_evict` (single-key /
+prefix). `condition` / `unless` predicates stay caller-side, the idiomatic
+Rust form.
 
 ## Quick start
 
@@ -160,6 +171,35 @@ semantics: `set_if_absent` mirrors to both halves and returns
 `primary || secondary`; `exists` is the union; `delete_prefix` returns
 the **summed** count; `stats` prefers the primary's, falling back to the
 secondary's.
+
+### `CacheHealthIndicator`
+
+A `firefly_observability::Indicator` that probes the cache with an
+**active** put/get/evict round-trip (pyfly's `CacheHealthIndicator`),
+rather than a bare reachability ping:
+
+```rust,ignore
+use firefly_cache::{CacheHealthIndicator, MemoryAdapter};
+use std::sync::Arc;
+
+let indicator = CacheHealthIndicator::new(Arc::new(MemoryAdapter::new()));
+// register with the actuator HealthRegistry; reports under "cache"
+```
+
+It writes a namespaced sentinel, reads it back, evicts it, and attaches
+the round-trip latency under a `latencyMs` detail:
+
+| Outcome                              | Status       |
+|--------------------------------------|--------------|
+| round-trip `< 1000ms`                | `UP`         |
+| round-trip `≥ 1000ms` (threshold)    | `DEGRADED`   |
+| read-back value mismatch             | `DOWN`       |
+| adapter error                        | `DOWN`       |
+
+pyfly returns `OUT_OF_SERVICE` for the slow-but-working case; the Rust
+`Status` enum has no such variant, so it maps to `DEGRADED` — the
+semantically equivalent "works with reduced capability" state. The
+threshold is configurable with `with_threshold(Duration)`.
 
 ## Testing
 

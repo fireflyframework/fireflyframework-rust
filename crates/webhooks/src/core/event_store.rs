@@ -72,10 +72,11 @@ pub trait EventStore: Send + Sync {
 /// An in-process [`EventStore`] backed by a mutex-guarded set — the Rust
 /// analog of pyfly's `InMemoryWebhookEventStore`.
 ///
-/// Keys accumulate for the lifetime of the process; unlike pyfly's Redis
-/// adapter there is no TTL, so a long-lived single-instance service that
-/// must bound memory should periodically swap in a fresh store (or use a
-/// distributed implementation).
+/// Keys accumulate for the lifetime of the process; there is no TTL, so a
+/// long-lived single-instance service that must bound memory should
+/// periodically swap in a fresh store. Multi-instance deployments that need
+/// cross-process dedupe and automatic TTL pruning use the feature-gated
+/// `RedisEventStore` (the port of pyfly's `RedisWebhookEventStore`) instead.
 ///
 /// # Example
 ///

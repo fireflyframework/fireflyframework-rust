@@ -25,13 +25,15 @@
 //! shape.
 
 use crate::condition::evaluate as evaluate_condition;
+use crate::observability::{NoOpOrchestrationEvents, OrchestrationEvents};
 use crate::saga::CompensationPolicy;
 use crate::step_context::StepContext;
-use crate::{boxed_action, ActionFn, BoxError, CancellationToken};
+use crate::{boxed_action, ActionFn, BoxError, CancellationToken, ExecutionPattern};
 use std::collections::HashSet;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
 
 /// A context-aware node action: it receives the run's [`StepContext`] so it
@@ -379,7 +381,12 @@ impl Workflow {
     /// cancelled token short-circuits the run with
     /// [`WorkflowError::Cancelled`].
     pub async fn run_cancellable(&self, token: &CancellationToken) -> Result<(), WorkflowError> {
-        self.run_inner(token, &StepContext::new()).await
+        self.run_inner(
+            token,
+            &StepContext::new(),
+            Arc::new(NoOpOrchestrationEvents),
+        )
+        .await
     }
 
     /// Executes the workflow threading `ctx` through every context-aware
@@ -387,7 +394,12 @@ impl Workflow {
     /// to seed input ([`StepContext::with_input`]) or to inspect step
     /// results afterwards — pyfly's `WorkflowExecutor.execute(definition, ctx)`.
     pub async fn run_with_context(&self, ctx: &StepContext) -> Result<(), WorkflowError> {
-        self.run_inner(&CancellationToken::new(), ctx).await
+        self.run_inner(
+            &CancellationToken::new(),
+            ctx,
+            Arc::new(NoOpOrchestrationEvents),
+        )
+        .await
     }
 
     /// Executes the workflow with both an explicit cancellation token and a
@@ -397,31 +409,67 @@ impl Workflow {
         token: &CancellationToken,
         ctx: &StepContext,
     ) -> Result<(), WorkflowError> {
-        self.run_inner(token, ctx).await
+        self.run_inner(token, ctx, Arc::new(NoOpOrchestrationEvents))
+            .await
+    }
+
+    /// Executes the workflow firing lifecycle hooks on `listener` — pyfly's
+    /// `OrchestrationEvents` wiring. The listener observes `on_start`,
+    /// per-node `on_step_started` / `on_step_success` / `on_step_failed` /
+    /// `on_step_skipped`, `on_compensation_started` / `on_step_compensated`,
+    /// and `on_completed`. Behaviour is otherwise identical to
+    /// [`Workflow::run`].
+    pub async fn run_with_listener(
+        &self,
+        listener: Arc<dyn OrchestrationEvents>,
+    ) -> Result<(), WorkflowError> {
+        self.run_inner(&CancellationToken::new(), &StepContext::new(), listener)
+            .await
+    }
+
+    /// Executes the workflow with an explicit [`StepContext`] and lifecycle
+    /// `listener` — the most general workflow run.
+    pub async fn run_with_context_and_listener(
+        &self,
+        token: &CancellationToken,
+        ctx: &StepContext,
+        listener: Arc<dyn OrchestrationEvents>,
+    ) -> Result<(), WorkflowError> {
+        self.run_inner(token, ctx, listener).await
     }
 
     async fn run_inner(
         &self,
         token: &CancellationToken,
         ctx: &StepContext,
+        listener: Arc<dyn OrchestrationEvents>,
     ) -> Result<(), WorkflowError> {
+        let cid = ctx.correlation_id();
+        let started = Instant::now();
+        listener
+            .on_start(&self.name, ExecutionPattern::Workflow, &cid)
+            .await;
         let mut names: HashSet<&str> = HashSet::with_capacity(self.nodes.len());
         for node in &self.nodes {
             if !names.insert(node.name.as_str()) {
-                return Err(WorkflowError::DuplicateNode {
+                let err = WorkflowError::DuplicateNode {
                     workflow: self.name.clone(),
                     node: node.name.clone(),
-                });
+                };
+                self.emit_completed(&listener, &cid, false, started).await;
+                return Err(err);
             }
         }
         for node in &self.nodes {
             for dependency in &node.depends_on {
                 if !names.contains(dependency.as_str()) {
-                    return Err(WorkflowError::UnknownDependency {
+                    let err = WorkflowError::UnknownDependency {
                         workflow: self.name.clone(),
                         node: node.name.clone(),
                         dependency: dependency.clone(),
-                    });
+                    };
+                    self.emit_completed(&listener, &cid, false, started).await;
+                    return Err(err);
                 }
             }
         }
@@ -444,7 +492,9 @@ impl Workflow {
                 .into_iter()
                 .partition(|node| node.depends_on.iter().all(|dep| done.contains(dep)));
             if ready.is_empty() {
-                self.compensate(ctx, &completed_order).await;
+                self.compensate(ctx, &completed_order, &listener, &cid)
+                    .await;
+                self.emit_completed(&listener, &cid, false, started).await;
                 return Err(WorkflowError::NoProgress {
                     workflow: self.name.clone(),
                 });
@@ -456,6 +506,7 @@ impl Workflow {
             for node in &ready {
                 if node.fire_and_forget {
                     if !node.condition_holds(ctx) {
+                        listener.on_step_skipped(&self.name, &cid, &node.name).await;
                         done.insert(node.name.clone());
                         continue;
                     }
@@ -475,16 +526,25 @@ impl Workflow {
             let wave = blocking.iter().map(|node| {
                 let internal = internal.clone();
                 let completed_order = Arc::clone(&completed_order);
+                let listener = Arc::clone(&listener);
+                let cid = cid.clone();
                 async move {
                     if token.is_cancelled() || internal.is_cancelled() {
                         return Err(WorkflowError::Cancelled);
                     }
                     // Skip-when-condition-false (pyfly condition=...).
                     if !node.condition_holds(ctx) {
+                        listener.on_step_skipped(&self.name, &cid, &node.name).await;
                         return Ok(node.name.clone());
                     }
+                    listener.on_step_started(&self.name, &cid, &node.name).await;
+                    let node_start = Instant::now();
                     match node.run(ctx).await {
                         Ok(()) => {
+                            let latency_ms = node_start.elapsed().as_secs_f64() * 1000.0;
+                            listener
+                                .on_step_success(&self.name, &cid, &node.name, 1, latency_ms)
+                                .await;
                             if node.is_compensatable() {
                                 completed_order
                                     .lock()
@@ -494,6 +554,17 @@ impl Workflow {
                             Ok(node.name.clone())
                         }
                         Err(source) => {
+                            let latency_ms = node_start.elapsed().as_secs_f64() * 1000.0;
+                            listener
+                                .on_step_failed(
+                                    &self.name,
+                                    &cid,
+                                    &node.name,
+                                    &source.to_string(),
+                                    1,
+                                    latency_ms,
+                                )
+                                .await;
                             internal.cancel();
                             Err(WorkflowError::Node {
                                 node: node.name.clone(),
@@ -515,14 +586,36 @@ impl Workflow {
             }
             if !errors.is_empty() {
                 // Roll back completed compensatable nodes before surfacing.
-                self.compensate(ctx, &completed_order).await;
+                self.compensate(ctx, &completed_order, &listener, &cid)
+                    .await;
                 Self::join_async(async_tasks).await;
+                self.emit_completed(&listener, &cid, false, started).await;
                 return Err(WorkflowError::join(errors));
             }
             pending = still_pending;
         }
         Self::join_async(async_tasks).await;
+        self.emit_completed(&listener, &cid, true, started).await;
         Ok(())
+    }
+
+    /// Fires `on_completed` with the wall-clock duration since `started`.
+    async fn emit_completed(
+        &self,
+        listener: &Arc<dyn OrchestrationEvents>,
+        cid: &str,
+        success: bool,
+        started: Instant,
+    ) {
+        listener
+            .on_completed(
+                &self.name,
+                ExecutionPattern::Workflow,
+                cid,
+                success,
+                started.elapsed().as_secs_f64() * 1000.0,
+            )
+            .await;
     }
 
     /// Awaits every fire-and-forget task to completion so they run to the
@@ -546,15 +639,30 @@ impl Workflow {
         &self,
         ctx: &StepContext,
         completed_order: &Arc<std::sync::Mutex<Vec<String>>>,
+        listener: &Arc<dyn OrchestrationEvents>,
+        cid: &str,
     ) {
         let order: Vec<String> = completed_order.lock().expect("lock").clone();
+        if !order.is_empty() {
+            listener.on_compensation_started(&self.name, cid).await;
+        }
         for name in order.iter().rev() {
             if let Some(node) = self.nodes.iter().find(|n| &n.name == name) {
                 if let Some(compensate) = &node.compensate {
-                    if compensate(ctx.clone()).await.is_err()
-                        && self.policy == CompensationPolicy::StopOnError
-                    {
-                        return;
+                    match compensate(ctx.clone()).await {
+                        Ok(()) => {
+                            listener
+                                .on_step_compensated(&self.name, cid, name, None)
+                                .await;
+                        }
+                        Err(err) => {
+                            listener
+                                .on_step_compensated(&self.name, cid, name, Some(&err.to_string()))
+                                .await;
+                            if self.policy == CompensationPolicy::StopOnError {
+                                return;
+                            }
+                        }
                     }
                 }
             }

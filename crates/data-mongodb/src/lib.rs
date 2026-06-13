@@ -54,6 +54,21 @@
 //!   [`MongoRepository::with_soft_delete`] and every read injects a
 //!   `{"<column>": null}` guard while `delete_by_id` becomes a logical
 //!   delete.
+//! - **Derived & custom queries executed end-to-end**: the document analogue
+//!   of pyfly's repository bean post-processor —
+//!   [`find_by_derived`](MongoRepository::find_by_derived) /
+//!   [`count_by_derived`](MongoRepository::count_by_derived) /
+//!   [`exists_by_derived`](MongoRepository::exists_by_derived) /
+//!   [`delete_by_derived`](MongoRepository::delete_by_derived) run a parsed
+//!   `find_by_…`-style method name (lowered to a `$`-operator filter via the
+//!   shared [`Specification`](firefly_data::Specification) tree), while
+//!   [`query_find`](MongoRepository::query_find) /
+//!   [`query_aggregate`](MongoRepository::query_aggregate) run a `@query`
+//!   JSON filter document / aggregation pipeline with `":param"` named
+//!   substitution, and [`project_by_spec`](MongoRepository::project_by_spec)
+//!   applies a DB-level [`ColumnProjection`](firefly_data::ColumnProjection).
+//! - **Actuator integration** (feature `actuator`): [`MongoHealthIndicator`]
+//!   contributes a `db` component to `GET /actuator/health` (server `ping`).
 //!
 //! # Quick start
 //!
@@ -102,10 +117,15 @@
 
 mod document;
 mod error;
+#[cfg(feature = "actuator")]
+mod observe;
 mod repository;
 
 pub use document::BaseDocument;
 pub use repository::{Audited, MongoRepository};
+
+#[cfg(feature = "actuator")]
+pub use observe::MongoHealthIndicator;
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.3";

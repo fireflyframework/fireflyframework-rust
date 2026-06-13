@@ -102,6 +102,46 @@ fn logger_omits_empty_service() {
     assert!(rec.get("service").is_none(), "unexpected: {rec}");
 }
 
+/// Rust-specific: the active span's `trace_id`/`span_id` are injected into
+/// every log record from the W3C trace-context scope — the analog of pyfly's
+/// `_add_trace_ids` structlog processor (the SLF4J MDC equivalent).
+#[tokio::test]
+async fn logger_emits_trace_and_span_ids_from_trace_context() {
+    let (buf, sub) = json_logger("orders");
+    firefly_observability::with_trace_context(
+        Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string()),
+        None,
+        async {
+            tracing::info!("served");
+        },
+    )
+    .with_subscriber(sub)
+    .await;
+
+    let rec: serde_json::Value = serde_json::from_str(buf.as_string().trim()).unwrap();
+    assert_eq!(
+        rec["trace_id"], "0af7651916cd43dd8448eb211c80319c",
+        "missing trace_id: {rec}"
+    );
+    assert_eq!(rec["span_id"], "b7ad6b7169203331", "missing span_id: {rec}");
+    assert_eq!(rec["msg"], "served");
+}
+
+/// Rust-specific: with no trace context in scope, no `trace_id`/`span_id`
+/// fields appear — the injection stays a no-op without tracing, matching
+/// pyfly's "no active span" branch.
+#[test]
+fn logger_omits_trace_ids_without_trace_context() {
+    let (buf, sub) = json_logger("orders");
+    tracing::subscriber::with_default(sub, || {
+        tracing::info!("no trace");
+    });
+
+    let rec: serde_json::Value = serde_json::from_str(buf.as_string().trim()).unwrap();
+    assert!(rec.get("trace_id").is_none(), "unexpected trace_id: {rec}");
+    assert!(rec.get("span_id").is_none(), "unexpected span_id: {rec}");
+}
+
 /// Rust-specific: text format mirrors slog's text handler — key=value
 /// pairs with the same field names.
 #[test]

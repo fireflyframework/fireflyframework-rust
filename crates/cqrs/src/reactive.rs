@@ -69,6 +69,7 @@ use crate::error::CqrsError;
 /// | [`CqrsError::ResultTypeMismatch`]  | 500 | dispatch invariant broken        |
 /// | [`CqrsError::Serialization`]       | 500 | cache-key encoding failed        |
 /// | [`CqrsError::Handler`]             | 500 | domain failure inside a handler  |
+/// | [`CqrsError::EventPublish`]        | 500 | domain-event publish failed      |
 #[must_use]
 pub fn cqrs_error_to_firefly(err: CqrsError) -> FireflyError {
     let detail = err.to_string();
@@ -79,7 +80,8 @@ pub fn cqrs_error_to_firefly(err: CqrsError) -> FireflyError {
         | CqrsError::HandlerTypeMismatch { .. }
         | CqrsError::ResultTypeMismatch { .. }
         | CqrsError::Serialization(_)
-        | CqrsError::Handler(_) => FireflyError::internal(detail),
+        | CqrsError::Handler(_)
+        | CqrsError::EventPublish(_) => FireflyError::internal(detail),
     };
     firefly.with_cause(err)
 }

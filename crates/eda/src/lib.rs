@@ -75,6 +75,25 @@
 //! Go module extracting it from `context.Context` via
 //! `kernel.CorrelationIDFrom`.
 //!
+//! ## Raw-bytes publish convenience
+//!
+//! [`PublisherExt::publish_bytes`] is a one-call helper over any
+//! [`Publisher`] — it builds the [`Event`] (stamping the correlation id
+//! from the ambient scope) and publishes it, so the common "send this
+//! payload to this topic" call does not spell out [`Event::new`] each
+//! time. It is blanket-implemented for every publisher.
+//!
+//! ## Pluggable event serializer
+//!
+//! [`EventSerializer`] is the codec port a transport uses to turn an
+//! [`Event`] into wire bytes and back (pyfly's `EventSerializer`). The
+//! default [`JsonEventSerializer`] encodes via the canonical [`Event`]
+//! JSON codec, so it is wire-compatible with every sibling port and a
+//! zero-change default; [`AvroEventSerializer`] / [`ProtobufEventSerializer`]
+//! are the failing-loud, not-yet-implemented sentinels pyfly ships, and
+//! [`serializer_for`] selects one by name (`"json"` / `"avro"` /
+//! `"protobuf"`) for a `serialization-format` config key.
+//!
 //! ## Delivery gates, dead-letter store, and health
 //!
 //! Three pyfly-parity surfaces layer over the broker:
@@ -119,6 +138,7 @@ mod listener;
 mod ports;
 mod rabbitmq;
 mod reactive;
+mod serializer;
 
 pub use dlq::{EdaDeadLetterEntry, EdaDeadLetterStore, InMemoryEdaDeadLetterStore};
 pub use error::{EdaError, EdaResult};
@@ -130,9 +150,13 @@ pub use health::{BrokerHealth, EventPublisherHealthIndicator};
 pub use inmemory::InMemoryBroker;
 pub use kafka::{new_kafka_broker, KafkaConfig};
 pub use listener::{wrap_listener, ListenerPolicy, HEADER_EXCEPTION, HEADER_ORIGINAL_TOPIC};
-pub use ports::{handler, Broker, Handler, HandlerFuture, Publisher, Subscriber};
+pub use ports::{handler, Broker, Handler, HandlerFuture, Publisher, PublisherExt, Subscriber};
 pub use rabbitmq::{new_rabbitmq_broker, RabbitMqConfig};
 pub use reactive::DEFAULT_REACTIVE_BUFFER;
+pub use serializer::{
+    serializer_for, AvroEventSerializer, EventSerializer, JsonEventSerializer,
+    ProtobufEventSerializer,
+};
 
 /// The released framework version, shared across all Firefly crates.
 pub const VERSION: &str = "26.6.3";

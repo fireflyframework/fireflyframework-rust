@@ -75,21 +75,38 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod condition;
 mod error;
 mod provider;
 mod registration;
+mod scan;
 mod scope;
+mod value;
 
 use std::any::{type_name, Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock, Weak};
 use std::time::Instant;
 
+pub use condition::{Condition, ConditionContext};
 pub use error::ContainerError;
 pub use provider::Provider;
-pub use registration::{BeanMetrics, Factory, Registration, HIGHEST_PRECEDENCE, LOWEST_PRECEDENCE};
+pub use registration::{
+    BeanMetrics, DestroyHook, Factory, Registration, HIGHEST_PRECEDENCE, LOWEST_PRECEDENCE,
+};
+pub use scan::{
+    discovered, routes, BeanDescriptor, BeanStats, ComponentRegistration, RouteDescriptor,
+    Stereotype as BeanStereotype,
+};
 pub use scope::{RefreshScope, Scope, ScopeHandler, ScopeSpec, SharedInstance, REFRESH_SCOPE_NAME};
+pub use value::resolve_value;
+
+// Re-export `inventory` so `firefly-macros`-generated `inventory::submit!`
+// thunks resolve through `firefly_container::inventory` without the user crate
+// listing `inventory` directly.
+#[doc(hidden)]
+pub use inventory;
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.3";
@@ -134,6 +151,17 @@ pub struct Container {
     scopes: RwLock<HashMap<String, Arc<dyn ScopeHandler>>>,
     /// Insertion-ordered registered type names, for fuzzy suggestions.
     type_names: RwLock<Vec<String>>,
+    /// Self-keyed registrations in registration order, for introspection
+    /// (`beans()`) and reverse-order `#[pre_destroy]` on shutdown.
+    registered: RwLock<Vec<Arc<Registration>>>,
+    /// The active condition context consulted during [`Container::scan`]
+    /// (profiles + config properties). Empty by default.
+    conditions: RwLock<ConditionContext>,
+    /// A weak self-handle, populated when the container is wrapped in an `Arc`
+    /// via [`Container::shared`] / [`Container::provider`]. Lets factory
+    /// closures (which receive `&Container`) build a [`Provider<T>`], which
+    /// needs an `Arc<Container>`.
+    me: OnceLock<Weak<Container>>,
 }
 
 impl Container {
@@ -141,6 +169,30 @@ impl Container {
     #[must_use]
     pub fn new() -> Self {
         Container::default()
+    }
+
+    /// Create an empty container wrapped in an `Arc`, with its self-handle
+    /// installed.
+    ///
+    /// Use this (rather than `Arc::new(Container::new())`) when any bean
+    /// autowires a [`Provider<T>`] field: the generated factory builds the
+    /// provider from the container's self-handle, which is only set when the
+    /// container is created shared (or after a call to
+    /// [`provider`](Container::provider)).
+    #[must_use]
+    pub fn shared() -> Arc<Self> {
+        let arc = Arc::new(Container::default());
+        let _ = arc.me.set(Arc::downgrade(&arc));
+        arc
+    }
+
+    /// Install the weak self-handle from an owning `Arc`, enabling
+    /// [`Provider<T>`] autowiring on a container that was created with
+    /// [`new`](Container::new) and later wrapped in an `Arc`.
+    ///
+    /// Idempotent and safe to call repeatedly.
+    pub fn install_shared_handle(self: &Arc<Self>) {
+        let _ = self.me.set(Arc::downgrade(self));
     }
 
     // ------------------------------------------------------------------
@@ -251,6 +303,42 @@ impl Container {
         self.install::<T>(ScopeSpec::Builtin(scope), name, primary, order, erased);
     }
 
+    /// Record the stereotype label of the most-recently-registered `T`.
+    ///
+    /// Used by the stereotype derives in `firefly-macros` so
+    /// [`beans`](Container::beans) and the admin `/beans` view can group beans
+    /// by layer. No-op if `T` is not registered.
+    pub fn set_stereotype<T: 'static>(&self, label: &str) {
+        let type_id = TypeId::of::<T>();
+        let registered = self.registered.read().expect("registered lock poisoned");
+        if let Some(reg) = registered.iter().rev().find(|r| r.impl_type == type_id) {
+            *reg.stereotype.lock().expect("stereotype mutex poisoned") = Some(label.to_string());
+        }
+    }
+
+    /// Attach a `#[pre_destroy]` teardown hook to the most-recently-registered
+    /// `T`. The hook receives the shared instance and runs on
+    /// [`destroy`](Container::destroy) in reverse construction order.
+    ///
+    /// Used by `firefly-macros` for `#[pre_destroy]` methods. No-op if `T` is
+    /// not registered.
+    pub fn set_destroy_hook<T, F>(&self, hook: F)
+    where
+        T: Send + Sync + 'static,
+        F: Fn(&Arc<T>) + Send + Sync + 'static,
+    {
+        let type_id = TypeId::of::<T>();
+        let registered = self.registered.read().expect("registered lock poisoned");
+        if let Some(reg) = registered.iter().rev().find(|r| r.impl_type == type_id) {
+            let erased: DestroyHook = Box::new(move |shared: &SharedInstance| {
+                if let Ok(typed) = shared.clone().downcast::<T>() {
+                    hook(&typed);
+                }
+            });
+            *reg.destroy.lock().expect("destroy mutex poisoned") = Some(erased);
+        }
+    }
+
     /// Bind an interface (trait object) to a concrete, already-registered
     /// implementation `T`.
     ///
@@ -327,6 +415,8 @@ impl Container {
             factory,
             instance: std::sync::Mutex::new(None),
             metrics: std::sync::Mutex::new(BeanMetrics::default()),
+            stereotype: std::sync::Mutex::new(None),
+            destroy: std::sync::Mutex::new(None),
         });
 
         let caster: Caster = Box::new(|shared: SharedInstance| {
@@ -362,6 +452,15 @@ impl Container {
             if !names.contains(&type_name_str) {
                 names.push(type_name_str);
             }
+        }
+
+        {
+            // Track self-keyed registrations in order for `beans()` /
+            // reverse-order `destroy()`. Re-registering the same (type, name)
+            // replaces the prior entry so introspection never double-counts.
+            let mut registered = self.registered.write().expect("registered lock poisoned");
+            registered.retain(|r| !(r.impl_type == type_id && r.name == reg.name));
+            registered.push(Arc::clone(&reg));
         }
 
         reg
@@ -555,6 +654,31 @@ impl Container {
             })
     }
 
+    /// Resolve a named bean to its type-erased [`SharedInstance`], warming the
+    /// singleton cache without knowing the static type.
+    ///
+    /// Used by the `ApplicationContext` eager-init pass to fail-fast-build every
+    /// named singleton at startup (running its `#[post_construct]`). Prefer the
+    /// typed [`resolve_named`](Container::resolve_named) for actual use.
+    ///
+    /// # Errors
+    /// [`ContainerError::NoSuchBean`] if no bean has that name; propagates a
+    /// construction error from the factory.
+    pub fn resolve_named_erased(&self, name: &str) -> Result<SharedInstance, ContainerError> {
+        let reg = {
+            let by_name = self.by_name.read().expect("by_name lock poisoned");
+            by_name.get(name).map(Arc::clone)
+        };
+        let Some(reg) = reg else {
+            let names = {
+                let by_name = self.by_name.read().expect("by_name lock poisoned");
+                by_name.keys().cloned().collect::<Vec<_>>()
+            };
+            return Err(ContainerError::no_such_name(name, names));
+        };
+        self.resolve_registration(&reg)
+    }
+
     /// Resolve every bean registered or bound under `T`.
     ///
     /// Returns one `Arc<T>` per registration, deduplicated by instance identity
@@ -732,10 +856,31 @@ impl Container {
     /// A deferred [`Provider<T>`] for `T`.
     ///
     /// Mirrors pyfly's `Provider[T]` injection. Requires the container to be
-    /// wrapped in an `Arc`; clone the `Arc` you already share.
+    /// wrapped in an `Arc`; clone the `Arc` you already share. Also installs
+    /// the self-handle so later `&Container`-only factory closures can build
+    /// providers via [`provider_for`](Container::provider_for).
     #[must_use]
     pub fn provider<T: ?Sized + Send + Sync + 'static>(self: &Arc<Self>) -> Provider<T> {
+        let _ = self.me.set(Arc::downgrade(self));
         Provider::new(Arc::clone(self))
+    }
+
+    /// Build a [`Provider<T>`] from a borrowed container — the helper a
+    /// generated `Provider<T>` autowiring uses inside a factory closure.
+    ///
+    /// # Panics
+    /// Panics if the container has no installed self-handle. Create the
+    /// container with [`shared`](Container::shared) (or call
+    /// [`install_shared_handle`](Container::install_shared_handle)) before
+    /// resolving any bean that autowires a `Provider<T>` field.
+    #[must_use]
+    pub fn provider_for<T: ?Sized + Send + Sync + 'static>(&self) -> Provider<T> {
+        let arc = self.me.get().and_then(Weak::upgrade).expect(
+            "Container::provider_for requires a shared container: create it with \
+                 Container::shared() (or call install_shared_handle) before resolving a \
+                 bean that autowires a Provider<T> field",
+        );
+        Provider::new(arc)
     }
 
     // ------------------------------------------------------------------
@@ -840,6 +985,235 @@ impl Container {
                 .then_with(|| a.1.cmp(&b.1))
         });
         scored.into_iter().take(5).map(|(_, n)| n).collect()
+    }
+
+    // ------------------------------------------------------------------
+    // Conditional context (profiles + config properties)
+    // ------------------------------------------------------------------
+
+    /// Install the [`ConditionContext`] that [`scan`](Container::scan) consults
+    /// to gate conditional/profile-guarded beans.
+    ///
+    /// The `firefly` facade's `ApplicationContext` builds this from
+    /// `firefly_config` (active profiles + flattened config map); a standalone
+    /// container can set it directly. Replaces any previously-set context.
+    pub fn set_condition_context(&self, ctx: ConditionContext) {
+        *self.conditions.write().expect("conditions lock poisoned") = ctx;
+    }
+
+    /// A clone of the currently-installed [`ConditionContext`].
+    #[must_use]
+    pub fn condition_context(&self) -> ConditionContext {
+        self.conditions
+            .read()
+            .expect("conditions lock poisoned")
+            .clone()
+    }
+
+    /// The condition-context property map restricted to keys under `prefix`
+    /// (prefix-stripped) — the input a `#[derive(ConfigProperties)]` bean binds
+    /// from. See [`ConditionContext::properties_with_prefix`].
+    #[must_use]
+    pub fn config_properties(&self, prefix: &str) -> HashMap<String, String> {
+        self.conditions
+            .read()
+            .expect("conditions lock poisoned")
+            .properties_with_prefix(prefix)
+    }
+
+    // ------------------------------------------------------------------
+    // Component scanning (pyfly scan_package / _auto_bind_interfaces)
+    // ------------------------------------------------------------------
+
+    /// Register every stereotype-annotated type discovered across the crate
+    /// graph, honoring conditionals and profiles.
+    ///
+    /// The Rust analog of pyfly's `scan_package` + `scan_module_classes`:
+    /// every `#[derive(Component)]` / `Service` / `Repository` /
+    /// `Configuration` / `Controller` / `ConfigProperties` emits an
+    /// [`inventory::submit!`] thunk, and `scan` collects them all via
+    /// [`inventory::iter`]. Conditions and `#[profile(...)]` are evaluated
+    /// against the installed [`ConditionContext`] in two passes (registry-
+    /// independent first, then bean-dependent), mirroring pyfly's
+    /// `_evaluate_conditions` / `_evaluate_bean_conditions`.
+    ///
+    /// Returns the number of beans registered.
+    ///
+    /// # Generics
+    /// Generic types cannot be inventoried (the concrete monomorphization is
+    /// chosen at the use site). Register those with the explicit
+    /// `register_all!(container, [Foo::<Bar>, ...])` fallback after scanning.
+    pub fn scan(&self) -> usize {
+        let ctx = self.condition_context();
+        self.scan_with(&ctx)
+    }
+
+    /// Like [`scan`](Container::scan) but against an explicit
+    /// [`ConditionContext`] (which is also installed on the container for any
+    /// later resolution-time use).
+    pub fn scan_with(&self, ctx: &ConditionContext) -> usize {
+        self.set_condition_context(ctx.clone());
+        let all: Vec<&'static ComponentRegistration> = scan::discovered().collect();
+
+        // Pass 1: keep only beans whose registry-independent conditions pass.
+        let pass1: Vec<&'static ComponentRegistration> = all
+            .into_iter()
+            .filter(|r| ctx.pass1(&(r.conditions)()))
+            .collect();
+
+        // Two-stage registration so pass-2 (bean-dependent) conditions see the
+        // beans registered by pass-1 survivors with no bean conditions, exactly
+        // like pyfly registers, then prunes. We register every pass-1 survivor
+        // ordered by `order`, but defer those carrying bean-dependent
+        // conditions until the unconditional ones are in place.
+        let mut ordered = pass1;
+        ordered.sort_by_key(|r| r.order);
+
+        let (deferred, immediate): (Vec<_>, Vec<_>) = ordered
+            .into_iter()
+            .partition(|r| (r.conditions)().iter().any(Condition::is_bean_dependent));
+
+        let mut count = 0usize;
+        for reg in &immediate {
+            (reg.register)(self);
+            count += 1;
+        }
+        // Pass 2: evaluate bean-dependent conditions against the now-populated
+        // registry, registering survivors in order.
+        for reg in &deferred {
+            if self.eval_bean_conditions(&(reg.conditions)()) {
+                (reg.register)(self);
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Evaluate the bean-dependent (pass-2) conditions against the current
+    /// registry. Type matching is by short type name (the inventory thunk
+    /// records the dependency type as a string, since `TypeId` of an arbitrary
+    /// referenced type is not available at submit time).
+    fn eval_bean_conditions(&self, conditions: &[Condition]) -> bool {
+        conditions.iter().all(|c| match c {
+            Condition::OnBean(ty) => self.count_assignable_by_name(ty) > 0,
+            Condition::OnMissingBean(ty) => self.count_assignable_by_name(ty) == 0,
+            Condition::OnSingleCandidate(ty) => self.count_assignable_by_name(ty) == 1,
+            _ => true,
+        })
+    }
+
+    /// Count registered beans whose short type name matches `name` (the
+    /// dependency string a bean-dependent condition carries). Type-only, never
+    /// resolves an instance — matching pyfly's registration-based counting.
+    #[must_use]
+    pub fn count_assignable_by_name(&self, name: &str) -> usize {
+        let target = short_name(name);
+        let registered = self.registered.read().expect("registered lock poisoned");
+        registered
+            .iter()
+            .filter(|r| short_name(&r.type_name) == target)
+            .count()
+    }
+
+    // ------------------------------------------------------------------
+    // Bean introspection (admin /beans + overview)
+    // ------------------------------------------------------------------
+
+    /// A snapshot of every self-keyed bean registration, for the admin
+    /// `/beans` view.
+    ///
+    /// Ports the shape pyfly's `BeansProvider.get_beans` returns
+    /// (name/type/scope/stereotype/primary + initialized + resolution count).
+    /// Synthetic interface bindings are excluded — only the concrete
+    /// registrations are reported, one per bean.
+    #[must_use]
+    pub fn beans(&self) -> Vec<BeanDescriptor> {
+        let registered = self.registered.read().expect("registered lock poisoned");
+        registered
+            .iter()
+            .map(|reg| {
+                let metrics = *reg.metrics.lock().expect("metrics mutex poisoned");
+                BeanDescriptor {
+                    name: reg.display_name(),
+                    type_name: reg.type_name.clone(),
+                    scope: reg.scope.name(),
+                    stereotype: reg.stereotype(),
+                    primary: reg.primary,
+                    initialized: reg
+                        .instance
+                        .lock()
+                        .expect("registration mutex poisoned")
+                        .is_some(),
+                    resolution_count: metrics.resolution_count,
+                }
+            })
+            .collect()
+    }
+
+    /// Aggregate bean counts (total + per-stereotype) for the admin overview.
+    ///
+    /// Mirrors pyfly `OverviewProvider`'s `beans` block.
+    #[must_use]
+    pub fn bean_stats(&self) -> BeanStats {
+        let registered = self.registered.read().expect("registered lock poisoned");
+        let mut stats = BeanStats {
+            total: registered.len(),
+            ..BeanStats::default()
+        };
+        for reg in registered.iter() {
+            let label = reg.stereotype().unwrap_or_else(|| "component".to_string());
+            *stats.stereotypes.entry(label).or_insert(0) += 1;
+        }
+        stats
+    }
+
+    /// The number of registered beans (counting only concrete self-keyed
+    /// registrations, not synthetic interface bindings).
+    #[must_use]
+    pub fn bean_count(&self) -> usize {
+        self.registered
+            .read()
+            .expect("registered lock poisoned")
+            .len()
+    }
+
+    // ------------------------------------------------------------------
+    // Lifecycle (pyfly _call_pre_destroy)
+    // ------------------------------------------------------------------
+
+    /// Invoke every `#[pre_destroy]` hook in reverse construction order, then
+    /// clear cached singleton instances.
+    ///
+    /// Ports pyfly's `_call_pre_destroy` shutdown pass: hooks run on the
+    /// already-built singleton instances, last-registered first, de-duplicated
+    /// by instance identity. A hook is a teardown side-effect (errors are not
+    /// propagated — Rust `Drop` still runs afterwards for deterministic cleanup).
+    pub fn destroy(&self) {
+        let regs: Vec<Arc<Registration>> = {
+            let registered = self.registered.read().expect("registered lock poisoned");
+            registered.iter().rev().cloned().collect()
+        };
+        let mut seen: Vec<*const ()> = Vec::new();
+        for reg in regs {
+            let instance = {
+                let guard = reg.instance.lock().expect("registration mutex poisoned");
+                guard.clone()
+            };
+            let Some(instance) = instance else { continue };
+            let identity = Arc::as_ptr(&instance) as *const ();
+            if seen.contains(&identity) {
+                continue;
+            }
+            seen.push(identity);
+            if let Some(hook) = reg.destroy.lock().expect("destroy mutex poisoned").as_ref() {
+                hook(&instance);
+            }
+        }
+        // Evict cached singletons so a subsequent resolve rebuilds them.
+        let registered = self.registered.read().expect("registered lock poisoned");
+        for reg in registered.iter() {
+            *reg.instance.lock().expect("registration mutex poisoned") = None;
+        }
     }
 }
 

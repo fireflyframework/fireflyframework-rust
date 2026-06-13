@@ -220,7 +220,7 @@ impl fmt::Display for StepStatus {
 }
 
 /// One of the three TCC execution phases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TccPhase {
     /// Reserve the resource.

@@ -22,6 +22,17 @@
 //! in-process map during local dev or — once the Redis adapter ships in the
 //! next minor — a Redis cluster in production.
 //!
+//! [`Typed`] also offers the declarative-cache conveniences pyfly exposes
+//! as decorators: [`get_or_set`](Typed::get_or_set) (`@cacheable`),
+//! [`put`](Typed::put) (`@cache_put`), and [`delete`](Typed::delete) /
+//! [`delete_prefix`](Typed::delete_prefix) (`@cache_evict`).
+//!
+//! [`CacheHealthIndicator`] is a [`firefly_observability::Indicator`] that
+//! probes the cache with an active put/get/evict round-trip and reports
+//! the round-trip `latencyMs` — pyfly's `CacheHealthIndicator` — degrading
+//! to `DEGRADED` past a latency threshold and `DOWN` on a probe mismatch
+//! or adapter error.
+//!
 //! Values cross the port as raw bytes; the [`Typed`] facade layers JSON
 //! encoding (via `serde_json`) on top so services work with their own types.
 //! The JSON wire format matches the Go/`encoding/json` port byte-for-byte for
@@ -53,12 +64,14 @@
 
 mod adapter;
 mod fallback;
+mod health;
 mod memory;
 mod noop;
 mod typed;
 
 pub use adapter::{Adapter, CacheError, CacheStats};
 pub use fallback::FallbackAdapter;
+pub use health::CacheHealthIndicator;
 pub use memory::MemoryAdapter;
 pub use noop::NoOpAdapter;
 pub use typed::Typed;

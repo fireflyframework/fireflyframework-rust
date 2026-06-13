@@ -25,6 +25,7 @@ use serde::Serialize;
 
 use crate::authorization::AuthorizationResult;
 use crate::context::ExecutionContext;
+use crate::event::DomainEvent;
 use crate::fluent::MessageMetadata;
 use crate::CqrsError;
 
@@ -79,6 +80,18 @@ pub trait Message: Clone + Serialize + Send + Sync + 'static {
         let _ = ctx;
         AuthorizationResult::success()
     }
+
+    /// The domain events this command produced, harvested by
+    /// [`DomainEventMiddleware`](crate::DomainEventMiddleware) after a
+    /// successful dispatch — pyfly's `command.domain_events`.
+    ///
+    /// The default returns no events, so a plain message publishes nothing,
+    /// mirroring a pyfly command without a `domain_events` attribute. A
+    /// command that mutates aggregate state overrides this to surface the
+    /// events to publish to the EDA broker.
+    fn domain_events(&self) -> Vec<DomainEvent> {
+        Vec::new()
+    }
 }
 
 type ErasedRef<'a> = &'a (dyn Any + Send + Sync);
@@ -98,6 +111,7 @@ pub struct Envelope {
     cache_ttl_fn: fn(ErasedRef<'_>) -> Option<Duration>,
     cache_json_fn: fn(ErasedRef<'_>) -> Result<Vec<u8>, CqrsError>,
     authorize_fn: fn(ErasedRef<'_>, Option<&ExecutionContext>) -> AuthorizationResult,
+    domain_events_fn: fn(ErasedRef<'_>) -> Vec<DomainEvent>,
     context: Option<Arc<ExecutionContext>>,
     metadata: Option<MessageMetadata>,
     cache_ttl_override: Option<Option<Duration>>,
@@ -116,6 +130,7 @@ impl Envelope {
             cache_ttl_fn: |m: ErasedRef<'_>| erased::<C>(m).cache_ttl(),
             cache_json_fn: |m: ErasedRef<'_>| Ok(serde_json::to_vec(erased::<C>(m))?),
             authorize_fn: |m: ErasedRef<'_>, ctx| erased::<C>(m).authorize(ctx),
+            domain_events_fn: |m: ErasedRef<'_>| erased::<C>(m).domain_events(),
             context: None,
             metadata: None,
             cache_ttl_override: None,
@@ -179,6 +194,13 @@ impl Envelope {
     /// attached [`ExecutionContext`] (if any).
     pub fn authorize(&self) -> AuthorizationResult {
         (self.authorize_fn)(self.message.as_ref(), self.context.as_deref())
+    }
+
+    /// Reads the message's [`Message::domain_events`] hook — the events
+    /// [`DomainEventMiddleware`](crate::DomainEventMiddleware) publishes
+    /// after a successful dispatch.
+    pub fn domain_events(&self) -> Vec<DomainEvent> {
+        (self.domain_events_fn)(self.message.as_ref())
     }
 
     /// Fully-qualified Rust type name of the wrapped message — the analog
@@ -497,6 +519,39 @@ impl Bus {
             chain = middleware.wrap(chain);
         }
         chain(Arc::new(envelope)).await
+    }
+
+    /// Dispatches `command` and then publishes the *result's* domain events
+    /// through `publisher` — pyfly's `result.domain_events` half of
+    /// `DefaultCommandBus._try_publish_events`.
+    ///
+    /// The full middleware chain runs first (including any
+    /// [`DomainEventMiddleware`](crate::DomainEventMiddleware) that harvests
+    /// the *command's* events); then, on success, the events the *result*
+    /// type exposes via [`DomainEvents`](crate::DomainEvents) are published.
+    /// Use this when a handler returns an aggregate/result carrying the
+    /// events it produced (rather than the command).
+    ///
+    /// Events publish only after a successful dispatch, honouring `strategy`
+    /// for publish failures (see
+    /// [`publish_domain_events`](crate::publish_domain_events)).
+    pub async fn send_publishing<C, R>(
+        &self,
+        command: C,
+        publisher: &dyn crate::CommandEventPublisher,
+        destination: Option<&str>,
+        strategy: crate::EventFailureStrategy,
+    ) -> Result<R, CqrsError>
+    where
+        C: Message,
+        R: Clone + Send + Sync + 'static + crate::DomainEvents,
+    {
+        let result: R = self.send(command).await?;
+        let events = result.domain_events();
+        if !events.is_empty() {
+            crate::publish_domain_events(publisher, &events, destination, strategy).await?;
+        }
+        Ok(result)
     }
 }
 

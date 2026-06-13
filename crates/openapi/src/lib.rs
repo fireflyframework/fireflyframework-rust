@@ -28,6 +28,46 @@
 //! framework, no DI, no codegen step. You hand-register routes and the
 //! JSON samples do the rest.
 //!
+//! ## Automatic generation from `#[rest_controller]`
+//!
+//! When the `firefly-macros` `#[rest_controller]` / `#[get]` / `#[post]`
+//! markers decorate your controllers, they emit a compile-time
+//! [`firefly_container::RouteDescriptor`] for every mapped method into an
+//! `inventory` registry. [`Builder::from_routes`] (and
+//! [`Builder::add_route_descriptors`]) consume that registry to build a
+//! spec **without re-declaring a single route** — the Rust analog of
+//! pyfly's `ControllerRegistrar.collect_route_metadata` driving its
+//! `OpenAPIGenerator`. Each descriptor yields an operation whose:
+//!
+//! - **path** is the axum route with `:param` / `*rest` segments
+//!   normalised to OpenAPI `{param}`,
+//! - **path parameters** become required `in: path` [`Parameter`]s,
+//! - **tag** is derived from the controller type name
+//!   (`OrderApi` → `Order`, `CatalogController` → `Catalog`),
+//! - **operationId** is the handler method name.
+//!
+//! ```no_run
+//! use firefly_openapi::{Builder, Info};
+//!
+//! // `firefly_container::routes()` enumerates every `#[rest_controller]`
+//! // route discovered across the crate graph.
+//! let builder = Builder::new(Info {
+//!     title: "Orders API".into(),
+//!     version: "1.0.0".into(),
+//!     ..Info::default()
+//! })
+//! .from_routes(firefly_container::routes());
+//!
+//! // Serves GET /openapi.json + GET /openapi/ui + GET /redoc.
+//! let app: axum::Router = builder.router();
+//! # let _ = app;
+//! ```
+//!
+//! Enrich any auto-derived operation with request/response schemas,
+//! summaries, or a `deprecated` flag by also calling [`Builder::add`]
+//! with a matching `method` + `path` — same-path/same-method routes merge
+//! field-by-field (an explicit value wins over the auto-derived default).
+//!
 //! ## Why sample values instead of reflection?
 //!
 //! Rust has no runtime reflection, so where the Go port inspects a
@@ -115,6 +155,17 @@ pub struct Server {
     pub description: String,
 }
 
+/// A top-level tag declaration (`{"name": "Order"}`), the OpenAPI
+/// grouping pyfly emits into the document's `tags` array.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tag {
+    /// The tag name shown by Swagger-UI / ReDoc.
+    pub name: String,
+    /// Optional human-readable description; omitted from JSON when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
 /// A JSON sample of a request or response body type, optionally carrying
 /// the component-schema name it should be registered under.
 ///
@@ -182,18 +233,91 @@ pub struct RouteDef {
     pub method: String,
     /// Route path, e.g. `/api/v1/orders/{id}`.
     pub path: String,
+    /// Stable operation identifier (e.g. the handler method name);
+    /// omitted from the document when empty.
+    pub operation_id: String,
     /// One-line operation summary.
     pub summary: String,
     /// Longer operation description.
     pub description: String,
     /// Grouping tags shown by Swagger-UI.
     pub tags: Vec<String>,
+    /// Path / query / header / cookie parameters.
+    pub parameters: Vec<Parameter>,
     /// Sample of the request body type, or `None` for no body.
     pub request: Option<Sample>,
     /// Sample of the success response body, or `None` for no body.
     pub response: Option<Sample>,
     /// Success status code; `0` defaults to 201 for POST, 200 otherwise.
     pub status: u16,
+    /// Whether the endpoint is deprecated; renders `deprecated: true` and
+    /// is omitted from the document when `false`.
+    pub deprecated: bool,
+}
+
+/// Where a [`Parameter`] is carried — the OpenAPI `in` field.
+///
+/// Mirrors pyfly's `PathVar` / `QueryParam` / `Header` / `Cookie`
+/// bindings, which it maps onto `in: path|query|header|cookie`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterIn {
+    /// A templated path segment (`/orders/{id}`); always required.
+    Path,
+    /// A `?key=value` query-string parameter.
+    Query,
+    /// An HTTP request header.
+    Header,
+    /// An HTTP cookie.
+    Cookie,
+}
+
+impl ParameterIn {
+    /// The lowercase OpenAPI `in` token (`"path"`, `"query"`, …).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ParameterIn::Path => "path",
+            ParameterIn::Query => "query",
+            ParameterIn::Header => "header",
+            ParameterIn::Cookie => "cookie",
+        }
+    }
+}
+
+/// One OpenAPI operation parameter (the analog of pyfly's per-binding
+/// parameter dict). Path parameters are always required.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Parameter {
+    /// Parameter name (`id`, `page`, `X-Tenant-Id`, …).
+    pub name: String,
+    /// Where the parameter is carried.
+    pub location: ParameterIn,
+    /// Whether the parameter must be supplied (always `true` for `path`).
+    pub required: bool,
+    /// The parameter's JSON schema (defaults to `{"type":"string"}`).
+    pub schema: Value,
+}
+
+impl Parameter {
+    /// Builds a required `in: path` string parameter — the shape derived
+    /// from a `{name}` segment when a route declares no richer schema.
+    pub fn path(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            location: ParameterIn::Path,
+            required: true,
+            schema: json!({"type": "string"}),
+        }
+    }
+
+    /// Renders the parameter as the OpenAPI parameter object.
+    fn to_value(&self) -> Value {
+        json!({
+            "name": self.name,
+            "in": self.location.as_str(),
+            "required": self.required,
+            "schema": self.schema,
+        })
+    }
 }
 
 /// Document is the OpenAPI 3.1 root.
@@ -206,6 +330,11 @@ pub struct Document {
     /// Server list; omitted from JSON when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<Server>,
+    /// Top-level tag declarations (one `{ "name": … }` per controller
+    /// group), in discovery order; omitted from JSON when empty —
+    /// matching pyfly's `spec["tags"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<Tag>,
     /// Path → method → operation map (always serialized, even when empty).
     #[serde(default)]
     pub paths: BTreeMap<String, PathItem>,
@@ -222,6 +351,14 @@ pub type PathItem = BTreeMap<String, Operation>;
 /// Operation is a single endpoint description.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Operation {
+    /// Stable operation identifier (pyfly emits the handler name);
+    /// omitted from JSON when empty.
+    #[serde(
+        rename = "operationId",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub operation_id: String,
     /// One-line summary; omitted from JSON when empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub summary: String,
@@ -231,6 +368,14 @@ pub struct Operation {
     /// Grouping tags; omitted from JSON when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Whether the endpoint is deprecated; omitted from JSON when `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deprecated: bool,
+    /// Path / query / header / cookie parameters; omitted from JSON when
+    /// empty. Each entry is the OpenAPI parameter object produced by
+    /// [`Parameter`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<Value>,
     /// Request body wrapper, when the route declares a request sample.
     #[serde(
         rename = "requestBody",
@@ -290,6 +435,9 @@ pub struct Builder {
     /// Server entries emitted into `servers`.
     pub servers: Vec<Server>,
     routes: Vec<RouteDef>,
+    /// Tag names in discovery order (de-duplicated), emitted into the
+    /// document's top-level `tags` array.
+    tags: Vec<String>,
 }
 
 impl Builder {
@@ -316,8 +464,72 @@ impl Builder {
     #[must_use]
     #[allow(clippy::should_implement_trait)]
     pub fn add(mut self, r: RouteDef) -> Self {
+        for tag in &r.tags {
+            self.track_tag(tag);
+        }
         self.routes.push(r);
         self
+    }
+
+    /// Records a tag name into the top-level `tags` array, preserving
+    /// discovery order and de-duplicating — pyfly's `_collect_tags`.
+    fn track_tag(&mut self, tag: &str) {
+        if !tag.is_empty() && !self.tags.iter().any(|t| t == tag) {
+            self.tags.push(tag.to_string());
+        }
+    }
+
+    /// Builds a [`RouteDef`] from a single [`firefly_container::RouteDescriptor`]
+    /// (a `#[rest_controller]` route) and registers it.
+    ///
+    /// The descriptor's axum path (`/orders/:id`, `/files/*rest`) is
+    /// normalised to the OpenAPI template form (`/orders/{id}`,
+    /// `/files/{rest}`); every templated segment becomes a required
+    /// `in: path` [`Parameter`]; the operation's tag is derived from the
+    /// controller type name and its `operationId` is the handler name.
+    #[must_use]
+    pub fn add_route(self, descriptor: &firefly_container::RouteDescriptor) -> Self {
+        let (path, params) = openapi_path_and_params(descriptor.path);
+        let tag = derive_tag(descriptor.controller);
+        self.add(RouteDef {
+            method: descriptor.method.to_string(),
+            path,
+            operation_id: descriptor.handler.to_string(),
+            tags: if tag.is_empty() {
+                Vec::new()
+            } else {
+                vec![tag]
+            },
+            parameters: params,
+            ..RouteDef::default()
+        })
+    }
+
+    /// Registers every descriptor in `descriptors` via [`Builder::add_route`].
+    ///
+    /// Pass [`firefly_container::routes()`] to build a spec from every
+    /// `#[rest_controller]` route discovered across the crate graph — the
+    /// Rust analog of pyfly's `collect_route_metadata` feeding the
+    /// `OpenAPIGenerator`.
+    #[must_use]
+    pub fn add_route_descriptors<'a, I>(mut self, descriptors: I) -> Self
+    where
+        I: IntoIterator<Item = &'a firefly_container::RouteDescriptor>,
+    {
+        for descriptor in descriptors {
+            self = self.add_route(descriptor);
+        }
+        self
+    }
+
+    /// Alias of [`Builder::add_route_descriptors`] with a name that reads
+    /// at the call site as "build from the live route table".
+    #[must_use]
+    pub fn from_routes<'a, I>(self, descriptors: I) -> Self
+    where
+        I: IntoIterator<Item = &'a firefly_container::RouteDescriptor>,
+    {
+        self.add_route_descriptors(descriptors)
     }
 
     /// Assembles the [`Document`].
@@ -332,11 +544,14 @@ impl Builder {
         let mut paths: BTreeMap<String, PathItem> = BTreeMap::new();
         let mut schemas: BTreeMap<String, Value> = BTreeMap::new();
 
-        for r in &self.routes {
+        for r in &self.merged_routes() {
             let mut op = Operation {
+                operation_id: r.operation_id.clone(),
                 summary: r.summary.clone(),
                 description: r.description.clone(),
                 tags: r.tags.clone(),
+                deprecated: r.deprecated,
+                parameters: r.parameters.iter().map(Parameter::to_value).collect(),
                 request_body: None,
                 responses: BTreeMap::new(),
             };
@@ -403,9 +618,46 @@ impl Builder {
             openapi: "3.1.0".to_string(),
             info: self.info.clone(),
             servers: self.servers.clone(),
+            tags: self
+                .tags
+                .iter()
+                .map(|name| Tag {
+                    name: name.clone(),
+                    ..Tag::default()
+                })
+                .collect(),
             paths,
             components: Components { schemas },
         }
+    }
+
+    /// Folds every registered [`RouteDef`] sharing the same `(method,
+    /// path)` into one, merging field-by-field so an auto-derived route
+    /// (from a `#[rest_controller]` descriptor) and an explicit
+    /// [`Builder::add`] of the same endpoint compose: the later route's
+    /// non-default fields win, the earlier route's fill the gaps. This is
+    /// what lets a user enrich an auto-generated operation with a request
+    /// /response schema or a `deprecated` flag without re-declaring its
+    /// path, method, tag, and parameters.
+    ///
+    /// Insertion order is preserved across distinct endpoints.
+    fn merged_routes(&self) -> Vec<RouteDef> {
+        let mut order: Vec<(String, String)> = Vec::new();
+        let mut merged: BTreeMap<(String, String), RouteDef> = BTreeMap::new();
+        for r in &self.routes {
+            let key = (r.method.to_lowercase(), r.path.clone());
+            match merged.get_mut(&key) {
+                Some(existing) => merge_route(existing, r),
+                None => {
+                    order.push(key.clone());
+                    merged.insert(key, r.clone());
+                }
+            }
+        }
+        order
+            .into_iter()
+            .map(|key| merged.remove(&key).expect("merged route present"))
+            .collect()
     }
 
     /// Renders the built document as the exact bytes the JSON endpoint
@@ -418,9 +670,10 @@ impl Builder {
         body
     }
 
-    /// Returns an [`axum::Router`] serving `GET /openapi.json` (and
-    /// `GET /openapi/ui` — a minimal Swagger-UI HTML page), the Go
-    /// port's `Handler()`.
+    /// Returns an [`axum::Router`] serving `GET /openapi.json`,
+    /// `GET /openapi/ui` (a minimal Swagger-UI HTML page), and
+    /// `GET /redoc` (a ReDoc HTML page) — the Go port's `Handler()`
+    /// extended with pyfly's `/redoc` documentation endpoint.
     ///
     /// The document is rendered once, when the router is created.
     pub fn router(&self) -> Router {
@@ -442,6 +695,15 @@ impl Builder {
                     )
                 }),
             )
+            .route(
+                "/redoc",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                        REDOC_PAGE,
+                    )
+                }),
+            )
     }
 }
 
@@ -455,6 +717,19 @@ const SWAGGER_UI_PAGE: &str = r##"<!doctype html>
 <script>
 window.onload = () => SwaggerUIBundle({ url: "/openapi.json", dom_id: "#swagger-ui" });
 </script></body></html>"##;
+
+/// The ReDoc HTML page served at `/redoc` — the Rust counterpart of
+/// pyfly's `make_redoc_endpoint`, pointing ReDoc at `/openapi.json`.
+const REDOC_PAGE: &str = r##"<!doctype html>
+<html><head><meta charset="utf-8"><title>API · Firefly · ReDoc</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body { margin: 0; padding: 0; }</style></head>
+<body><div id="redoc-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/redoc@2/bundles/redoc.standalone.js"></script>
+<script>
+Redoc.init("/openapi.json", { expandResponses: "200,201" }, document.getElementById("redoc-container"));
+</script>
+<noscript>ReDoc requires JavaScript to render the API documentation.</noscript></body></html>"##;
 
 // ----- Sample-based schema derivation -----
 
@@ -526,6 +801,84 @@ fn object_schema(map: &Map<String, Value>) -> Value {
         out["required"] = json!(required);
     }
     out
+}
+
+/// Merges `incoming` onto `base` field-by-field: every field set on
+/// `incoming` (i.e. not its [`RouteDef::default`] value) overwrites
+/// `base`; unset fields leave `base` untouched. `method` and `path` are
+/// the merge key and are never changed.
+fn merge_route(base: &mut RouteDef, incoming: &RouteDef) {
+    if !incoming.operation_id.is_empty() {
+        base.operation_id = incoming.operation_id.clone();
+    }
+    if !incoming.summary.is_empty() {
+        base.summary = incoming.summary.clone();
+    }
+    if !incoming.description.is_empty() {
+        base.description = incoming.description.clone();
+    }
+    if !incoming.tags.is_empty() {
+        base.tags = incoming.tags.clone();
+    }
+    if !incoming.parameters.is_empty() {
+        base.parameters = incoming.parameters.clone();
+    }
+    if incoming.request.is_some() {
+        base.request = incoming.request.clone();
+    }
+    if incoming.response.is_some() {
+        base.response = incoming.response.clone();
+    }
+    if incoming.status != 0 {
+        base.status = incoming.status;
+    }
+    if incoming.deprecated {
+        base.deprecated = true;
+    }
+}
+
+/// Derives an OpenAPI tag from a controller type name, mirroring pyfly's
+/// `_derive_tag`: a trailing `Controller` or `Api` suffix is stripped
+/// (`OrderApi` → `Order`, `CatalogController` → `Catalog`), and a leading
+/// path qualifier (`crate :: OrderApi`, as a Rust type path renders) is
+/// dropped so only the final segment remains.
+fn derive_tag(controller: &str) -> String {
+    // The macro stringifies `Self`, which may render a path or carry
+    // spaces around `::`; take the final identifier segment.
+    let last = controller.rsplit("::").next().unwrap_or(controller).trim();
+    for suffix in ["Controller", "Api"] {
+        if let Some(stripped) = last.strip_suffix(suffix) {
+            if !stripped.is_empty() {
+                return stripped.to_string();
+            }
+        }
+    }
+    last.to_string()
+}
+
+/// Converts an axum route path to the OpenAPI template form and extracts
+/// its path parameters.
+///
+/// axum captures are `:name` (single segment) and `*name` (catch-all);
+/// both become OpenAPI `{name}` segments and a required `in: path`
+/// [`Parameter`]. Plain segments pass through unchanged.
+fn openapi_path_and_params(path: &str) -> (String, Vec<Parameter>) {
+    let mut params = Vec::new();
+    let mut segments: Vec<String> = Vec::new();
+    for segment in path.split('/') {
+        if let Some(name) = segment
+            .strip_prefix(':')
+            .or_else(|| segment.strip_prefix('*'))
+        {
+            if !name.is_empty() {
+                params.push(Parameter::path(name));
+                segments.push(format!("{{{name}}}"));
+                continue;
+            }
+        }
+        segments.push(segment.to_string());
+    }
+    (segments.join("/"), params)
 }
 
 /// Returns the canonical reason phrase for a status code, or `""` for
@@ -1012,5 +1365,209 @@ mod tests {
         assert_send_sync::<RouteDef>();
         assert_send_sync::<Sample>();
         assert_send_sync::<OpenApiError>();
+        assert_send_sync::<Parameter>();
+        assert_send_sync::<Tag>();
+    }
+
+    // ----- Automatic generation from #[rest_controller] route metadata -----
+
+    use firefly_container::RouteDescriptor;
+
+    const ORDER_ROUTES: &[RouteDescriptor] = &[
+        RouteDescriptor {
+            controller: "OrderApi",
+            method: "POST",
+            path: "/api/v1/orders",
+            handler: "create",
+        },
+        RouteDescriptor {
+            controller: "OrderApi",
+            method: "GET",
+            path: "/api/v1/orders/:id",
+            handler: "fetch",
+        },
+    ];
+
+    #[test]
+    fn derive_tag_strips_controller_and_api_suffixes() {
+        assert_eq!(derive_tag("OrderApi"), "Order");
+        assert_eq!(derive_tag("CatalogController"), "Catalog");
+        assert_eq!(derive_tag("Health"), "Health");
+        // A Rust type path keeps only the final segment.
+        assert_eq!(derive_tag("crate :: api :: OrderApi"), "Order");
+        // A bare `Api`/`Controller` (nothing left after stripping) is kept.
+        assert_eq!(derive_tag("Api"), "Api");
+    }
+
+    #[test]
+    fn openapi_path_converts_axum_captures_and_extracts_params() {
+        let (path, params) = openapi_path_and_params("/api/v1/orders/:id");
+        assert_eq!(path, "/api/v1/orders/{id}");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, "id");
+        assert_eq!(params[0].location, ParameterIn::Path);
+        assert!(params[0].required);
+        assert_eq!(params[0].schema, json!({"type": "string"}));
+
+        // Catch-all `*rest` and multiple captures.
+        let (path, params) = openapi_path_and_params("/files/:bucket/*rest");
+        assert_eq!(path, "/files/{bucket}/{rest}");
+        assert_eq!(
+            params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            vec!["bucket", "rest"]
+        );
+
+        // A path with no captures is unchanged and has no parameters.
+        let (path, params) = openapi_path_and_params("/health");
+        assert_eq!(path, "/health");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn from_routes_builds_operations_tags_and_parameters() {
+        let doc = Builder::new(Info {
+            title: "Orders API".to_string(),
+            version: "1.0.0".to_string(),
+            ..Info::default()
+        })
+        .from_routes(ORDER_ROUTES)
+        .build();
+
+        // POST /api/v1/orders → operationId + tag, no path params.
+        let post = &doc.paths["/api/v1/orders"]["post"];
+        assert_eq!(post.operation_id, "create");
+        assert_eq!(post.tags, vec!["Order".to_string()]);
+        assert!(post.parameters.is_empty());
+        // POST default success status is 201.
+        assert!(post.responses.contains_key("201"));
+
+        // GET /api/v1/orders/{id} → axum :id converted, required path param.
+        let item = doc
+            .paths
+            .get("/api/v1/orders/{id}")
+            .expect("templated path");
+        let get = &item["get"];
+        assert_eq!(get.operation_id, "fetch");
+        assert_eq!(get.tags, vec!["Order".to_string()]);
+        assert_eq!(get.parameters.len(), 1);
+        assert_eq!(get.parameters[0]["name"], "id");
+        assert_eq!(get.parameters[0]["in"], "path");
+        assert_eq!(get.parameters[0]["required"], json!(true));
+        assert!(get.responses.contains_key("200"));
+
+        // Top-level tags array (de-duplicated, discovery order).
+        assert_eq!(
+            doc.tags,
+            vec![Tag {
+                name: "Order".to_string(),
+                ..Tag::default()
+            }]
+        );
+        // Every operation still carries the RFC 7807 default response.
+        assert!(post.responses.contains_key("default"));
+        assert!(get.responses.contains_key("default"));
+    }
+
+    #[test]
+    fn explicit_add_enriches_auto_derived_route_by_merge() {
+        let doc = Builder::new(Info::default())
+            .from_routes(ORDER_ROUTES)
+            // Same method+path as the auto-derived GET: enrich it with a
+            // response schema, a summary, and a deprecated flag without
+            // re-declaring tag / operationId / parameters.
+            .add(RouteDef {
+                method: "GET".to_string(),
+                path: "/api/v1/orders/{id}".to_string(),
+                summary: "Fetch one order".to_string(),
+                response: Some(Sample::named("Order", json!({"id": "o-1"}))),
+                deprecated: true,
+                ..RouteDef::default()
+            })
+            .build();
+
+        let get = &doc.paths["/api/v1/orders/{id}"]["get"];
+        // Auto-derived fields survive the merge.
+        assert_eq!(get.operation_id, "fetch");
+        assert_eq!(get.tags, vec!["Order".to_string()]);
+        assert_eq!(get.parameters.len(), 1);
+        // Explicit fields win.
+        assert_eq!(get.summary, "Fetch one order");
+        assert!(get.deprecated);
+        assert_eq!(
+            get.responses["200"].content.as_ref().unwrap()["application/json"].schema,
+            json!({"$ref": "#/components/schemas/Order"})
+        );
+        assert!(doc.components.schemas.contains_key("Order"));
+        // Exactly one GET operation on the path (merged, not duplicated).
+        assert_eq!(doc.paths["/api/v1/orders/{id}"].len(), 1);
+    }
+
+    #[test]
+    fn deprecated_flag_serializes_and_is_omitted_when_false() {
+        let doc = Builder::new(Info::default())
+            .add(RouteDef {
+                method: "GET".to_string(),
+                path: "/old".to_string(),
+                deprecated: true,
+                ..RouteDef::default()
+            })
+            .add(RouteDef {
+                method: "GET".to_string(),
+                path: "/new".to_string(),
+                ..RouteDef::default()
+            })
+            .build();
+        let value = serde_json::to_value(&doc).unwrap();
+        assert_eq!(value["paths"]["/old"]["get"]["deprecated"], json!(true));
+        // A non-deprecated operation omits the key (Go omitempty parity).
+        assert!(value["paths"]["/new"]["get"].get("deprecated").is_none());
+    }
+
+    #[test]
+    fn auto_generated_wire_shape_matches_pyfly_layout() {
+        let value = serde_json::to_value(
+            Builder::new(Info {
+                title: "Orders API".to_string(),
+                version: "1.0.0".to_string(),
+                ..Info::default()
+            })
+            .from_routes(ORDER_ROUTES)
+            .build(),
+        )
+        .unwrap();
+        // pyfly emits operationId + tags + parameters in the operation.
+        let get = &value["paths"]["/api/v1/orders/{id}"]["get"];
+        assert_eq!(get["operationId"], "fetch");
+        assert_eq!(get["tags"], json!(["Order"]));
+        assert_eq!(
+            get["parameters"],
+            json!([{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}])
+        );
+        // Top-level tags array, like pyfly's spec["tags"].
+        assert_eq!(value["tags"], json!([{"name": "Order"}]));
+    }
+
+    #[tokio::test]
+    async fn handler_serves_redoc() {
+        let (status, ct, body) = get_response(orders_builder().router(), "/redoc").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ct, "text/html; charset=utf-8");
+        assert!(body.starts_with("<!doctype html>"));
+        assert!(body.contains("redoc.standalone.js"));
+        assert!(body.contains(r#"Redoc.init("/openapi.json""#));
+        assert!(body.contains("ReDoc requires JavaScript"));
+    }
+
+    #[test]
+    fn empty_builder_omits_top_level_tags() {
+        // No routes → no tags array (omitempty parity); existing wire
+        // format unchanged.
+        let body = Builder::new(Info {
+            title: "T".to_string(),
+            version: "1".to_string(),
+            ..Info::default()
+        })
+        .json();
+        assert!(!body.contains("\"tags\""));
     }
 }

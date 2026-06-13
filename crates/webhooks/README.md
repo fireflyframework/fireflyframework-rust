@@ -149,9 +149,9 @@ When a store is registered and the event carries the idempotency header
 - a failed `already_processed` lookup is fail-closed (surfaced, no
   dispatch).
 
-Production deployments supply a distributed implementation (pyfly ships
-a Redis adapter); `MemoryEventStore` covers tests and single-instance
-services.
+`MemoryEventStore` covers tests and single-instance services;
+multi-instance deployments use the Redis adapter below for cross-process
+dedupe.
 
 ```rust,ignore
 let pipeline = Arc::new(Pipeline::new(Arc::new(MemoryDlq::new())));
@@ -159,6 +159,40 @@ pipeline.register_validator(StripeValidator::new(b"whsec_test"));
 pipeline.register_event_store(MemoryEventStore::new());
 // Duplicate X-Idempotency-Key deliveries are skipped (202), processed once.
 ```
+
+#### Redis-backed `RedisEventStore` (feature `redis`)
+
+`RedisEventStore` is the Rust port of pyfly's `RedisWebhookEventStore`: a
+distributed, durable idempotency store so a webhook redelivered to a
+**different** instance is still recognised as a duplicate. Each key is a
+TTL-expiring Redis string, so the store self-prunes without a background
+job. Defaults match pyfly exactly — key prefix `webhook:idem:`, TTL
+`86_400`s (24 h) — so keys are wire-compatible against the same Redis
+across the Python and Rust runtimes.
+
+| `EventStore` method | Redis command            |
+|---------------------|--------------------------|
+| `already_processed` | `EXISTS <prefix><key>`   |
+| `remember`          | `SET <prefix><key> "1" EX <ttl>` |
+
+```toml
+# Cargo.toml — opt in (off by default to keep the core crate lean)
+firefly-webhooks = { version = "26.6", features = ["redis"] }
+```
+
+```rust,ignore
+use firefly_webhooks::RedisEventStore;
+
+let store = RedisEventStore::connect("redis://127.0.0.1:6379/0")
+    .await?
+    .with_key_prefix("webhook:idem:") // pyfly default; override as needed
+    .with_ttl_seconds(86_400);        // pyfly default (24 h)
+pipeline.register_event_store_arc(std::sync::Arc::new(store));
+```
+
+Like pyfly, the `already_processed` → `remember` pair is a non-atomic
+check-then-set; serialise it behind a distributed lock if you need strict
+once-exactly semantics.
 
 ### `web`
 

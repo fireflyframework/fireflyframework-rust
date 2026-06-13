@@ -9,6 +9,7 @@ rust-version.workspace = true
 description = "Firefly Framework for Rust — OpenAPI 3.1 generator + Swagger-UI shim"
 
 [dependencies]
+firefly-container = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 axum = { workspace = true }

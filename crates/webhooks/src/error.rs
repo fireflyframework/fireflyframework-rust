@@ -54,6 +54,16 @@ pub enum WebhookError {
     /// implementations to report their own failures.
     #[error("firefly/webhooks: dlq: {0}")]
     Dlq(String),
+
+    /// A backing-store (e.g. Redis) operation failed for an
+    /// [`EventStore`](crate::EventStore) adapter — a lookup or persist
+    /// against the distributed idempotency store could not complete. The
+    /// in-memory [`MemoryEventStore`](crate::MemoryEventStore) is
+    /// infallible and never produces this; the feature-gated
+    /// `RedisEventStore` surfaces its driver errors through it. The
+    /// pipeline treats it fail-closed (dispatch does not happen).
+    #[error("firefly/webhooks: event-store backend: {0}")]
+    Backend(String),
 }
 
 impl WebhookError {

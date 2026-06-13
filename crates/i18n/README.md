@@ -47,6 +47,35 @@ let app: Router = Router::new()
 `b.t("es-MX", "hello", ...)` consults `es-mx` first, then `es`, then the
 fallback locale. Region tags fall back to language tags automatically.
 
+## pyfly parity surface
+
+The crate ports pyfly's `i18n` package so a migrating service finds the
+same pluggable shape:
+
+- **`MessageSource` port** — a pluggable resolution trait
+  (`get_message` / `get_message_or_default`) so consumers depend on an
+  abstraction, not the concrete `Bundle`. A miss is a typed
+  `MessageNotFound` (pyfly's `KeyError`).
+- **Positional `{0}`/`{1}` MessageFormat** — `format_message` and
+  `Bundle::tn` substitute positional arguments with
+  `java.text.MessageFormat` quote semantics (`''` → `'`, single-quoted
+  text is literal), alongside the existing named `{name}` substitution.
+- **File-convention loader** — `Bundle::load_dir(base, locale)` reads the
+  first of `messages_{locale}.yaml` / `.yml` / `.json` under `base` and
+  flattens nested keys with dots (`greeting.hello`).
+- **`LocaleResolver` port** — `FixedLocaleResolver` (always one locale)
+  and `AcceptHeaderLocaleResolver` (highest-quality `Accept-Language` tag,
+  reduced to its language root).
+
+```rust
+use firefly_i18n::{Bundle, MessageSource};
+
+let b = Bundle::new("en");
+b.load_dir("i18n/", "es").unwrap();          // reads messages_es.yaml|yml|json
+let msg = b.get_message("greeting.hello", &["World"], "es").unwrap();
+let or_default = b.get_message_or_default("missing", "Hi {0}", &["World"], "es");
+```
+
 ## Public surface
 
 | Symbol                                       | Purpose                                                            |
@@ -55,12 +84,19 @@ fallback locale. Region tags fall back to language tags automatically.
 | `Bundle::add(locale, key, template)`         | Add one localised message                                          |
 | `Bundle::load(locale, src)`                  | Bulk-add from any `(key, template)` iterator                       |
 | `Bundle::load_json` / `Bundle::load_yaml`    | Bulk-add from a serialized `key → template` map (Rust convenience) |
-| `Bundle::t(locale, key, args)`               | Translate; falls back to `key` literal when no match               |
+| `Bundle::load_dir(base, locale)`             | Load `messages_{locale}.{yaml,yml,json}`, flattening nested keys   |
+| `Bundle::t(locale, key, args)`               | Translate (named `{name}` args); falls back to `key` literal       |
+| `Bundle::tn(locale, key, args)`              | Translate with positional `{0}`/`{1}` MessageFormat args           |
+| `format_message(template, args)`             | Standalone positional MessageFormat formatter (quote-aware)        |
+| `MessageSource`                              | Pluggable resolution port (`get_message` / `…_or_default`)         |
+| `MessageNotFound`                            | Typed miss error (pyfly's `KeyError`)                              |
+| `LocaleResolver`                             | Pluggable locale-resolution port                                   |
+| `FixedLocaleResolver` / `AcceptHeaderLocaleResolver` | Built-in resolvers (fixed locale / Accept-Language root)   |
 | `LocaleLayer::new(&bundle)`                  | Tower layer — sets the request-extension locale per request        |
 | `Locale`                                     | Resolved locale; axum extractor (empty string when absent)         |
 | `with_locale(ext, locale)` / `locale_from`   | Manual extension propagation (Go ctx analogue)                     |
 | `pick_locale(header, fallback)`              | Standalone Accept-Language picker                                  |
-| `I18nError`                                  | `thiserror` enum for `load_json` / `load_yaml` failures            |
+| `I18nError`                                  | `thiserror` enum for `load_json` / `load_yaml` / `load_dir` errors |
 
 ## Testing
 

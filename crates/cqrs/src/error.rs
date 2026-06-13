@@ -98,6 +98,14 @@ pub enum CqrsError {
     /// — the analog of a Go handler returning an arbitrary `error`.
     #[error("{0}")]
     Handler(String),
+
+    /// Publishing a domain event to the EDA broker failed — pyfly's
+    /// `CommandProcessingException` raised by `_try_publish_events` under
+    /// [`EventFailureStrategy::Raise`](crate::EventFailureStrategy::Raise),
+    /// or the wrapped transport error surfaced by
+    /// [`EdaCommandEventPublisher`](crate::EdaCommandEventPublisher).
+    #[error("firefly/cqrs: domain event publish failed: {0}")]
+    EventPublish(String),
 }
 
 impl CqrsError {

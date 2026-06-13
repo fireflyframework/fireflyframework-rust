@@ -23,6 +23,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use firefly_actuator::{HealthComposite, HealthStatus, MetricRegistry};
+use firefly_container::{BeanDescriptor, Container};
 use firefly_cqrs::Bus;
 use firefly_orchestration::{ExecutionPattern, OrchestrationRegistry};
 use firefly_scheduling::Scheduler;
@@ -60,9 +61,20 @@ pub async fn health(health: &HealthComposite) -> (Value, bool) {
     (body, overall == HealthStatus::Down)
 }
 
-/// Renders the `/admin/api/overview` body — app info + health summary
-/// (pyfly's `OverviewProvider`, minus the DI-container bean stats Rust has no
-/// analogue for).
+/// Renders the `/admin/api/overview` body — app info + health summary plus the
+/// `beans` (`{total, stereotypes}`) and `wiring` blocks (pyfly's
+/// `OverviewProvider`).
+///
+/// When a DI [`Container`](firefly_container::Container) is wired into
+/// [`AdminDeps::container`](crate::AdminDeps::container), the bean total and
+/// per-stereotype counts are read from [`Container::bean_stats`]; otherwise
+/// both default to zero/empty (the SPA donut + stat card then render `0`
+/// without erroring). The `wiring` block reports the live collaborator counts
+/// the Rust port can observe — `cqrs_handlers` from the wired
+/// [`Bus`](firefly_cqrs::Bus) and `scheduled` from the wired
+/// [`Scheduler`](firefly_scheduling::Scheduler) — with the remaining pyfly keys
+/// (`event_listeners`, `message_listeners`, `async_methods`, `post_processors`)
+/// reported as `0`.
 pub async fn overview(deps: &AdminDeps) -> Value {
     let (health_body, _down) = health(&deps.health).await;
     json!({
@@ -75,9 +87,51 @@ pub async fn overview(deps: &AdminDeps) -> Value {
             "platform": std::env::consts::OS,
         },
         "health": health_body,
+        "beans": bean_stats(deps.container.as_ref()),
+        "wiring": wiring_counts(deps),
         "views": {
             "total": deps.views.len(),
         },
+    })
+}
+
+/// Renders the overview `beans` block — `{total, stereotypes}` — from the wired
+/// container's [`bean_stats`](firefly_container::Container::bean_stats), or
+/// `{total: 0, stereotypes: {}}` when no container is wired (pyfly's
+/// `OverviewProvider` bean block).
+fn bean_stats(container: Option<&Arc<Container>>) -> Value {
+    match container {
+        None => json!({ "total": 0, "stereotypes": {} }),
+        Some(container) => {
+            let stats = container.bean_stats();
+            json!({ "total": stats.total, "stereotypes": stats.stereotypes })
+        }
+    }
+}
+
+/// Renders the overview `wiring` block — the live collaborator counts the Rust
+/// port can observe (pyfly's `wiring_counts`). `cqrs_handlers` and `scheduled`
+/// reflect the wired [`Bus`] / [`Scheduler`]; the listener/post-processor keys
+/// the Rust runtime has no central registry for are reported as `0` so the SPA
+/// wiring bars render real numbers where available and zeros elsewhere.
+fn wiring_counts(deps: &AdminDeps) -> Value {
+    let cqrs_handlers = deps
+        .bus
+        .as_ref()
+        .map(|b| b.handler_names().len())
+        .unwrap_or(0);
+    let scheduled = deps
+        .scheduler
+        .as_ref()
+        .map(|s| s.tasks().len())
+        .unwrap_or(0);
+    json!({
+        "event_listeners": 0,
+        "message_listeners": 0,
+        "cqrs_handlers": cqrs_handlers,
+        "scheduled": scheduled,
+        "async_methods": 0,
+        "post_processors": 0,
     })
 }
 
@@ -169,6 +223,147 @@ pub fn cqrs(bus: Option<&Arc<Bus>>) -> Value {
         "total": total,
         "pipeline": { "command_bus": bus.is_some(), "query_bus": bus.is_some() },
     })
+}
+
+/// Maps one [`BeanDescriptor`] to the JSON row shape pyfly's
+/// `BeansProvider.get_beans` produces.
+///
+/// The Rust container exposes name/type/scope/stereotype/primary plus
+/// initialized + resolution-count; the type-hint-derived fields pyfly fills by
+/// runtime reflection (`dependencies`, `conditions`, `category`, `order`,
+/// `profile`, `creation_time_ms`, `created_at`) have no zero-cost Rust analogue
+/// and are reported with empty/`null` defaults so the SPA renders without
+/// erroring. `category` falls back to `"component"` when no stereotype label is
+/// recorded, matching pyfly's `_infer_category` default.
+fn bean_to_json(bean: &BeanDescriptor) -> Value {
+    let stereotype = bean
+        .stereotype
+        .clone()
+        .unwrap_or_else(|| "none".to_string());
+    let category = bean
+        .stereotype
+        .clone()
+        .unwrap_or_else(|| "component".to_string());
+    json!({
+        "name": bean.name,
+        "type": bean.type_name,
+        "scope": bean.scope,
+        "stereotype": stereotype,
+        "category": category,
+        "primary": bean.primary,
+        "order": Value::Null,
+        "profile": Value::Null,
+        "conditions": [],
+        "dependencies": [],
+        "initialized": bean.initialized,
+        "creation_time_ms": Value::Null,
+        "resolution_count": bean.resolution_count,
+        "created_at": Value::Null,
+    })
+}
+
+/// Renders the `/admin/api/beans` body (pyfly's `BeansProvider.get_beans`) —
+/// `{beans: [...], total: N}`, every registered bean sorted by
+/// `(stereotype, name)`. A missing container yields an empty listing.
+pub fn beans(container: Option<&Arc<Container>>) -> Value {
+    let mut rows: Vec<(String, String, Value)> = container
+        .map(|c| {
+            c.beans()
+                .iter()
+                .map(|b| {
+                    let stereotype = b.stereotype.clone().unwrap_or_else(|| "none".to_string());
+                    (stereotype, b.name.clone(), bean_to_json(b))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let beans: Vec<Value> = rows.into_iter().map(|(_, _, v)| v).collect();
+    let total = beans.len();
+    json!({ "beans": beans, "total": total })
+}
+
+/// Renders the `/admin/api/beans/{name}` body (pyfly's
+/// `BeansProvider.get_bean_detail`) — the bean row enriched with the
+/// detail-only fields the SPA's detail panel reads, or `None` when no bean
+/// matches `name` (the route returns `404`).
+///
+/// `module` is derived from the Rust type path (everything before the final
+/// `::`); reflection-only fields (`file`/`doc`/`dependency_chain`/
+/// `post_construct`/`pre_destroy`/`autowired_fields`/`bean_method_origin`)
+/// carry empty/`null` defaults.
+pub fn bean_detail(container: Option<&Arc<Container>>, name: &str) -> Option<Value> {
+    let container = container?;
+    let bean = container.beans().into_iter().find(|b| b.name == name)?;
+    let module = bean
+        .type_name
+        .rsplit_once("::")
+        .map(|(prefix, _)| prefix.to_string())
+        .unwrap_or_default();
+    let mut detail = bean_to_json(&bean);
+    let obj = detail.as_object_mut().expect("bean row is an object");
+    obj.insert("module".into(), json!(module));
+    obj.insert("file".into(), Value::Null);
+    obj.insert("doc".into(), json!(""));
+    obj.insert("dependency_chain".into(), json!([]));
+    obj.insert("bean_method_origin".into(), Value::Null);
+    obj.insert("post_construct".into(), json!([]));
+    obj.insert("pre_destroy".into(), json!([]));
+    obj.insert("autowired_fields".into(), json!([]));
+    Some(detail)
+}
+
+/// Renders the `/admin/api/beans/graph` body (pyfly's
+/// `BeansProvider.get_bean_graph`) — `{nodes, edges}`. Each registered bean
+/// becomes a node; edges (constructor/autowired dependencies) require
+/// type-hint reflection the Rust container does not retain, so the edge list is
+/// empty (best-effort nodes-only graph, per the gap report). A missing
+/// container yields an empty graph.
+pub fn bean_graph(container: Option<&Arc<Container>>) -> Value {
+    let nodes: Vec<Value> = container
+        .map(|c| {
+            c.beans()
+                .iter()
+                .map(|b| {
+                    let stereotype = b.stereotype.clone().unwrap_or_else(|| "none".to_string());
+                    let category = b
+                        .stereotype
+                        .clone()
+                        .unwrap_or_else(|| "component".to_string());
+                    json!({
+                        "id": b.name,
+                        "name": b.name,
+                        "type": b.type_name,
+                        "stereotype": stereotype,
+                        "category": category,
+                        "scope": b.scope,
+                        "initialized": b.initialized,
+                        "order": Value::Null,
+                        "resolution_count": b.resolution_count,
+                        "creation_time_ms": Value::Null,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({ "nodes": nodes, "edges": [] })
+}
+
+/// A snapshot of every bean's current `resolution_count`, keyed by bean name —
+/// the per-tick sample the `/admin/api/sse/beans` stream diffs against its last
+/// snapshot (pyfly's `beans_stream` `last_counts`). An absent container yields
+/// an empty map.
+pub fn bean_resolution_counts(
+    container: Option<&Arc<Container>>,
+) -> std::collections::BTreeMap<String, u64> {
+    container
+        .map(|c| {
+            c.beans()
+                .into_iter()
+                .map(|b| (b.name, b.resolution_count))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Renders the `/admin/api/transactions` body (pyfly's `TransactionsProvider`)
@@ -383,6 +578,99 @@ mod tests {
         let body = cqrs(None);
         assert_eq!(body["total"], 0);
         assert_eq!(body["pipeline"]["command_bus"], false);
+    }
+
+    #[test]
+    fn beans_empty_without_container() {
+        let body = beans(None);
+        assert_eq!(body["total"], 0);
+        assert!(body["beans"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bean_detail_none_without_container() {
+        assert!(bean_detail(None, "anything").is_none());
+    }
+
+    #[test]
+    fn bean_graph_empty_without_container() {
+        let body = bean_graph(None);
+        assert!(body["nodes"].as_array().unwrap().is_empty());
+        assert!(body["edges"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bean_resolution_counts_empty_without_container() {
+        assert!(bean_resolution_counts(None).is_empty());
+    }
+
+    #[test]
+    fn beans_lists_registered_container_beans() {
+        let container = std::sync::Arc::new(firefly_container::Container::new());
+        container.register_instance(42_i32);
+        container.register_instance("hello".to_string());
+        // Force a resolution so the count is observable.
+        let _ = container.resolve::<i32>();
+
+        let body = beans(Some(&container));
+        assert_eq!(body["total"], 2);
+        let rows = body["beans"].as_array().unwrap();
+        // Sorted by (stereotype, name); both are hand-registered (stereotype
+        // "none"), so the listing is alphabetical by type name.
+        assert!(rows.iter().any(|r| r["type"] == "i32"));
+        assert!(rows.iter().any(|r| r["type"] == "alloc::string::String"));
+        let int_row = rows.iter().find(|r| r["type"] == "i32").unwrap();
+        assert_eq!(int_row["stereotype"], "none");
+        assert_eq!(int_row["category"], "component");
+        assert!(int_row["resolution_count"].as_u64().unwrap() >= 1);
+        assert_eq!(int_row["initialized"], true);
+    }
+
+    #[test]
+    fn bean_detail_found_carries_module_and_detail_fields() {
+        let container = std::sync::Arc::new(firefly_container::Container::new());
+        container.register_instance("hello".to_string());
+        let detail = bean_detail(Some(&container), "alloc::string::String").unwrap();
+        assert_eq!(detail["type"], "alloc::string::String");
+        assert_eq!(detail["module"], "alloc::string");
+        assert!(detail["dependency_chain"].is_array());
+        assert!(detail["post_construct"].is_array());
+        assert!(detail["autowired_fields"].is_array());
+    }
+
+    #[test]
+    fn bean_graph_renders_nodes_only() {
+        let container = std::sync::Arc::new(firefly_container::Container::new());
+        container.register_instance(7_i32);
+        let body = bean_graph(Some(&container));
+        assert_eq!(body["nodes"].as_array().unwrap().len(), 1);
+        assert!(body["edges"].as_array().unwrap().is_empty());
+        assert_eq!(body["nodes"][0]["id"], "i32");
+    }
+
+    #[tokio::test]
+    async fn overview_carries_beans_and_wiring_blocks() {
+        let deps = minimal_deps();
+        let body = overview(&deps).await;
+        // No container wired ⇒ zero beans, empty stereotypes.
+        assert_eq!(body["beans"]["total"], 0);
+        assert!(body["beans"]["stereotypes"].is_object());
+        // Wiring block is always present with the pyfly keys.
+        assert_eq!(body["wiring"]["cqrs_handlers"], 0);
+        assert_eq!(body["wiring"]["scheduled"], 0);
+        assert_eq!(body["wiring"]["event_listeners"], 0);
+    }
+
+    #[tokio::test]
+    async fn overview_beans_total_from_container() {
+        let container = std::sync::Arc::new(firefly_container::Container::new());
+        container.register_instance(1_u8);
+        let deps = AdminDeps {
+            container: Some(container),
+            ..minimal_deps()
+        };
+        let body = overview(&deps).await;
+        assert_eq!(body["beans"]["total"], 1);
     }
 
     #[test]

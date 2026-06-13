@@ -10,6 +10,7 @@ description = "Firefly Framework for Rust — Opt-in TypeId-keyed DI container: 
 
 [dependencies]
 thiserror = { workspace = true }
+inventory = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

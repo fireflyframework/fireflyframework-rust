@@ -22,21 +22,47 @@
 //! attempts, exponential backoff, jitter, per-attempt timeout) — pyfly's
 //! `ParticipantInvoker` / `StepInvoker`.
 
+use crate::observability::{NoOpOrchestrationEvents, OrchestrationEvents};
 use crate::step_context::StepContext;
 use crate::step_invoker::invoke_with_policy;
-use crate::{boxed_action, ActionFn, BoxError, RetryPolicy};
+use crate::{boxed_action, ActionFn, BoxError, ExecutionPattern, RetryPolicy, TccPhase};
 use std::fmt;
 use std::future::Future;
+use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
+
+/// A context-aware TCC action: receives the run's [`StepContext`] so the try
+/// phase can publish its result and confirm / cancel can read it — the engine
+/// spelling of pyfly's `@FromTry` argument injection.
+type CtxActionFn = Box<
+    dyn Fn(StepContext) -> futures::future::BoxFuture<'static, Result<(), BoxError>> + Send + Sync,
+>;
+
+/// A participant phase body — either a legacy zero-arg action or a
+/// context-aware one (`@FromTry` data passing).
+enum Phase {
+    Plain(ActionFn),
+    WithContext(CtxActionFn),
+}
+
+impl Phase {
+    fn call(&self, ctx: &StepContext) -> futures::future::BoxFuture<'static, Result<(), BoxError>> {
+        match self {
+            Phase::Plain(action) => action(),
+            Phase::WithContext(action) => action(ctx.clone()),
+        }
+    }
+}
 
 /// A Try-Confirm-Cancel participant. Try reserves the resource. Confirm
 /// finalises the reservation; Cancel rolls it back. Confirm and Cancel must
 /// be idempotent.
 pub struct TccParticipant {
     name: String,
-    try_action: ActionFn,
-    confirm_action: ActionFn,
-    cancel_action: Option<ActionFn>,
+    try_action: Phase,
+    confirm_action: Phase,
+    cancel_action: Option<Phase>,
     retry: RetryPolicy,
 }
 
@@ -56,8 +82,57 @@ impl TccParticipant {
     {
         Self {
             name: name.into(),
-            try_action: boxed_action(try_action),
-            confirm_action: boxed_action(confirm_action),
+            try_action: Phase::Plain(boxed_action(try_action)),
+            confirm_action: Phase::Plain(boxed_action(confirm_action)),
+            cancel_action: None,
+            retry: RetryPolicy::default(),
+        }
+    }
+
+    /// Creates a participant whose try and confirm bodies receive the run's
+    /// [`StepContext`] — the engine spelling of pyfly's `@FromTry` argument
+    /// injection. The try body can publish its outcome with
+    /// [`StepContext::set_result`](crate::StepContext::set_result) and the
+    /// confirm body can read it, so the value the try phase produced flows
+    /// into confirm (and, via [`TccParticipant::with_context_cancel`], into
+    /// cancel).
+    ///
+    /// ```
+    /// use firefly_orchestration::{StepContext, Tcc, TccParticipant};
+    /// use serde_json::json;
+    ///
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let tcc = Tcc::new("reserve").participant(TccParticipant::with_context(
+    ///     "stock",
+    ///     // try: reserve and record a reservation id.
+    ///     |ctx| async move {
+    ///         ctx.set_result("stock", json!({"reservation_id": "R-7"}));
+    ///         Ok(())
+    ///     },
+    ///     // confirm: consume the try phase's result (@FromTry).
+    ///     |ctx| async move {
+    ///         assert_eq!(ctx.result_field("stock", "reservation_id").unwrap(), json!("R-7"));
+    ///         Ok(())
+    ///     },
+    /// ));
+    /// tcc.run().await.expect("confirms");
+    /// # });
+    /// ```
+    pub fn with_context<TF, TFut, CF, CFut>(
+        name: impl Into<String>,
+        try_action: TF,
+        confirm_action: CF,
+    ) -> Self
+    where
+        TF: Fn(StepContext) -> TFut + Send + Sync + 'static,
+        TFut: Future<Output = Result<(), BoxError>> + Send + 'static,
+        CF: Fn(StepContext) -> CFut + Send + Sync + 'static,
+        CFut: Future<Output = Result<(), BoxError>> + Send + 'static,
+    {
+        Self {
+            name: name.into(),
+            try_action: Phase::WithContext(Box::new(move |ctx| Box::pin(try_action(ctx)))),
+            confirm_action: Phase::WithContext(Box::new(move |ctx| Box::pin(confirm_action(ctx)))),
             cancel_action: None,
             retry: RetryPolicy::default(),
         }
@@ -70,7 +145,21 @@ impl TccParticipant {
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
     {
-        self.cancel_action = Some(boxed_action(cancel_action));
+        self.cancel_action = Some(Phase::Plain(boxed_action(cancel_action)));
+        self
+    }
+
+    /// Attaches a context-aware cancel action that can read the try phase's
+    /// result from the [`StepContext`] — pyfly's `@FromTry` in a cancel
+    /// method.
+    pub fn with_context_cancel<F, Fut>(mut self, cancel_action: F) -> Self
+    where
+        F: Fn(StepContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), BoxError>> + Send + 'static,
+    {
+        self.cancel_action = Some(Phase::WithContext(Box::new(move |ctx| {
+            Box::pin(cancel_action(ctx))
+        })));
         self
     }
 
@@ -205,53 +294,223 @@ impl Tcc {
     /// Each try and confirm phase is invoked under the participant's
     /// [`RetryPolicy`](crate::RetryPolicy) ([`TccParticipant::with_retry`]).
     pub async fn run(&self) -> Result<(), TccError> {
-        let ctx = StepContext::new();
+        self.run_inner(&StepContext::new(), &NoOpOrchestrationEvents)
+            .await
+    }
+
+    /// Executes the TCC threading `ctx` through every participant so confirm
+    /// / cancel can read the value the try phase published — pyfly's
+    /// `@FromTry` data passing ([`TccParticipant::with_context`]).
+    pub async fn run_with_context(&self, ctx: &StepContext) -> Result<(), TccError> {
+        self.run_inner(ctx, &NoOpOrchestrationEvents).await
+    }
+
+    /// Executes the TCC firing TCC-phase lifecycle hooks on `listener` —
+    /// pyfly's `OrchestrationEvents` wiring (`on_start`, `on_phase_started` /
+    /// `on_phase_completed` / `on_phase_failed`, per-participant
+    /// `on_participant_*`, and `on_completed`). Behaviour is otherwise
+    /// identical to [`Tcc::run`].
+    pub async fn run_with_listener(
+        &self,
+        listener: Arc<dyn OrchestrationEvents>,
+    ) -> Result<(), TccError> {
+        self.run_inner(&StepContext::new(), listener.as_ref()).await
+    }
+
+    /// Executes the TCC with an explicit [`StepContext`] and lifecycle
+    /// `listener` — the most general TCC run.
+    pub async fn run_with_context_and_listener(
+        &self,
+        ctx: &StepContext,
+        listener: &dyn OrchestrationEvents,
+    ) -> Result<(), TccError> {
+        self.run_inner(ctx, listener).await
+    }
+
+    async fn run_inner(
+        &self,
+        ctx: &StepContext,
+        listener: &dyn OrchestrationEvents,
+    ) -> Result<(), TccError> {
+        let cid = ctx.correlation_id();
+        let started_at = Instant::now();
+        listener
+            .on_start(&self.name, ExecutionPattern::Tcc, &cid)
+            .await;
+
+        // ── Try phase ───────────────────────────────────────────────────
+        listener
+            .on_phase_started(&self.name, &cid, TccPhase::Try)
+            .await;
+        let try_start = Instant::now();
         let mut tried: Vec<usize> = Vec::with_capacity(self.participants.len());
         for (i, participant) in self.participants.iter().enumerate() {
+            listener
+                .on_participant_started(&self.name, &cid, TccPhase::Try, &participant.name)
+                .await;
             let try_result =
-                invoke_with_policy(&participant.name, &participant.retry, &ctx, |_ctx| {
-                    (participant.try_action)()
+                invoke_with_policy(&participant.name, &participant.retry, ctx, |ctx| {
+                    participant.try_action.call(ctx)
                 })
                 .await;
             if let Err(invoke_err) = try_result {
-                self.cancel_tried(&tried).await;
+                let source = unwrap_invoke_cause(&participant.retry, invoke_err);
+                let message = source.to_string();
+                listener
+                    .on_participant_failed(
+                        &self.name,
+                        &cid,
+                        TccPhase::Try,
+                        &participant.name,
+                        &message,
+                    )
+                    .await;
+                listener
+                    .on_phase_failed(&self.name, &cid, TccPhase::Try, &message)
+                    .await;
+                self.cancel_tried(ctx, &tried, listener, &cid).await;
+                listener
+                    .on_completed(
+                        &self.name,
+                        ExecutionPattern::Tcc,
+                        &cid,
+                        false,
+                        started_at.elapsed().as_secs_f64() * 1000.0,
+                    )
+                    .await;
                 return Err(TccError::Try {
                     tcc: self.name.clone(),
                     participant: participant.name.clone(),
-                    source: unwrap_invoke_cause(&participant.retry, invoke_err),
+                    source,
                 });
             }
+            listener
+                .on_participant_success(&self.name, &cid, TccPhase::Try, &participant.name)
+                .await;
             tried.push(i);
         }
+        listener
+            .on_phase_completed(
+                &self.name,
+                &cid,
+                TccPhase::Try,
+                try_start.elapsed().as_secs_f64() * 1000.0,
+            )
+            .await;
 
+        // ── Confirm phase ────────────────────────────────────────────────
+        listener
+            .on_phase_started(&self.name, &cid, TccPhase::Confirm)
+            .await;
+        let confirm_start = Instant::now();
         let mut failures: Vec<ConfirmError> = Vec::new();
         for &i in &tried {
             let participant = &self.participants[i];
+            listener
+                .on_participant_started(&self.name, &cid, TccPhase::Confirm, &participant.name)
+                .await;
             let confirm_result =
-                invoke_with_policy(&participant.name, &participant.retry, &ctx, |_ctx| {
-                    (participant.confirm_action)()
+                invoke_with_policy(&participant.name, &participant.retry, ctx, |ctx| {
+                    participant.confirm_action.call(ctx)
                 })
                 .await;
             if let Err(invoke_err) = confirm_result {
+                let source = unwrap_invoke_cause(&participant.retry, invoke_err);
+                listener
+                    .on_participant_failed(
+                        &self.name,
+                        &cid,
+                        TccPhase::Confirm,
+                        &participant.name,
+                        &source.to_string(),
+                    )
+                    .await;
                 failures.push(ConfirmError {
                     participant: participant.name.clone(),
-                    source: unwrap_invoke_cause(&participant.retry, invoke_err),
+                    source,
                 });
+            } else {
+                listener
+                    .on_participant_success(&self.name, &cid, TccPhase::Confirm, &participant.name)
+                    .await;
             }
         }
+        let confirm_ms = confirm_start.elapsed().as_secs_f64() * 1000.0;
         if failures.is_empty() {
+            listener
+                .on_phase_completed(&self.name, &cid, TccPhase::Confirm, confirm_ms)
+                .await;
+            listener
+                .on_completed(
+                    &self.name,
+                    ExecutionPattern::Tcc,
+                    &cid,
+                    true,
+                    started_at.elapsed().as_secs_f64() * 1000.0,
+                )
+                .await;
             Ok(())
         } else {
+            let joined_msg = joined(&failures);
+            listener
+                .on_phase_failed(&self.name, &cid, TccPhase::Confirm, &joined_msg)
+                .await;
+            listener
+                .on_completed(
+                    &self.name,
+                    ExecutionPattern::Tcc,
+                    &cid,
+                    false,
+                    started_at.elapsed().as_secs_f64() * 1000.0,
+                )
+                .await;
             Err(TccError::Confirm(failures))
         }
     }
 
     /// Cancels the tried participants in reverse order, ignoring cancel
     /// errors and participants without a cancel action.
-    async fn cancel_tried(&self, tried: &[usize]) {
+    async fn cancel_tried(
+        &self,
+        ctx: &StepContext,
+        tried: &[usize],
+        listener: &dyn OrchestrationEvents,
+        cid: &str,
+    ) {
+        if !tried.is_empty() {
+            listener
+                .on_phase_started(&self.name, cid, TccPhase::Cancel)
+                .await;
+        }
         for &i in tried.iter().rev() {
-            if let Some(cancel) = &self.participants[i].cancel_action {
-                let _ = cancel().await;
+            let participant = &self.participants[i];
+            if let Some(cancel) = &participant.cancel_action {
+                listener
+                    .on_participant_started(&self.name, cid, TccPhase::Cancel, &participant.name)
+                    .await;
+                match cancel.call(ctx).await {
+                    Ok(()) => {
+                        listener
+                            .on_participant_success(
+                                &self.name,
+                                cid,
+                                TccPhase::Cancel,
+                                &participant.name,
+                            )
+                            .await;
+                    }
+                    Err(err) => {
+                        listener
+                            .on_participant_failed(
+                                &self.name,
+                                cid,
+                                TccPhase::Cancel,
+                                &participant.name,
+                                &err.to_string(),
+                            )
+                            .await;
+                    }
+                }
             }
         }
     }
