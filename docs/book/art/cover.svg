@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="750" height="925" viewBox="0 0 750 925"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="300" y2="925" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#16110c"/>
+      <stop offset="0.55" stop-color="#1f160d"/>
+      <stop offset="1" stop-color="#0f0b07"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="375" cy="314" r="310" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f6a821" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#d4793a" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#d4793a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="gear" x1="-92" y1="-92" x2="92" y2="92" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffbf3f"/>
+      <stop offset="1" stop-color="#d4793a"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <rect width="750" height="925" fill="url(#bg)"/>
+
+  <!-- faint hex texture -->
+  <g opacity="0.05" fill="none" stroke="#f6a821" stroke-width="0.7">
+    <g id="hx"><polygon points="0,-26 22.5,-13 22.5,13 0,26 -22.5,13 -22.5,-13"/></g>
+    <use xlink:href="#hx" x="60" y="60"/><use xlink:href="#hx" x="150" y="60"/>
+    <use xlink:href="#hx" x="240" y="60"/><use xlink:href="#hx" x="330" y="60"/>
+    <use xlink:href="#hx" x="420" y="60"/><use xlink:href="#hx" x="510" y="60"/>
+    <use xlink:href="#hx" x="600" y="60"/><use xlink:href="#hx" x="690" y="60"/>
+    <use xlink:href="#hx" x="105" y="100"/><use xlink:href="#hx" x="195" y="100"/>
+    <use xlink:href="#hx" x="285" y="100"/><use xlink:href="#hx" x="375" y="100"/>
+    <use xlink:href="#hx" x="465" y="100"/><use xlink:href="#hx" x="555" y="100"/>
+    <use xlink:href="#hx" x="645" y="100"/>
+    <use xlink:href="#hx" x="60" y="140"/><use xlink:href="#hx" x="150" y="140"/>
+    <use xlink:href="#hx" x="240" y="140"/><use xlink:href="#hx" x="330" y="140"/>
+    <use xlink:href="#hx" x="420" y="140"/><use xlink:href="#hx" x="510" y="140"/>
+    <use xlink:href="#hx" x="600" y="140"/><use xlink:href="#hx" x="690" y="140"/>
+  </g>
+
+  <!-- glow behind the emblem -->
+  <rect width="750" height="925" fill="url(#glow)"/>
+
+  <!-- publisher -->
+  <text x="375" y="78" text-anchor="middle" fill="#a8917a" font-size="14"
+        font-weight="500" letter-spacing="6">FIREFLY SOFTWARE FOUNDATION</text>
+
+  <!-- ===== emblem: a Rust gear cradling a firefly + an event mesh ===== -->
+  <g transform="translate(375,300)">
+    <!-- event mesh: nodes around the gear, amber pulses on the spokes -->
+    <g fill="none" stroke="#6b4a1f" stroke-width="1.4" opacity="0.7">
+      <path d="M0,0 L-150,-78"/><path d="M0,0 L150,-70"/>
+      <path d="M0,0 L168,40"/><path d="M0,0 L-168,46"/>
+      <path d="M0,0 L-96,128"/><path d="M0,0 L104,124"/>
+    </g>
+    <g fill="#f6a821">
+      <circle cx="-75" cy="-39" r="4.2" opacity="0.9"/>
+      <circle cx="75" cy="-35" r="4.2" opacity="0.9"/>
+      <circle cx="84" cy="20" r="3.6" opacity="0.7"/>
+      <circle cx="-84" cy="23" r="3.6" opacity="0.7"/>
+      <circle cx="-48" cy="64" r="3.2" opacity="0.6"/>
+      <circle cx="52" cy="62" r="3.2" opacity="0.6"/>
+    </g>
+    <!-- satellite hex nodes -->
+    <g font-size="13" font-weight="700" fill="#e9d4b0" text-anchor="middle">
+      <g transform="translate(-150,-78)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">CQRS</text></g>
+      <g transform="translate(150,-70)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">EVT</text></g>
+      <g transform="translate(168,40)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">SAGA</text></g>
+      <g transform="translate(-168,46)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">HTTP</text></g>
+      <g transform="translate(-96,128)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">DATA</text></g>
+      <g transform="translate(104,124)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">MSG</text></g>
+    </g>
+
+    <!-- the gear (Rust motif) -->
+    <g>
+      <circle r="92" fill="none" stroke="#f6a821" stroke-width="1.5" opacity="0.35"/>
+      <g fill="url(#gear)">
+        <!-- 12 gear teeth -->
+        <g id="tooth"><rect x="-9" y="-86" width="18" height="20" rx="3"/></g>
+        <use xlink:href="#tooth" transform="rotate(0)"/>
+        <use xlink:href="#tooth" transform="rotate(30)"/>
+        <use xlink:href="#tooth" transform="rotate(60)"/>
+        <use xlink:href="#tooth" transform="rotate(90)"/>
+        <use xlink:href="#tooth" transform="rotate(120)"/>
+        <use xlink:href="#tooth" transform="rotate(150)"/>
+        <use xlink:href="#tooth" transform="rotate(180)"/>
+        <use xlink:href="#tooth" transform="rotate(210)"/>
+        <use xlink:href="#tooth" transform="rotate(240)"/>
+        <use xlink:href="#tooth" transform="rotate(270)"/>
+        <use xlink:href="#tooth" transform="rotate(300)"/>
+        <use xlink:href="#tooth" transform="rotate(330)"/>
+      </g>
+      <circle r="74" fill="url(#gear)"/>
+      <circle r="60" fill="#16110c"/>
+    </g>
+
+    <!-- firefly in the hub: body + glowing tail -->
+    <g>
+      <ellipse cx="0" cy="20" rx="26" ry="26" fill="#ffbf3f" opacity="0.28"/>
+      <ellipse cx="0" cy="20" rx="20" ry="20" fill="#ffbf3f" opacity="0.6"/>
+      <ellipse cx="0" cy="-8" rx="12" ry="17" fill="#2a1d10" stroke="#f6a821" stroke-width="2"/>
+      <ellipse cx="0" cy="18" rx="13" ry="16" fill="#ffbf3f"/>
+      <ellipse cx="0" cy="18" rx="6.5" ry="9" fill="#fff2cf"/>
+      <!-- wings -->
+      <path d="M-3,-12 C-34,-30 -44,-6 -16,2 Z" fill="#e8a06a" opacity="0.55"/>
+      <path d="M3,-12 C34,-30 44,-6 16,2 Z" fill="#e8a06a" opacity="0.55"/>
+      <!-- antennae -->
+      <path d="M-4,-22 C-12,-34 -18,-36 -22,-40" fill="none" stroke="#f6a821" stroke-width="2" stroke-linecap="round"/>
+      <path d="M4,-22 C12,-34 18,-36 22,-40" fill="none" stroke="#f6a821" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- ===== amber + rust divider rules ===== -->
+  <rect x="60" y="500" width="630" height="4" rx="2" fill="#f6a821"/>
+  <rect x="60" y="510" width="630" height="1.4" rx="1" fill="#d4793a" opacity="0.5"/>
+
+  <!-- ===== title block ===== -->
+  <text x="60" y="600" fill="#fffdf8" font-size="92" font-weight="800" letter-spacing="-3">Firefly</text>
+  <text x="63" y="660" fill="#f6a821" font-size="46" font-weight="600" letter-spacing="-1">for Rust</text>
+  <text x="65" y="708" fill="#d4793a" font-size="40" font-weight="600">by Example</text>
+
+  <!-- thin amber rule under the title -->
+  <rect x="63" y="726" width="360" height="2.5" rx="1.25" fill="#f6a821" opacity="0.55"/>
+
+  <!-- subtitle -->
+  <text x="63" y="770" fill="#c9b59c" font-size="21" font-weight="400">Event-Driven Rust Microservices</text>
+  <text x="63" y="798" fill="#c9b59c" font-size="21" font-weight="400">with the Firefly Framework</text>
+
+  <!-- footer wordmark -->
+  <g transform="translate(60,858)">
+    <circle cx="9" cy="0" r="9" fill="#f6a821"/>
+    <circle cx="9" cy="0" r="4" fill="#16110c"/>
+    <text x="28" y="6" fill="#a8917a" font-size="18" font-weight="700" letter-spacing="1">FIREFLY</text>
+    <text x="120" y="6" fill="#6b5b48" font-size="18" font-weight="400" letter-spacing="1">· tokio + axum · Rust 1.85+</text>
+  </g>
+</svg>

@@ -1,0 +1,23 @@
+/* Design tokens for "Firefly for Rust by Example".
+   Firefly brand: warm amber/gold on dark; Rust-orange accents for the
+   language-specific touches. Loaded first; book.css + print.css build on it. */
+:root{
+  /* amber / gold — the firefly glow */
+  --amber:#f6a821; --amber-bright:#ffbf3f; --amber-soft:#ffd87a; --amber-deep:#c97e10;
+  /* rust-orange — the language accent */
+  --rust:#d4793a; --rust-deep:#b5531f; --rust-soft:#e8a06a;
+  /* ink / paper */
+  --ink:#1b1714; --ink-soft:#3a322c; --muted:#8a7f74; --page:#fffdf8;
+  --ink-deep:#120f0c;
+  /* headings sit in a warm near-black */
+  --head:#2a211a; --head-soft:#43352a;
+  /* code surfaces */
+  --code-bg:#fbf7ef; --code-border:#ece1cf; --code-ink:#2b2620;
+  --rule:#ece3d6;
+  /* callouts */
+  --note:#2563c9; --note-bg:#eef4ff;
+  --tip:#1f8a4c; --tip-bg:#ecf9f0;
+  --warn:#c2410c; --warn-bg:#fff3ec;
+  --spring:#43b02a; --spring-bg:#f2faea; --spring-deep:#2c8a1c;
+  --reactor:#7c3aed; --reactor-bg:#f5f0ff; --reactor-deep:#5b21b6;
+}

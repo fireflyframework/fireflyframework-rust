@@ -1,0 +1,165 @@
+/* book.css — shared structural + typographic styling for both the PDF and the
+   EPUB editions of "Firefly for Rust by Example".
+   tokens.css + pygments.css are loaded alongside this file by the build (the
+   EPUB links all three stylesheets; the PDF passes them to WeasyPrint), so no
+   @import is needed here — and @import breaks strict EPUB validation. */
+
+/* ============ base ============ */
+html{ -webkit-text-size-adjust:100%; }
+body{
+  color:var(--ink); background:var(--page);
+  font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+  font-size:1rem; line-height:1.66; margin:0;
+  text-rendering:optimizeLegibility; -webkit-font-smoothing:antialiased;
+}
+.chapter{ padding:0 0 2.5rem; }
+
+/* ============ headings (warm sans for contrast against serif body) ============ */
+h1,h2,h3,h4{ color:var(--head); line-height:1.2; font-weight:700;
+  font-family:"Avenir Next",Avenir,"Helvetica Neue",Helvetica,Arial,sans-serif; }
+.eyebrow{ display:block; color:var(--rust-deep); font-weight:800; letter-spacing:.18em;
+  font-size:.72rem; text-transform:uppercase; margin-bottom:.4rem; }
+
+/* chapter opener: a number badge + the title, set off by an amber rule */
+.ch-head{ margin:0 0 1.4rem; }
+.ch-num{ display:block; font-family:"Avenir Next",Avenir,Helvetica,Arial,sans-serif;
+  color:var(--rust-deep); font-weight:800; letter-spacing:.2em; font-size:.78rem;
+  text-transform:uppercase; margin-bottom:.5rem; }
+h1.chtitle{ font-size:2.25rem; line-height:1.06; margin:.1rem 0 .9rem; color:var(--head);
+  letter-spacing:-.015em; font-weight:800; }
+h1.chtitle::after{ content:""; display:block; width:3.2rem; height:4px; border-radius:2px;
+  margin-top:.85rem; background:linear-gradient(90deg,var(--amber),var(--rust)); }
+
+/* chapter opener illustration */
+.ch-opener{ margin:0 0 1.6rem; text-align:center; }
+.ch-opener svg{ width:100%; max-width:520px; height:auto; }
+
+h2{ font-size:1.38rem; font-weight:800; color:var(--head); margin:1.9rem 0 .65rem;
+  padding-bottom:.32rem; border-bottom:2px solid var(--rule); }
+h3{ font-size:1.08rem; font-weight:700; margin:1.3rem 0 .4rem; color:var(--head-soft); }
+h4{ font-size:.98rem; font-weight:700; margin:1.1rem 0 .35rem; color:var(--head-soft); }
+h2+p,h3+p{ margin-top:0; }
+
+/* ============ text ============ */
+p{ margin:0 0 .85rem; }
+strong,b{ color:var(--head); font-weight:700; }
+em{ color:inherit; }
+a{ color:var(--rust-deep); text-decoration:underline; text-decoration-color:var(--amber-soft);
+  text-underline-offset:2px; }
+ul,ol{ margin:.3rem 0 1rem; padding-left:1.45rem; }
+li{ margin:.26rem 0; }
+li::marker{ color:var(--amber-deep); }
+hr{ border:none; border-top:1px solid var(--rule); margin:1.7rem 0; }
+blockquote{ margin:1.1rem 0; padding:.2rem 0 .2rem 1rem; border-left:3px solid var(--amber);
+  color:var(--ink-soft); font-style:italic; }
+
+/* inline code */
+code{ background:#f3ecdf; color:var(--rust-deep); padding:.05em .34em; border-radius:4px;
+  font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace; font-size:.84em;
+  word-break:break-word; }
+
+/* ============ code listings ============ */
+.listing{ margin:1.15rem 0; }
+.filetab{ display:inline-block; background:#f3ead9; color:var(--rust-deep);
+  font:700 .7rem/1 "SF Mono","JetBrains Mono",Menlo,monospace;
+  padding:.42rem .7rem; border:1px solid var(--code-border); border-bottom:none;
+  border-radius:8px 8px 0 0; letter-spacing:.02em; }
+pre.code, pre{
+  margin:0; background:var(--code-bg); border:1px solid var(--code-border);
+  border-radius:0 8px 8px 8px; padding:.8rem 1rem;
+  font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  font-size:.76rem; line-height:1.6; color:var(--code-ink);
+  white-space:pre-wrap; overflow-wrap:anywhere; word-break:normal; tab-size:4;
+}
+.filetab + pre.code{ border-top-left-radius:0; }
+pre code{ background:none; color:inherit; padding:0; border-radius:0; font-size:1em; }
+.lcap{ font-size:.75rem; color:var(--muted); margin-top:.42rem; font-style:italic; }
+
+/* ============ figures ============ */
+figure.fig{ margin:1.4rem auto; text-align:center; }
+figure.fig svg{ max-width:100%; height:auto; }
+figure.fig img.fig-img{ max-width:260px; height:auto; }
+figcaption{ font-size:.77rem; color:var(--muted); margin-top:.5rem; line-height:1.45; }
+figcaption b,figcaption strong{ color:var(--rust-deep); }
+
+/* ============ tables ============ */
+table{ width:100%; border-collapse:collapse; margin:1.1rem 0; font-size:.88rem; line-height:1.45; }
+th,td{ border:1px solid var(--code-border); padding:.48rem .7rem; text-align:left; vertical-align:top; }
+thead th{ background:#fbf0da; color:var(--rust-deep); font-weight:700;
+  font-family:"Avenir Next",Avenir,Helvetica,Arial,sans-serif; }
+tbody tr:nth-child(even){ background:#fdfaf2; }
+td code,th code{ background:#f3ecdf; }
+
+/* ============ callouts ============ */
+.admonition{ border-radius:10px; padding:.78rem 1rem; margin:1.15rem 0; font-size:.9rem;
+  line-height:1.55; border:1px solid var(--rule); border-left-width:4px; background:#faf6ee; }
+.admonition>:last-child{ margin-bottom:0; }
+.admonition>:first-child{ margin-top:0; }
+.admonition-title{ font-weight:800; font-size:.69rem; letter-spacing:.08em; text-transform:uppercase;
+  margin:0 0 .32rem; display:flex; align-items:center; gap:.42rem;
+  font-family:"Avenir Next",Avenir,Helvetica,Arial,sans-serif; }
+.adm-ico{ flex:none; width:15px; height:15px; }
+.admonition.note{ background:var(--note-bg); border-color:#cfe0fb; border-left-color:var(--note); }
+.admonition.note>.admonition-title{ color:var(--note); }
+.admonition.tip{ background:var(--tip-bg); border-color:#cdeccd; border-left-color:var(--tip); }
+.admonition.tip>.admonition-title{ color:var(--tip); }
+.admonition.warning{ background:var(--warn-bg); border-color:#fcd9c2; border-left-color:var(--warn); }
+.admonition.warning>.admonition-title{ color:var(--warn); }
+.admonition.spring{ background:var(--spring-bg); border-color:#d4e9bd; border-left-color:var(--spring); }
+.admonition.spring>.admonition-title{ color:var(--spring-deep); }
+.admonition.reactor{ background:var(--reactor-bg); border-color:#ddd0fb; border-left-color:var(--reactor); }
+.admonition.reactor>.admonition-title{ color:var(--reactor-deep); }
+
+/* ============ recap / exercises (applied to the section H2) ============ */
+h2.recap,h2.exercises{ color:var(--rust-deep); border-bottom-color:var(--amber-soft);
+  display:flex; align-items:center; gap:.5rem; }
+h2.recap::before{ content:"\2713"; color:var(--amber-deep); font-size:1.05rem; }
+h2.exercises::before{ content:"\270E"; color:var(--amber-deep); font-size:1.05rem; }
+
+/* ============ Table of Contents ============ */
+.toc{ padding:0 0 2.5rem; }
+.toc h1.chtitle{ margin-bottom:1.4rem; }
+.toc h1.chtitle::after{ display:none; }
+.toc-part-group{ margin:1.4rem 0 .4rem; }
+.toc-part-title{
+  font-size:1.16rem; font-weight:800; color:var(--rust-deep);
+  margin:1.5rem 0 .5rem; padding:0; border:none; letter-spacing:-.005em;
+  font-family:"Avenir Next",Avenir,Helvetica,Arial,sans-serif;
+}
+.toc-part-eyebrow{ color:var(--amber-deep); font-weight:800; letter-spacing:.12em;
+  font-size:.74rem; text-transform:uppercase; margin-right:.5rem; }
+ol.toc-chapters{ list-style:none; margin:0; padding:0; }
+ol.toc-chapters > li{ margin:.16rem 0; }
+.toc-link{ display:block; color:var(--ink); text-decoration:none; font-size:.96rem; line-height:1.7; }
+.toc-link:hover{ color:var(--rust-deep); }
+
+/* ============ EPUB nav (part-grouped) ============ */
+nav#toc ol{ list-style:none; padding-left:1rem; }
+nav#toc > ol{ padding-left:0; }
+nav#toc li{ margin:.2rem 0; }
+nav#toc li.toc-part > a,
+nav#toc li.toc-part{ color:var(--rust-deep); font-weight:800; text-decoration:none;
+  font-family:"Avenir Next",Avenir,Helvetica,Arial,sans-serif; }
+nav#toc li.toc-part > ol{ margin-top:.2rem; }
+nav#toc li.toc-part > ol a{ font-weight:400; color:var(--ink); }
+
+/* ============ Part-divider page ============ */
+.part-divider{ padding:0; }
+.part-divider-inner{ text-align:center; }
+.part-eyebrow{
+  display:block; color:var(--amber-deep); font-weight:800; letter-spacing:.24em;
+  font-size:1rem; text-transform:uppercase; margin-bottom:.8rem;
+  font-family:"Avenir Next",Avenir,Helvetica,Arial,sans-serif;
+}
+.part-title{
+  font-size:2.8rem; line-height:1.1; font-weight:800; color:var(--head);
+  letter-spacing:-.02em; margin:0; border:none; padding:0;
+  font-family:"Avenir Next",Avenir,Helvetica,Arial,sans-serif;
+}
+.part-title::after{ content:""; display:block; width:4rem; height:5px; border-radius:3px;
+  margin:1.1rem auto 0; background:linear-gradient(90deg,var(--amber),var(--rust)); }
+.part-divider svg.part-glyph{ width:120px; height:auto; margin:0 auto 1.6rem; display:block; }
+
+/* ============ Front-matter title page ============ */
+.frontmatter h1.chtitle{ font-size:2.6rem; }
+.frontmatter h3{ color:var(--rust-deep); font-weight:600; }

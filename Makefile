@@ -32,9 +32,9 @@ help:
 	@echo "Docs:"
 	@echo "  book        build the mdBook documentation site (docs/book)"
 	@echo "  book-serve  serve the book locally with live reload"
-	@echo "  book-pdf    render the book to docs/book/dist/*.pdf  (pandoc + tectonic)"
-	@echo "  book-epub   render the book to docs/book/dist/*.epub (pandoc)"
-	@echo "  book-dist   render both the PDF and the EPUB"
+	@echo "  book-pdf    render the designed book to docs/book/dist/*.pdf  (WeasyPrint)"
+	@echo "  book-epub   render the designed book to docs/book/dist/*.epub (EPUB3)"
+	@echo "  book-dist   render both the designed PDF and the EPUB"
 
 # ---- Integration test infrastructure -------------------------------------
 # Host ports (chosen to avoid collisions with other local services):
@@ -81,8 +81,10 @@ book:
 book-serve:
 	mdbook serve docs/book --open
 
-# Polished PDF/EPUB editions rendered from the mdBook chapters via
-# pandoc + tectonic. Artifacts land in docs/book/dist/ and are committed.
+# Designed PDF/EPUB editions rendered from the src/ chapters by the WeasyPrint
+# pipeline (docs/book/build/build.py, driven by docs/book/book.yaml: cover,
+# part dividers, chapter openers, callouts, syntax-highlighted listings).
+# Artifacts land in docs/book/dist/ and are committed.
 book-pdf:
 	bash docs/book/build-book.sh --pdf
 
