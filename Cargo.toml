@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/firefly",
+    "crates/macros",
     "crates/reactive",
     "crates/kernel",
     "crates/utils",
@@ -67,6 +69,10 @@ members = [
     "crates/eda-redis",
     "crates/cache-postgres",
     "crates/starter-web",
+    "crates/data-sqlx",
+    "crates/data-mongodb",
+    "crates/session-redis",
+    "crates/session-postgres",
     "tests/integration",
     "samples/orders",
     "samples/reactive-banking",
@@ -148,6 +154,12 @@ firefly-eda-postgres = { path = "crates/eda-postgres", version = "26.6.2" }
 firefly-eda-redis = { path = "crates/eda-redis", version = "26.6.2" }
 firefly-cache-postgres = { path = "crates/cache-postgres", version = "26.6.2" }
 firefly-starter-web = { path = "crates/starter-web", version = "26.6.2" }
+firefly = { path = "crates/firefly", version = "26.6.2" }
+firefly-macros = { path = "crates/macros", version = "26.6.2" }
+firefly-data-sqlx = { path = "crates/data-sqlx", version = "26.6.2" }
+firefly-data-mongodb = { path = "crates/data-mongodb", version = "26.6.2" }
+firefly-session-redis = { path = "crates/session-redis", version = "26.6.2" }
+firefly-session-postgres = { path = "crates/session-postgres", version = "26.6.2" }
 
 # ---- async runtime + web ----
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "net", "fs"] }
@@ -188,6 +200,8 @@ rand = "0.8"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "streams", "aio"] }
 lapin = "2"
 tokio-postgres = "0.7"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "mysql", "sqlite", "macros", "chrono", "uuid", "json"] }
+mongodb = "3"
 rdkafka = { version = "0.36", features = ["cmake-build", "tokio"] }
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 tonic = "0.12"
@@ -196,8 +210,15 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 socket2 = "0.5"
 
+# ---- proc-macro toolchain (firefly-macros) ----
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+darling = "0.20"
+
 # ---- cli / templating / misc parity ----
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 minijinja = "2"
 quick-xml = { version = "0.36", features = ["serialize"] }
 globset = "0.4"
