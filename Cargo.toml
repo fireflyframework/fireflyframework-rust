@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/firefly",
     "crates/macros",
+    "crates/starter-experience",
     "crates/reactive",
     "crates/kernel",
     "crates/utils",
@@ -77,6 +78,7 @@ members = [
     "samples/orders",
     "samples/reactive-banking",
     "samples/macro-quickstart",
+    "samples/lumen",
 ]
 
 [workspace.package]
@@ -161,6 +163,7 @@ firefly-data-sqlx = { path = "crates/data-sqlx", version = "26.6.3" }
 firefly-data-mongodb = { path = "crates/data-mongodb", version = "26.6.3" }
 firefly-session-redis = { path = "crates/session-redis", version = "26.6.3" }
 firefly-session-postgres = { path = "crates/session-postgres", version = "26.6.3" }
+firefly-starter-experience = { path = "crates/starter-experience", version = "26.6.3" }
 
 # ---- async runtime + web ----
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "net", "fs"] }
@@ -216,6 +219,7 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 darling = "0.20"
+inventory = "0.3"
 
 # ---- cli / templating / misc parity ----
 clap = { version = "4", features = ["derive"] }

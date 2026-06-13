@@ -2355,6 +2355,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "firefly-sample-lumen"
+version = "26.6.3"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "firefly",
+ "http-body-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
+ "uuid",
+]
+
+[[package]]
 name = "firefly-sample-macro-quickstart"
 version = "26.6.3"
 dependencies = [
@@ -2610,6 +2627,25 @@ dependencies = [
  "futures",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "firefly-starter-experience"
+version = "26.6.3"
+dependencies = [
+ "async-trait",
+ "axum",
+ "firefly-cache",
+ "firefly-client",
+ "firefly-orchestration",
+ "firefly-starter-core",
+ "firefly-starter-web",
+ "firefly-web",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
 ]
 
 [[package]]
