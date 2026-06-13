@@ -17,11 +17,19 @@
 //! `firefly-testkit` collects the helpers every `#[cfg(test)]` module in
 //! every Firefly service ends up needing:
 //!
-//! | Group        | Helper                                                              |
-//! |--------------|---------------------------------------------------------------------|
-//! | HMAC signers | [`sign_hmac`] / [`sign_stripe`] / [`sign_github`] / [`sign_twilio`] |
-//! | Event spy    | [`SpyBroker::record`], [`SpyBroker::find_by_type`], [`SpyBroker::reset`], [`SpyBroker::len`] |
-//! | JSON         | [`must_encode`] / [`must_decode`]                                   |
+//! | Group            | Helper                                                              | Feature     |
+//! |------------------|---------------------------------------------------------------------|-------------|
+//! | HMAC signers     | [`sign_hmac`] / [`sign_stripe`] / [`sign_github`] / [`sign_twilio`] | *(default)* |
+//! | Event spy        | [`SpyBroker::record`], [`SpyBroker::find_by_type`], [`SpyBroker::reset`], [`SpyBroker::len`] | *(default)* |
+//! | Event assertions | [`assert_event_published`] / [`assert_event_published_with`] / [`assert_no_events_published`] | *(default)* |
+//! | JSON             | [`must_encode`] / [`must_decode`]                                   | *(default)* |
+//! | HTTP test client | [`TestClient`] / [`TestResponse`] (in-process over an axum `Router`) | `web`       |
+//! | DI test slices   | [`Slice`] / [`BuiltSlice`] (subset + `Arc` overrides, eager resolve) | `container` |
+//!
+//! The default surface carries no heavy dependencies; the richer
+//! migration-ergonomics helpers (the analogs of pyfly's `PyFlyTestClient` and
+//! `slice_context`/`mock_bean`) are opt-in behind the `web` and `container`
+//! features so a service that only needs the signers gets a lean build.
 //!
 //! Every signer matches the wire shape of its corresponding `webhooks`
 //! validator — drop them into a test handler and a real Stripe / GitHub /
@@ -30,7 +38,7 @@
 //! # Quick start
 //!
 //! ```
-//! use firefly_testkit::{must_encode, sign_stripe, SpyBroker};
+//! use firefly_testkit::{assert_event_published, must_encode, sign_stripe, SpyBroker};
 //!
 //! // Sign a webhook body exactly like Stripe would.
 //! let sig = sign_stripe(b"whsec_test", br#"{"type":"charge.succeeded"}"#, 1_700_000_000);
@@ -40,16 +48,34 @@
 //! let spy = SpyBroker::new();
 //! let body = must_encode(&serde_json::json!({ "id": 1 }));
 //! spy.record("orders", "OrderPlaced", &body);
-//! assert_eq!(spy.find_by_type("OrderPlaced").len(), 1);
+//! let event = assert_event_published(&spy, "OrderPlaced");
+//! assert_eq!(event.topic, "orders");
 //! ```
 
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+mod assertions;
 mod broker;
 mod json;
 mod signers;
 
+#[cfg(feature = "web")]
+mod client;
+#[cfg(feature = "container")]
+mod slice;
+
+pub use assertions::{
+    assert_event_published, assert_event_published_with, assert_no_events_published,
+};
 pub use broker::{RecordedEvent, SpyBroker};
 pub use json::{must_decode, must_encode};
 pub use signers::{sign_github, sign_hmac, sign_stripe, sign_twilio};
+
+#[cfg(feature = "web")]
+pub use client::{TestClient, TestResponse};
+#[cfg(feature = "container")]
+pub use slice::{BuiltSlice, Slice};
 
 /// Framework version stamp.
 pub const VERSION: &str = "26.6.2";

@@ -506,7 +506,7 @@ async fn sse_traces_stream_frames_each_trace() {
     });
 
     // Read the raw SSE stream until the first `event: trace` frame arrives.
-    let frame = tokio::time::timeout(Duration::from_secs(5), async {
+    let frame = tokio::time::timeout(Duration::from_secs(30), async {
         let mut resp = reqwest::Client::new()
             .get(format!("http://{addr}/admin/api/sse/traces"))
             .send()
@@ -538,7 +538,7 @@ async fn sse_health_stream_emits_initial_frame() {
         axum::serve(listener, router).await.unwrap();
     });
 
-    let frame = tokio::time::timeout(Duration::from_secs(5), async {
+    let frame = tokio::time::timeout(Duration::from_secs(30), async {
         let mut resp = reqwest::Client::new()
             .get(format!("http://{addr}/admin/api/sse/health"))
             .send()

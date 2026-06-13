@@ -504,10 +504,18 @@ fn value_schema(v: &Value) -> Value {
 /// Builds an inline object schema: every present key becomes a property
 /// and every non-null key is required (the sample-value analogue of
 /// Go's "no `omitempty`" rule).
+///
+/// Keys are emitted in **sorted order** to match Go's `encoding/json`
+/// map encoding byte-for-byte. We iterate via a `BTreeMap` rather than
+/// the input `Map` (and rather than relying on `serde_json::Map`'s
+/// iteration order) so the output is deterministic regardless of whether
+/// the `serde_json/preserve_order` feature is active anywhere in the
+/// workspace dependency graph.
 fn object_schema(map: &Map<String, Value>) -> Value {
+    let sorted: BTreeMap<&String, &Value> = map.iter().collect();
     let mut props = Map::new();
     let mut required: Vec<String> = Vec::new();
-    for (key, val) in map {
+    for (key, val) in sorted {
         props.insert(key.clone(), value_schema(val));
         if !val.is_null() {
             required.push(key.clone());

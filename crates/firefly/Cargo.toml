@@ -6,9 +6,17 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Firefly Framework for Rust — facade crate — prelude + re-exports of the whole framework + macros"
+description = "Firefly Framework for Rust — the one-dependency facade: prelude + re-exports of the whole framework + macros"
+readme = "README.md"
+keywords = ["firefly", "framework", "facade", "prelude", "cqrs"]
+categories = ["web-programming", "asynchronous", "rust-patterns"]
 
 [dependencies]
+# ---- always-on: macros + the lean port/runtime crates -----------------
+# These are the framework's pure/port crates (no heavy third-party drivers),
+# so a default `firefly` dependency stays lean. The `__rt` module re-exports
+# each one under its crate name; this path is the stable CONTRACT that
+# `firefly-macros`-generated code references.
 firefly-macros = { workspace = true }
 firefly-kernel = { workspace = true }
 firefly-reactive = { workspace = true }
@@ -31,6 +39,63 @@ firefly-starter-core = { workspace = true }
 firefly-starter-web = { workspace = true }
 firefly-client = { workspace = true }
 
+# ---- optional: heavy adapter crates, gated behind cargo features ------
+# A minimal `firefly` dep pulls NONE of these. Turn them on with the
+# matching feature (e.g. `firefly = { version = "...", features = ["data-sqlx"] }`).
+firefly-data-sqlx = { workspace = true, optional = true }
+firefly-data-mongodb = { workspace = true, optional = true }
+firefly-eda-kafka = { workspace = true, optional = true }
+firefly-eda-rabbitmq = { workspace = true, optional = true }
+firefly-eda-redis = { workspace = true, optional = true }
+firefly-eda-postgres = { workspace = true, optional = true }
+firefly-cache-redis = { workspace = true, optional = true }
+firefly-cache-postgres = { workspace = true, optional = true }
+firefly-admin = { workspace = true, optional = true }
+
+[features]
+# The default profile is a sensible web-service set: the lean port crates are
+# always compiled in (they are non-optional deps above), so `default` only
+# needs to leave the heavy adapter features OFF. This keeps a default
+# `firefly` build fast and dependency-light while still giving the full
+# in-process web/CQRS/scheduling/orchestration surface.
+default = []
+
+# ---- relational + document persistence adapters ----------------------
+data-sqlx = ["dep:firefly-data-sqlx"]
+data-mongodb = ["dep:firefly-data-mongodb"]
+
+# ---- event-driven transport adapters ---------------------------------
+eda-kafka = ["dep:firefly-eda-kafka"]
+eda-rabbitmq = ["dep:firefly-eda-rabbitmq"]
+eda-redis = ["dep:firefly-eda-redis"]
+eda-postgres = ["dep:firefly-eda-postgres"]
+
+# ---- cache backends --------------------------------------------------
+cache-redis = ["dep:firefly-cache-redis"]
+cache-postgres = ["dep:firefly-cache-postgres"]
+
+# ---- admin / back-office surface -------------------------------------
+admin = ["dep:firefly-admin"]
+
+# ---- convenience aggregate features ----------------------------------
+# `full` turns on every optional adapter — handy for examples and for the
+# workspace's own `--all-features` verification, never for a lean service.
+full = [
+    "data-sqlx",
+    "data-mongodb",
+    "eda-kafka",
+    "eda-rabbitmq",
+    "eda-redis",
+    "eda-postgres",
+    "cache-redis",
+    "cache-postgres",
+    "admin",
+]
+
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

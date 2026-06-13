@@ -158,6 +158,152 @@ parenthesised parameterised SQL fragment via `to_sql` (no leading
 spec in memory against any `serde`-serialisable entity (supporting `eq`,
 `ne`, `<`/`<=`/`>`/`>=`, `like`/`ilike`, `in`, `isnil`).
 
+### Dialects & document lowering
+
+`firefly-data` is a **technology-agnostic PORT crate**: the `Filter` /
+`Specification` tree is the single source of truth, and it lowers to
+**three** backends — relational SQL (any vendor), an in-memory matcher,
+*and* a MongoDB-style document filter. Relational and document adapters
+plug in on top of these without re-walking or re-implementing the tree.
+
+#### `SqlDialect` — one tree, every relational vendor
+
+```rust,ignore
+pub trait SqlDialect {
+    fn placeholder(&self, n: usize) -> String;                       // "$1" | "?"
+    fn quote_ident(&self, id: &str) -> String;                       // "id"  | `id`
+    fn render_in(&self, field: &str, start: usize, n_args: usize) -> String; // = ANY($n) | IN (?,…)
+    fn ilike(&self, field_q: &str, ph: &str) -> String;              // ILIKE | LOWER(..) LIKE LOWER(..)
+    // + in_arg_count() / expands_in_list() — how many arg slots IN consumes
+}
+
+// zero-sized vendor impls
+pub struct PostgresDialect;   pub struct MySqlDialect;   pub struct SqliteDialect;
+
+impl Filter {
+    pub fn to_sql(&self) -> (String, Vec<Value>);                    // Postgres default
+    pub fn to_sql_with(&self, d: &dyn SqlDialect) -> (String, Vec<Value>);
+}
+impl Specification {
+    pub fn to_sql(&self) -> (String, Vec<Value>);                    // Postgres default
+    pub fn to_sql_with(&self, d: &dyn SqlDialect) -> (String, Vec<Value>);
+}
+```
+
+The DSL no longer hard-codes PostgreSQL syntax. The four vendor-specific
+rendering decisions live behind the `SqlDialect` trait:
+
+| concern | `PostgresDialect` | `MySqlDialect` | `SqliteDialect` |
+|---|---|---|---|
+| placeholder | `$1`, `$2`, … | `?` | `?` |
+| identifier quote | `"ident"` | `` `ident` `` | `"ident"` |
+| `IN` list | `= ANY($n)` (one array param) | `IN (?, ?, …)` | `IN (?, ?, …)` |
+| case-insensitive `LIKE` | `field ILIKE $n` | `LOWER(field) LIKE LOWER(?)` | `LOWER(field) LIKE LOWER(?)` |
+
+`to_sql()` / `Specification::to_sql()` are **unchanged** — they are
+exactly `to_sql_with(&PostgresDialect)`, so existing callers and tests
+keep working. A relational adapter (e.g. `firefly-data-sqlx`) just picks
+the dialect at runtime from the backend kind and calls `to_sql_with`.
+
+The returned **args vector always matches the placeholders the dialect
+emitted**: Postgres binds an `IN` list as one array argument, while
+MySQL/SQLite flatten it into one scalar argument per element, and the
+placeholder numbering after an `IN` advances accordingly.
+
+```rust
+use firefly_data::{Filter, MySqlDialect, Op, Predicate, PostgresDialect, SqliteDialect};
+use serde_json::json;
+
+let f = Filter::new()
+    .add(Predicate::new("role", Op::In, json!(["a", "b"])))
+    .where_eq("active", true);
+
+// Postgres: array param, `active` is $2
+assert_eq!(
+    f.to_sql_with(&PostgresDialect),
+    (r#" WHERE "role" = ANY($1) AND "active" = $2"#.to_string(),
+     vec![json!(["a", "b"]), json!(true)]),
+);
+// MySQL: expanded IN, args flattened
+assert_eq!(
+    f.to_sql_with(&MySqlDialect),
+    (" WHERE `role` IN (?, ?) AND `active` = ?".to_string(),
+     vec![json!("a"), json!("b"), json!(true)]),
+);
+// SQLite: like MySQL but ANSI-quoted
+assert_eq!(f.to_sql_with(&SqliteDialect).0, r#" WHERE "role" IN (?, ?) AND "active" = ?"#);
+```
+
+#### Document lowering — `to_mongo()`
+
+```rust,ignore
+impl Filter        { pub fn to_mongo(&self) -> Value;  pub fn mongo_sort(&self) -> Value; }
+impl Specification { pub fn to_mongo(&self) -> Value; }
+impl ParsedQuery   { pub fn to_mongo(&self, args: &[Value]) -> Result<Value, QueryBindError>;
+                     pub fn mongo_sort(&self) -> Value; }
+```
+
+`to_mongo()` lowers the **same** tree to a MongoDB `$`-operator filter
+document, so a document adapter (e.g. `firefly-data-mongodb`) reuses the
+`Specification` tree instead of re-walking it — mirroring pyfly's
+`MongoSpecification` / `MongoQueryMethodCompiler`:
+
+| spec node / op | Mongo |
+|---|---|
+| `eq` | `{field: {"$eq": v}}` |
+| `ne` | `{field: {"$ne": v}}` |
+| `gt` / `lt` / `gte` / `lte` | `{field: {"$gt": v}}` … |
+| `like` / `ilike` | `{field: {"$regex": …}}` (`%`→`.*`, `_`→`.`; `ilike` adds `"$options":"i"`) |
+| `in` | `{field: {"$in": v}}` |
+| `isnil` | `{field: {"$eq": null}}` |
+| `And([..])` | `{"$and": [..]}` |
+| `Or([..])` | `{"$or": [..]}` |
+| `Not(x)` | `{"$nor": [x]}` |
+| `All` | `{}` (matches everything) |
+
+```rust
+use firefly_data::Specification;
+use serde_json::json;
+
+let spec = (Specification::eq("role", "admin") & Specification::eq("active", true))
+    | Specification::eq("name", "Diana");
+
+assert_eq!(
+    spec.to_mongo(),
+    json!({ "$or": [
+        { "$and": [ { "role": { "$eq": "admin" } }, { "active": { "$eq": true } } ] },
+        { "name": { "$eq": "Diana" } },
+    ] }),
+);
+```
+
+Sorting / paging are not part of the filter document (a Mongo cursor
+applies those separately); `Filter::mongo_sort()` /
+`ParsedQuery::mongo_sort()` return the cursor sort spec
+(`{field: 1 | -1}`).
+
+#### `UserProvider` — implicit current-user for auditing adapters
+
+```rust,ignore
+pub type UserProvider = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+impl Auditor {
+    pub fn with_user_provider(provider: UserProvider) -> Self;
+    pub fn with_provider_and_clock(provider: UserProvider, clock) -> Self;
+    pub fn current_user(&self) -> Option<String>;
+    pub fn stamp_insert(&self, stamps: &mut AuditStamps); // resolves user from provider
+    pub fn stamp_update(&self, stamps: &mut AuditStamps);
+}
+```
+
+An adapter holds a `UserProvider` (wired from the request-context /
+security crate) and an `Auditor`/`SoftDeletePolicy`, then auto-applies
+them on every write/read path without the caller threading the user
+through each call — the Rust analogue of pyfly's implicit
+`RequestContext.current()` user lookup. The explicit
+`on_insert(stamps, Some("alice"))` / `apply(filter)` helpers are
+unchanged; the provider form is purely additive.
+
 ### `AuditStamps` + `Auditor`
 
 ```rust,ignore

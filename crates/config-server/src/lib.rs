@@ -128,15 +128,19 @@ pub enum ConfigServerError {
 /// One logical source of properties (file, profile, db row).
 ///
 /// Serializes with the exact Spring Cloud Config field names
-/// (`name`, `source`). The `source` map uses `serde_json`'s default
-/// `BTreeMap`-backed [`serde_json::Map`], so keys encode in sorted
-/// order — byte-for-byte identical to Go's sorted map encoding.
+/// (`name`, `source`). The `source` map is a
+/// [`BTreeMap`](std::collections::BTreeMap), which always serializes its
+/// keys in sorted order — byte-for-byte identical to Go's sorted map
+/// encoding. A `BTreeMap` (rather than [`serde_json::Map`]) is used
+/// deliberately so the sorted-key wire contract holds regardless of
+/// whether the `serde_json/preserve_order` feature is enabled anywhere
+/// in the workspace dependency graph (e.g. via `bson`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PropertySource {
     /// Source identifier, e.g. `"default"` or a file path.
     pub name: String,
-    /// Flat `property → value` map.
-    pub source: serde_json::Map<String, serde_json::Value>,
+    /// Flat `property → value` map, encoded with sorted keys.
+    pub source: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// The wire-shape returned by `/{application}/{profile}`.

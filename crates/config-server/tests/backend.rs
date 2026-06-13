@@ -423,7 +423,11 @@ async fn server_returns_property_sources() {
     assert_eq!(env.profiles, vec!["prod".to_string()]);
     assert_eq!(
         env.property_sources[0].source,
+        // `PropertySource::source` is a `BTreeMap` (sorted-key wire
+        // contract); compare against the same key/value set.
         props(&[("a", serde_json::json!("b"))])
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
     );
     assert_eq!(env.property_sources[0].name, "orders-prod");
 }

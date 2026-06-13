@@ -437,6 +437,40 @@ impl ParsedQuery {
         Ok(filter)
     }
 
+    /// Lowers this parsed query, with bound `args`, into a MongoDB
+    /// `$`-operator filter document — the document-store execution path,
+    /// the analogue of [`ParsedQuery::to_filter`] for SQL.
+    ///
+    /// It builds the [`Specification`] via
+    /// [`ParsedQuery::to_specification`] and lowers that with
+    /// [`Specification::to_mongo`], so the parsed-query → Mongo lowering
+    /// goes through the **same** spec tree as the SQL and in-memory
+    /// paths (the spec is the single source of truth), matching pyfly's
+    /// `MongoQueryMethodCompiler`. The order-by clauses are *not* part of
+    /// the filter document — use [`ParsedQuery::mongo_sort`] for the
+    /// cursor sort spec.
+    ///
+    /// Returns [`QueryBindError::ArgumentCount`] when the supplied
+    /// argument count does not match [`ParsedQuery::arg_count`].
+    pub fn to_mongo(&self, args: &[Value]) -> Result<Value, QueryBindError> {
+        Ok(self.to_specification(args)?.to_mongo())
+    }
+
+    /// The MongoDB sort spec for this query's order-by clauses, as an
+    /// ordered document `{field: 1 | -1, …}` (`1` ascending, `-1`
+    /// descending) — what a Mongo adapter passes to the cursor's `sort`.
+    pub fn mongo_sort(&self) -> Value {
+        let mut map = serde_json::Map::new();
+        for o in &self.order_clauses {
+            let dir = match o.direction {
+                Direction::Asc => 1,
+                Direction::Desc => -1,
+            };
+            map.insert(o.field.clone(), Value::from(dir));
+        }
+        Value::Object(map)
+    }
+
     /// The order-by clauses lowered to the filter DSL's [`Sort`].
     pub fn sort_clauses(&self) -> Vec<Sort> {
         self.order_clauses
@@ -1038,6 +1072,98 @@ mod tests {
     fn test_arg_count_zero_for_null_tests() {
         let parsed = parser().parse("find_by_email_is_null").unwrap();
         assert_eq!(parsed.arg_count(), 0);
+    }
+
+    // ----- Document (Mongo) lowering ----------------------------------
+
+    #[test]
+    fn test_to_mongo_single_eq() {
+        let parsed = parser().parse("find_by_status").unwrap();
+        let doc = parsed.to_mongo(&[json!("active")]).unwrap();
+        assert_eq!(doc, json!({ "status": { "$eq": "active" } }));
+    }
+
+    #[test]
+    fn test_to_mongo_and_query() {
+        let parsed = parser().parse("find_by_status_and_role").unwrap();
+        let doc = parsed.to_mongo(&[json!("active"), json!("admin")]).unwrap();
+        assert_eq!(
+            doc,
+            json!({ "$and": [
+                { "status": { "$eq": "active" } },
+                { "role": { "$eq": "admin" } },
+            ] })
+        );
+    }
+
+    #[test]
+    fn test_to_mongo_or_query() {
+        let parsed = parser().parse("find_by_status_or_role").unwrap();
+        let doc = parsed
+            .to_mongo(&[json!("inactive"), json!("admin")])
+            .unwrap();
+        assert_eq!(
+            doc,
+            json!({ "$or": [
+                { "status": { "$eq": "inactive" } },
+                { "role": { "$eq": "admin" } },
+            ] })
+        );
+    }
+
+    #[test]
+    fn test_to_mongo_between_lowers_to_gte_lte_and() {
+        let parsed = parser().parse("find_by_age_between").unwrap();
+        let doc = parsed.to_mongo(&[json!(18), json!(65)]).unwrap();
+        assert_eq!(
+            doc,
+            json!({ "$and": [
+                { "age": { "$gte": 18 } },
+                { "age": { "$lte": 65 } },
+            ] })
+        );
+    }
+
+    #[test]
+    fn test_to_mongo_containing_is_regex() {
+        let parsed = parser().parse("find_by_name_containing").unwrap();
+        let doc = parsed.to_mongo(&[json!("lph")]).unwrap();
+        assert_eq!(doc, json!({ "name": { "$regex": ".*lph.*" } }));
+    }
+
+    #[test]
+    fn test_to_mongo_is_not_null_is_nor() {
+        let parsed = parser().parse("find_by_email_is_not_null").unwrap();
+        let doc = parsed.to_mongo(&[]).unwrap();
+        assert_eq!(doc, json!({ "$nor": [ { "email": { "$eq": null } } ] }));
+    }
+
+    #[test]
+    fn test_to_mongo_in_query() {
+        let parsed = parser().parse("find_by_role_in").unwrap();
+        let doc = parsed.to_mongo(&[json!(["admin", "user"])]).unwrap();
+        assert_eq!(doc, json!({ "role": { "$in": ["admin", "user"] } }));
+    }
+
+    #[test]
+    fn test_to_mongo_arg_count_mismatch_errors() {
+        let parsed = parser().parse("find_by_age_between").unwrap();
+        let err = parsed.to_mongo(&[json!(1)]).unwrap_err();
+        assert_eq!(
+            err,
+            QueryBindError::ArgumentCount {
+                expected: 2,
+                got: 1
+            }
+        );
+    }
+
+    #[test]
+    fn test_mongo_sort_maps_order_clauses() {
+        let parsed = parser()
+            .parse("find_by_status_order_by_name_asc_price_desc")
+            .unwrap();
+        assert_eq!(parsed.mongo_sort(), json!({ "name": 1, "price": -1 }));
     }
 
     #[test]

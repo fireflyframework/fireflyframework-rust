@@ -1,0 +1,5 @@
+error: a command/query handler must take exactly one argument: the message
+  --> tests/ui/fail/handler_two_args.rs:11:14
+   |
+11 | async fn bad(_a: Cmd, _b: u32) -> Result<(), CqrsError> {
+   |              ^^^^^^^^^^^^^^^^

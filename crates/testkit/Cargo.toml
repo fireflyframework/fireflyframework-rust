@@ -6,7 +6,24 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Firefly Framework for Rust — HMAC signers, SpyBroker, JSON test helpers"
+description = "Firefly Framework for Rust — HMAC signers, SpyBroker, JSON test helpers, in-process TestClient, DI slices"
+
+[features]
+# The base surface (HMAC signers, SpyBroker + event assertions, JSON helpers)
+# carries no heavy dependencies, so a service that only needs them gets a lean
+# build. The richer migration-ergonomics helpers are opt-in.
+default = []
+
+# In-process HTTP test client (`TestClient` / `TestResponse`) that drives an
+# axum `Router` via `tower::ServiceExt::oneshot` without binding a socket — the
+# Rust analog of pyfly's `PyFlyTestClient`. Pulls in axum/tower/http and a
+# Tokio runtime for the blocking convenience wrapper.
+web = ["dep:axum", "dep:tower", "dep:http", "dep:http-body-util", "dep:tokio"]
+
+# DI test slices (`slice()` / `Slice`) over `firefly-container`: register a
+# subset of beans plus `Arc` overrides and resolve them eagerly — the Rust
+# analog of pyfly's `slice_context` + `mock_bean`.
+container = ["dep:firefly-container"]
 
 [dependencies]
 hmac = { workspace = true }
@@ -15,3 +32,19 @@ hex = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# `web` feature
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+# `container` feature
+firefly-container = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

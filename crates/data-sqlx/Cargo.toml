@@ -8,6 +8,17 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Firefly Framework for Rust — relational repository adapter over sqlx (Postgres/MySQL/SQLite)"
 
+[features]
+# All three relational backends are enabled by default. The workspace
+# catalog already compiles `sqlx` with the `postgres` / `mysql` / `sqlite`
+# drivers, so these features only gate which code paths this crate exposes;
+# disable one to drop its repository branch (e.g. `--no-default-features
+# --features sqlite` for a SQLite-only build).
+default = ["postgres", "mysql", "sqlite"]
+postgres = []
+mysql = []
+sqlite = []
+
 [dependencies]
 firefly-data = { workspace = true }
 firefly-reactive = { workspace = true }
@@ -19,9 +30,11 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
+async-stream = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }

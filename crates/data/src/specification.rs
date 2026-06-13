@@ -61,7 +61,10 @@ use std::ops::{BitAnd, BitOr, Not};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::filter::{Filter, Op, Predicate};
+use crate::dialect::{PostgresDialect, SqlDialect};
+use crate::filter::{
+    combine_mongo_and, predicate_to_mongo, render_predicate_sql, Filter, Op, Predicate,
+};
 
 /// A composable query predicate.
 ///
@@ -222,25 +225,93 @@ impl Specification {
     /// `" WHERE "`** — it is a bare boolean expression suitable for
     /// embedding inside a larger clause, e.g. alongside a soft-delete
     /// guard.
+    ///
+    /// This is the **PostgreSQL default**: it is exactly
+    /// `self.to_sql_with(&PostgresDialect)`. Use
+    /// [`Specification::to_sql_with`] to render for MySQL or SQLite.
     pub fn to_sql(&self) -> (String, Vec<Value>) {
+        self.to_sql_with(&PostgresDialect)
+    }
+
+    /// Renders the specification to a parenthesised, parameterised SQL
+    /// fragment for a specific [`SqlDialect`] — the storage-agnostic
+    /// rendering path. Identifier quoting, placeholder syntax,
+    /// `IN`-list shape, and case-insensitive `LIKE` all defer to
+    /// `dialect`, so one [`Specification`] tree renders correct SQL for
+    /// PostgreSQL (`$n` / `"id"` / `= ANY` / `ILIKE`), MySQL (`?` /
+    /// `` `id` `` / `IN (?,…)` / `LOWER LIKE LOWER`), or SQLite.
+    ///
+    /// As with [`Specification::to_sql`], the fragment has no leading
+    /// `" WHERE "`, and the args vector always matches the placeholders
+    /// the dialect emitted (postgres binds an `IN` list as one array
+    /// arg; MySQL/SQLite flatten it).
+    pub fn to_sql_with(&self, dialect: &dyn SqlDialect) -> (String, Vec<Value>) {
         let mut args: Vec<Value> = Vec::new();
         let mut idx = 1usize;
-        let sql = self.render(&mut args, &mut idx);
+        let sql = self.render(dialect, &mut args, &mut idx);
         (sql, args)
     }
 
-    fn render(&self, args: &mut Vec<Value>, idx: &mut usize) -> String {
+    fn render(&self, dialect: &dyn SqlDialect, args: &mut Vec<Value>, idx: &mut usize) -> String {
         match self {
             Specification::All => String::new(),
-            Specification::Pred(p) => render_predicate(p, args, idx),
-            Specification::And(children) => render_joined(children, "AND", args, idx),
-            Specification::Or(children) => render_joined(children, "OR", args, idx),
+            Specification::Pred(p) => render_predicate_sql(p, dialect, args, idx),
+            Specification::And(children) => render_joined(children, "AND", dialect, args, idx),
+            Specification::Or(children) => render_joined(children, "OR", dialect, args, idx),
             Specification::Not(inner) => {
-                let inner_sql = inner.render(args, idx);
+                let inner_sql = inner.render(dialect, args, idx);
                 if inner_sql.is_empty() {
                     String::new()
                 } else {
                     format!("NOT {inner_sql}")
+                }
+            }
+        }
+    }
+
+    /// Lowers the specification tree to a MongoDB `$`-operator filter
+    /// document — the document-store analogue of
+    /// [`Specification::to_sql`], so the **same** spec tree drives SQL,
+    /// in-memory matching ([`Specification::matches`]), *and* a document
+    /// backend. This keeps the [`Specification`] the single source of
+    /// truth for every backend, exactly as pyfly factors the lowering
+    /// behind the spec.
+    ///
+    /// The tree maps node-for-node onto Mongo operators, mirroring
+    /// pyfly's `MongoSpecification`:
+    ///
+    /// - [`Specification::All`] → `{}` (matches everything),
+    /// - [`Specification::Pred`] → a single field clause
+    ///   (`{field: {$eq: …}}`, `{field: {$gt: …}}`, `like`/`ilike` →
+    ///   `$regex`, `in` → `$in`, …),
+    /// - [`Specification::And`] → `{"$and": [...]}`,
+    /// - [`Specification::Or`] → `{"$or": [...]}`,
+    /// - [`Specification::Not`] → `{"$nor": [...]}` (pyfly's `__invert__`).
+    ///
+    /// As in pyfly, a `$nor` / `$and` / `$or` wrapping an empty child is
+    /// collapsed to `{}` so a no-op spec lowers cleanly.
+    pub fn to_mongo(&self) -> Value {
+        match self {
+            Specification::All => Value::Object(serde_json::Map::new()),
+            Specification::Pred(p) => predicate_to_mongo(p),
+            Specification::And(children) => {
+                let clauses = non_empty_mongo_children(children);
+                combine_mongo_and(clauses)
+            }
+            Specification::Or(children) => {
+                let clauses = non_empty_mongo_children(children);
+                match clauses.len() {
+                    0 => Value::Object(serde_json::Map::new()),
+                    1 => clauses.into_iter().next().unwrap(),
+                    _ => serde_json::json!({ "$or": clauses }),
+                }
+            }
+            Specification::Not(inner) => {
+                let doc = inner.to_mongo();
+                if is_empty_mongo(&doc) {
+                    Value::Object(serde_json::Map::new())
+                } else {
+                    serde_json::json!({ "$nor": [doc] })
                 }
             }
         }
@@ -273,35 +344,16 @@ impl Specification {
     }
 }
 
-fn render_predicate(p: &Predicate, args: &mut Vec<Value>, idx: &mut usize) -> String {
-    let clause = match p.op {
-        Op::Eq => format!(r#""{}" = ${idx}"#, p.field),
-        Op::Ne => format!(r#""{}" <> ${idx}"#, p.field),
-        Op::Lt => format!(r#""{}" < ${idx}"#, p.field),
-        Op::Lte => format!(r#""{}" <= ${idx}"#, p.field),
-        Op::Gt => format!(r#""{}" > ${idx}"#, p.field),
-        Op::Gte => format!(r#""{}" >= ${idx}"#, p.field),
-        Op::Like => format!(r#""{}" LIKE ${idx}"#, p.field),
-        Op::ILike => format!(r#""{}" ILIKE ${idx}"#, p.field),
-        Op::In => format!(r#""{}" = ANY(${idx})"#, p.field),
-        Op::IsNil => format!(r#""{}" IS NULL"#, p.field),
-    };
-    if p.op != Op::IsNil {
-        args.push(p.value.clone());
-        *idx += 1;
-    }
-    clause
-}
-
 fn render_joined(
     children: &[Specification],
     joiner: &str,
+    dialect: &dyn SqlDialect,
     args: &mut Vec<Value>,
     idx: &mut usize,
 ) -> String {
     let parts: Vec<String> = children
         .iter()
-        .map(|c| c.render(args, idx))
+        .map(|c| c.render(dialect, args, idx))
         .filter(|s| !s.is_empty())
         .collect();
     match parts.len() {
@@ -309,6 +361,22 @@ fn render_joined(
         1 => parts.into_iter().next().unwrap(),
         _ => format!("({})", parts.join(&format!(" {joiner} "))),
     }
+}
+
+/// Lowers each child to a Mongo doc, dropping the no-op (`{}`) children
+/// so an `All` mixed into an `And`/`Or` does not pollute the operator
+/// array — mirroring pyfly's "empty doc falls through" combinators.
+fn non_empty_mongo_children(children: &[Specification]) -> Vec<Value> {
+    children
+        .iter()
+        .map(Specification::to_mongo)
+        .filter(|d| !is_empty_mongo(d))
+        .collect()
+}
+
+/// Whether a lowered Mongo doc is the empty / match-everything `{}`.
+fn is_empty_mongo(doc: &Value) -> bool {
+    matches!(doc, Value::Object(map) if map.is_empty())
 }
 
 fn eval_predicate(p: &Predicate, row: &Value) -> bool {
@@ -405,6 +473,7 @@ impl Not for Specification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dialect::{MySqlDialect, SqliteDialect};
     use serde::Serialize;
     use serde_json::json;
 
@@ -699,5 +768,149 @@ mod tests {
     #[test]
     fn test_non_object_entity_does_not_match() {
         assert!(!admin().matches(&"not an object"));
+    }
+
+    // ---- Rust-specific: dialect-aware SQL lowering ------------------
+
+    #[test]
+    fn test_to_sql_equals_postgres_default() {
+        let spec = (admin() & active()) | Specification::eq("name", "Diana");
+        assert_eq!(spec.to_sql(), spec.to_sql_with(&PostgresDialect));
+    }
+
+    #[test]
+    fn test_and_to_sql_for_mysql() {
+        let (sql, args) = (admin() & active()).to_sql_with(&MySqlDialect);
+        assert_eq!(sql, "(`role` = ? AND `active` = ?)");
+        assert_eq!(args, vec![json!("admin"), json!(true)]);
+    }
+
+    #[test]
+    fn test_or_to_sql_for_sqlite() {
+        let (sql, args) = (admin() | active()).to_sql_with(&SqliteDialect);
+        assert_eq!(sql, r#"("role" = ? OR "active" = ?)"#);
+        assert_eq!(args, vec![json!("admin"), json!(true)]);
+    }
+
+    #[test]
+    fn test_complex_to_sql_numbering_postgres_vs_mysql() {
+        let diana = Specification::eq("name", "Diana");
+        let spec = (admin() & active()) | diana;
+        let (pg, pargs) = spec.to_sql_with(&PostgresDialect);
+        assert_eq!(pg, r#"(("role" = $1 AND "active" = $2) OR "name" = $3)"#);
+        let (my, margs) = spec.to_sql_with(&MySqlDialect);
+        assert_eq!(my, "((`role` = ? AND `active` = ?) OR `name` = ?)");
+        assert_eq!(pargs, margs);
+    }
+
+    #[test]
+    fn test_in_spec_expands_for_mysql() {
+        let spec = Specification::pred(Predicate::new("role", Op::In, json!(["a", "b"])))
+            & Specification::eq("active", true);
+        let (sql, args) = spec.to_sql_with(&MySqlDialect);
+        assert_eq!(sql, "(`role` IN (?, ?) AND `active` = ?)");
+        assert_eq!(args, vec![json!("a"), json!("b"), json!(true)]);
+    }
+
+    #[test]
+    fn test_in_spec_array_param_for_postgres() {
+        let spec = Specification::pred(Predicate::new("role", Op::In, json!(["a", "b"])))
+            & Specification::eq("active", true);
+        let (sql, args) = spec.to_sql_with(&PostgresDialect);
+        assert_eq!(sql, r#"("role" = ANY($1) AND "active" = $2)"#);
+        assert_eq!(args, vec![json!(["a", "b"]), json!(true)]);
+    }
+
+    #[test]
+    fn test_ilike_spec_lowers_for_mysql() {
+        let spec = Specification::pred(Predicate::new("name", Op::ILike, "a%"));
+        let (sql, _) = spec.to_sql_with(&MySqlDialect);
+        assert_eq!(sql, "LOWER(`name`) LIKE LOWER(?)");
+    }
+
+    // ---- Rust-specific: document (Mongo) lowering -------------------
+
+    #[test]
+    fn test_to_mongo_all_is_empty_doc() {
+        assert_eq!(Specification::all().to_mongo(), json!({}));
+    }
+
+    #[test]
+    fn test_to_mongo_pred_is_eq_clause() {
+        assert_eq!(admin().to_mongo(), json!({ "role": { "$eq": "admin" } }));
+    }
+
+    #[test]
+    fn test_to_mongo_and() {
+        let spec = admin() & active();
+        assert_eq!(
+            spec.to_mongo(),
+            json!({ "$and": [
+                { "role": { "$eq": "admin" } },
+                { "active": { "$eq": true } },
+            ] })
+        );
+    }
+
+    #[test]
+    fn test_to_mongo_or() {
+        let spec = admin() | active();
+        assert_eq!(
+            spec.to_mongo(),
+            json!({ "$or": [
+                { "role": { "$eq": "admin" } },
+                { "active": { "$eq": true } },
+            ] })
+        );
+    }
+
+    #[test]
+    fn test_to_mongo_not_uses_nor() {
+        let spec = !active();
+        assert_eq!(
+            spec.to_mongo(),
+            json!({ "$nor": [ { "active": { "$eq": true } } ] })
+        );
+    }
+
+    #[test]
+    fn test_to_mongo_complex_tree() {
+        let diana = Specification::eq("name", "Diana");
+        let spec = (admin() & active()) | diana;
+        assert_eq!(
+            spec.to_mongo(),
+            json!({ "$or": [
+                { "$and": [
+                    { "role": { "$eq": "admin" } },
+                    { "active": { "$eq": true } },
+                ] },
+                { "name": { "$eq": "Diana" } },
+            ] })
+        );
+    }
+
+    #[test]
+    fn test_to_mongo_not_of_all_is_empty() {
+        // `!All == All`, which lowers to {} — and even a raw Not(All)
+        // collapses cleanly.
+        assert_eq!((!Specification::all()).to_mongo(), json!({}));
+    }
+
+    #[test]
+    fn test_to_mongo_isnil_clause() {
+        let spec = Specification::pred(Predicate::is_nil("deleted_at"));
+        assert_eq!(spec.to_mongo(), json!({ "deleted_at": { "$eq": null } }));
+    }
+
+    #[test]
+    fn test_to_mongo_gt_lt_in_like() {
+        let gt = Specification::pred(Predicate::new("age", Op::Gt, 18));
+        assert_eq!(gt.to_mongo(), json!({ "age": { "$gt": 18 } }));
+        let lt = Specification::pred(Predicate::new("age", Op::Lt, 65));
+        assert_eq!(lt.to_mongo(), json!({ "age": { "$lt": 65 } }));
+        let in_op = Specification::pred(Predicate::new("role", Op::In, json!(["a", "b"])));
+        assert_eq!(in_op.to_mongo(), json!({ "role": { "$in": ["a", "b"] } }));
+        let like = Specification::pred(Predicate::new("name", Op::Like, "A%"));
+        assert_eq!(like.to_mongo(), json!({ "name": { "$regex": "A.*" } }));
     }
 }

@@ -39,8 +39,16 @@
 //!   `And` / `Or` / `Not`, combined with `&` / `|` / `!`) that lower to
 //!   the [`Filter`] DSL ([`Specification::to_filter`]), render to a
 //!   parenthesised parameterised SQL fragment
-//!   ([`Specification::to_sql`]), or evaluate in memory
+//!   ([`Specification::to_sql`]), lower to a MongoDB `$`-operator filter
+//!   document ([`Specification::to_mongo`]), or evaluate in memory
 //!   ([`Specification::matches`]).
+//! - **[`SqlDialect`]** — the dialect abstraction
+//!   ([`PostgresDialect`] / [`MySqlDialect`] / [`SqliteDialect`]) that
+//!   keeps the DSL technology-agnostic: [`Filter::to_sql_with`] /
+//!   [`Specification::to_sql_with`] render the *same* tree as
+//!   PostgreSQL, MySQL, or SQLite, so a relational adapter just picks a
+//!   dialect at runtime. [`Filter::to_sql`] / [`Specification::to_sql`]
+//!   stay the PostgreSQL default for back-compat.
 //! - **[`AuditStamps`] + [`Auditor`]** — automatic
 //!   `created_at` / `updated_at` / `created_by` / `updated_by` stamping
 //!   on insert and update.
@@ -97,6 +105,7 @@
 #![warn(missing_docs)]
 
 mod auditing;
+mod dialect;
 mod filter;
 mod mapper;
 mod page;
@@ -108,7 +117,8 @@ mod routing;
 mod soft_delete;
 mod specification;
 
-pub use auditing::{AuditStamps, Auditor};
+pub use auditing::{AuditStamps, Auditor, UserProvider};
+pub use dialect::{MySqlDialect, PostgresDialect, SqlDialect, SqliteDialect};
 pub use filter::{Direction, Filter, Op, Predicate, Sort};
 pub use mapper::{MapError, Mapper, Mapping, Projection};
 pub use page::Page;

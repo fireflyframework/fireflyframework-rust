@@ -46,8 +46,37 @@
 //! assert_eq!(stamps.created_at, created); // unchanged
 //! ```
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// Resolves the **current user** identifier for audit stamping — the
+/// Rust analogue of pyfly's implicit `RequestContext.current()` user
+/// lookup.
+///
+/// An adapter (e.g. a `firefly-data-sqlx` repository) holds a
+/// `UserProvider` and calls it on every write so [`Auditor::on_insert`]
+/// / [`Auditor::on_update`] get the user *without the caller passing it
+/// each time*. Wire it from the request-context / security crate: the
+/// closure reads the authenticated principal (returning `None` for
+/// unauthenticated / system writes). Because it is an
+/// `Arc<dyn Fn() -> Option<String> + Send + Sync>`, the same provider is
+/// cheaply shared across repositories and tasks.
+///
+/// ```
+/// use std::sync::Arc;
+/// use firefly_data::UserProvider;
+///
+/// // A fixed user (a real one would read the security context).
+/// let provider: UserProvider = Arc::new(|| Some("alice".to_string()));
+/// assert_eq!(provider(), Some("alice".to_string()));
+///
+/// // The unauthenticated / system path.
+/// let system: UserProvider = Arc::new(|| None);
+/// assert_eq!(system(), None);
+/// ```
+pub type UserProvider = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// The four audit columns every Firefly entity carries, mirroring
 /// pyfly's `BaseEntity` (`created_at`, `updated_at`, `created_by`,
@@ -84,12 +113,17 @@ impl AuditStamps {
 /// pyfly's `AuditingEntityListener`.
 ///
 /// `Auditor` carries a clock so tests can pin time; production code uses
-/// [`Auditor::new`], which reads `Utc::now()`. Unlike pyfly's listener,
-/// which resolves the user from a thread/`contextvar` `RequestContext`,
-/// the current user is passed in explicitly to keep the helper
-/// dependency-free.
+/// [`Auditor::new`], which reads `Utc::now()`. The current user can be
+/// supplied explicitly per call ([`Auditor::on_insert`] /
+/// [`Auditor::on_update`]) — the dependency-free path — *or* resolved
+/// implicitly from a [`UserProvider`] wired in via
+/// [`Auditor::with_user_provider`], the Rust analogue of pyfly's
+/// `RequestContext`-backed user lookup. The implicit form
+/// ([`Auditor::stamp_insert`] / [`Auditor::stamp_update`]) is what an
+/// adapter calls so it never has to thread the user through every write.
 pub struct Auditor {
     clock: Box<dyn Fn() -> DateTime<Utc> + Send + Sync>,
+    user_provider: Option<UserProvider>,
 }
 
 impl std::fmt::Debug for Auditor {
@@ -105,10 +139,12 @@ impl Default for Auditor {
 }
 
 impl Auditor {
-    /// Returns an auditor whose clock is the system UTC wall clock.
+    /// Returns an auditor whose clock is the system UTC wall clock and
+    /// which has no [`UserProvider`] (the explicit-user path).
     pub fn new() -> Self {
         Auditor {
             clock: Box::new(Utc::now),
+            user_provider: None,
         }
     }
 
@@ -117,7 +153,65 @@ impl Auditor {
     pub fn with_clock(clock: impl Fn() -> DateTime<Utc> + Send + Sync + 'static) -> Self {
         Auditor {
             clock: Box::new(clock),
+            user_provider: None,
         }
+    }
+
+    /// Returns an auditor that resolves the current user implicitly from
+    /// `provider` on every [`Auditor::stamp_insert`] /
+    /// [`Auditor::stamp_update`] — the constructor an adapter uses for
+    /// automatic audit stamping without the caller passing a user each
+    /// time. The clock is the system UTC wall clock; chain
+    /// [`Auditor::with_provider_and_clock`] to pin time in tests.
+    pub fn with_user_provider(provider: UserProvider) -> Self {
+        Auditor {
+            clock: Box::new(Utc::now),
+            user_provider: Some(provider),
+        }
+    }
+
+    /// Returns an auditor with both a custom clock and a
+    /// [`UserProvider`] — the deterministic-test form of
+    /// [`Auditor::with_user_provider`].
+    pub fn with_provider_and_clock(
+        provider: UserProvider,
+        clock: impl Fn() -> DateTime<Utc> + Send + Sync + 'static,
+    ) -> Self {
+        Auditor {
+            clock: Box::new(clock),
+            user_provider: Some(provider),
+        }
+    }
+
+    /// The configured [`UserProvider`], if any. An adapter can call this
+    /// to resolve the user once and reuse it across a multi-row write.
+    pub fn user_provider(&self) -> Option<&UserProvider> {
+        self.user_provider.as_ref()
+    }
+
+    /// Resolves the current user via the configured [`UserProvider`],
+    /// returning `None` when no provider is wired or the provider yields
+    /// no user (the unauthenticated / system path).
+    pub fn current_user(&self) -> Option<String> {
+        self.user_provider.as_ref().and_then(|p| p())
+    }
+
+    /// Stamps a freshly inserted entity, resolving the user from the
+    /// configured [`UserProvider`] — the auto-application path an adapter
+    /// calls on every insert. Equivalent to
+    /// `auditor.on_insert(stamps, auditor.current_user().as_deref())`.
+    pub fn stamp_insert(&self, stamps: &mut AuditStamps) {
+        let user = self.current_user();
+        self.on_insert(stamps, user.as_deref());
+    }
+
+    /// Stamps an updated entity, resolving the user from the configured
+    /// [`UserProvider`] — the auto-application path an adapter calls on
+    /// every update. Equivalent to
+    /// `auditor.on_update(stamps, auditor.current_user().as_deref())`.
+    pub fn stamp_update(&self, stamps: &mut AuditStamps) {
+        let user = self.current_user();
+        self.on_update(stamps, user.as_deref());
     }
 
     /// Stamps a freshly inserted entity: sets `created_at` and
@@ -261,5 +355,65 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Auditor>();
         assert_send_sync::<AuditStamps>();
+    }
+
+    // ---- UserProvider hook (implicit current-user resolution) -------
+
+    #[test]
+    fn test_with_user_provider_resolves_user_on_stamp_insert() {
+        let provider: UserProvider = Arc::new(|| Some("alice".to_string()));
+        let auditor = Auditor::with_provider_and_clock(provider, || fixed(1_000));
+        let mut s = AuditStamps::new();
+        auditor.stamp_insert(&mut s);
+        assert_eq!(s.created_by.as_deref(), Some("alice"));
+        assert_eq!(s.updated_by.as_deref(), Some("alice"));
+        assert_eq!(s.created_at, Some(fixed(1_000)));
+    }
+
+    #[test]
+    fn test_stamp_update_resolves_user() {
+        let provider: UserProvider = Arc::new(|| Some("bob".to_string()));
+        let auditor = Auditor::with_provider_and_clock(provider, || fixed(2_000));
+        let mut s = AuditStamps::new();
+        auditor.stamp_update(&mut s);
+        assert_eq!(s.updated_by.as_deref(), Some("bob"));
+        assert_eq!(s.updated_at, Some(fixed(2_000)));
+    }
+
+    #[test]
+    fn test_no_provider_means_no_user() {
+        let auditor = Auditor::with_clock(|| fixed(1_000));
+        assert!(auditor.user_provider().is_none());
+        assert_eq!(auditor.current_user(), None);
+        let mut s = AuditStamps::new();
+        auditor.stamp_insert(&mut s);
+        // timestamps set, but no user without a provider
+        assert_eq!(s.created_at, Some(fixed(1_000)));
+        assert!(s.created_by.is_none());
+    }
+
+    #[test]
+    fn test_provider_returning_none_is_system_write() {
+        let provider: UserProvider = Arc::new(|| None);
+        let auditor = Auditor::with_provider_and_clock(provider, || fixed(1_000));
+        assert_eq!(auditor.current_user(), None);
+        let mut s = AuditStamps::new();
+        auditor.stamp_insert(&mut s);
+        assert!(s.created_by.is_none());
+        assert!(s.updated_by.is_none());
+    }
+
+    #[test]
+    fn test_current_user_reads_provider_each_call() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let counter = Arc::new(AtomicUsize::new(0));
+        let c2 = Arc::clone(&counter);
+        let provider: UserProvider = Arc::new(move || {
+            let n = c2.fetch_add(1, Ordering::SeqCst);
+            Some(format!("user{n}"))
+        });
+        let auditor = Auditor::with_user_provider(provider);
+        assert_eq!(auditor.current_user(), Some("user0".to_string()));
+        assert_eq!(auditor.current_user(), Some("user1".to_string()));
     }
 }

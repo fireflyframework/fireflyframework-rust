@@ -86,7 +86,11 @@ impl<B: ConfigBackend> ConfigServer<B> {
             .into_iter()
             .map(|s| PropertySource {
                 name: format!("{}-{}", s.application, s.profile),
-                source: s.properties,
+                // `Properties` (a `serde_json::Map`) may iterate in
+                // insertion order when `serde_json/preserve_order` is on;
+                // collecting into the field's `BTreeMap` restores the
+                // sorted-key wire contract.
+                source: s.properties.into_iter().collect(),
             })
             .collect();
 

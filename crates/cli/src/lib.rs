@@ -27,6 +27,9 @@
 //! - [`db`] — the `firefly db` migration command group (firefly-migrations).
 //! - [`openapi`] — the `firefly openapi` skeleton-spec export.
 //! - [`diagnostics`] — `firefly info` / `firefly doctor` environment checks.
+//! - [`completion`] — `firefly completion <shell>` shell-completion scripts.
+//! - [`sbom`] — `firefly sbom` Software Bill of Materials from `Cargo.lock`.
+//! - [`license`] — `firefly license` framework + dependency license report.
 //! - [`cli`] — the clap v4 command definitions and dispatcher.
 //!
 //! # pyfly parity
@@ -48,13 +51,16 @@
 
 pub mod actuator;
 pub mod cli;
+pub mod completion;
 pub mod db;
 pub mod diagnostics;
 pub mod error;
 pub mod generate;
+pub mod license;
 pub mod naming;
 pub mod openapi;
 pub mod project;
+pub mod sbom;
 pub mod scaffold;
 pub mod templates;
 

@@ -1,0 +1,5 @@
+error: #[rest_controller] found no #[get]/#[post]/#[put]/#[delete]/#[patch] methods
+ --> tests/ui/fail/controller_no_routes.rs:8:6
+  |
+8 | impl Empty {
+  |      ^^^^^

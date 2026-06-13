@@ -76,6 +76,7 @@ members = [
     "tests/integration",
     "samples/orders",
     "samples/reactive-banking",
+    "samples/macro-quickstart",
 ]
 
 [workspace.package]

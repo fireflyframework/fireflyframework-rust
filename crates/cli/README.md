@@ -3,6 +3,7 @@
 The `firefly` developer CLI for the **Firefly Framework for Rust**: scaffold new
 projects that *actually compile*, generate code artifacts into them, export an
 OpenAPI document, manage SQLite migrations, introspect a running app's actuator,
+generate shell completions, report a Software Bill of Materials and licenses,
 and diagnose your toolchain and project.
 
 ```bash
@@ -23,6 +24,9 @@ firefly --help
 | `firefly actuator <health\|info\|metrics\|env> --url <base>` | Query a running app's `/actuator/*`. |
 | `firefly routes\|env\|health\|metrics --url <base>` | Remote introspection of a running app. |
 | `firefly beans\|conditions [--url <base>]` | No local Rust analog (documented; pass-through with `--url`). |
+| `firefly completion <bash\|zsh\|fish\|powershell\|elvish>` | Print a shell-completion script for the `firefly` CLI. |
+| `firefly sbom [--json]` | Software Bill of Materials (resolved deps from `Cargo.lock`). |
+| `firefly license` | Framework + dependency license report. |
 
 Run `firefly <command> --help` for the full flag list of any command.
 
@@ -221,6 +225,63 @@ happens to expose those endpoints.
 > actuator admin surface on `127.0.0.1:8081` by default (override with the
 > `ADMIN_ADDR` env var), so `firefly actuator health --url http://localhost:8081`
 > works against a project you just scaffolded and ran.
+
+---
+
+### `firefly completion`
+
+```bash
+firefly completion bash                       # print the bash completion script
+eval "$(firefly completion bash)"             # enable for the current shell
+firefly completion zsh   > ~/.zfunc/_firefly  # zsh: drop into an fpath dir
+firefly completion fish | source              # fish: enable for the session
+firefly completion powershell | Out-String | Invoke-Expression   # PowerShell
+```
+
+Generates a shell-completion script for `bash`, `zsh`, `fish`, `powershell`, or
+`elvish`. The script is produced by `clap_complete` from the live `firefly` clap
+definition, so it always covers every subcommand, flag, and value-parser choice
+(e.g. the `--archetype` and `completion <shell>` enums) and never drifts from
+the CLI. This is the Rust spelling of pyfly's `pyfly completion`, which leans on
+Click's completion machinery.
+
+---
+
+### `firefly sbom`
+
+```bash
+firefly sbom                                  # human-readable table
+firefly sbom --json                           # machine-readable JSON
+```
+
+Prints a **Software Bill of Materials**: the framework name/version/license plus
+every resolved dependency read from the project's `Cargo.lock` (the source of
+truth Cargo uses for reproducible builds). Each row carries the crate name, the
+exact locked version, and its origin (`crates.io`, a `git+<url>` source, or
+`local` for workspace/path crates). `--json` emits a stable
+`{ name, version, license, dependencies: [{ name, version, source }] }`
+document. The lockfile is found by walking up from the current directory; run
+outside a project, the command reports an empty dependency list rather than
+failing. This is the Rust port of pyfly's `pyfly sbom` (which walks
+`importlib.metadata`); here the resolved Cargo graph plays the same role.
+
+---
+
+### `firefly license`
+
+```bash
+firefly license                               # license header + full text + deps
+```
+
+Prints the framework license report: the **Apache-2.0** header and copyright
+line, the full `LICENSE` text when one is found by walking up the project tree
+(falling back to the canonical Apache-2.0 pointer otherwise), and a third-party
+**dependency inventory** (the resolved crates from `Cargo.lock` with versions
+and origins). Cargo lockfiles do not record per-crate SPDX identifiers, so the
+report lists the dependency *inventory* rather than a per-crate license string —
+a deliberate divergence from a `cargo-license`-style scan that would require a
+heavier dependency. This extends pyfly's `pyfly license` (which prints only the
+framework license) with the dependency report the gap analysis asked for.
 
 ---
 

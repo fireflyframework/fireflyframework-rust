@@ -1,0 +1,5 @@
+error: #[scheduled] needs exactly one trigger: cron, fixed_rate, or fixed_delay
+ --> tests/ui/fail/scheduled_no_trigger.rs:7:1
+  |
+7 | async fn no_trigger() -> Result<(), std::io::Error> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

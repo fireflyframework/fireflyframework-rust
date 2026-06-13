@@ -215,13 +215,21 @@ impl HmacDispatcher {
         for (k, v) in &target.headers {
             set_header(&mut headers, k, v);
         }
+        // Canonicalize the payload to sorted-key JSON *before* both
+        // signing and sending, so the wire body and its HMAC always match
+        // Go's `encoding/json` sorted-map output byte-for-byte — and so
+        // the contract holds regardless of how the caller serialized the
+        // payload or whether the `serde_json/preserve_order` feature is
+        // active anywhere in the workspace graph. Non-JSON payloads pass
+        // through unchanged.
+        let body = canonical_payload(&ev.payload);
         // After the custom headers, so the signature always wins —
         // identical ordering to the Go port.
         if !target.secret.is_empty() {
             set_header(
                 &mut headers,
                 HEADER_SIGNATURE,
-                &sign(target.secret.as_bytes(), &ev.payload),
+                &sign(target.secret.as_bytes(), &body),
             );
         }
 
@@ -229,7 +237,7 @@ impl HmacDispatcher {
             .http
             .post(&target.url)
             .headers(headers)
-            .body(ev.payload.clone())
+            .body(body)
             .send()
             .await;
         match result {
@@ -336,6 +344,48 @@ fn host_of(url: &str) -> Option<String> {
         host_port.split(':').next().unwrap_or(host_port)
     };
     Some(host.to_ascii_lowercase())
+}
+
+/// Returns the canonical (sorted-key) JSON encoding of `payload`.
+///
+/// If `payload` parses as JSON, it is re-emitted with every object's
+/// keys in sorted order — byte-for-byte identical to Go's
+/// `encoding/json` map encoding, and independent of the
+/// `serde_json/preserve_order` feature. If `payload` is not valid JSON
+/// it is returned unchanged, so opaque (non-JSON) bodies still flow
+/// through untouched.
+fn canonical_payload(payload: &[u8]) -> Vec<u8> {
+    match serde_json::from_slice::<serde_json::Value>(payload) {
+        Ok(value) => {
+            serde_json::to_vec(&canonicalize_value(value)).unwrap_or_else(|_| payload.to_vec())
+        }
+        Err(_) => payload.to_vec(),
+    }
+}
+
+/// Recursively rebuilds `value` so every object's keys are inserted in
+/// sorted order. Because the keys are *inserted* sorted, the resulting
+/// [`serde_json::Map`] serializes sorted regardless of whether
+/// `preserve_order` (insertion-order) is enabled.
+fn canonicalize_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut sorted: std::collections::BTreeMap<String, serde_json::Value> =
+                std::collections::BTreeMap::new();
+            for (k, v) in map {
+                sorted.insert(k, canonicalize_value(v));
+            }
+            let mut out = serde_json::Map::new();
+            for (k, v) in sorted {
+                out.insert(k, v);
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(canonicalize_value).collect())
+        }
+        other => other,
+    }
 }
 
 /// Computes the `X-Firefly-Signature` value:
