@@ -49,7 +49,9 @@ use firefly_actuator::{
 use firefly_admin::{mount, AdminConfig, AdminDeps, LogBuffer, LogRecord, TraceBuffer, TraceEntry};
 use firefly_container::Container;
 use firefly_cqrs::{Bus, CqrsError};
-use firefly_orchestration::{Node, OrchestrationRegistry, Saga, Step, Tcc, TccParticipant, Workflow};
+use firefly_orchestration::{
+    Node, OrchestrationRegistry, Saga, Step, Tcc, TccParticipant, Workflow,
+};
 use firefly_scheduling::{FixedDelayTrigger, FixedRateTrigger, Scheduler, Task};
 use serde::Serialize;
 
@@ -125,7 +127,9 @@ async fn main() {
     let health = Arc::new(HealthComposite::new());
     health.add(IndicatorFn::new("db", || async { HealthResult::up() }));
     health.add(IndicatorFn::new("cache", || async { HealthResult::up() }));
-    health.add(IndicatorFn::new("diskSpace", || async { HealthResult::up() }));
+    health.add(IndicatorFn::new("diskSpace", || async {
+        HealthResult::up()
+    }));
 
     // ── Metrics: a handful of meters that we keep moving below ────────────
     let metrics = Arc::new(MetricRegistry::new());
@@ -197,11 +201,13 @@ async fn main() {
             .node(Node::new("approve", || async { Ok(()) }).depends_on(["submitKyc"]))
             .node(Node::new("openAccount", || async { Ok(()) }).depends_on(["approve"])),
     );
-    orchestration.register_tcc(Tcc::new("reserveInventory").participant(TccParticipant::new(
-        "warehouse",
-        || async { Ok(()) },
-        || async { Ok(()) },
-    )));
+    orchestration.register_tcc(
+        Tcc::new("reserveInventory").participant(TccParticipant::new(
+            "warehouse",
+            || async { Ok(()) },
+            || async { Ok(()) },
+        )),
+    );
 
     // ── Loggers: root + per-target levels ────────────────────────────────
     let loggers = Arc::new(LoggersState::with_reload_fn(
@@ -276,7 +282,11 @@ fn seed_logs(logs: &LogBuffer) {
     let samples = [
         ("INFO", "demo_service::boot", "service started on :8099"),
         ("INFO", "firefly_scheduling", "registered 3 scheduled tasks"),
-        ("DEBUG", "firefly_cqrs::bus", "registered handler OpenAccount"),
+        (
+            "DEBUG",
+            "firefly_cqrs::bus",
+            "registered handler OpenAccount",
+        ),
         ("WARN", "demo_service::fx", "rate provider latency 412ms"),
         ("INFO", "demo_service::ledger", "settlement sweep complete"),
     ];
@@ -308,14 +318,16 @@ async fn live_activity(metrics: Arc<MetricRegistry>, traces: Arc<TraceBuffer>, l
         tick += 1;
 
         metrics.counter("http_server_requests_total").inc();
-        if tick % 3 == 0 {
+        if tick.is_multiple_of(3) {
             metrics.counter("orders_placed_total").inc();
             metrics.counter("payments_captured_total").inc();
         }
         // A gentle oscillation so the gauge line chart visibly moves.
         let depth = 3.0 + ((tick % 7) as f64);
         metrics.gauge("queue_depth").set(depth);
-        metrics.gauge("accounts_active").set(412.0 + (tick % 11) as f64);
+        metrics
+            .gauge("accounts_active")
+            .set(412.0 + (tick % 11) as f64);
 
         let (method, path, status) = paths[(tick as usize) % paths.len()];
         traces.record(TraceEntry {
@@ -334,7 +346,12 @@ async fn live_activity(metrics: Arc<MetricRegistry>, traces: Arc<TraceBuffer>, l
         logs.push(LogRecord {
             id: 0,
             timestamp: now_rfc3339(),
-            level: if tick % 10 == 0 { "WARN" } else { "INFO" }.into(),
+            level: if tick.is_multiple_of(10) {
+                "WARN"
+            } else {
+                "INFO"
+            }
+            .into(),
             logger: "demo_service::traffic".into(),
             message: format!("handled {method} {path} -> {status}"),
             context: format!("tick={tick}"),

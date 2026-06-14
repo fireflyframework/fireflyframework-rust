@@ -188,7 +188,9 @@ pub(crate) fn repository_impl(args: TokenStream, mut item: ItemImpl) -> syn::Res
                     quote!(self.#accessor().query_list(&__q, #entity, &__params))
                 }
                 QueryKind::Count => quote!(self.#accessor().query_count(&__q, #entity, &__params)),
-                QueryKind::Exists => quote!(self.#accessor().query_exists(&__q, #entity, &__params)),
+                QueryKind::Exists => {
+                    quote!(self.#accessor().query_exists(&__q, #entity, &__params))
+                }
                 QueryKind::Delete => {
                     quote!(self.#accessor().query_execute(&__q, #entity, &__params))
                 }

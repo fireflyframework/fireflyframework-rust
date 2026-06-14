@@ -98,7 +98,9 @@ pub struct BearerProperties {
 ///
 /// Precedence: a configured `jwk_set_uri` wins (RS256 resource server); else a
 /// configured `secret` builds an HMAC verifier; else `None`.
-pub fn verifier_from_config(props: &JwtProperties) -> Result<Option<Arc<dyn Verifier>>, SecurityError> {
+pub fn verifier_from_config(
+    props: &JwtProperties,
+) -> Result<Option<Arc<dyn Verifier>>, SecurityError> {
     if !props.jwk_set_uri.trim().is_empty() {
         let mut verifier = JwksVerifier::new(props.jwk_set_uri.clone());
         if !props.issuer_uri.trim().is_empty() {

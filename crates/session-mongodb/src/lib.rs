@@ -278,8 +278,8 @@ mod tests {
     /// otherwise so the default `cargo test` stays infra-free.
     #[tokio::test]
     async fn registry_round_trips_against_live_mongo() {
-        let Ok(url) = std::env::var("FIREFLY_TEST_MONGODB_URL")
-            .or_else(|_| std::env::var("MONGODB_URL"))
+        let Ok(url) =
+            std::env::var("FIREFLY_TEST_MONGODB_URL").or_else(|_| std::env::var("MONGODB_URL"))
         else {
             eprintln!("skipping registry_round_trips_against_live_mongo: set FIREFLY_TEST_MONGODB_URL to run");
             return;
@@ -311,7 +311,10 @@ mod tests {
 
         registry.deregister("alice", "s1").await;
         assert_eq!(registry.count("alice").await, 1);
-        assert_eq!(registry.list_sessions("alice").await, vec![("s2".into(), 200)]);
+        assert_eq!(
+            registry.list_sessions("alice").await,
+            vec![("s2".into(), 200)]
+        );
 
         // Cleanup.
         let _ = registry.collection().drop().await;

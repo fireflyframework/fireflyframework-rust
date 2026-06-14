@@ -170,8 +170,7 @@ pub(crate) fn upsert_sql(
                         }
                     })
                     .collect();
-                let mut clause =
-                    format!(" ON CONFLICT({id_q}) DO UPDATE SET {}", sets.join(", "));
+                let mut clause = format!(" ON CONFLICT({id_q}) DO UPDATE SET {}", sets.join(", "));
                 // Optimistic-lock guard: only update when the stored version
                 // still matches the loaded one, so a stale write affects 0 rows.
                 if let Some(vc) = version_column {

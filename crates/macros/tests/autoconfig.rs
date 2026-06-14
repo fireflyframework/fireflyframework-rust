@@ -50,7 +50,10 @@ fn scan_auto_registers_bean_methods() {
     let c = Container::new();
     // No `ClockConfig::firefly_register_beans(&c)` — scan() must find the bean.
     let registered = c.scan();
-    assert!(registered >= 2, "scan should register the config holder + its bean");
+    assert!(
+        registered >= 2,
+        "scan should register the config holder + its bean"
+    );
 
     let clock = c
         .resolve::<RealClock>()

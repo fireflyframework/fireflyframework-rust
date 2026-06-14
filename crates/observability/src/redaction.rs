@@ -67,7 +67,7 @@ pub fn luhn_valid(value: &str) -> bool {
         }
         checksum += d;
     }
-    checksum % 10 == 0
+    checksum.is_multiple_of(10)
 }
 
 /// How a detected token is replaced — pyfly's `mask` setting

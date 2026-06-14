@@ -187,8 +187,8 @@ pub use bus::{
     ValidationMiddleware,
 };
 pub use cache::{QueryCache, QueryCacheMiddleware};
-pub use correlation::CorrelationMiddleware;
 pub use context::{ExecutionContext, ExecutionContextBuilder};
+pub use correlation::CorrelationMiddleware;
 pub use eda_bridge::{
     resolve_pattern, CacheInvalidationEvent, EdaCacheInvalidationBridge, CACHE_INVALIDATION_TOPIC,
 };

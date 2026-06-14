@@ -161,8 +161,7 @@ pub use firefly_scheduling::Scheduler;
 pub use firefly_web::{
     ContentNegotiationLayer, CorrelationLayer, CorsConfig, CorsLayer, CsrfLayer, IdempotencyConfig,
     IdempotencyLayer, MetricsLayer, Outcome, ProblemLayer, RequestLogLayer, RequestMetric,
-    RequestObserver,
-    SecurityHeadersConfig, SecurityHeadersLayer, HTTP_SERVER_REQUESTS_MAX_METRIC,
+    RequestObserver, SecurityHeadersConfig, SecurityHeadersLayer, HTTP_SERVER_REQUESTS_MAX_METRIC,
     HTTP_SERVER_REQUESTS_METRIC,
 };
 

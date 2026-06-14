@@ -50,10 +50,12 @@ async fn repo() -> SqlxRepository<Doc, i64> {
         .connect("sqlite::memory:")
         .await
         .expect("open in-memory sqlite");
-    sqlx::query("CREATE TABLE docs (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version INTEGER NOT NULL)")
-        .execute(&pool)
-        .await
-        .expect("create table");
+    sqlx::query(
+        "CREATE TABLE docs (id INTEGER PRIMARY KEY, name TEXT NOT NULL, version INTEGER NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create table");
     let cfg = TableConfig::new("docs", "id", ["id", "name", "version"]);
     SqlxRepository::new(Db::Sqlite(pool), cfg, map_doc, write_doc).with_version_column("version")
 }

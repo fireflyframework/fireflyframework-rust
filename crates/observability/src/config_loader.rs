@@ -393,8 +393,10 @@ mod tests {
     // No `file.name` → no file appender attached (console-only stays the default).
     #[test]
     fn from_properties_without_file_name_leaves_appender_off() {
-        let props: std::collections::HashMap<String, String> =
-            [("level", "warn")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let props: std::collections::HashMap<String, String> = [("level", "warn")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         let cfg = log_config_from_properties(&props, LogConfig::default());
         assert_eq!(cfg.level, Level::WARN);
         assert!(cfg.file.is_none());

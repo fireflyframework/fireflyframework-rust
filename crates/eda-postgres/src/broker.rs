@@ -421,7 +421,10 @@ impl PostgresBroker {
     /// open while we pump.
     async fn run_listener_session(
         client: Client,
-        mut connection: tokio_postgres::Connection<tokio_postgres::Socket, tokio_postgres::tls::NoTlsStream>,
+        mut connection: tokio_postgres::Connection<
+            tokio_postgres::Socket,
+            tokio_postgres::tls::NoTlsStream,
+        >,
         channel: &str,
         wake: &Arc<Notify>,
     ) {

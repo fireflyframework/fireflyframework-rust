@@ -463,9 +463,7 @@ mod tests {
     #[test]
     fn pretty_indents_output() {
         let mapper = ObjectMapper::new().pretty(true);
-        let json = mapper
-            .to_string(&serde_json::json!({"a": 1}))
-            .unwrap();
+        let json = mapper.to_string(&serde_json::json!({"a": 1})).unwrap();
         assert!(json.contains('\n'), "pretty output is multi-line: {json}");
     }
 

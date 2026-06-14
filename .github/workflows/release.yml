@@ -25,6 +25,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+      - name: System libraries (librdkafka native build + TLS/SASL)
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libssl-dev libsasl2-dev zlib1g-dev libzstd-dev libcurl4-openssl-dev
 
       # Release gate: the tagged commit must build and pass the workspace suite.
       - name: build (locked)

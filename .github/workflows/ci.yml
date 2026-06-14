@@ -33,6 +33,8 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: System libraries (librdkafka native build + TLS/SASL)
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libssl-dev libsasl2-dev zlib1g-dev libzstd-dev libcurl4-openssl-dev
       - name: rustfmt
         run: cargo fmt --all --check
       - name: clippy (deny warnings)
@@ -50,6 +52,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+      - name: System libraries (librdkafka native build + TLS/SASL)
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libssl-dev libsasl2-dev zlib1g-dev libzstd-dev libcurl4-openssl-dev
       - name: build
         run: cargo build --workspace --all-targets
       - name: test
@@ -115,6 +119,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+      - name: System libraries (librdkafka native build + TLS/SASL)
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libssl-dev libsasl2-dev zlib1g-dev libzstd-dev libcurl4-openssl-dev
       - name: integration tests (relational, document, cache, eda, session)
         run: |
           cargo test --no-fail-fast \

@@ -51,13 +51,13 @@ mod builder;
 mod common;
 mod config_properties;
 mod container;
-mod mapper;
-mod repository_query;
 mod cqrs;
 mod eda;
 mod eventsourcing;
-mod scheduling;
+mod mapper;
 mod method_security;
+mod repository_query;
+mod scheduling;
 mod transactional;
 mod web;
 

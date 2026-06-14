@@ -253,7 +253,7 @@ pub fn validate_luhn(s: &str) -> Result<(), ValidationError> {
         sum += d;
         double = !double;
     }
-    if sum % 10 != 0 {
+    if !sum.is_multiple_of(10) {
         return Err(invalid("luhn: checksum"));
     }
     Ok(())

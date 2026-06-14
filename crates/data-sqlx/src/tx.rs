@@ -211,7 +211,11 @@ async fn begin_active_tx(db: &Db, opts: &TxOptions) -> Result<ActiveTx, TxError>
 /// Applies isolation / read-only / timeout to a freshly-opened PG/MySQL
 /// transaction (issued as the transaction's first statements). `is_pg` selects
 /// Postgres-only `SET LOCAL statement_timeout`.
-async fn apply_pg_like_opts(active: &mut ActiveTx, opts: &TxOptions, is_pg: bool) -> Result<(), TxError> {
+async fn apply_pg_like_opts(
+    active: &mut ActiveTx,
+    opts: &TxOptions,
+    is_pg: bool,
+) -> Result<(), TxError> {
     if let Some(level) = opts.isolation.sql_level() {
         active
             .execute_raw(&format!("SET TRANSACTION ISOLATION LEVEL {level}"))
@@ -249,11 +253,7 @@ impl SqlxTransactionManager {
 
 #[async_trait]
 impl TransactionManager for SqlxTransactionManager {
-    async fn execute<'a>(
-        &self,
-        opts: TxOptions,
-        op: BoxedTxOp<'a>,
-    ) -> Result<TxOutcome, TxError> {
+    async fn execute<'a>(&self, opts: TxOptions, op: BoxedTxOp<'a>) -> Result<TxOutcome, TxError> {
         match current_stack() {
             None => self.run_as_root(opts, op).await,
             Some(stack) => run_as_nested(stack, self.db.clone(), opts, op).await,
@@ -262,7 +262,11 @@ impl TransactionManager for SqlxTransactionManager {
 
     fn is_active(&self) -> bool {
         current_stack()
-            .map(|s| s.try_lock().map(|g| g.active_real_index().is_some()).unwrap_or(true))
+            .map(|s| {
+                s.try_lock()
+                    .map(|g| g.active_real_index().is_some())
+                    .unwrap_or(true)
+            })
             .unwrap_or(false)
     }
 }
@@ -335,11 +339,7 @@ async fn run_as_nested<'a>(
         // Join the current transaction; propagate a nested failure as
         // rollback-only on the enclosing transaction.
         Propagation::Required | Propagation::Supports | Propagation::Mandatory => {
-            stack
-                .lock()
-                .await
-                .frames
-                .push(Frame::Joined);
+            stack.lock().await.frames.push(Frame::Joined);
             let op_result = op.await;
             let mut g = stack.lock().await;
             g.frames.pop(); // remove the Joined frame
@@ -407,7 +407,8 @@ async fn run_as_nested<'a>(
             };
             if let Some(tx) = g.current_tx_mut() {
                 if roll {
-                    tx.execute_raw(&format!("ROLLBACK TO SAVEPOINT {name}")).await?;
+                    tx.execute_raw(&format!("ROLLBACK TO SAVEPOINT {name}"))
+                        .await?;
                 } else {
                     tx.execute_raw(&format!("RELEASE SAVEPOINT {name}")).await?;
                 }
@@ -684,7 +685,11 @@ mod tests {
         let out: Result<(), TxError> = transactional_on(&mgr, TxOptions::default(), || async {
             insert(&db, 1, "a").await?;
             // Read-your-writes inside the transaction.
-            assert_eq!(count(&db).await, 1, "uncommitted write visible within the tx");
+            assert_eq!(
+                count(&db).await,
+                1,
+                "uncommitted write visible within the tx"
+            );
             Err(TxError::application("boom"))
         })
         .await;
@@ -714,7 +719,11 @@ mod tests {
         .await;
         assert!(out.is_err());
         // The outer row rolled back; the independent inner row survives.
-        assert_eq!(count(&db).await, 1, "REQUIRES_NEW committed; outer rolled back");
+        assert_eq!(
+            count(&db).await,
+            1,
+            "REQUIRES_NEW committed; outer rolled back"
+        );
     }
 
     #[tokio::test]
@@ -736,7 +745,11 @@ mod tests {
         })
         .await;
         assert!(out.is_ok());
-        assert_eq!(count(&db).await, 1, "savepoint rolled back, outer committed");
+        assert_eq!(
+            count(&db).await,
+            1,
+            "savepoint rolled back, outer committed"
+        );
     }
 
     #[tokio::test]

@@ -52,7 +52,7 @@ use crate::tx::SqlxTransactionManager;
 ///     max-connections: 16
 ///     acquire-timeout-ms: 5000
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct DataSourceProperties {
     /// The database URL. The scheme selects the backend: `postgres://` /
@@ -69,19 +69,6 @@ pub struct DataSourceProperties {
     pub idle_timeout_ms: u64,
     /// Maximum connection lifetime in milliseconds; `0` = unbounded.
     pub max_lifetime_ms: u64,
-}
-
-impl Default for DataSourceProperties {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            max_connections: 0,
-            min_connections: 0,
-            acquire_timeout_ms: 0,
-            idle_timeout_ms: 0,
-            max_lifetime_ms: 0,
-        }
-    }
 }
 
 impl DataSourceProperties {
@@ -122,7 +109,11 @@ impl Db {
                 "data: empty datasource url (set firefly.datasource.url)",
             ));
         }
-        let scheme = url.split([':', '/']).next().unwrap_or("").to_ascii_lowercase();
+        let scheme = url
+            .split([':', '/'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
         match scheme.as_str() {
             "postgres" | "postgresql" => connect_postgres(props).await,
             "mysql" => connect_mysql(props).await,
@@ -243,7 +234,9 @@ mod tests {
 
     #[tokio::test]
     async fn connect_builds_a_pool_from_a_url() {
-        let db = Db::connect("sqlite::memory:").await.expect("connect sqlite");
+        let db = Db::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
         assert_eq!(db.backend(), Backend::Sqlite);
     }
 

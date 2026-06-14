@@ -146,8 +146,8 @@ mod writer;
 pub use connect::{auto_configure, DataSourceProperties};
 pub use db::{Backend, Db};
 pub use repository::{SqlxReactiveRepository, SqlxRepository};
-pub use tx::SqlxTransactionManager;
 pub use row::{AnyRow, SqlxRowMapper, TryGetAcross};
+pub use tx::SqlxTransactionManager;
 pub use writer::{ColumnValue, RowWriter};
 
 #[cfg(feature = "actuator")]

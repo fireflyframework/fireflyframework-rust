@@ -113,10 +113,12 @@ impl AccountRepo {
 #[tokio::test]
 async fn declarative_derived_queries_execute() {
     let pool = shared_memory_pool("firefly_repo_derived").await;
-    sqlx::query("CREATE TABLE accounts (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, status TEXT NOT NULL)")
-        .execute(&pool)
-        .await
-        .expect("create table");
+    sqlx::query(
+        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, status TEXT NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create table");
 
     let cfg = TableConfig::new("accounts", "id", ["id", "owner", "status"]);
     let repo = SqlxReactiveRepository::new(Db::Sqlite(pool), cfg, map_account, write_account);
@@ -154,10 +156,12 @@ async fn declarative_derived_queries_execute() {
 #[tokio::test]
 async fn paged_and_custom_queries_execute() {
     let pool = shared_memory_pool("firefly_repo_paged").await;
-    sqlx::query("CREATE TABLE accounts (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, status TEXT NOT NULL)")
-        .execute(&pool)
-        .await
-        .expect("create table");
+    sqlx::query(
+        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, status TEXT NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create table");
 
     let cfg = TableConfig::new("accounts", "id", ["id", "owner", "status"]);
     let repo = SqlxReactiveRepository::new(Db::Sqlite(pool), cfg, map_account, write_account);
@@ -184,13 +188,19 @@ async fn paged_and_custom_queries_execute() {
     // Paged derived query: ada's rows, one per page, newest id first.
     // Pages are 1-based (matching Spring/pyfly).
     let page1 = api
-        .find_by_owner("ada", Pageable::of(1, 1, RequestSort::of([Order::desc("id")])).unwrap())
+        .find_by_owner(
+            "ada",
+            Pageable::of(1, 1, RequestSort::of([Order::desc("id")])).unwrap(),
+        )
         .await
         .expect("paged find");
     assert_eq!(page1.len(), 1, "page size 1");
     assert_eq!(page1[0].id, 2, "newest id first");
     let page2 = api
-        .find_by_owner("ada", Pageable::of(2, 1, RequestSort::of([Order::desc("id")])).unwrap())
+        .find_by_owner(
+            "ada",
+            Pageable::of(2, 1, RequestSort::of([Order::desc("id")])).unwrap(),
+        )
         .await
         .expect("paged find");
     assert_eq!(page2[0].id, 1, "second page is the older row");

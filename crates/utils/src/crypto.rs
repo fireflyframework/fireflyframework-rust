@@ -134,7 +134,7 @@ pub fn encode_base64(b: &[u8]) -> String {
 /// unpadded input — identical acceptance to Go's `DecodeBase64`,
 /// which routes on `len(s) % 4`.
 pub fn decode_base64(s: &str) -> Result<Vec<u8>, CryptoError> {
-    if s.len() % 4 != 0 {
+    if !s.len().is_multiple_of(4) {
         Ok(URL_SAFE_NO_PAD.decode(s)?)
     } else {
         Ok(URL_SAFE.decode(s)?)

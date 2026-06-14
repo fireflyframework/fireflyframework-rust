@@ -1520,15 +1520,13 @@ where
 
     async fn save(&self, entity: T) -> Result<T, DataError> {
         let inner = Arc::clone(&self.inner);
-        let id_value = do_upsert(&inner, &entity)
-            .await
-            .map_err(|e| {
-                if e.code == OPTIMISTIC_LOCK_CODE {
-                    DataError::OptimisticLock
-                } else {
-                    DataError::Backend(e.to_string())
-                }
-            })?;
+        let id_value = do_upsert(&inner, &entity).await.map_err(|e| {
+            if e.code == OPTIMISTIC_LOCK_CODE {
+                DataError::OptimisticLock
+            } else {
+                DataError::Backend(e.to_string())
+            }
+        })?;
         match fetch_one_by_id(inner, id_value).await {
             Ok(v) => Ok(v),
             Err(e) if e.code == EMPTY_CODE => Err(DataError::NotFound),

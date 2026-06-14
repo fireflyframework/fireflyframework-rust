@@ -40,8 +40,8 @@ fn builder_sets_fields_with_required_and_defaults() {
         OpenAccount {
             owner: "ada".into(),
             note: "vip".into(),
-            overdraft: 0,   // #[builder(default)]
-            limit: 100,     // #[builder(default_expr = "100")]
+            overdraft: 0, // #[builder(default)]
+            limit: 100,   // #[builder(default_expr = "100")]
         }
     );
 }

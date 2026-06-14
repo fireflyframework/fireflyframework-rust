@@ -111,7 +111,9 @@ pub(crate) fn derive_builder(input: DeriveInput) -> syn::Result<TokenStream> {
                 let expr: syn::Expr = syn::parse_str(expr_str).map_err(|e| {
                     syn::Error::new_spanned(
                         fident,
-                        format!("#[builder(default = \"{expr_str}\")] is not a valid expression: {e}"),
+                        format!(
+                            "#[builder(default = \"{expr_str}\")] is not a valid expression: {e}"
+                        ),
                     )
                 })?;
                 quote! { .unwrap_or_else(|| #expr) }

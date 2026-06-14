@@ -207,8 +207,7 @@ pub type BoxedTxOp<'a> = Pin<Box<dyn Future<Output = Result<TxOutcome, TxError>>
 #[async_trait]
 pub trait TransactionManager: Send + Sync {
     /// Runs `op` within a transaction governed by `opts`.
-    async fn execute<'a>(&self, opts: TxOptions, op: BoxedTxOp<'a>)
-        -> Result<TxOutcome, TxError>;
+    async fn execute<'a>(&self, opts: TxOptions, op: BoxedTxOp<'a>) -> Result<TxOutcome, TxError>;
 
     /// Whether a transaction is currently active on this task (for
     /// introspection / `Propagation` checks). Defaults to `false`.
@@ -340,7 +339,10 @@ mod tests {
     #[test]
     fn tx_options_builders() {
         assert_eq!(TxOptions::default().propagation, Propagation::Required);
-        assert_eq!(TxOptions::requires_new().propagation, Propagation::RequiresNew);
+        assert_eq!(
+            TxOptions::requires_new().propagation,
+            Propagation::RequiresNew
+        );
         assert_eq!(TxOptions::nested().propagation, Propagation::Nested);
         assert!(TxOptions::default().read_only().read_only);
         assert_eq!(
@@ -354,28 +356,24 @@ mod tests {
     #[test]
     fn isolation_sql() {
         assert_eq!(Isolation::Default.sql_level(), None);
-        assert_eq!(
-            Isolation::Serializable.sql_level(),
-            Some("SERIALIZABLE")
-        );
-        assert_eq!(
-            Isolation::ReadCommitted.sql_level(),
-            Some("READ COMMITTED")
-        );
+        assert_eq!(Isolation::Serializable.sql_level(), Some("SERIALIZABLE"));
+        assert_eq!(Isolation::ReadCommitted.sql_level(), Some("READ COMMITTED"));
     }
 
     #[tokio::test]
     async fn transactional_runs_without_manager() {
         // No manager registered in this test process → degrades to a plain call.
-        let out: Result<i32, TxError> = transactional(TxOptions::default(), || async { Ok(7) }).await;
+        let out: Result<i32, TxError> =
+            transactional(TxOptions::default(), || async { Ok(7) }).await;
         assert_eq!(out.unwrap(), 7);
     }
 
     #[tokio::test]
     async fn transactional_propagates_error_without_manager() {
-        let out: Result<i32, TxError> =
-            transactional(TxOptions::default(), || async { Err(TxError::application("boom")) })
-                .await;
+        let out: Result<i32, TxError> = transactional(TxOptions::default(), || async {
+            Err(TxError::application("boom"))
+        })
+        .await;
         assert!(out.is_err());
     }
 }

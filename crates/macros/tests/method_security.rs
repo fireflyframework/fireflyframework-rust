@@ -81,8 +81,7 @@ async fn pre_authorize_authenticated_rejects_anonymous() {
     let ok = with_authentication_scope(principal("u", &[], &[]), any_authenticated()).await;
     assert_eq!(ok, Ok("hello"));
     // Anonymous is present but not a real principal.
-    let denied =
-        with_authentication_scope(Authentication::anonymous(), any_authenticated()).await;
+    let denied = with_authentication_scope(Authentication::anonymous(), any_authenticated()).await;
     assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
 }
 
@@ -108,11 +107,7 @@ impl Reports {
 #[tokio::test]
 async fn pre_authorize_on_method_uses_authority() {
     let svc = Reports;
-    let ok = with_authentication_scope(
-        principal("svc", &[], &["reports:read"]),
-        svc.read(),
-    )
-    .await;
+    let ok = with_authentication_scope(principal("svc", &[], &["reports:read"]), svc.read()).await;
     assert_eq!(ok, Ok("rows"));
     let denied =
         with_authentication_scope(principal("svc", &[], &["reports:write"]), svc.read()).await;

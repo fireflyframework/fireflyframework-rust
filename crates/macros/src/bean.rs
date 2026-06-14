@@ -269,7 +269,11 @@ fn build_bean_conditions(container: &TokenStream, args: &BeanArgs) -> TokenStrea
     if let Some(p) = args.profile.as_deref().filter(|s| !s.is_empty()) {
         entries.push(quote!(#container::Condition::Profile(#p.to_string())));
     }
-    if let Some(p) = args.condition_on_property.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(p) = args
+        .condition_on_property
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
         entries.push(quote!(#container::Condition::on_property(#p)));
     }
     if let Some(c) = args.condition_on_class.as_deref().filter(|s| !s.is_empty()) {
@@ -327,7 +331,8 @@ fn parse_bean_args(attr: &syn::Attribute) -> syn::Result<BeanArgs> {
         } else if meta.path.is_ident("condition_on_missing_bean") {
             args.condition_on_missing_bean = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("condition_on_single_candidate") {
-            args.condition_on_single_candidate = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+            args.condition_on_single_candidate =
+                Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else {
             return Err(meta.error(
                 "unknown #[bean] argument; use name, scope, primary, order, profile, \
