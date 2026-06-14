@@ -51,7 +51,7 @@ Success criteria:
 - **Crate naming**: `firefly-<module>` with hyphenation
   (`firefly-idp-aws-cognito`, `firefly-ecm-storage-aws`, `firefly-starter-core`, …).
 - **Version**: `26.6.2` — CalVer (`YY.MM.Patch`) expressed as valid semver, set to the
-  June 2026 release window. Edition 2021, MSRV 1.85.
+  June 2026 release window. Edition 2021, MSRV 1.88.
 - **Dependency policy**: all external deps are declared once in `[workspace.dependencies]`;
   member crates only reference `{ workspace = true }`. Core stack: tokio, axum 0.7, tower,
   serde/serde_json/serde_yaml, thiserror, async-trait, uuid, chrono, reqwest; crypto via

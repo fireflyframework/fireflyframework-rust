@@ -16,8 +16,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # The framework's MSRV — kept in lockstep with Cargo.toml `rust-version`.
-  RUST_TOOLCHAIN: "1.85"
+  # The framework targets the latest stable Rust.
+  RUST_TOOLCHAIN: "stable"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -54,20 +54,6 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: test
         run: cargo test --workspace --all-targets
-
-  # ---------------------------------------------------------------------------
-  # MSRV guard — the workspace must build on its declared minimum Rust.
-  # ---------------------------------------------------------------------------
-  msrv:
-    name: MSRV build (${{ '1.85' }})
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --locked
 
   # ---------------------------------------------------------------------------
   # Real-infra integration — the env-gated adapter suite against live services

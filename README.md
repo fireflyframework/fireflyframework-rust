@@ -11,11 +11,11 @@ _/ ____\__|______   _____/ ____\  | ___.__.
 
 **Spring Boot for Rust — a production-grade platform for building
 *reactive* (WebFlux-style), event-driven, resilient microservices on
-Rust 1.85+ (tokio + axum).**
+Rust 1.88+ (tokio + axum).**
 
 [![Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Version 26.6.4](https://img.shields.io/badge/version-26.6.4-orange.svg)](CHANGELOG.md)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-93450a.svg)](https://www.rust-lang.org)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-93450a.svg)](https://www.rust-lang.org)
 [![Reactive: Mono / Flux](https://img.shields.io/badge/reactive-Mono%20%2F%20Flux-success.svg)](docs/book/src/05-reactive-model.md)
 [![One dependency: firefly](https://img.shields.io/badge/one%20dep-firefly%20%2B%20macros-success.svg)](crates/firefly/README.md)
 [![Real-infra tested](https://img.shields.io/badge/tests-real%20infra%20(Docker)-2496ed.svg)](#real-infrastructure-testing)
@@ -349,7 +349,7 @@ fireflyframework-rust/
 ├── docs/                         # ARCHITECTURE, CONFIGURATION, DESIGN
 ├── docs/book/                    # the mdBook guide (mdbook build docs/book) + dist/*.pdf,*.epub
 ├── docker-compose.yml            # real backing services for integration tests
-└── Cargo.toml                    # workspace root — version 26.6.4, edition 2021, MSRV 1.85
+└── Cargo.toml                    # workspace root — version 26.6.4, edition 2021, MSRV 1.88
 ```
 
 ### Choosing your tier / optional adapters
@@ -501,7 +501,7 @@ cargo test  --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Requires Rust 1.85+ (edition 2021).
+Requires Rust 1.88+ (edition 2021).
 
 ---
 

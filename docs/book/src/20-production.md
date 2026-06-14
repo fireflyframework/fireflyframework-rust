@@ -267,7 +267,7 @@ adapter, keep the code," applied to the storage and messaging tiers.
 A typical multi-stage build for Lumen:
 
 ```dockerfile
-FROM rust:1.85 AS build
+FROM rust:1.88 AS build
 WORKDIR /app
 COPY . .
 RUN cargo build --release -p firefly-sample-lumen

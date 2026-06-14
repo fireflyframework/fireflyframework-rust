@@ -10,7 +10,7 @@ _/ ____\__|______   _____/ ____\  | ___.__.
 ```
 
 **A production-grade platform for building reactive, event-driven, resilient
-microservices on Rust 1.85+ (tokio + axum) — taught one running service at a
+microservices on Rust 1.88+ (tokio + axum) — taught one running service at a
 time.**
 
 The Firefly Framework provides the cross-cutting machinery that every

@@ -17,7 +17,7 @@ Firefly dependency is the [`firefly`](./21-declarative-macros.md) facade.
 ## Prerequisites
 
 ```bash
-rustc --version   # 1.85 or later
+rustc --version   # 1.88 or later
 cargo --version
 ```
 

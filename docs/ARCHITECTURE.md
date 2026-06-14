@@ -64,7 +64,7 @@ infrastructure adapters — including the hexagonal database adapters
 `firefly-data-sqlx` / `firefly-data-mongodb` and the distributed session
 registries `firefly-session-redis` / `firefly-session-postgres` /
 `firefly-session-mongodb`). One
-version (`26.6.4`), one edition (2021), one MSRV (1.85) — set once in
+version (`26.6.4`), one edition (2021), one MSRV (1.88) — set once in
 `[workspace.package]` and inherited by every member.
 
 The runtime stack is deliberate and small:
