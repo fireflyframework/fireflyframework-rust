@@ -1,7 +1,7 @@
 # firefly-eda-kafka
 
 Apache Kafka transport for the Firefly Framework [`firefly-eda`] event-driven
-architecture port, built on [`rdkafka`] (a binding over the `librdkafka` C
+architecture, built on [`rdkafka`] (a binding over the `librdkafka` C
 library).
 
 `KafkaBroker` implements the same `Publisher` / `Subscriber` / `Broker`
@@ -44,7 +44,7 @@ Publisher::close(&*broker).await?;
 |--------------------|--------|
 | value              | canonical `Event` JSON (`id`/`type`/`source`/`topic`/`correlationId`/`time`/`headers`/`payload`) |
 | key                | `Event.correlation_id`, falling back to `Event.id` |
-| topic              | `Event.topic` (pyfly `destination`) |
+| topic              | `Event.topic` |
 | headers            | every `Event` header copied as a UTF-8 Kafka header |
 
 The consumer deserializes the record value back into an `Event` and dispatches
@@ -58,8 +58,8 @@ skipped, and a handler that returns an error is logged with the loop continuing
 `KafkaConfig` is field-for-field the shape of `firefly_eda::KafkaConfig` (so the
 starter can hand the same config to either the scaffold or this adapter) plus a
 `with_property` escape hatch for arbitrary `librdkafka` tuning (`acks`, SASL
-credentials, `auto.offset.reset`, …). The consumer defaults mirror pyfly's
-`KafkaEventBus`: auto-commit enabled and `auto.offset.reset=earliest`.
+credentials, `auto.offset.reset`, …). The consumer defaults to auto-commit
+enabled and `auto.offset.reset=earliest`.
 
 ## Testing
 
@@ -75,19 +75,12 @@ the real produce → consumer-group consume round-trip:
 FIREFLY_TEST_KAFKA_BROKERS=localhost:9092 cargo test -p firefly-eda-kafka
 ```
 
-## pyfly parity
+## Design notes
 
-This is the Rust analog of pyfly's `KafkaEventBus` (aiokafka): a producer plus a
-consumer-group loop with per-message error isolation. The differences are
-idiomatic, not behavioral:
-
-- pyfly subscribes by `fnmatch` `event_type` pattern over a fixed topic list;
-  the Rust `Subscriber` port is topic-based, so `KafkaBroker` subscribes by
-  Kafka topic (the pyfly `destination`). The wire format and per-message
-  isolation are identical.
-- pyfly carries an injected `EventSerializer`; Rust uses the canonical `Event`
-  JSON codec directly (Avro / Protobuf are `NotImplementedError` stubs in pyfly
-  too).
+`KafkaBroker` pairs a producer with a consumer-group loop and per-message error
+isolation. Because the `firefly-eda` `Subscriber` port is topic-based,
+`KafkaBroker` subscribes by Kafka topic and uses the canonical `Event` JSON
+codec directly (Avro / Protobuf are not yet supported).
 
 [`firefly-eda`]: ../eda
 [`rdkafka`]: https://docs.rs/rdkafka

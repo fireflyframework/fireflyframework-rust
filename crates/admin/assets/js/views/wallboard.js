@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Wallboard View.
+ * Firefly Admin — Wallboard View.
  *
  * Full-screen wallboard mode for large displays showing key metrics
  * as a 3x3 grid of tiles with real-time SSE updates for health,
@@ -60,26 +60,23 @@ function beansSubtitle(beans) {
 }
 
 /**
- * Sum all GC generation collections.
- * @param {object|null} gc  The gc object from runtime.
- * @returns {string}  e.g. "111" or "--"
+ * Format the live Tokio task count.
+ * @param {object|null} tokio  The tokio object from runtime.
+ * @returns {string}  e.g. "7" or "--"
  */
-function formatGC(gc) {
-    if (!gc) return '--';
-    const total = (gc.gen0_collections || 0)
-        + (gc.gen1_collections || 0)
-        + (gc.gen2_collections || 0);
-    return String(total);
+function formatTasks(tokio) {
+    if (!tokio || tokio.alive_tasks == null) return '--';
+    return String(tokio.alive_tasks);
 }
 
 /**
- * Format CPU process time.
+ * Format the logical CPU core count.
  * @param {object|null} cpu  The cpu object from runtime.
- * @returns {string}  e.g. "12.5s" or "--"
+ * @returns {string}  e.g. "11" or "--"
  */
 function formatCPU(cpu) {
-    if (!cpu || cpu.process_time_s == null) return '--';
-    return `${cpu.process_time_s.toFixed(1)}s`;
+    if (!cpu || cpu.logical_cores == null) return '--';
+    return String(cpu.logical_cores);
 }
 
 /**
@@ -233,8 +230,8 @@ export async function render(container, api) {
     memTile.id = 'wb-memory';
     grid.appendChild(memTile);
 
-    // CPU tile — process time
-    const cpuTile = createTile('CPU', formatCPU(runtime?.cpu), '--admin-info');
+    // CPU tile — logical core count
+    const cpuTile = createTile('Cores', formatCPU(runtime?.cpu), '--admin-info');
     cpuTile.id = 'wb-cpu';
     grid.appendChild(cpuTile);
 
@@ -250,19 +247,19 @@ export async function render(container, api) {
     beansTile.id = 'wb-beans';
     grid.appendChild(beansTile);
 
-    // Threads tile — active count
+    // Worker-threads tile — Tokio worker count
     const threadTile = createTile(
-        'Threads',
-        String(runtime?.threads?.active ?? '--'),
+        'Workers',
+        String(runtime?.tokio?.worker_threads ?? '--'),
         '--admin-text',
     );
     threadTile.id = 'wb-threads';
     grid.appendChild(threadTile);
 
-    // GC tile — total collections across all generations
-    const gcTile = createTile('GC', formatGC(runtime?.gc), '--admin-danger');
-    gcTile.id = 'wb-gc';
-    grid.appendChild(gcTile);
+    // Tasks tile — live Tokio task count
+    const tasksTile = createTile('Tasks', formatTasks(runtime?.tokio), '--admin-success');
+    tasksTile.id = 'wb-tasks';
+    grid.appendChild(tasksTile);
 
     // ── Row 3 ──────────────────────────────────────────────────
 
@@ -315,13 +312,13 @@ export async function render(container, api) {
         }
 
         const threadValue = document.querySelector('#wb-threads .wallboard-tile-value');
-        if (threadValue && data.threads) {
-            threadValue.textContent = String(data.threads.active);
+        if (threadValue && data.tokio && data.tokio.worker_threads != null) {
+            threadValue.textContent = String(data.tokio.worker_threads);
         }
 
-        const gcValue = document.querySelector('#wb-gc .wallboard-tile-value');
-        if (gcValue && data.gc) {
-            gcValue.textContent = formatGC(data.gc);
+        const tasksValue = document.querySelector('#wb-tasks .wallboard-tile-value');
+        if (tasksValue && data.tokio) {
+            tasksValue.textContent = formatTasks(data.tokio);
         }
 
         const cpuValue = document.querySelector('#wb-cpu .wallboard-tile-value');

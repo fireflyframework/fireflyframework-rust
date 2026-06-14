@@ -34,11 +34,12 @@ and a reactive `Flux` subscription surface. The production transports (Kafka,
 RabbitMQ, Postgres outbox, Redis Streams) implement the same ports and slot in
 at wiring time, so Lumen's projection never changes when the broker does.
 
-> **Spring parity** — The `Broker` port is the Spring Cloud Stream binder
-> abstraction; publishing to it is `ApplicationEventPublisher.publishEvent` /
-> `StreamBridge.send`. `#[event_listener(topic = …)]` is `@KafkaListener` /
-> `@EventListener`. `wrap_listener`'s retry/DLQ is `@RetryableTopic`; the glob
-> subscription is `bus.subscribe("user.*", …)`.
+> **Design note.** The `Broker` is Firefly's transport-agnostic messaging port:
+> you publish an `Event` to it and subscribe handlers with
+> `#[event_listener(topic = …)]`. `wrap_listener` adds retry and dead-lettering;
+> subscriptions accept glob topic patterns. Production transports (Kafka,
+> RabbitMQ, Postgres outbox, Redis Streams) implement the same port and slot in
+> at wiring time, so a handler never changes when the broker does.
 
 ## Two kinds of "event" in one wallet
 
@@ -60,9 +61,11 @@ next chapter's subject.
 
 ## The `Event` envelope
 
-`Event` is wire-compatible across the Java/.NET/Go/Python/Rust ports — the same
-JSON field names and omission rules. Construct one with `Event::new`, which also
-stamps `correlation_id` from the kernel's task-local correlation scope:
+`Event` is Firefly's canonical wire envelope, with a stable JSON shape (fixed
+field names and omission rules) so producers and consumers agree on the bytes
+regardless of broker or service — any system that honours the contract
+interoperates. Construct one with `Event::new`, which also stamps
+`correlation_id` from the kernel's task-local correlation scope:
 
 ```rust
 use firefly_eda::Event;
@@ -121,10 +124,6 @@ routing metadata for a subscriber to find and re-fold the affected aggregate
 without decoding the payload — which is exactly what Lumen's projection does
 below.
 
-> **Spring parity** — `to_envelope` is the hand-written equivalent of a Spring
-> Cloud Stream message converter: the domain object becomes the payload, and the
-> `KafkaHeaders.MESSAGE_KEY` / custom headers carry the routing metadata.
-
 ## Publishing from the ledger
 
 The `Ledger` is the single write path every command and the transfer saga call.
@@ -166,17 +165,16 @@ async fn commit(&self, wallet: &mut Wallet, expected: i64) -> Result<(), DomainE
 ```
 
 Notice the ordering: **append before publish.** A subscriber must never see a
-fact that did not persist — the same "save before you publish" discipline a
-Spring service follows with `@TransactionalEventListener(phase = AFTER_COMMIT)`.
-If the append fails (including the optimistic-concurrency race) the loop is never
-reached, so no event is broadcast. The store backing this `Ledger` is the
-in-memory `MemoryEventStore`; the [next chapter](./11-event-sourcing.md) is where
-that store earns the name *event-sourced*.
+fact that did not persist. If the append fails (including the
+optimistic-concurrency race) the loop is never reached, so no event is broadcast.
+The store backing this `Ledger` is the in-memory `MemoryEventStore`; the
+[next chapter](./11-event-sourcing.md) is where that store earns the name
+*event-sourced*.
 
-> **Spring parity** — Publishing after the unit of work commits mirrors Spring's
-> `@TransactionalEventListener(phase = AFTER_COMMIT)`. The gap between append and
-> publish — where a crash could persist a fact but drop the broadcast — is what
-> the transactional outbox in the next chapter eliminates.
+> **Note.** Append before publish: a subscriber must never see a fact that did
+> not persist. The gap between append and publish — where a crash could persist a
+> fact but drop the broadcast — is what the transactional outbox in the
+> [next chapter](./11-event-sourcing.md) eliminates.
 
 ## The in-process broker
 
@@ -265,19 +263,18 @@ and has no idea a deposit was processed. It reacts purely to the published fact.
 You can add a `FraudDetector` or a `WelcomeNotifier` subscriber next to it
 without touching a line of the command path.
 
-> **Spring parity** — `#[event_listener(topic = "wallets.events")]` →
-> `subscribe_project_wallet_event(broker)` is the macro analog of Spring's
-> `@KafkaListener(topics = "wallets.events")` and pyfly's
-> `@event_listener(event_types=[...])`: the framework wires the subscription for
-> you; you write only the reaction.
+> **Note.** `#[event_listener(topic = "wallets.events")]` generates
+> `subscribe_project_wallet_event(broker)`: the framework wires the subscription
+> for you; you write only the reaction.
 
 ### Wiring state into a free-fn listener
 
-Spring would inject the store and read model into a `@Component` listener bean. A
-Rust free fn cannot capture wiring state, so Lumen uses the same
+A Rust free fn cannot capture wiring state, so Lumen uses the same
 publish-collaborators-once pattern its CQRS handlers use: the resolved
 collaborators are placed in a process-global `OnceLock` at startup, and the
-listener reads them back through a small accessor:
+listener reads them back through a small accessor. (When you would rather have the
+collaborators injected, the [dependency-injection chapter](./04a-dependency-injection.md)'s
+`#[derive(Component)]` listener is the constructor-injection alternative.)
 
 ```rust
 use std::sync::{Arc, OnceLock};
@@ -422,8 +419,8 @@ dropped before the handler body runs.
 
 `InMemoryBroker::subscribe_reactive(topic)` is the reactive twin of
 `subscribe` — a `Flux<Event>` that emits every event delivered to the topic,
-composing with the whole Reactor operator set. `publish_mono(event)` is the cold
-reactive publish (nothing happens until the `Mono` is subscribed):
+composing with Firefly's full reactive-streams operator set. `publish_mono(event)`
+is the cold reactive publish (nothing happens until the `Mono` is subscribed):
 
 ```rust
 use std::sync::Arc;

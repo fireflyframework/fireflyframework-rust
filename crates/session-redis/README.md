@@ -1,12 +1,11 @@
 # `firefly-session-redis`
 
-> **Tier:** Platform · **Status:** Full · **pyfly original:** `pyfly.session.adapters.redis_registry.RedisSessionRegistry`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
 `firefly-session-redis` is the **Redis-backed, distributed** implementation of
-the [`firefly_session::SessionRegistry`](../session) port — the Rust port of
-pyfly's `RedisSessionRegistry`. It is a shared, per-principal index of live
+the [`firefly_session::SessionRegistry`](../session) port. It is a shared, per-principal index of live
 sessions: every application instance reads and writes the same Redis keys, so
 the per-principal concurrency cap enforced by
 [`firefly_session::SessionConcurrencyController`](../session) holds **across the
@@ -41,8 +40,8 @@ in-process registry's bucket pruning).
 
 > A plain Redis set (`SADD`/`SMEMBERS`/`SREM`) cannot record each session's
 > `created_at` nor return entries oldest-first, both of which the
-> `SessionRegistry` contract requires; a **sorted set** is used instead. This
-> is faithful to pyfly's actual `ZADD`/`ZRANGE`/`ZREM`/`ZCARD` implementation.
+> `SessionRegistry` contract requires; a **sorted set** is used instead, driven
+> by the `ZADD`/`ZRANGE`/`ZREM`/`ZCARD` commands shown above.
 
 ## TTL — bounding orphan growth
 

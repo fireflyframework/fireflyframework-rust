@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Environment View.
+ * Firefly Admin — Environment View.
  *
  * Displays active profiles, config sources, and a filterable
  * properties table with type-aware value styling.

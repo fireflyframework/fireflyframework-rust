@@ -1,15 +1,13 @@
 # `firefly-data-sqlx`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** Spring Data R2DBC · **pyfly module:** `data.relational.sqlalchemy`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
 `firefly-data-sqlx` is the **relational repository adapter** that implements
 the [`firefly-data`](../data) ports over [`sqlx`](https://github.com/launchbadge/sqlx)
-for **PostgreSQL, MySQL, and SQLite** from a single codebase. It is the Rust
-analogue of pyfly's SQLAlchemy adapter
-(`pyfly.data.relational.sqlalchemy.repository.Repository[T, ID]`), which
-serves all three relational backends behind one `Repository` surface.
+for **PostgreSQL, MySQL, and SQLite** from a single codebase. It serves all
+three relational backends behind one `Repository` surface.
 
 The repositories are generic over the entity `T` and its id, and select the
 matching `SqlDialect` at runtime from the connection-pool's backend kind — so
@@ -25,7 +23,7 @@ placeholders (`$n` vs `?`), identifier quoting (`"id"` vs `` `id` ``),
 |---|---|
 | `Db` | a backend-tagged pool (`Postgres(PgPool)` / `MySql(MySqlPool)` / `Sqlite(SqlitePool)`); hands out the matching `SqlDialect` |
 | `Backend` | the backend kind (`Postgres` / `MySql` / `Sqlite`) |
-| `SqlxReactiveRepository<T, ID>` | streaming `ReactiveCrudRepository` + `ReactiveSpecificationRepository` (Spring Data R2DBC analogue) |
+| `SqlxReactiveRepository<T, ID>` | streaming `ReactiveCrudRepository` + `ReactiveSpecificationRepository` |
 | `SqlxRepository<T, K>` | the blocking-style `Repository` over the same SQL |
 | `AnyRow` + `SqlxRowMapper<T>` | one backend-agnostic row mapper, column-name accessors dispatch to the concrete backend row |
 | `RowWriter<T>` + `ColumnValue` | the entity's `(column, value)` pairs; the repo builds the dialect-aware `UPSERT` |
@@ -49,10 +47,9 @@ placeholders (`$n` vs `?`), identifier quoting (`"id"` vs `` `id` ``),
 
 ### Derived & custom queries (executed end-to-end)
 
-The adapter runs Spring-Data **derived query methods** and **`@query`
-custom queries** against the live pool — the Rust analogue of pyfly's
-repository bean post-processor (Rust has no runtime reflection, so the query
-is named/described at the call site rather than via a stub method):
+The adapter runs **derived query methods** and **`@query` custom queries**
+against the live pool. Rust has no runtime reflection, so the query is
+named/described at the call site rather than via a stub method:
 
 ```rust,ignore
 use firefly_data::CustomQuery;
@@ -165,11 +162,10 @@ cargo test -p firefly-data-sqlx
 ## Actuator integration (feature `actuator`)
 
 Enable the `actuator` feature to get a database health component and per-query
-metrics, the Rust port of pyfly's `SqlAlchemyHealthIndicator` /
-`SqlAlchemyQueryMetrics`:
+metrics:
 
 ```toml
-firefly-data-sqlx = { version = "26.6.3", features = ["actuator"] }
+firefly-data-sqlx = { version = "26.6.4", features = ["actuator"] }
 ```
 
 - `SqlxHealthIndicator` implements `firefly_actuator::HealthIndicator`: it
@@ -177,10 +173,10 @@ firefly-data-sqlx = { version = "26.6.3", features = ["actuator"] }
   `details.database`) — the `db` component on `GET /actuator/health`.
   `SqlxHealthIndicator::named(db, "db-reporting")` probes a named datasource
   under its own component name.
-- `SqlxQueryMetrics` records `pyfly_db_query_duration_seconds` /
-  `pyfly_db_queries_total` / `pyfly_db_query_errors_total`, all labelled by a
-  **bounded** `operation` (`SELECT` / `INSERT` / `UPDATE` / `DELETE` /
-  `OTHER`), matching pyfly's metric names for cross-port dashboards.
+- `SqlxQueryMetrics` records `firefly_db_query_duration_seconds` /
+  `firefly_db_queries_total` / `firefly_db_query_errors_total`, all labelled by
+  a **bounded** `operation` (`SELECT` / `INSERT` / `UPDATE` / `DELETE` /
+  `OTHER`).
 
 ## Cargo features
 
@@ -188,7 +184,7 @@ All three backends are enabled by default. Disable the ones you do not need
 for a smaller build, e.g. a SQLite-only repository:
 
 ```toml
-firefly-data-sqlx = { version = "26.6.3", default-features = false, features = ["sqlite"] }
+firefly-data-sqlx = { version = "26.6.4", default-features = false, features = ["sqlite"] }
 ```
 
 The `actuator` feature (off by default) adds the health/metrics integration

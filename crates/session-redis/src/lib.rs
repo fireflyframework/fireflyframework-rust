@@ -97,7 +97,7 @@ use redis::{AsyncCommands, Client};
 use tokio::sync::Mutex;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.3";
+pub const VERSION: &str = "26.6.4";
 
 /// The default key prefix for a principal's session sorted set — pyfly's
 /// `pyfly:session:user:` under the Rust framework's `firefly:` namespace. The
@@ -221,18 +221,20 @@ impl SessionRegistry for RedisSessionRegistry {
     /// login failing.
     async fn register(&self, principal: &str, session_id: &str, created_at: i64) {
         let key = self.key(principal);
-        let mut conn = self.conn.lock().await;
-        // ZADD key score member — score is the creation time so ZRANGE is
-        // oldest-first.
-        if let Err(e) = conn.zadd::<_, _, _, ()>(&key, session_id, created_at).await {
-            tracing::warn!(principal, session_id, error = %e, "session-redis: ZADD failed; concurrency cap not enforced for this login");
-            return;
-        }
+        // Pipeline ZADD + the sliding EXPIRE into a single round-trip so the
+        // connection lock is never held across two awaits (which would
+        // serialize unrelated principals' logins behind one another's network
+        // latency). ZADD's score is the creation time so ZRANGE stays
+        // oldest-first; the EXPIRE slides the orphan-bounding TTL forward on
+        // every login (only when a positive TTL is configured).
+        let mut pipe = redis::pipe();
+        pipe.zadd(&key, session_id, created_at).ignore();
         if self.ttl_secs > 0 {
-            // Slide the orphan-bounding TTL forward on every login.
-            if let Err(e) = conn.expire::<_, ()>(&key, self.ttl_secs).await {
-                tracing::warn!(principal, error = %e, "session-redis: EXPIRE failed; index TTL not refreshed");
-            }
+            pipe.expire(&key, self.ttl_secs).ignore();
+        }
+        let mut conn = self.conn.lock().await;
+        if let Err(e) = pipe.query_async::<()>(&mut *conn).await {
+            tracing::warn!(principal, session_id, error = %e, "session-redis: register pipeline (ZADD/EXPIRE) failed; concurrency cap not enforced for this login");
         }
     }
 

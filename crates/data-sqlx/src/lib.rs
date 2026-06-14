@@ -133,16 +133,20 @@
 #![warn(missing_docs)]
 
 mod binding;
+mod connect;
 mod db;
 #[cfg(feature = "actuator")]
 mod observe;
 mod repository;
 mod row;
 mod sql;
+mod tx;
 mod writer;
 
+pub use connect::{auto_configure, DataSourceProperties};
 pub use db::{Backend, Db};
 pub use repository::{SqlxReactiveRepository, SqlxRepository};
+pub use tx::SqlxTransactionManager;
 pub use row::{AnyRow, SqlxRowMapper, TryGetAcross};
 pub use writer::{ColumnValue, RowWriter};
 
@@ -153,4 +157,4 @@ pub use observe::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.3";
+pub const VERSION: &str = "26.6.4";

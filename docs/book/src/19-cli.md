@@ -5,13 +5,13 @@ each chapter. By the end of this chapter you will know the other way to start a
 service like Lumen: the `firefly` developer CLI scaffolds a project, generates
 the same artifacts the earlier chapters wrote by hand, runs the binary with
 profiles and overrides, manages migrations, exports an OpenAPI document, and
-introspects a running Lumen over its actuator surface. It is the Rust port of
-pyfly's `pyfly` CLI, adapted to a compiled Cargo workspace.
+introspects a running Lumen over its actuator surface — all from one binary
+built for a compiled Cargo workspace.
 
-> **Spring parity.** `firefly` is to a Firefly-Rust service what the Spring Boot
-> CLI / `spring init` and `mvn`/`gradle` goals are to a Spring Boot service:
-> project scaffolding, run, build-info stamping, and actuator introspection in
-> one binary. The command names track pyfly's `pyfly` group one-for-one
+> **One binary, the whole lifecycle.** `firefly` scaffolds a project, generates
+> code artifacts, runs the binary with profiles and overrides, stamps
+> build-info, manages migrations, exports OpenAPI, and introspects a running
+> service — the everyday developer loop in a single command-line tool
 > (`new` / `run` / `generate` / `db` / `doctor` / `sbom` / `license`).
 
 ## Installing
@@ -19,7 +19,7 @@ pyfly's `pyfly` CLI, adapted to a compiled Cargo workspace.
 ```bash
 cargo install --path crates/cli   # installs the `firefly` binary
 firefly --help                     # prints the banner + every command
-firefly --version                  # 26.6.3
+firefly --version                  # 26.6.4
 ```
 
 ## Command overview
@@ -60,10 +60,10 @@ generated `firefly-*` dependencies are git / path / version configurable
 `--git` initializes a repository with an initial commit; `--force` overwrites an
 existing target directory.
 
-> **Spring parity.** `firefly new --archetype web-api` is `spring init
-> --dependencies=web`: it stamps the entry point, the controller, and the
-> dependency set so the first `cargo run` boots. `--features` selects the same
-> opt-in adapters the [facade chapter](./21-declarative-macros.md) lists
+> **Archetypes scaffold a working service.** `firefly new --archetype web-api`
+> stamps the entry point, a controller, and the dependency set so the first
+> `cargo run` boots. `--features` selects the opt-in adapters the
+> [facade chapter](./21-declarative-macros.md) lists
 > (`web`, `data`, `cqrs`, `eda`, `cache`, `security`, …).
 
 ## Generating artifacts
@@ -102,13 +102,11 @@ firefly run --release --bin lumen            # cargo run --release --bin lumen
 firefly run --dry-run                        # print the resolved env + cargo command
 ```
 
-> **Spring parity.** `firefly run -p dev -D server.port=9090` is
-> `mvn spring-boot:run -Dspring-boot.run.profiles=dev
-> -Dserver.port=9090`. The flags become environment variables rather than JVM
-> system properties, but the resolution order is the same: CLI flag → env →
-> config file. There is no `--reload` / `--server` / `--workers` (pyfly's
-> ASGI-server selection) — a Rust service is a single compiled binary, so those
-> have no analog and are intentionally omitted.
+> **Flags become `FIREFLY_*` env vars.** `firefly run -p dev -D server.port=9090`
+> maps to `FIREFLY_PROFILES_ACTIVE=dev` and `FIREFLY_SERVER_PORT=9090`, then
+> exec's `cargo run`. The resolution order is CLI flag → env → config file. A
+> Firefly service is a single compiled binary, so there is no live-reload or
+> worker-process selection — you rebuild and rerun.
 
 For Lumen specifically, recall that `main.rs` reads `LUMEN_ADDR` /
 `LUMEN_ADMIN_ADDR` directly, so the equivalent of the two-port bind is:
@@ -152,10 +150,9 @@ firefly db status  --url sqlite://app.db   # show applied + pending
 The database URL resolves from `--url`, then `$DATABASE_URL`, then
 `firefly.datasource.url` in `firefly.yaml`, defaulting to `sqlite://firefly.db`.
 
-> **Spring parity.** `firefly db` mirrors pyfly's `pyfly db` group, which drives
-> Alembic; this port drives the framework's own forward-only runner. The runner
-> is forward-only, so `firefly db downgrade` is unsupported — write a corrective
-> migration instead, exactly as you would with a forward-only Flyway setup.
+> **Forward-only migrations.** `firefly db` drives Firefly's own forward-only
+> migration runner. Because the runner is forward-only, `firefly db downgrade`
+> is unsupported — write a corrective migration instead.
 
 > **Note** — The CLI migration backend is **SQLite via `rusqlite`**; a
 > `postgres://` / `mysql://` URL returns a clear "not wired into the CLI" error.
@@ -193,12 +190,11 @@ firefly beans      --url http://localhost:8081   # the DI container's bean table
 firefly conditions --url http://localhost:8081   # the auto-configuration report
 ```
 
-> **Spring parity.** `firefly beans` and `firefly conditions` mirror Spring
-> Boot's `/actuator/beans` and `/actuator/conditions` — they render the
-> [DI container's bean table](./04a-dependency-injection.md) and the
-> conditional-bean evaluation report of a running service. `firefly routes`
-> reads `/actuator/mappings`, the Rust analog of Spring's
-> `RequestMappingHandlerMapping` dump.
+> **Introspecting a running service.** `firefly beans` renders the
+> [DI container's bean table](./04a-dependency-injection.md), `firefly conditions`
+> the conditional-bean evaluation report, and `firefly routes` the route table —
+> all read over HTTP from a running service's actuator port
+> (`/actuator/beans`, `/actuator/conditions`, and `/actuator/mappings`).
 
 ## Diagnosing, completing, and auditing
 

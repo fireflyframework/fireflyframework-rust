@@ -10,6 +10,8 @@ description = "Firefly Framework for Rust — with_tx transaction helper over a 
 
 [dependencies]
 thiserror = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 rusqlite = { workspace = true }
+tokio = { workspace = true }

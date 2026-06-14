@@ -20,18 +20,18 @@ RFC 7807 problem decode into a typed `FireflyError`:
 
 - the **eager `RestClient`** (built with `RestBuilder`) — an `async fn` that
   awaits a `Result`, with a built-in retry budget;
-- the **reactive `WebClient`** — the Rust analog of WebFlux's `WebClient`, whose
-  terminal operators hand back `Mono` / `Flux`.
+- the **reactive `WebClient`** — whose terminal operators hand back `Mono` /
+  `Flux`, so an outbound call drops straight into a reactive pipeline.
 
 The crate also ships scaffolds for SOAP, gRPC, GraphQL, and WebSocket clients.
 Everything is reachable through the one `firefly` facade as `firefly::client`.
 
-> **Spring parity.** `RestClient` is `RestTemplate`/`RestClient`; `WebClient` is
-> the WebFlux `WebClient` — fluent builder, `body_to_mono` / `body_to_flux`
-> terminals, `exchange` for the raw response. Where pyfly and the JVM generate a
-> client *implementation* from an annotated interface (`@service_client`,
-> `@FeignClient`), Rust has no reflection — you build the client value with a
-> fluent builder, and the resilience decorators (covered below) wrap the call.
+> **Two clients, one contract.** `RestClient` is the eager `async fn`-and-await
+> client with a built-in retry budget; `WebClient` is the reactive one whose
+> `body_to_mono` / `body_to_flux` / `exchange` terminals return publishers you
+> compose. Both are values built with a fluent builder — no annotated interface
+> to generate from, no reflection — and the resilience decorators (covered below)
+> wrap the call.
 
 ## The eager `RestClient`
 
@@ -78,8 +78,8 @@ async fn main() {
 
 A non-2xx `application/problem+json` response is decoded into a `FireflyError`,
 so an upstream failure carries the upstream's status and detail straight through
-Lumen's own error stack. `err.as_firefly()` is the typed accessor — the analog
-of the JVM's `errors.As(&FireflyError)` — and `ClientError` also offers
+Lumen's own error stack. `err.as_firefly()` is the typed accessor that recovers
+the upstream's typed problem, and `ClientError` also offers
 predicate helpers like `is_not_found()`, `is_unprocessable_entity()`, and
 `is_retryable()` so a caller can branch on the failure class without matching
 raw status codes.
@@ -114,7 +114,7 @@ the key *consistently* across retries.
 The reactive client returns `Mono` / `Flux`, so an outbound call drops straight
 into a reactive pipeline and composes end-to-end with the
 [`NdJson` / `Sse` responders](./05-reactive-model.md) Lumen's streaming endpoint
-uses. The fluent chain is the WebFlux spelling:
+uses. The fluent chain reads top to bottom — build, address, send, decode:
 
 ```rust,no_run
 use firefly::client::WebClientBuilder;
@@ -176,8 +176,9 @@ response `Content-Type`:
 - `text/event-stream` → SSE frames separated by a blank line; the `data:` lines
   are concatenated and comment / `event:` / `id:` lines are ignored.
 
-A malformed element terminates the stream with a decode `FireflyError`
-(Reactor's first-error-is-terminal semantics). This is the *consumer* side of the
+A malformed element terminates the stream with a decode `FireflyError` — the
+first error is terminal, the reactive-streams contract Firefly's `Flux` honors.
+This is the *consumer* side of the
 same wire format Lumen's own `GET /api/v1/wallets/:id/events` endpoint produces:
 one service streams the wallet's event log, another reads it back element by
 element.
@@ -198,10 +199,10 @@ if resp.is_success() {
 
 ### No baked-in retry
 
-> **Reactor parity.** Unlike `RestBuilder::with_retries`, the `WebClient` has
-> **no** retry budget. Compose retries on the returned publisher with
-> `Mono::retry` / `Mono::retry_backoff`, exactly as WebFlux composes
-> `retryWhen(..)` rather than baking retry into the client:
+> **Retries are composed, not baked in.** Unlike `RestBuilder::with_retries`,
+> the `WebClient` has **no** retry budget. Compose retries on the returned
+> publisher with `Mono::retry` / `Mono::retry_backoff`, so retry policy stays a
+> property of the call site, not the client:
 >
 > ```rust,ignore
 > use firefly::reactive::{Backoff, Mono};
@@ -254,9 +255,9 @@ security headers, request metrics, correlation, and the actuator surface) and
 adds the BFF building blocks:
 
 - `DomainClients` — a registry of named `RestClient`s for the downstream domain
-  services, the Rust spelling of pyfly's `ClientFactory`;
-- `SignalService` — `@WaitForSignal`-style gates for long-running, signal-driven
-  workflow steps (the experience-tier `Workflow` from
+  services;
+- `SignalService` — gates a long-running, signal-driven workflow step parks on
+  until a caller delivers a named signal (the experience-tier `Workflow` from
   [Sagas](./12-sagas.md));
 - a Redis-capable `WorkflowState` keyed by correlation id, plus a
   `WorkflowQueryService` for journey-status reads.
@@ -294,13 +295,14 @@ response.
 > client. That separation is why the experience starter is *not* bundled into
 > the one-dependency facade — a domain service does not need it.
 
-> **Spring parity.** The BFF mirrors the Spring Cloud Gateway / BFF approach
-> where a thin application aggregates several microservices. `Mono::zip` (and the
-> concurrent fan-out above) plays the role of WebFlux's `Mono.zip()` and pyfly's
-> `asyncio.gather`. `DomainClients` is the `ClientFactory`; the signal-driven
-> `Workflow` is `@WaitForSignal`. The team-ownership model is identical: domain
-> teams own stable, fine-grained contracts; the frontend team owns the BFF that
-> adapts them.
+> **The BFF pattern.** A BFF is a thin application that aggregates several
+> domain services into one journey-shaped API, server-side. `Mono::zip` (and the
+> concurrent fan-out above) launches the upstream calls together, so the
+> composite latency is bounded by the slower upstream rather than their sum, and
+> a circuit-open upstream degrades gracefully instead of failing the whole
+> response. The team-ownership model follows from the tier boundary: domain teams
+> own stable, fine-grained contracts; the frontend team owns the BFF that adapts
+> them.
 
 ## Other protocols
 

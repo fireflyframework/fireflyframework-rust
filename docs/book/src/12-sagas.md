@@ -25,11 +25,13 @@ typed context blackboard, and respects cooperative cancellation.
 | `Workflow` | DAG with parallel branches | Reverse-order, configurable policy |
 | `Tcc`      | Try-all then Confirm-all   | Cancel-tried-on-Try-failure        |
 
-> **Spring parity.** This is the `firefly-common-domain` orchestration model:
-> orchestrated multi-step processes with compensation, the same
-> step/compensation shapes you know from the JVM's `@Saga` / `@SagaStep` (and
-> pyfly's `@saga` / `@saga_step`), expressed here as async closures rather than
-> a bean the container discovers.
+> **Design note.** Firefly's orchestration model is built around orchestrated
+> multi-step processes with compensation. You declare each step and its
+> compensation explicitly as async closures and run the engine as a plain
+> future — there is no container to scan and no annotations to discover. If
+> you've used a batteries-included framework before, the step/compensation
+> shape will feel familiar; here it's a value you construct, which keeps the
+> control flow visible and the types honest.
 
 ## The problem with distributed writes
 
@@ -295,13 +297,13 @@ back out and wrap it in `TransferError::Compensated`. That is how
 `POST /api/v1/transfers` can answer with `insufficient funds` instead of a
 stringly-typed box.
 
-> **Spring parity.** On the JVM you would annotate a bean with `@Saga` and each
-> method with `@SagaStep(compensate = "refundDebit")`, and the
-> `WorkflowBeanPostProcessor` would discover and register it. Rust has no
-> reflection, so Lumen builds the `Saga` value explicitly with `Step::new` /
-> `with_compensation`. The shape is identical — forward step, named
-> compensation, reverse-order rollback — but the wiring is a value you
-> construct, not a bean the container scans.
+> **Design note.** Firefly builds a `Saga` as an explicit value: each forward
+> action is a `Step::new`, and its undo is attached with `with_compensation`.
+> There is no reflection, no annotation scanning, and no hidden post-processor
+> registering steps behind your back — the engine runs exactly the steps you
+> wired, compensating completed ones in reverse order on failure. Because the
+> saga is a plain value rather than something a container discovers, the whole
+> flow is visible at the call site and checked by the compiler.
 
 ### The endpoint
 
@@ -450,8 +452,8 @@ wave.
 > gate) is the textbook `Workflow`. The experience-tier starter,
 > `firefly-starter-experience`, builds on exactly this engine with
 > *signal-driven* workflow steps that park until an external caller delivers a
-> named signal — the Rust spelling of pyfly's `@wait_for_signal` and the JVM's
-> `@WaitForSignal`. We return to that tier in [HTTP Clients](./13-http-clients.md).
+> named signal, then resume from where they left off. We return to that tier in
+> [HTTP Clients](./13-http-clients.md).
 
 ## TCC — Try / Confirm / Cancel
 
@@ -490,9 +492,9 @@ assert!(result.is_ok());
 
 ## Cancellation
 
-All three engines respect a `CancellationToken` — the Rust analog of the Go
-port's `context.Context` cancellation and pyfly's cooperative cancellation. Pass
-one to `run_cancellable(&token)` and cancel it from elsewhere to drain the run:
+All three engines respect a `CancellationToken` for cooperative cancellation.
+Pass one to `run_cancellable(&token)` and cancel it from elsewhere — a timeout,
+a shutdown signal — to drain the run:
 
 ```rust,ignore
 use firefly_orchestration::CancellationToken;

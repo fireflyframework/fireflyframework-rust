@@ -1,35 +1,35 @@
-/* PyFly Admin Dashboard — Theme Definitions */
+/* Firefly Admin Dashboard — Theme Definitions */
 
 :root,
 [data-theme="dark"] {
-    --admin-bg: #0b120d;
-    --admin-bg-subtle: #0f1812;
-    --admin-surface: #141f18;
-    --admin-surface-hover: #1b2a20;
-    --admin-surface-active: #233529;
-    --admin-text: #e6f0e0;
-    --admin-text-secondary: #9db59a;
-    --admin-text-muted: #6b806a;
-    /* Brand accent — derived from the pyfly logo's vivid lime-green */
-    --admin-primary: #5fbf2e;
-    --admin-primary-hover: #7ad94a;
-    --admin-primary-dim: rgba(95, 191, 46, 0.16);
+    --admin-bg: #0c0e12;
+    --admin-bg-subtle: #11141a;
+    --admin-surface: #151922;
+    --admin-surface-hover: #1c212c;
+    --admin-surface-active: #232a37;
+    --admin-text: #e8ecf2;
+    --admin-text-secondary: #9aa4b2;
+    --admin-text-muted: #6b7280;
+    /* Brand accent — the Firefly amber→gold of the wordmark's signature dot. */
+    --admin-primary: #f5921e;
+    --admin-primary-hover: #ffc24d;
+    --admin-primary-dim: rgba(245, 146, 30, 0.16);
     --admin-success: #10b981;
     --admin-success-dim: rgba(16, 185, 129, 0.15);
     --admin-danger: #f43f5e;
     --admin-danger-dim: rgba(244, 63, 94, 0.15);
     --admin-warning: #f59e0b;
     --admin-warning-dim: rgba(245, 158, 11, 0.15);
-    --admin-info: #06b6d4;
-    --admin-info-dim: rgba(6, 182, 212, 0.15);
-    --admin-border: #213127;
-    --admin-border-subtle: #18241c;
-    --admin-sidebar-bg: #070d09;
-    --admin-sidebar-text: #9db59a;
-    --admin-sidebar-text-active: #e6f0e0;
-    --admin-sidebar-hover: #0e160f;
-    --admin-sidebar-active: #15211a;
-    --admin-sidebar-accent: #5fbf2e;
+    --admin-info: #38bdf8;
+    --admin-info-dim: rgba(56, 189, 248, 0.15);
+    --admin-border: #222834;
+    --admin-border-subtle: #1a1f29;
+    --admin-sidebar-bg: #080a0e;
+    --admin-sidebar-text: #9aa4b2;
+    --admin-sidebar-text-active: #f6f8fb;
+    --admin-sidebar-hover: #11141a;
+    --admin-sidebar-active: #181d27;
+    --admin-sidebar-accent: #f5921e;
     --admin-sidebar-width: 260px;
     --admin-navbar-height: 56px;
     --admin-radius: 8px;
@@ -39,40 +39,40 @@
     --admin-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.4);
     --admin-font-sans: 'Maven Pro', -apple-system, BlinkMacSystemFont, sans-serif;
     --admin-font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-    --admin-card-bg: #16241a;
+    --admin-card-bg: #161b24;
     --admin-transition: 150ms ease;
     /* Skeleton-loading sheen swept across placeholder blocks. */
     --admin-skeleton-sheen: rgba(255, 255, 255, 0.06);
 }
 
 [data-theme="light"] {
-    --admin-bg: #f1f5f9;
-    --admin-bg-subtle: #e8edf4;
+    --admin-bg: #f6f7f9;
+    --admin-bg-subtle: #eef1f5;
     --admin-surface: #ffffff;
     --admin-surface-hover: #f8fafc;
     --admin-surface-active: #f1f5f9;
-    --admin-text: #0f172a;
+    --admin-text: #11151c;
     --admin-text-secondary: #475569;
     --admin-text-muted: #94a3b8;
-    --admin-primary: #4a9e1f;
-    --admin-primary-hover: #5fbf2e;
-    --admin-primary-dim: rgba(74, 158, 31, 0.12);
+    --admin-primary: #d97a0c;
+    --admin-primary-hover: #f5921e;
+    --admin-primary-dim: rgba(217, 122, 12, 0.12);
     --admin-success: #059669;
     --admin-success-dim: rgba(5, 150, 105, 0.1);
     --admin-danger: #e11d48;
     --admin-danger-dim: rgba(225, 29, 72, 0.1);
     --admin-warning: #d97706;
     --admin-warning-dim: rgba(217, 119, 6, 0.1);
-    --admin-info: #0891b2;
-    --admin-info-dim: rgba(8, 145, 178, 0.1);
+    --admin-info: #0284c7;
+    --admin-info-dim: rgba(2, 132, 199, 0.1);
     --admin-border: #e2e8f0;
     --admin-border-subtle: #f1f5f9;
-    --admin-sidebar-bg: #0f172a;
-    --admin-sidebar-text: #94a3b8;
-    --admin-sidebar-text-active: #f1f5f9;
-    --admin-sidebar-hover: #1e293b;
-    --admin-sidebar-active: #1e293b;
-    --admin-sidebar-accent: #5fbf2e;
+    --admin-sidebar-bg: #14110b;
+    --admin-sidebar-text: #b8a98f;
+    --admin-sidebar-text-active: #fdf6ec;
+    --admin-sidebar-hover: #1f1a10;
+    --admin-sidebar-active: #25200f;
+    --admin-sidebar-accent: #f5921e;
     --admin-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
     --admin-card-bg: #ffffff;
     --admin-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.1);

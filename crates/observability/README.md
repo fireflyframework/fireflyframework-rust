@@ -1,6 +1,6 @@
 # `firefly-observability`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `firefly-otel-spring-boot-starter` · **Go module:** `observability` · **.NET project:** `FireflyFramework.Observability`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -25,15 +25,15 @@ building blocks that compose with the `tracing` ecosystem.
 ### Logging
 
 ```rust,ignore
-pub enum LogFormat { Json, Text, Console }   // Go: "json" | "text"; +Console (pyfly dev renderer)
+pub enum LogFormat { Json, Text, Console }   // "json" | "text"; +Console (dev renderer)
 impl LogFormat { pub fn from_name(&str) -> Self; }  // console|pretty|dev -> Console; logfmt|text -> Text
 
-pub struct LogConfig {                       // Go: LogConfig
-    pub level: tracing::Level,               //   Level   slog.Level
-    pub service: String,                     //   Service string
-    pub format: LogFormat,                   //   Format  string
+pub struct LogConfig {
+    pub level: tracing::Level,
+    pub service: String,
+    pub format: LogFormat,
 }
-impl Default for LogConfig {}                // Go: DefaultLogConfig() — JSON, info
+impl Default for LogConfig {}                // JSON, info
 impl LogConfig {                             // builder-style setters
     pub fn new() -> Self;
     pub fn with_level(self, Level) -> Self;
@@ -41,40 +41,38 @@ impl LogConfig {                             // builder-style setters
     pub fn with_format(self, LogFormat) -> Self;
 }
 
-pub struct CorrelationLayer;                 // Go: CorrelationHandler, as a tracing Layer
+pub struct CorrelationLayer;                 // a tracing Layer
 impl CorrelationLayer {
     pub fn new(cfg: LogConfig) -> Self;                       // stdout
-    pub fn with_writer(cfg, impl Write + Send + 'static) -> Self;  // Go: LogConfig.Output
+    pub fn with_writer(cfg, impl Write + Send + 'static) -> Self;  // custom output writer
 }
 
-pub fn subscriber(cfg) -> impl Subscriber + Send + Sync;      // Go: NewLogger(cfg)
+pub fn subscriber(cfg) -> impl Subscriber + Send + Sync;
 pub fn subscriber_with_writer(cfg, writer) -> impl Subscriber + Send + Sync;
 pub fn init_logging(cfg) -> Result<(), SetGlobalDefaultError>; // install globally
 
-pub struct BufferWriter;                     // clonable in-memory sink (Go tests: bytes.Buffer)
+pub struct BufferWriter;                     // clonable in-memory sink (for tests)
 ```
 
-Where Go wraps a `slog.Handler`, this port is a `tracing` `Layer` — but
-the JSON log field names are identical to the Go `slog` JSON handler:
-`time`, `level`, `msg`, `service`, `correlationId`, plus event fields at
-top level. One log pipeline parses every port. Fields recorded on
-enclosing `tracing` spans are merged into each event — the analog of
-Go's `logger.With(...)`. `tracing`'s extra `TRACE` level maps to `DEBUG`
+`CorrelationLayer` is a `tracing_subscriber` `Layer`. The JSON log field
+names are `time`, `level`, `msg`, `service`, `correlationId`, plus event
+fields at top level — a stable wire shape designed so a single log pipeline
+parses every service uniformly. Fields recorded on enclosing `tracing` spans
+are merged into each event. `tracing`'s extra `TRACE` level maps to `DEBUG`
 so the level vocabulary stays `DEBUG`/`INFO`/`WARN`/`ERROR` everywhere.
 
 **Log ↔ trace correlation.** When a W3C trace context is in scope (set by
 `TraceContextLayer` / `with_trace_context`), every record also carries
 `trace_id` (32-hex) and `span_id` (16-hex), sourced from the active
-`traceparent` — the Rust analog of pyfly's `_add_trace_ids` structlog
-processor (the SLF4J MDC equivalent), so logs and traces join in the same
-pipeline. A no-op when no trace context is set.
+`traceparent`, so logs and traces join in the same pipeline. A no-op when
+no trace context is set.
 
 ### Health
 
 ```rust,ignore
 pub enum Status { Up, Down, Degraded, Unknown }  // serializes "UP" | "DOWN" | "DEGRADED" | "UNKNOWN"
 
-pub struct HealthResult {                    // JSON shape identical to Go
+pub struct HealthResult {
     pub status: Status,                      //   "status"
     pub message: String,                     //   "message"  (omitted when empty)
     pub details: BTreeMap<String, Value>,    //   "details"  (omitted when empty)
@@ -91,19 +89,19 @@ impl HealthResult {
 }
 
 #[async_trait]
-pub trait Indicator: Send + Sync {           // Go: Indicator
+pub trait Indicator: Send + Sync {
     fn name(&self) -> &str;
-    async fn check(&self) -> HealthResult;   // ctx → cancellation via future drop
+    async fn check(&self) -> HealthResult;   // cancellation via future drop
 }
 
-pub struct IndicatorFn<F>;                   // Go: IndicatorFunc
+pub struct IndicatorFn<F>;
 impl IndicatorFn { pub fn new(name, f: impl Fn() -> Future<HealthResult>) -> Self; }
 
-pub struct Composite;                        // Go: Composite
+pub struct Composite;
 impl Composite {
     pub fn new() -> Self;
-    pub fn add(&self, impl Indicator + 'static);          // &self: interior mutability,
-    pub fn add_arc(&self, Arc<dyn Indicator>);            // like Go's internal sync.RWMutex
+    pub fn add(&self, impl Indicator + 'static);          // &self: interior mutability
+    pub fn add_arc(&self, Arc<dyn Indicator>);
     pub async fn check_all(&self) -> (Status, BTreeMap<String, HealthResult>);
 }
 ```
@@ -114,9 +112,8 @@ result is stamped with its check duration and UTC start time.
 
 ### Banner
 
-The banner is aligned with the canonical Java (`firefly-application`
-`banner.txt`) and pyfly (`pyfly.core.banner`) banners: the red `firefly`
-script-figlet, a `:: Firefly Framework for Rust ::  (v<version>)` tagline,
+The banner renders the red `firefly` script-figlet, a
+`:: Firefly Framework for Rust ::  (v<version>)` tagline,
 `(c) 2026 Firefly Software Foundation`, `Licensed under Apache 2.0`, then
 app / starter / runtime / active-profiles metadata and an optional
 Swagger-UI URL line.
@@ -124,16 +121,15 @@ Swagger-UI URL line.
 Two layers of API:
 
 ```rust,ignore
-// Simple, always-plain (no ANSI) — the Go-parity surface.
+// Simple, always-plain (no ANSI).
 pub struct BannerData { pub version, starter, app, rust_version: String }
 pub fn print_banner(w: &mut impl Write, starter: &str, app: &str) -> io::Result<()>;
 pub fn render_banner(w: &mut impl Write, data: BannerData) -> io::Result<()>;
 pub fn banner_string(starter: &str, app: &str) -> String;
-pub const RUSTC_VERSION: &str;               // Go: runtime.Version() minus the "go" prefix
+pub const RUSTC_VERSION: &str;               // the rustc version, without the leading "rustc " prefix
 
-// Rich — mode selection, profiles, Swagger, custom files, TTY colour
-// (the pyfly `BannerPrinter` analog).
-pub enum BannerMode { Text, Minimal, Off }   // pyfly BannerMode; Spring Boot Banner.Mode
+// Rich — mode selection, profiles, Swagger, custom files, TTY colour.
+pub enum BannerMode { Text, Minimal, Off }   // Spring Boot-style Banner.Mode
 impl BannerMode { pub fn from_name(&str) -> Self; }  // case-insensitive, unknown -> Text
 
 pub trait BannerConfig { fn get(&self, key: &str) -> Option<String>; }
@@ -165,20 +161,19 @@ impl BannerPrinter {
 case-insensitive, unknown → `Text`) and `firefly.banner.location` (a custom
 banner file; missing/unreadable falls back to the embedded template).
 Observability stays decoupled from `firefly-config`: `from_config` takes
-any `BannerConfig` (or a `Fn(&str) -> Option<String>` closure), mirroring how
-pyfly passes the resolved `mode`/`location` in.
+any `BannerConfig` (or a `Fn(&str) -> Option<String>` closure), so the caller
+passes in the resolved `mode`/`location`.
 
 **Colour.** `render()` and `write_to` are plain by default (so
 captured/log output stays clean); `print()` colourises when stdout is a
-terminal — red art, green foundation/license lines, bold tagline (Java's
-`${AnsiColor.RED}` / `${AnsiColor.GREEN}` markers). `with_color(true|false)`
-forces it either way.
+terminal — red art, green foundation/license lines, bold tagline.
+`with_color(true|false)` forces it either way.
 
 The template lives in `crates/observability/banner.txt` (embedded via
-`include_str!`, the analog of `go:embed`); placeholders `{version}`,
-`{starter}`, `{app}`, `{rust_version}`, `{profiles}` are substituted at
-render time. The compiler version is captured by the build script from
-`rustc --version`. Called by `firefly-starter-core` on startup.
+`include_str!`); placeholders `{version}`, `{starter}`, `{app}`,
+`{rust_version}`, `{profiles}` are substituted at render time. The compiler
+version is captured by the build script from `rustc --version`. Called by
+`firefly-starter-core` on startup.
 
 ## Quick start
 
@@ -218,33 +213,19 @@ async fn ping_db() -> Result<(), std::io::Error> {
 The `firefly-actuator` crate mounts a composite like this on
 `GET /actuator/health`.
 
-## Adaptation notes (Go → Rust)
+## Metrics, tracing, and richer logging
 
-| Go | Rust |
-|----|------|
-| `slog.Handler` decorator (`CorrelationHandler`) | `tracing_subscriber` `Layer` (`CorrelationLayer`) |
-| `kernel.CorrelationIDFrom(ctx)` | `firefly_kernel::correlation_id()` task-local read |
-| `LogConfig.Output io.Writer` | `with_writer(cfg, impl Write + Send)` / `subscriber_with_writer` |
-| `slog.LevelInfo` | `tracing::Level::INFO` (`TRACE` renders as `DEBUG`) |
-| `logger.With(attrs...)` | fields on enclosing `tracing` spans |
-| `Indicator.Check(ctx)` | `async fn check(&self)` — cancellation via future drop |
-| `IndicatorFunc{NameValue, Fn}` | `IndicatorFn::new(name, async closure)` |
-| `CheckAll` returning `map[string]HealthResult` | `BTreeMap<String, HealthResult>` (deterministic order) |
-| `go:embed banner.txt` + `text/template` | `include_str!` + `{placeholder}` substitution (`{version}`/`{starter}`/`{app}`/`{rust_version}`/`{profiles}`) |
-| `runtime.Version()` minus `"go"` prefix | `RUSTC_VERSION` captured by `build.rs` from `rustc --version` |
+Beyond the structured-logging, health, and banner essentials, the crate
+provides a labeled-metrics registry, W3C trace-context propagation, process
+metrics, per-target log levels, PII redaction, a rolling file appender, a
+console/dev log renderer, and external logging-config-file loading.
 
-## pyfly parity
-
-The crate additionally ports the pyfly (`pyfly.observability` +
-`pyfly.logging`) surface. Everything below is purely additive — every
-Go-parity wire shape above is unchanged.
-
-### Labeled metrics + `timed()` / `counted()` (pyfly `observability/metrics.py`)
+### Labeled metrics + `timed()` / `counted()`
 
 ```rust,ignore
-pub struct MetricsRegistry;                  // pyfly: MetricsRegistry
+pub struct MetricsRegistry;
 impl MetricsRegistry {
-    pub fn new() -> Self;                    // process-global, idempotent (pyfly module caches)
+    pub fn new() -> Self;                    // process-global, idempotent
     pub fn isolated() -> Self;               // private registry (tests/exporters)
     pub fn counter(&self, name, desc, labels: &[&str]) -> Arc<Counter>;
     pub fn gauge(&self, name, desc, labels: &[&str]) -> Arc<Gauge>;
@@ -254,22 +235,22 @@ impl MetricsRegistry {
 // Counter/Gauge/Histogram: .labels(&["v", …]) -> Labeled* child series,
 // inc/inc_by, set/add/inc/dec, observe; value()/value_with(), count()/sum().
 
-pub async fn timed(®istry, name, fut) -> T;            // pyfly @timed
+pub async fn timed(®istry, name, fut) -> T;
 pub async fn timed_result(®istry, name, fut) -> Result<T, E>;
-pub async fn counted(®istry, name, fut) -> T;          // pyfly @counted
+pub async fn counted(®istry, name, fut) -> T;
 pub async fn counted_result(®istry, name, fut) -> Result<T, E>;
 pub struct Timed;   // builder: .description() .class() .method() .tag() .record()/.record_result()
 pub struct Counted; // builder: same, counting result=success|failure + exception
 
-// Metrics-recording PORT (pyfly observability/ports.py) — write
-// instrumentation against the abstraction, not the Prometheus adapter:
-pub trait MetricsRecorder: Send + Sync {    // pyfly: MetricsRecorder Protocol
+// Metrics-recording PORT — write instrumentation against the
+// abstraction, not the Prometheus adapter:
+pub trait MetricsRecorder: Send + Sync {
     fn counter(&self, name, desc, labels: &[&str]) -> Arc<Counter>;
     fn gauge(&self, name, desc, labels: &[&str]) -> Arc<Gauge>;
     fn histogram(&self, name, desc, labels: &[&str], buckets: Option<&[f64]>) -> Arc<Histogram>;
 }
 impl MetricsRecorder for MetricsRegistry;    // the default (Prometheus) adapter
-pub struct NoOpMetricsRecorder;              // pyfly: NoOpMetricsRecorder — discards everything
+pub struct NoOpMetricsRecorder;              // discards everything
 ```
 
 `MetricsRecorder` is the port instrumentation depends on so it is not
@@ -280,16 +261,14 @@ no-op recorder is backed by a private isolated registry whose data is never
 exposed, yet still enforces the same label-arity contract — surfacing wiring
 mistakes in tests.
 
-Micrometer naming is preserved: `orders.process` → histogram
+Micrometer-style naming is used: `orders.process` → histogram
 `orders_process_seconds` with `class`/`method`/`exception` labels;
 counted meters are exposed as `<name>_total` with
-`class`/`method`/`result`/`exception`. pyfly derives `class`/`method`
-from the decorated function's qualname; in Rust they are explicit
-builder fields (decorator → builder adaptation). The `exception` label
-on `Err` is the unqualified error type name (`type(exc).__name__`
-analog via `std::any::type_name`).
+`class`/`method`/`result`/`exception`. The `class`/`method` labels are
+explicit builder fields. The `exception` label on `Err` is the unqualified
+error type name (via `std::any::type_name`).
 
-### W3C trace context (pyfly `observability/propagation.py` + `correlation.py`)
+### W3C trace context
 
 ```rust,ignore
 pub struct TraceParent { version, trace_id, parent_id, flags } // parse() / Display / sampled()
@@ -298,26 +277,24 @@ pub const TRACEPARENT_HEADER: &str;          // "traceparent"
 pub const TRACESTATE_HEADER: &str;           // "tracestate"
 
 pub async fn with_trace_context(tp: Option<String>, ts: Option<String>, fut) -> T;
-pub fn current_traceparent() -> Option<String>;  // pyfly get_traceparent()
-pub fn current_tracestate() -> Option<String>;   // pyfly get_tracestate()
+pub fn current_traceparent() -> Option<String>;
+pub fn current_tracestate() -> Option<String>;
 
-pub struct TraceContextLayer;                // tower layer (pyfly TracingFilter):
+pub struct TraceContextLayer;                // tower layer:
                                              //   parses inbound headers, stores TraceParent/
                                              //   TraceState in request extensions + task-locals
-pub fn inject_headers(&mut http::HeaderMap); // pyfly inject_headers (outbound)
+pub fn inject_headers(&mut http::HeaderMap); // outbound injection
 pub fn inject_reqwest(reqwest::RequestBuilder) -> reqwest::RequestBuilder;
 ```
 
-pyfly delegates to the OTel propagator; this port implements the W3C
-wire format natively (lowercase hex, version `ff` and all-zero ids
-rejected, future versions tolerated, `tracestate` capped at 32
-members). The kernel task-local carries the correlation id; the
-trace-context pair lives in this crate's own task-locals (pyfly
-contextvars → tokio `task_local!`). When a trace context is in scope, the
-logging layer also stamps `trace_id`/`span_id` onto every record (see
-[Logging](#logging)), matching pyfly's `_add_trace_ids`.
+The crate implements the W3C trace-context wire format natively (lowercase
+hex, version `ff` and all-zero ids rejected, future versions tolerated,
+`tracestate` capped at 32 members). The kernel task-local carries the
+correlation id; the trace-context pair lives in this crate's own tokio
+task-locals. When a trace context is in scope, the logging layer also stamps
+`trace_id`/`span_id` onto every record (see [Logging](#logging)).
 
-### Process metrics (pyfly `observability/process_metrics.py`)
+### Process metrics
 
 ```rust,ignore
 pub struct ProcessMetricsCollector;          // sysinfo-backed
@@ -330,17 +307,17 @@ impl ProcessMetricsCollector {
 }
 ```
 
-Micrometer/Spring Boot meter names, so Spring dashboards/alerts work
-unchanged across ports.
+The meter names follow Micrometer/Spring Boot conventions, so standard
+dashboards and alerts work against them out of the box.
 
-### Per-target log levels + runtime `set_level` (pyfly level map / `LoggingPort`)
+### Per-target log levels + runtime `set_level`
 
 ```rust,ignore
 pub struct LogConfig {
     // … existing fields unchanged …
-    pub levels: BTreeMap<String, Level>,     // pyfly {root: INFO, "my.module": DEBUG}
-    pub file: Option<FileConfig>,            // pyfly.logging.file.*
-    pub redaction: Option<RedactionConfig>,  // pyfly.logging.redaction.*
+    pub levels: BTreeMap<String, Level>,     // {root: INFO, "my.module": DEBUG}
+    pub file: Option<FileConfig>,
+    pub redaction: Option<RedactionConfig>,
 }
 impl LogConfig {
     pub fn with_target_level(self, target, Level) -> Self; // "root" routes to .level
@@ -348,7 +325,7 @@ impl LogConfig {
     pub fn with_redaction(self, RedactionConfig) -> Self;
 }
 
-pub struct LevelHandle;                      // pyfly LoggingPort.set_level
+pub struct LevelHandle;                      // runtime level control
 impl LevelHandle {
     pub fn set_level(&self, target, Level);  // runtime change, "root" = root level
     pub fn clear_level(&self, target);       // drop an override (loggers POST null)
@@ -365,7 +342,7 @@ pub fn init_logging_with_handle(cfg) -> Result<LevelHandle, …>;
 Targets match by longest prefix at a `::` (or `.`) boundary —
 `firefly_web` covers `firefly_web::routes` but not `firefly_webx`.
 
-### PII redaction (pyfly `logging/redaction/`)
+### PII redaction
 
 ```rust,ignore
 pub trait Redactor { fn redact<'a>(&self, &'a str) -> Cow<'a, str>; }
@@ -383,14 +360,12 @@ Wired into the JSON/text writers via `LogConfig::with_redaction`:
 deny-listed keys are replaced wholesale, a non-empty allow list limits
 scanning to listed fields plus the message, `CREDIT_CARD` matches are
 gated by the Luhn check. The default config is `None`, so existing log
-output is byte-identical unless redaction is opted in. Divergences
-from pyfly, by design: the Presidio NER engine is Python-only (regex is
-the cross-port contract; pyfly itself falls back to it), stdout/stderr
-stream interception is not possible in Rust (redaction applies at the
-layer's writer boundary), and the `PHONE` look-arounds are emulated
-with a digit-boundary check (the `regex` crate has no look-around).
+output is byte-identical unless redaction is opted in. Redaction is
+regex-based and applies at the layer's writer boundary; the `PHONE`
+patterns use a digit-boundary check in place of look-arounds (the `regex`
+crate has no look-around support).
 
-### Rolling file appender (pyfly `logging/handlers.py`)
+### Rolling file appender
 
 ```rust,ignore
 pub fn parse_size("10MB" | "512KB" | "4096" | "") -> u64; // 0 when empty/invalid
@@ -405,22 +380,20 @@ tees output to console and file; an unopenable file falls back to
 console only — a logging misconfiguration never crashes the
 application.
 
-### Console / dev log renderer (pyfly `StructlogAdapter` `ConsoleRenderer`)
+### Console / dev log renderer
 
 ```rust,ignore
-pub enum LogFormat { Json, Text, Console }   // +Console (pyfly json|logfmt|console)
+pub enum LogFormat { Json, Text, Console }   // +Console (json|logfmt|console)
 impl LogConfig { pub fn with_console_colors(self, bool) -> Self; } // default false
 ```
 
 `LogFormat::Console` renders a human-friendly `time [LEVEL] msg key=value`
-line — leading `time`/`level`/`msg`, trailing fields — the Rust analog of
-pyfly's `structlog.dev.ConsoleRenderer`. It is plain text by default
-(matching pyfly's `colors=False`); `with_console_colors(true)` enables ANSI
-level coloring + dimmed timestamp/field keys for an interactive terminal.
-Intended for local development; the production JSON/logfmt wire shapes are
-unchanged.
+line — leading `time`/`level`/`msg`, trailing fields. It is plain text by
+default; `with_console_colors(true)` enables ANSI level coloring + dimmed
+timestamp/field keys for an interactive terminal. Intended for local
+development; the production JSON/logfmt wire shapes are unchanged.
 
-### External logging-config-file loading (pyfly `logging/config_loader.py`)
+### External logging-config-file loading
 
 ```rust,ignore
 pub fn load_log_config(path, base: LogConfig) -> Result<LogConfig, ConfigLoadError>;
@@ -428,39 +401,35 @@ pub fn apply_external_config(path, base: LogConfig) -> (LogConfig, bool); // (me
 pub enum ConfigLoadError { NotFound, Io, Parse, UnsupportedFormat }
 ```
 
-The Rust analog of pyfly's `apply_external_config`: load a logging
-definition from a file at startup and fold its `level` / `format` /
-`service` / per-target `levels` over a base `LogConfig`. Two shapes,
-chosen by extension — `.json` (the dictConfig analog) and
-`.properties` / `.conf` / `.ini` (`key=value`, the fileConfig analog,
-with per-target overrides under the `level.` prefix). `apply_external_config`
-mirrors pyfly's lenient contract: an empty/missing path, read error, parse
-error, or unsupported extension returns `(base, false)` — the base config
-unchanged, startup never crashed (pyfly logs a warning and falls back). An
-unknown level/format value is ignored, leaving that field untouched so a
-single bad value doesn't drop the rest of the file. dictConfig/fileConfig
-are Python-stdlib `logging` constructs with no Rust equivalent, so this
-reproduces the *intent* (file-driven reconfiguration) over a small,
-language-neutral schema that maps onto the `LogConfig` builder.
+Load a logging definition from a file at startup and fold its `level` /
+`format` / `service` / per-target `levels` over a base `LogConfig`. Two
+shapes, chosen by extension — `.json` and `.properties` / `.conf` / `.ini`
+(`key=value`, with per-target overrides under the `level.` prefix).
+`apply_external_config` is deliberately lenient: an empty/missing path, read
+error, parse error, or unsupported extension returns `(base, false)` — the
+base config unchanged, startup never crashed. An unknown level/format value
+is ignored, leaving that field untouched so a single bad value doesn't drop
+the rest of the file. The schema is a small, language-neutral mapping onto
+the `LogConfig` builder, enabling file-driven reconfiguration without a
+recompile.
 
-### Banner modes + colour (pyfly `core/banner.py` / Java `banner.txt`)
+### Banner modes + colour
 
 ```rust,ignore
-pub enum BannerMode { Text, Minimal, Off }   // pyfly BannerMode
+pub enum BannerMode { Text, Minimal, Off }
 pub trait BannerConfig { fn get(&self, key: &str) -> Option<String>; }
-pub struct BannerPrinter;                     // pyfly BannerPrinter
+pub struct BannerPrinter;
 impl BannerPrinter {
     pub fn from_config<C: BannerConfig>(&C) -> Self; // firefly.banner.{mode,location}
     // with_mode/with_version/with_app/with_starter/with_app_version/
     // with_rust_version/with_profiles/with_swagger/with_location/with_color
-    pub fn render(&self) -> String;           // plain; pyfly render()
+    pub fn render(&self) -> String;           // plain
     pub fn write_to(&self, &mut impl Write) -> io::Result<()>;
     pub fn print(&self) -> io::Result<()>;    // stdout, ANSI when TTY
 }
 ```
 
-The richer banner surface mirrors pyfly's `BannerPrinter` and the Java
-`firefly-application` `banner.txt`: a `BannerMode` (`Text` full art +
+The richer banner surface offers a `BannerMode` (`Text` full art +
 metadata, `Minimal` one line, `Off` nothing), a `from_config` that reads
 `firefly.banner.mode` / `firefly.banner.location` through a decoupled
 `BannerConfig` trait (or a `Fn(&str) -> Option<String>` closure), active
@@ -476,25 +445,22 @@ cargo test -p firefly-observability
 
 Covers JSON-format correlation-id emission (sync and async task-local
 scopes), the `degraded ⊕ up` overall computation, banner content and
-overrides, plus Rust-specific cases: level filtering, text format, span
-field merging, log↔trace correlation (`trace_id`/`span_id` injected from
-the W3C trace context, omitted with no context in scope), the Go JSON wire
-shape of `HealthResult` (nanosecond `duration`, omitted empty
-`message`/`details`), the `MetricsRecorder` port + `NoOpMetricsRecorder`
-adapter (recording, discard semantics, trait-object use, label-arity
-enforcement), and Send/Sync bounds.
+overrides, level filtering, text format, span field merging, log↔trace
+correlation (`trace_id`/`span_id` injected from the W3C trace context,
+omitted with no context in scope), the JSON wire shape of `HealthResult`
+(nanosecond `duration`, omitted empty `message`/`details`), the
+`MetricsRecorder` port + `NoOpMetricsRecorder` adapter (recording, discard
+semantics, trait-object use, label-arity enforcement), and Send/Sync bounds.
 
-The pyfly-parity surface is covered by `tests/pyfly_parity_test.rs`,
-porting pyfly's `tests/observability/` (metric idempotency across
-registries, `@timed`/`@counted` Micrometer naming and tags, W3C
-inject/extract round trips, the tracing-filter inbound-trace test) and
-`tests/logging/` (redaction engine/processor/patterns including Luhn,
-`parse_size`, rotation + backup pruning, per-logger levels and runtime
-`set_level`, the `ConsoleRenderer` branch of `test_structlog_adapter`, and
-`test_config_loader` for external-file reconfiguration) suites.
+The metrics, tracing, and logging surface is covered by
+`tests/pyfly_parity_test.rs`: metric idempotency across registries,
+`@timed`/`@counted` Micrometer naming and tags, W3C inject/extract round
+trips, the tracing-filter inbound-trace test, and the logging suite
+(redaction engine/processor/patterns including Luhn, `parse_size`, rotation
++ backup pruning, per-logger levels and runtime `set_level`, the console
+renderer, and `test_config_loader` for external-file reconfiguration).
 
-The banner is covered by `tests/banner_parity_test.rs`, porting pyfly's
-`tests/core/test_banner.py` (mode selection, text/minimal/off rendering,
-custom file location, `from_config`, metadata content) plus Rust-specific
-cases for the canonical Java metadata block, the optional Swagger-UI line,
-and TTY-aware ANSI colour (forced on/off + plain non-TTY default).
+The banner is covered by `tests/banner_parity_test.rs`: mode selection,
+text/minimal/off rendering, custom file location, `from_config`, metadata
+content, the metadata block, the optional Swagger-UI line, and TTY-aware
+ANSI colour (forced on/off + plain non-TTY default).

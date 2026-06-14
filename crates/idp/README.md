@@ -1,6 +1,6 @@
 # `firefly-idp`
 
-> **Tier:** Adapter · **Status:** Full (port + types) · **Java original:** `firefly-idp` · **Go module:** `idp`
+> **Tier:** Adapter · **Status:** Stable
 
 ## Overview
 
@@ -61,11 +61,10 @@ pub trait Adapter: Send + Sync {
 pub enum Error { InvalidCredentials, UserNotFound, Provider(String) }
 ```
 
-`User` and `Token` serialize with exactly the same JSON field names and
-empty-field omission rules as the Go port (`encoding/json` `omitempty`
-semantics), and the sentinel error messages are bytes-equal across
-runtimes (`firefly/idp: invalid credentials`, `firefly/idp: user not
-found`) — SDKs can transparently swap providers *and* ports.
+`User` and `Token` serialize with stable JSON field names and
+`omitempty`-style empty-field omission, and the sentinel error messages are
+fixed wire constants (`firefly/idp: invalid credentials`, `firefly/idp: user
+not found`) — SDKs can transparently swap providers *and* ports.
 
 ## Quick start
 
@@ -105,23 +104,24 @@ cargo test -p firefly-idp
 ```
 
 Sentinel-error guards ensure the canonical error variants exist, have
-non-empty messages, and render bytes-equal to the Go port; wire-shape
+non-empty messages, and render to their fixed wire constants; wire-shape
 tests pin the `User`/`Token` JSON encodings. The substantive end-to-end
 tests live in `firefly-idp-internal-db`.
 
-## pyfly parity
+## Extended adapter surface
 
-The port is widened to the full pyfly `IdpAdapter` surface. Every method
-below is a **default trait method** returning `Error::NotSupported("<op>")`,
-so adapters that predate this surface (the Keycloak / Azure AD / Cognito
-vendor crates, and any third-party adapter) keep compiling unchanged — they
-only override what they support. This mirrors pyfly's vendor adapters raising
-`NotImplementedError` for provider-side operations (e.g. MFA).
+The port carries a full-featured `Adapter` surface covering sessions, MFA,
+and role administration. Every method below is a **default trait method**
+returning `Error::NotSupported("<op>")`, so adapters that only implement the
+core surface (the Keycloak / Azure AD / Cognito vendor crates, and any
+third-party adapter) keep compiling unchanged — they only override what they
+support. Provider-side operations an adapter cannot perform (e.g. MFA) simply
+report `NotSupported`.
 
 ```rust
 #[async_trait]
 pub trait Adapter: Send + Sync {
-    // ... Go-parity required methods (login/refresh/validate/CRUD/name) ...
+    // ... core required methods (login/refresh/validate/CRUD/name) ...
 
     // Extended surface (default body → Error::NotSupported):
     async fn logout(&self, access_token: &str) -> Result<bool>;
@@ -141,8 +141,8 @@ pub trait Adapter: Send + Sync {
 }
 ```
 
-New DTOs (JSON field names match pyfly's `IdpRole` / `MfaChallenge` /
-`SessionIntrospection` dataclasses, empty optionals omitted):
+New DTOs (`Role` / `MfaChallenge` / `SessionIntrospection`, with stable JSON
+field names and empty optionals omitted):
 
 ```rust
 pub struct Role { pub name: String, pub description: String, pub scopes: Vec<String> }
@@ -154,24 +154,21 @@ pub struct SessionIntrospection {
 
 New error variants:
 
-* `Error::MfaRequired(MfaChallenge)` — the Rust analogue of pyfly's
-  `AuthResult.mfa_required=True` login outcome. An MFA-enrolled `login`
-  returns `Err(MfaRequired(challenge))` instead of a token; the caller
-  completes the challenge with `mfa_verify`.
+* `Error::MfaRequired(MfaChallenge)` — signals an MFA-gated login outcome.
+  An MFA-enrolled `login` returns `Err(MfaRequired(challenge))` instead of a
+  token; the caller completes the challenge with `mfa_verify`.
 * `Error::NotSupported(String)` — names the unsupported operation, returned
   by the default method bodies.
 
-pyfly returns booleans / `Optional` for several methods; the Rust port keeps
-those semantics where they convey real information (`logout`/`change_password`/
-`assign_role`/`revoke_role` return `Result<bool>`) and uses
-`Error::UserNotFound` where pyfly returns `None`/raises for a missing entity
-(`find_by_username`, `get_user_info`, `reset_password`).
+Methods return `Result<bool>` where the boolean conveys real information
+(`logout`/`change_password`/`assign_role`/`revoke_role`) and surface
+`Error::UserNotFound` for a missing entity (`find_by_username`,
+`get_user_info`, `reset_password`).
 
 ### REST controller (`web` feature)
 
 Enabling the `web` feature compiles `firefly_idp::web`, an axum `Router`
-that mounts any `Arc<dyn Adapter>` over the `/idp` REST surface — the Rust
-port of pyfly's `IdpController` (`@request_mapping("/idp")`). The router is
+that mounts any `Arc<dyn Adapter>` over the `/idp` REST surface. The router is
 generic over the **port**, so the internal-db adapter, a vendor adapter, or
 a test fake all drop straight in:
 

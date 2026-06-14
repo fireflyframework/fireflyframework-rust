@@ -271,14 +271,20 @@ impl PostgresBroker {
     /// attaches the `LISTEN` connection, and spawns the drain loop.
     /// Idempotent: a second call returns immediately.
     pub async fn start(&self) -> EdaResult<()> {
-        {
-            let state = self.state.read().await;
-            if state.started {
-                return Ok(());
-            }
-            if state.closed {
-                return Err(EdaError::Closed);
-            }
+        // Atomically claim the start: hold the single state write lock across
+        // the whole start so a concurrent caller cannot pass a stale
+        // read-check and double-open the listener/drain/query connections
+        // (a connection leak). The first caller proceeds and sets
+        // `started = true` before releasing; any second concurrent caller
+        // observes `started` and no-ops. `connect`/`spawn_listener` never
+        // touch `self.state`, so holding the guard across their awaits is
+        // deadlock-free.
+        let mut state = self.state.write().await;
+        if state.started {
+            return Ok(());
+        }
+        if state.closed {
+            return Err(EdaError::Closed);
         }
 
         // Query client (drives DDL, inserts, the drain). One shared
@@ -312,10 +318,8 @@ impl PostgresBroker {
         let task = tokio::spawn(async move { drain.run().await });
         self.tasks.lock().expect("tasks lock poisoned").push(task);
 
-        {
-            let mut state = self.state.write().await;
-            state.started = true;
-        }
+        state.started = true;
+        drop(state); // release the start claim before poking the drain
         self.wake.notify_one(); // initial catch-up sweep
         tracing::info!(
             channel = %self.channel,
@@ -360,55 +364,106 @@ impl PostgresBroker {
     /// Spawns the long-lived LISTEN connection. tokio-postgres surfaces
     /// `NOTIFY` only by polling the connection object, so we drive it
     /// with `poll_message` and flip the wake on every notification.
+    ///
+    /// The pump is wrapped in a supervise/reconnect loop: when a session
+    /// ends (transient error or `None`), the task checks the broker's
+    /// `closed` flag, backs off briefly, re-connects, re-issues
+    /// `LISTEN <channel>`, and resumes — so a transient drop no longer
+    /// silently loses every future `NOTIFY` wake-up. It only exits once
+    /// `close()` sets `closed`. The initial connect happens here (not in
+    /// the task) so a startup connection failure still surfaces to
+    /// `start()`.
     async fn spawn_listener(&self) -> EdaResult<()> {
         let dsn = self.config.normalised_listen_dsn();
-        let (client, mut connection) =
-            tokio_postgres::connect(&dsn, NoTls).await.map_err(pg_err)?;
+        // First connect synchronously so a startup failure surfaces to
+        // `start()`; the supervise loop reuses this session before
+        // reconnecting on its own.
+        let initial = tokio_postgres::connect(&dsn, NoTls).await.map_err(pg_err)?;
         let wake = self.wake.clone();
         let channel = self.channel.clone();
+        let state = self.state.clone();
         let task = tokio::spawn(async move {
-            // tokio-postgres surfaces NOTIFY only while the connection is
-            // polled, so wrap it in a stream we drive ourselves.
-            let mut stream = futures::stream::poll_fn(move |cx| connection.poll_message(cx));
-
-            // Phase 1 — issue LISTEN. The simple-query future only makes
-            // progress while the connection (stream) is polled, so drive
-            // both concurrently. Scope the borrow of `client` so it ends
-            // before we move on, keeping `client` owned (and thus the
-            // session alive) for the lifetime of the task.
-            {
-                let listen_sql = format!("LISTEN {channel}");
-                let listen = client.batch_execute(&listen_sql);
-                futures::pin_mut!(listen);
-                loop {
-                    tokio::select! {
-                        res = &mut listen => {
-                            if let Err(err) = res {
-                                tracing::warn!(err = %err, "postgres LISTEN failed");
-                            }
-                            break;
+            let mut session = Some(initial);
+            loop {
+                // Stop supervising once the broker is closed.
+                if state.read().await.closed {
+                    return;
+                }
+                // Acquire a session: reuse the seeded one, else reconnect.
+                let (client, connection) = match session.take() {
+                    Some(s) => s,
+                    None => match tokio_postgres::connect(&dsn, NoTls).await {
+                        Ok(s) => s,
+                        Err(err) => {
+                            tracing::warn!(err = %err, "postgres LISTEN reconnect failed");
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            continue;
                         }
-                        msg = stream.next() => {
-                            if Self::handle_listener_message(msg, &wake) {
-                                return;
-                            }
+                    },
+                };
+                Self::run_listener_session(client, connection, &channel, &wake).await;
+                // Session ended (error/None). Loop re-checks `closed` and,
+                // if still open, backs off briefly then reconnects.
+                if state.read().await.closed {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        });
+        self.tasks.lock().expect("tasks lock poisoned").push(task);
+        Ok(())
+    }
+
+    /// Drives one LISTEN session: issues `LISTEN <channel>`, then pumps
+    /// notifications until the connection ends. Returns when the session
+    /// is over (the caller's supervise loop decides whether to reconnect).
+    /// `client` is held for the whole session so the LISTEN session stays
+    /// open while we pump.
+    async fn run_listener_session(
+        client: Client,
+        mut connection: tokio_postgres::Connection<tokio_postgres::Socket, tokio_postgres::tls::NoTlsStream>,
+        channel: &str,
+        wake: &Arc<Notify>,
+    ) {
+        // tokio-postgres surfaces NOTIFY only while the connection is
+        // polled, so wrap it in a stream we drive ourselves.
+        let mut stream = futures::stream::poll_fn(move |cx| connection.poll_message(cx));
+
+        // Phase 1 — issue LISTEN. The simple-query future only makes
+        // progress while the connection (stream) is polled, so drive
+        // both concurrently. Scope the borrow of `client` so it ends
+        // before we move on, keeping `client` owned (and thus the
+        // session alive) for the lifetime of this call.
+        {
+            let listen_sql = format!("LISTEN {channel}");
+            let listen = client.batch_execute(&listen_sql);
+            futures::pin_mut!(listen);
+            loop {
+                tokio::select! {
+                    res = &mut listen => {
+                        if let Err(err) = res {
+                            tracing::warn!(err = %err, "postgres LISTEN failed");
+                        }
+                        break;
+                    }
+                    msg = stream.next() => {
+                        if Self::handle_listener_message(msg, wake) {
+                            return;
                         }
                     }
                 }
             }
+        }
 
-            // Phase 2 — pump notifications until the connection ends.
-            while let Some(msg) = stream.next().await {
-                if Self::handle_listener_message(Some(msg), &wake) {
-                    break;
-                }
+        // Phase 2 — pump notifications until the connection ends.
+        while let Some(msg) = stream.next().await {
+            if Self::handle_listener_message(Some(msg), wake) {
+                break;
             }
-            // `client` is dropped here, at task end — never before, so the
-            // LISTEN session stays open while we pump.
-            drop(client);
-        });
-        self.tasks.lock().expect("tasks lock poisoned").push(task);
-        Ok(())
+        }
+        // `client` is dropped here, at session end — never before, so the
+        // LISTEN session stays open while we pump.
+        drop(client);
     }
 
     /// Routes one polled connection message: a `NOTIFY` pokes the drain
@@ -481,6 +536,16 @@ struct DrainLoop {
 }
 
 impl DrainLoop {
+    /// The outbox `SELECT_BATCH_*` page size (mirrors the SQL `LIMIT 100`).
+    /// A full page means more rows likely remain, so the drain re-pokes
+    /// itself to fetch the next page under a fresh advisory-lock hold.
+    const BATCH_SIZE: usize = 100;
+    /// Upper bound on a single handler invocation. A hung handler must not
+    /// pin the per-group advisory lock indefinitely; on timeout the event
+    /// is treated as a handler failure (redelivery deferred, at-least-once
+    /// preserved).
+    const HANDLER_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// The consume loop: drain-then-wait, waking on NOTIFY/subscribe or
     /// the poll-interval timeout (pyfly's `_consume_loop`).
     async fn run(self) {
@@ -512,6 +577,13 @@ impl DrainLoop {
     /// cursor. Everyone else returns and retries on the next wake. The
     /// lock is session-scoped on the shared query connection — a crashed
     /// process drops the connection and Postgres auto-releases it.
+    ///
+    /// To bound how long the lock is held, this drains at most **one**
+    /// batch per acquisition and releases the lock immediately after. When
+    /// the batch was full (more rows likely queued) it re-pokes the wake so
+    /// the drain loop comes straight back around and re-acquires the lock
+    /// for the next page — so a slow handler in one group can no longer pin
+    /// the advisory lock across an unbounded number of batches.
     async fn drain(&self) -> EdaResult<()> {
         if self.state.read().await.subscriptions.is_empty() {
             return Ok(());
@@ -526,7 +598,7 @@ impl DrainLoop {
         if !got_lock {
             return Ok(());
         }
-        let result = self.drain_with_lock().await;
+        let result = self.drain_one_batch().await;
         // Always attempt unlock; on failure the lock releases when the
         // connection closes.
         if let Err(err) = self
@@ -536,71 +608,79 @@ impl DrainLoop {
         {
             tracing::debug!(err = %err, "pg_advisory_unlock raised; releases on conn close");
         }
-        result
+        // If the batch filled the page, more rows likely remain: re-poke so
+        // the loop re-acquires the lock and drains the next page promptly,
+        // without holding the lock across batches.
+        if matches!(result, Ok(true)) {
+            self.wake.notify_one();
+        }
+        result.map(|_| ())
     }
 
     /// The drain body, invoked while holding the group's advisory lock:
-    /// fetch a batch, dispatch in order, advance the cursor only past
-    /// successfully dispatched ids (at-least-once).
-    async fn drain_with_lock(&self) -> EdaResult<()> {
-        loop {
-            if self.state.read().await.closed {
-                return Ok(());
-            }
-            let offset: i64 = self
-                .client
-                .query_one(sql::SELECT_OFFSET, &[&self.config.group])
+    /// fetch one batch, dispatch in order, advance the cursor only past
+    /// successfully dispatched ids (at-least-once). Returns `Ok(true)` when
+    /// the page was full and fully dispatched (more rows likely remain).
+    async fn drain_one_batch(&self) -> EdaResult<bool> {
+        if self.state.read().await.closed {
+            return Ok(false);
+        }
+        let offset: i64 = self
+            .client
+            .query_one(sql::SELECT_OFFSET, &[&self.config.group])
+            .await
+            .map_err(pg_err)?
+            .get(0);
+
+        let rows = if let Some(dests) = self.config.destinations_ref() {
+            let dests: Vec<String> = dests.to_vec();
+            self.client
+                .query(sql::SELECT_BATCH_FILTERED, &[&offset, &dests])
                 .await
-                .map_err(pg_err)?
-                .get(0);
+        } else {
+            self.client.query(sql::SELECT_BATCH_ALL, &[&offset]).await
+        }
+        .map_err(pg_err)?;
 
-            let rows = if let Some(dests) = self.config.destinations_ref() {
-                let dests: Vec<String> = dests.to_vec();
-                self.client
-                    .query(sql::SELECT_BATCH_FILTERED, &[&offset, &dests])
-                    .await
-            } else {
-                self.client.query(sql::SELECT_BATCH_ALL, &[&offset]).await
-            }
-            .map_err(pg_err)?;
+        if rows.is_empty() {
+            return Ok(false);
+        }
 
-            if rows.is_empty() {
-                return Ok(());
-            }
-
-            // Dispatch BEFORE advancing the cursor. A handler error stops
-            // the batch early so redelivery resumes from the same point.
-            let mut last_dispatched = offset;
-            let last_row_id: i64 = rows[rows.len() - 1].get(0);
-            for row in &rows {
-                let event = row_to_event(row)?;
-                match self.dispatch(event).await {
-                    Ok(()) => last_dispatched = row.get(0),
-                    Err(err) => {
-                        tracing::error!(
-                            err = %err,
-                            id = last_dispatched,
-                            "Handler raised; deferring redelivery"
-                        );
-                        break;
-                    }
+        // Dispatch BEFORE advancing the cursor. A handler error stops
+        // the batch early so redelivery resumes from the same point.
+        let mut last_dispatched = offset;
+        let last_row_id: i64 = rows[rows.len() - 1].get(0);
+        let full_page = rows.len() >= Self::BATCH_SIZE;
+        for row in &rows {
+            let event = row_to_event(row)?;
+            match self.dispatch(event).await {
+                Ok(()) => last_dispatched = row.get(0),
+                Err(err) => {
+                    tracing::error!(
+                        err = %err,
+                        id = last_dispatched,
+                        "Handler raised; deferring redelivery"
+                    );
+                    break;
                 }
             }
-
-            if last_dispatched > offset {
-                self.client
-                    .execute(sql::UPDATE_OFFSET, &[&last_dispatched, &self.config.group])
-                    .await
-                    .map_err(pg_err)?;
-            }
-
-            // If a handler crashed before finishing the batch, back off
-            // briefly so we don't spin, and yield the loop.
-            if last_dispatched != last_row_id {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                return Ok(());
-            }
         }
+
+        if last_dispatched > offset {
+            self.client
+                .execute(sql::UPDATE_OFFSET, &[&last_dispatched, &self.config.group])
+                .await
+                .map_err(pg_err)?;
+        }
+
+        // If a handler crashed before finishing the batch, back off
+        // briefly so we don't spin, and don't claim more rows remain.
+        if last_dispatched != last_row_id {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            return Ok(false);
+        }
+
+        Ok(full_page)
     }
 
     /// Dispatches one event to every subscription whose glob matches the
@@ -618,7 +698,23 @@ impl DrainLoop {
                 .collect()
         };
         for handler in matched {
-            handler(event.clone()).await.map_err(EdaError::Handler)?;
+            // Bound each handler invocation so a hung handler cannot pin
+            // the per-group advisory lock indefinitely. A timeout surfaces
+            // as a handler error, so redelivery is deferred (at-least-once).
+            match tokio::time::timeout(Self::HANDLER_TIMEOUT, handler(event.clone())).await {
+                Ok(res) => res.map_err(EdaError::Handler)?,
+                Err(_) => {
+                    return Err(EdaError::Handler(firefly_kernel::FireflyError::internal(
+                        format!(
+                            "firefly/eda-postgres: handler timed out after {:?} for event {} \
+                             (type {}); deferring redelivery",
+                            Self::HANDLER_TIMEOUT,
+                            event.id,
+                            event.event_type
+                        ),
+                    )));
+                }
+            }
         }
         Ok(())
     }

@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Toast Notification System.
+ * Firefly Admin — Toast Notification System.
  *
  * Slides in from top-right, auto-dismisses. Safe DOM only.
  */

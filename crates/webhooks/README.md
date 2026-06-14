@@ -1,6 +1,6 @@
 # `firefly-webhooks`
 
-> **Tier:** Adapter · **Status:** Full · **Java original:** `firefly-webhooks` · **Go module:** `webhooks`
+> **Tier:** Adapter · **Status:** Stable
 
 ## Overview
 
@@ -10,7 +10,7 @@ validated against the registered signature scheme, optionally
 enriched, and dispatched to per-provider `Processor`s; failures are
 sent to a dead-letter queue for replay.
 
-Modules mirror the Go module's sub-packages (and the .NET project split):
+The crate is split into focused modules:
 
 | Module       | What it provides                                                        |
 |--------------|-------------------------------------------------------------------------|
@@ -31,17 +31,16 @@ Everything is re-exported flat from the crate root.
 | `GitHubValidator`   | `X-Hub-Signature-256`   | HMAC-SHA256 hex                                      |
 | `TwilioValidator`   | `X-Twilio-Signature`    | HMAC-SHA1 base64 of `URL + sorted(form k+v)`         |
 
-Bring your own by implementing the `Validator` trait. The signature
-wire formats are byte-identical to the Go port: every validator is
-tested against header values produced by the `firefly-testkit` signers
-(`sign_hmac`, `sign_stripe`, `sign_github`, `sign_twilio`).
+Bring your own by implementing the `Validator` trait. Every validator
+is tested against header values produced by the `firefly-testkit`
+signers (`sign_hmac`, `sign_stripe`, `sign_github`, `sign_twilio`).
 
-`TwilioValidator` reproduces Go's `Request.ParseForm` dispatch: form
-parameters participate only when the request's `Content-Type` media
-type is `application/x-www-form-urlencoded`; for any other body (JSON,
-a missing `Content-Type`, multipart, …) the signed string is the URL
-alone, matching Go's empty `PostForm`. A malformed `Content-Type` or
-form body is a signature mismatch (Go's `ParseForm` error path).
+`TwilioValidator` dispatches on the request's `Content-Type`: form
+parameters participate only when the media type is
+`application/x-www-form-urlencoded`; for any other body (JSON, a
+missing `Content-Type`, multipart, …) the signed string is the URL
+alone. A malformed `Content-Type` or form body is treated as a
+signature mismatch.
 
 ## Pipeline
 
@@ -97,8 +96,8 @@ pub struct DlqEntry { pub event: Inbound, pub err: String, pub time: DateTime<Ut
 
 pub struct Pipeline { /* … */ }
 impl Pipeline {
-    pub fn new(dlq: Arc<dyn Dlq>) -> Self;          // Go: NewPipeline(dlq)
-    pub fn without_dlq() -> Self;                   // Go: NewPipeline(nil)
+    pub fn new(dlq: Arc<dyn Dlq>) -> Self;
+    pub fn without_dlq() -> Self;
     pub fn register_validator(&self, v: impl Validator + 'static);
     pub fn register_processor(&self, p: impl Processor + 'static);
     pub fn enrich(&self, hook: impl Fn(&mut Inbound) + Send + Sync + 'static);
@@ -114,12 +113,11 @@ TwilioValidator::new(auth_token, post_url)
 WebhookError::SignatureMismatch             // "firefly/webhooks: signature mismatch"
 ```
 
-## pyfly parity — idempotency `EventStore`
+## Idempotency `EventStore`
 
-Mirrors pyfly's `WebhookEventStore` / `InMemoryWebhookEventStore`: a
-dedup store the pipeline consults **before** dispatch so a redelivered
-webhook (same idempotency key) is recognised and skipped instead of
-re-processed.
+An optional dedup store the pipeline consults **before** dispatch so a
+redelivered webhook (same idempotency key) is recognised and skipped
+instead of re-processed.
 
 ```rust,ignore
 #[async_trait]
@@ -139,11 +137,10 @@ impl Pipeline {
 ```
 
 When a store is registered and the event carries the idempotency header
-(read from `Inbound.headers`, Go canonical-MIME cased):
+(read from `Inbound.headers`, canonical-MIME cased):
 
 - a key already recorded → `process` returns `Ok(())` **without
-  dispatching** (the ingestion endpoint answers `202 Accepted`), exactly
-  as pyfly's `WebhookProcessor.process` returns the event for a duplicate;
+  dispatching** (the ingestion endpoint answers `202 Accepted`);
 - a fresh key is recorded with `remember` **before** the processors run;
 - an event with no idempotency header is dispatched unconditionally;
 - a failed `already_processed` lookup is fail-closed (surfaced, no
@@ -162,13 +159,11 @@ pipeline.register_event_store(MemoryEventStore::new());
 
 #### Redis-backed `RedisEventStore` (feature `redis`)
 
-`RedisEventStore` is the Rust port of pyfly's `RedisWebhookEventStore`: a
-distributed, durable idempotency store so a webhook redelivered to a
-**different** instance is still recognised as a duplicate. Each key is a
-TTL-expiring Redis string, so the store self-prunes without a background
-job. Defaults match pyfly exactly — key prefix `webhook:idem:`, TTL
-`86_400`s (24 h) — so keys are wire-compatible against the same Redis
-across the Python and Rust runtimes.
+`RedisEventStore` is a distributed, durable idempotency store so a
+webhook redelivered to a **different** instance is still recognised as a
+duplicate. Each key is a TTL-expiring Redis string, so the store
+self-prunes without a background job. Defaults are a key prefix
+`webhook:idem:` and a TTL of `86_400`s (24 h).
 
 | `EventStore` method | Redis command            |
 |---------------------|--------------------------|
@@ -185,14 +180,14 @@ use firefly_webhooks::RedisEventStore;
 
 let store = RedisEventStore::connect("redis://127.0.0.1:6379/0")
     .await?
-    .with_key_prefix("webhook:idem:") // pyfly default; override as needed
-    .with_ttl_seconds(86_400);        // pyfly default (24 h)
+    .with_key_prefix("webhook:idem:") // default; override as needed
+    .with_ttl_seconds(86_400);        // default (24 h)
 pipeline.register_event_store_arc(std::sync::Arc::new(store));
 ```
 
-Like pyfly, the `already_processed` → `remember` pair is a non-atomic
-check-then-set; serialise it behind a distributed lock if you need strict
-once-exactly semantics.
+The `already_processed` → `remember` pair is a non-atomic check-then-set;
+serialise it behind a distributed lock if you need strict once-exactly
+semantics.
 
 ### `web`
 
@@ -208,11 +203,10 @@ The handler performs:
 4. Build an `Inbound`. Call `Pipeline::process(ev)`.
 5. **202 Accepted** on success; **500** on processor error.
 
-Non-`POST` methods get **405**; a missing provider segment gets **400** —
-matching the Go handler. Header keys on `Inbound.headers` use Go's
-canonical MIME casing (`X-Event-Type`), and `Host` is omitted — Go's
-`net/http` server promotes it out of `Request.Header` before the
-handler runs — so the JSON wire shape is identical across ports.
+Non-`POST` methods get **405**; a missing provider segment gets **400**.
+Header keys on `Inbound.headers` use canonical MIME casing
+(`X-Event-Type`), and `Host` is omitted, giving a stable JSON wire
+shape.
 
 ### `sdk`
 
@@ -237,12 +231,10 @@ receiving end. Retries (3 attempts, 100 ms doubling backoff capped at
 and RFC 7807 error decoding behave exactly like the framework REST
 client.
 
-> Porting note: the Go `sdk.Client.Forward` builds the headed request
-> but then forwards through `RESTClient.Do`, which JSON-re-encodes the
-> payload and drops the per-call headers — untested dead code that its
-> own documentation contradicts. The Rust port implements the
-> documented contract (raw body + headers); without it no forwarded
-> event could ever pass signature validation.
+> Design note: the payload is sent verbatim as the request body with the
+> caller-supplied headers preserved — re-encoding the body or dropping
+> the per-call headers would strip the provider signature, so no
+> forwarded event could ever pass validation on the receiving end.
 
 ## Quick start
 
@@ -274,7 +266,7 @@ cargo test -p firefly-webhooks
 Covers HMAC validator success + tamper detection, the pipeline DLQ
 flow, the enrichment hook, and the ingestion endpoint (via
 `tower::ServiceExt::oneshot`) against known-good signatures plus
-401 / 404 / 405 / 400 / 500 negative paths — every Go test case, plus
-cross-crate proof that all four validators accept
-`firefly-testkit`-signed payloads and an SDK round-trip that replays a
-dead-lettered event end-to-end over a real socket.
+401 / 404 / 405 / 400 / 500 negative paths, plus cross-crate proof that
+all four validators accept `firefly-testkit`-signed payloads and an SDK
+round-trip that replays a dead-lettered event end-to-end over a real
+socket.

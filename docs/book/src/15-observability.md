@@ -17,12 +17,12 @@ wired the logging layer, the health composite, the metric registry, and the
 request-metrics middleware. This chapter turns those defaults into an admin
 surface and explains what each piece reports.
 
-> **Spring parity.** This is Spring Boot Actuator plus the
-> `firefly-otel-spring-boot-starter`: structured logs with MDC-style correlation,
-> `/actuator/health` + `/actuator/metrics` + `/actuator/loggers`, and a
-> Spring-Boot-Admin-style dashboard. The endpoint paths and the `configuredLevel`
-> / `effectiveLevel` logger shape match Spring's, so Actuator-aware tooling works
-> unchanged.
+> **An `/actuator` management surface.** Firefly exposes a JSON management
+> surface under `/actuator/*` — health, info, metrics, env, loggers, scheduled
+> tasks — with structured, correlation-enriched logs and an embedded admin
+> dashboard. The logger endpoint reports `configuredLevel` / `effectiveLevel`,
+> the conventional shape standard metrics and management tooling expects, so
+> off-the-shelf scrapers and dashboards work unchanged.
 
 ## The admin surface in main.rs
 
@@ -60,7 +60,7 @@ port at `http://127.0.0.1:8081/actuator/*`:
 |--------------------------------|----------------------------------------------------|
 | `/actuator/health`             | the composite rollup (+ liveness/readiness probes) |
 | `/actuator/info`               | app metadata + your info contributors              |
-| `/actuator/metrics`            | Micrometer-parity meter listing                    |
+| `/actuator/metrics`            | the registered meter listing                       |
 | `/actuator/metrics/:name`      | one meter's detail                                 |
 | `/actuator/prometheus`         | the Prometheus text-exposition scrape target       |
 | `/actuator/env`                | masked, origin-attributed property sources         |
@@ -82,7 +82,7 @@ in-memory infrastructure:
 ```jsonc
 // GET /actuator/info
 {
-  "app": { "name": "lumen", "version": "26.6.3" },
+  "app": { "name": "lumen", "version": "26.6.4" },
   "sample": { "name": "lumen", "store": "in-memory", "eventBus": "in-memory" }
 }
 ```
@@ -114,8 +114,9 @@ readiness need not trigger a liveness restart.
 
 ## Request metrics — already on
 
-`WebStack::new` turns on the request-metrics middleware by default (it fills in a
-`RequestMetricsConfig` if the caller left one unset). For every request it
+Request metrics are auto-instrumented **on by default** — at the `Core` layer
+(so even a bare `Core` emits them) and through `WebStack::new`, which fills in a
+`RequestMetricsConfig` if you left one unset. For every request the middleware
 records the labeled `http_server_requests_seconds` timer plus a companion `_max`
 gauge, tagged `method` / templated `uri` (the axum matched path, so
 `/api/v1/wallets/:id` not the concrete id) / `status` / `outcome` / `exception`,
@@ -123,9 +124,28 @@ and bridges them onto the actuator `MetricRegistry`. A clean request carries
 `exception="None"`. So the moment Lumen booted in Chapter 6 it was already
 emitting per-route latency; this chapter just exposes it at `/actuator/metrics`.
 
-The Micrometer dot-case names map straight to Prometheus
+> **Note.** To turn the auto-instrumentation off, set
+> `CoreConfig { disable_request_metrics: true, .. }`; to tune the rolling-max
+> window or path exclusions, supply a `request_metrics: Some(RequestMetricsConfig { .. })`.
+
+The dot-case meter names map straight to Prometheus
 (`http_server_requests_seconds`), so pointing a Prometheus `scrape_config` at
 `/actuator/prometheus` lights up Grafana with no extra code.
+
+Beyond the request timer, you record your own meters on the same registry. Pull
+it off the `Core` with `metric_registry()`, then increment a counter or set a
+gauge — both surface at `/actuator/metrics` and `/actuator/prometheus`
+immediately:
+
+```rust,ignore
+let metrics = app.web.metric_registry();
+
+// A domain counter, bumped each time the transfer saga completes.
+metrics.counter("lumen_transfers_total").increment(1.0);
+
+// A gauge sampling a live value (e.g. wallets currently held in the read model).
+metrics.gauge("lumen_wallets_active").set(wallet_count as f64);
+```
 
 ## Structured logging and correlation
 
@@ -142,8 +162,8 @@ let _ = app.web.init_logging();
 
 After that, plain `tracing` macros produce enriched lines; fields recorded on an
 enclosing span merge into each event. The field names (`time`, `level`, `msg`,
-`service`, `correlationId`) are identical across the ports, so one log pipeline
-parses every Firefly service.
+`service`, `correlationId`) follow a stable, documented schema, so one log
+pipeline parses every Firefly service consistently.
 
 Because the correlation id lives in a task-local scope, it flows automatically
 into every log line, every event Lumen's ledger publishes (`Event::new` stamps
@@ -151,10 +171,35 @@ it), and every outbound client call (the W3C `traceparent` is propagated). A
 request that opens a wallet, publishes `WalletOpened`, and projects it into the
 read model stitches together under one id with no manual threading.
 
-> **Spring parity.** `init_logging` is the analog of Spring Boot's Logback +
-> MDC setup; the task-local correlation id plays the role of the MDC
-> `traceId`/`spanId`. PyFly's `get_logger` + `TransactionIdMiddleware` and Go's
-> `CorrelationLayer` do the same — the wire field names are shared.
+> **Correlation flows automatically.** `init_logging` installs a structured
+> `tracing` subscriber; the task-local correlation id is attached to every log
+> line in place of manual thread-local plumbing, so a request stitches together
+> across logs, events, and outbound calls with no field threading.
+
+### Configuring logging
+
+Logging is configured the way you configure everything else — from the one main
+config file. Bind the `firefly.logging.*` section into a `LogConfig` with
+`firefly_observability::log_config_from_properties(props, base)`:
+
+```yaml
+firefly:
+  logging:
+    level: info                 # root level
+    format: json                # json | text (logfmt) | console
+    level:
+      firefly_web: warn         # per-logger levels (like logging.level.<logger>)
+      app::ledger: trace
+    file:
+      name: lumen.log           # enable the rolling file appender
+      max-size: 10MB
+      max-history: 7
+```
+
+Per-logger levels, the output format, and the rolling file appender all come
+from config; an external logging file can be folded in with
+`apply_external_config`. And every level can be changed **without a restart**
+through `POST /actuator/loggers/{name}` — the actuator's runtime logger control.
 
 ## Tracing / OpenTelemetry
 
@@ -166,13 +211,36 @@ where you add your preferred OTel `tracing` layer alongside the correlation
 layer. Lumen ships without an exporter (it is teaching code with no external
 collector), but the trace-context propagation is already on the edges.
 
+When you do want spans flowing to a collector, build an OTLP tracer and add
+`tracing-opentelemetry`'s layer to the subscriber Firefly installed — the
+correlation layer keeps working alongside it:
+
+```rust,ignore
+use opentelemetry_otlp::WithExportConfig;
+use tracing_subscriber::prelude::*;
+
+// Build an OTLP pipeline pointing at your collector.
+let tracer = opentelemetry_otlp::new_pipeline()
+    .tracing()
+    .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint("http://otel-collector:4317"))
+    .install_batch(opentelemetry_sdk::runtime::Tokio)?;
+
+// Register the OTel layer alongside Firefly's structured-log + correlation layers.
+tracing_subscriber::registry()
+    .with(tracing_opentelemetry::layer().with_tracer(tracer))
+    .init();
+```
+
+The `traceparent` headers Firefly already propagates become the parent/child
+edges between spans, so a request that fans out to an outbound call appears as a
+single distributed trace in your backend.
+
 ## The admin dashboard
 
-The actuator surface is JSON for machines. `firefly-admin` mounts a
-**Spring-Boot-Admin-style** single-page dashboard — vendored, no `npm` build —
-that ties health, metrics, loggers, beans, mappings, caches, CQRS handlers,
-sagas, traces, and a live log tail into one pane of glass with Server-Sent-Event
-streams. It is the next surface Lumen grows into; you enable the facade's
+The actuator surface is JSON for machines. `firefly-admin` mounts a single-page
+admin dashboard — vendored, no `npm` build — that ties health, metrics, loggers,
+beans, mappings, caches, CQRS handlers, sagas, traces, and a live log tail into
+one pane of glass with Server-Sent-Event streams. It is the next surface Lumen grows into; you enable the facade's
 `admin` feature and wire it from the `Core` accessors.
 
 `mount(AdminConfig, AdminDeps)` returns the dashboard router. `AdminDeps::new`
@@ -242,19 +310,44 @@ the moment you adopt `#[derive(Component)]` + `firefly::scan` (Chapter 4), the
 graph fills in. Without a container the endpoints degrade gracefully to an empty
 `{ total: 0 }` block.
 
-> **Spring parity.** The Beans view is Spring Boot Actuator's `/beans` endpoint
-> and Spring Boot Admin's Beans panel. `firefly-admin` maps to Spring Boot Admin
-> overall: server mode (`AdminServerConfig`) replaces `@EnableAdminServer`, the
-> `AdminClient` self-registration replaces `spring.boot.admin.client.url`, and
-> the vanilla-JS SPA + SSE streams replace the Vaadin/React frontend and its
-> WebSocket notifications. The Python and Go ports expose the same fifteen views.
+> **Beans and server mode.** The Beans view is the dashboard's window onto the
+> DI container. `firefly-admin` also runs in *server mode* (`AdminServerConfig`):
+> instances self-register through an `AdminClient`, and the server aggregates a
+> fleet of services into the Instances view. The dashboard is a vanilla-JS SPA
+> driven entirely by the `/admin/api` JSON + SSE endpoints — no frontend build
+> step.
 
 ### Custom views
 
 To add your own sidebar view, implement the `AdminView` trait and push it onto
-`AdminDeps::views`; the dashboard lists it under
-`/admin/api/views[/:id]`. A Lumen "Treasury" view might surface the total
-custody balance across all wallets, queried from the read model.
+`AdminDeps::views`; the dashboard lists it under `/admin/api/views[/:id]`. A
+Lumen "Treasury" view surfaces the total custody balance across all wallets,
+queried from the read model:
+
+```rust,ignore
+use firefly::admin::{AdminView, ViewMeta};
+
+struct TreasuryView {
+    read_model: Arc<WalletReadModel>,
+}
+
+#[async_trait::async_trait]
+impl AdminView for TreasuryView {
+    fn meta(&self) -> ViewMeta {
+        ViewMeta { id: "treasury", title: "Treasury", section: "Infrastructure" }
+    }
+
+    // Backs GET /admin/api/views/treasury.
+    async fn data(&self) -> serde_json::Value {
+        let total: i64 = self.read_model.all().iter().map(|w| w.balance).sum();
+        serde_json::json!({ "custodyTotal": total, "wallets": self.read_model.len() })
+    }
+}
+
+// Register it before mounting:
+let mut deps = AdminDeps::new(/* … */);
+deps.views.push(Box::new(TreasuryView { read_model: Arc::clone(&read_model) }));
+```
 
 ## What changed in Lumen
 

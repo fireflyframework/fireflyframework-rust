@@ -35,6 +35,11 @@ use crate::KafkaConfig;
 /// backpressure does not surface as a publish failure.
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Flush timeout used on the [`KafkaBroker::close`] path. Shorter than
+/// [`SEND_TIMEOUT`] so shutdown stays responsive while still draining
+/// in-flight produces best-effort.
+const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// An Apache Kafka [`Broker`]: publishes [`Event`]s through a shared
 /// [`FutureProducer`] and runs a dedicated [`StreamConsumer`] loop per
 /// subscribed topic, all under the configured consumer group.
@@ -145,8 +150,13 @@ impl KafkaBroker {
             let _ = handle.await;
         }
 
-        // Best-effort flush of any in-flight produces.
-        let _ = self.producer.flush(Timeout::After(SEND_TIMEOUT));
+        // Best-effort flush of any in-flight produces. flush() is a
+        // synchronous, blocking call (up to the timeout), so run it on a
+        // blocking thread instead of stalling a runtime worker. The
+        // FutureProducer wraps an Arc, so cloning is cheap.
+        let p = self.producer.clone();
+        let _ =
+            tokio::task::spawn_blocking(move || p.flush(Timeout::After(CLOSE_FLUSH_TIMEOUT))).await;
         Ok(())
     }
 }

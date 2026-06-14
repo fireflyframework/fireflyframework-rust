@@ -148,7 +148,7 @@ pub use query_parser::{
 };
 pub use reactive::{
     PostgresReactiveRepository, ReactiveCrudRepository, ReactiveMemoryRepository,
-    ReactiveSpecificationRepository, RowMapper, TableConfig,
+    ReactiveSortingRepository, ReactiveSpecificationRepository, RowMapper, TableConfig,
 };
 pub use repository::{DataError, MemoryRepository, Repository};
 pub use routing::{
@@ -158,4 +158,4 @@ pub use soft_delete::{SoftDelete, SoftDeletePolicy, DEFAULT_DELETED_AT_COLUMN};
 pub use specification::Specification;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.3";
+pub const VERSION: &str = "26.6.4";

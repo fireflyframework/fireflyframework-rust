@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Loggers View.
+ * Firefly Admin — Loggers View.
  *
  * Displays application loggers with runtime level management.
  * Supports searching/filtering by name and changing log levels

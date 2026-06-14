@@ -1,14 +1,14 @@
 # `firefly-ecm-esignature-adobe-sign`
 
-> **Tier:** Adapter · **Status:** Production (Adobe Acrobat Sign REST API v6) · **Backing tech:** Adobe Sign — OAuth bearer token / integration key + REST v6
+> **Tier:** Adapter · **Status:** Production · **Backing tech:** Adobe Sign — OAuth bearer token / integration key + REST v6
 
 ## Overview
 
 `firefly-ecm-esignature-adobe-sign` is the Adobe Sign / Adobe Acrobat Sign
 [`firefly_ecm::ESignatureProvider`] adapter. `RestProvider` is a **real REST
-integration** over [`reqwest`](https://docs.rs/reqwest), porting pyfly's
-`AdobeSignESignatureAdapter`. Every operation calls the live Adobe Acrobat Sign
-REST API v6 — there is no stub and no `not_implemented` path:
+integration** over [`reqwest`](https://docs.rs/reqwest). Every operation calls
+the live Adobe Acrobat Sign REST API v6 — there is no stub and no
+`not_implemented` path:
 
 | Operation | Adobe Acrobat Sign REST v6 call |
 |---|---|
@@ -61,7 +61,7 @@ reuses a caller-provided client for connection pooling, custom timeouts, or TLS.
 The `document_id` is the Adobe **transient document id** obtained from a prior
 `POST /transientDocuments` upload.
 
-### Status mapping (pyfly parity)
+### Status mapping
 
 | Adobe `status` | `SignatureStatus` |
 |---|---|
@@ -80,7 +80,7 @@ The `document_id` is the Adobe **transient document id** obtained from a prior
 | `RestProvider` | Real Adobe Sign `ESignatureProvider` over `reqwest`; `RestProvider::new(api_base, access_token)`, `.with_client(reqwest::Client)` |
 | `RestProvider::recipients(&id)` | `GET /agreements/{id}/members` → `Vec<SignerState>` |
 | `RestProvider::download(&id)` | `GET /agreements/{id}/combinedDocument` → combined signed PDF bytes |
-| `map_status(&str)` | Adobe agreement `status` → `SignatureStatus` (pyfly `_map_status` table) |
+| `map_status(&str)` | Adobe agreement `status` → `SignatureStatus` |
 | `VERSION` | Framework version stamp |
 
 ## Capability notes
@@ -101,9 +101,9 @@ Every operation calls the real Adobe API — no operation is stubbed.
 cargo test -p firefly-ecm-esignature-adobe-sign
 ```
 
-The REST behavior tests (`tests/rest_test.rs`, ported from pyfly's
-`test_adobe_sign_behavior.py`) spin up an in-process axum mock on port 0 and
-assert both the outbound request the adapter builds (method, path, auth header,
+The REST behavior tests (`tests/rest_test.rs`) spin up an in-process axum mock
+on port 0 and assert both the outbound request the adapter builds (method, path,
+auth header,
 JSON payload) and how each canned response is parsed into the domain types —
 covering `create`, `status`, `get`, `cancel`, `recipients`, and `download`, plus
 the `404` → `NotFound`/`None` paths. No network, Docker, or real Adobe Sign is

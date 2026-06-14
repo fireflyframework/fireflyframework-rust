@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Beans View.
+ * Firefly Admin — Beans View.
  *
  * Filterable, sortable bean explorer with a slide-in detail panel.
  * Uses the reusable table component with custom cell renderers

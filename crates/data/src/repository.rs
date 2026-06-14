@@ -36,6 +36,11 @@ pub enum DataError {
     /// (SQL driver error, connection loss, …).
     #[error("firefly/data: {0}")]
     Backend(String),
+    /// An optimistic-locking conflict: the row was modified by another writer
+    /// since it was loaded (the `@Version` guard found a stale version) —
+    /// Spring Data's `OptimisticLockingFailureException`.
+    #[error("firefly/data: optimistic lock conflict (stale version)")]
+    OptimisticLock,
 }
 
 /// Repository is the generic typed CRUD contract. Implementations may

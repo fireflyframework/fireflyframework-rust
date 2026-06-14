@@ -15,11 +15,11 @@ against the port and select the backend (in-memory, Redis, Postgres) at wiring
 time. All of it reaches Lumen through the one `firefly` facade, as
 `firefly::cache` and `firefly::resilience`.
 
-> **Spring parity.** `Adapter` is the `Cache` abstraction; `Typed::get_or_set`
-> is `@Cacheable`; the query-side `#[firefly(cache_ttl = "30s")]` is the
-> declarative read-through Lumen uses. The resilience decorators are
-> Resilience4j (circuit breaker, rate limiter, bulkhead, timeout) composed for
-> reactive Rust.
+> **The cache and resilience model.** `Adapter` is Firefly's single cache port;
+> `Typed<T>::get_or_set` is the read-through memoization primitive; the
+> query-side `#[firefly(cache_ttl = "30s")]` is the declarative cache TTL Lumen
+> uses. The resilience decorators — circuit breaker, rate limiter, bulkhead,
+> timeout — compose into a `Chain` around any async call.
 
 ## Lumen's read-side cache
 
@@ -117,11 +117,11 @@ assert_eq!(view.balance, 300);   // read-after-write is honest
 assert_eq!(view.version, 3);
 ```
 
-> **Spring parity.** This is `@Cacheable` on the query plus `@CacheEvict` on the
-> command, the read-through/evict pattern you know from Spring's cache
-> abstraction. The declaration lives on the message (`#[firefly(cache_ttl)]`),
-> the eviction is an explicit `invalidate_type` at the write boundary, and the
-> backing store is the same swappable `Adapter` port every other consumer uses.
+> **Read-through plus explicit evict.** The cache declaration lives on the
+> message (`#[firefly(cache_ttl)]`) and the eviction is an explicit
+> `invalidate_type` at the write boundary — read-after-write stays honest because
+> the writer drops the family the moment it changes a balance. The backing store
+> is the same swappable `Adapter` port every other consumer uses.
 
 ## The cache port
 
@@ -270,11 +270,12 @@ let to = Timeout::new(Duration::from_secs(2));
 let _ = to.execute(|| async { slow_call().await }).await;
 ```
 
-> **Spring parity.** `Chain` is the composed Resilience4j decorator stack; the
-> ordering (timeout outermost, breaker, bulkhead innermost) is the same call-wrap
-> order you tune in `resilience4j.yaml`. `CircuitBreaker::execute` returns the
-> operation's value (so a guarded read still hands you the `WalletView`), while
-> `Chain::execute` is for guarded operations whose value you discard.
+> **Decorator ordering.** `Chain` composes the four decorators in call-wrap
+> order — timeout outermost, breaker, bulkhead innermost — so a deadline bounds
+> the whole guarded call while the breaker and bulkhead protect the inner
+> operation. `CircuitBreaker::execute` returns the operation's value (so a guarded
+> read still hands you the `WalletView`), while `Chain::execute` is for guarded
+> operations whose value you discard.
 
 ## A complete read path
 

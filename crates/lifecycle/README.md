@@ -1,6 +1,6 @@
 # `firefly-lifecycle`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `SpringApplication.run()` · **Go module:** `lifecycle` · **.NET project:** `IHost` + `IHostedService`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -30,12 +30,12 @@ app.run().await?;
 
 ## Why a separate crate?
 
-The Spring Boot `SpringApplication.run()` line is famously concise because
-the framework owns the entire lifecycle. Idiomatic async Rust typically
-scatters this across `main.rs` (a `tokio::select!` over `ctrl_c`, graceful
-shutdown plumbing, drain timeouts, manual cleanup ordering). `firefly-lifecycle`
-lifts that into one declarative composition so every service handles
-`SIGTERM` the same way on day one.
+A concise one-line bootstrap is only possible when the framework owns the
+entire lifecycle. Idiomatic async Rust typically scatters this across
+`main.rs` (a `tokio::select!` over `ctrl_c`, graceful shutdown plumbing,
+drain timeouts, manual cleanup ordering). `firefly-lifecycle` lifts that into
+one declarative composition so every service handles `SIGTERM` the same way
+on day one.
 
 ## Public surface
 
@@ -60,13 +60,13 @@ impl Application {
 pub struct ShutdownHandle;            // Clone; .shutdown() triggers a graceful stop
 pub struct ShutdownSignal;            // Clone; .wait().await resolves at drain start
 
-pub enum LifecycleError {             // joined-error contract of the Go port
-    Cancelled,                        // analog of context.Canceled
+pub enum LifecycleError {             // joined-error contract
+    Cancelled,                        // a clean, handle-driven stop
     StartHook { index, source },      // "start hook %d: %w"
     StopHook  { index, source },      // "stop hook %d: %w"
     Server    { name,  source },      // "http %s: %w"
     DrainTimedOut { pending },        // drain budget elapsed
-    Joined(Vec<LifecycleError>),      // errors.Join; Display joins with '\n'
+    Joined(Vec<LifecycleError>),      // aggregated errors; Display joins with '\n'
 }
 ```
 
@@ -121,8 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .on_server("api", api_server)
         .on_stop(flush_broker);
 
-    // Programmatic stop — the Rust analog of cancelling Go's context;
-    // hand it to an admin endpoint, or call it from tests.
+    // Programmatic stop — hand it to an admin endpoint, or call it from tests.
     let handle = app.shutdown_handle();
     handle.shutdown(); // remove this line in a real service: run until SIGTERM
 
@@ -135,18 +134,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 `firefly-starter-core`'s `Core::new_application()` returns an `Application`
 pre-configured for the service.
 
-## Adaptation notes (Go → Rust)
+## Design notes
 
-| Go | Rust |
-|----|------|
-| `Hook func(ctx) error` | async closure / `async fn` returning `HookResult` |
-| `OnHTTP(addr, handler)` + own goroutine | `on_server(name, async fn(ShutdownSignal))` + own tokio task |
-| cancel the `context.Context` passed to `Run` | `ShutdownHandle::shutdown()` |
-| `errors.Is(err, context.Canceled)` | `LifecycleError::is_cancelled()` |
-| `errors.Join` | `LifecycleError::Joined` (Display joins with `\n`, like Go) |
-| `WithLogger(*slog.Logger)` | global `tracing` subscriber |
-| `Signals []os.Signal` field | `with_signal_trap(bool)` (set fixed to ctrl-c + `SIGTERM`) |
-| advisory `ctx` drain deadline | hard `tokio::time::timeout` per phase; every stop hook is still polled at least once, so prompt hooks always run |
+* Hooks are async closures or `async fn`s returning `HookResult`; servers are
+  `async fn(ShutdownSignal)`, each driven on its own tokio task.
+* A graceful stop is requested with `ShutdownHandle::shutdown()`, and a clean,
+  handle-driven stop is reported as `LifecycleError::is_cancelled()`.
+* Multiple errors are aggregated into `LifecycleError::Joined`, whose `Display`
+  joins entries with `\n`.
+* Logging flows through the global `tracing` subscriber.
+* The signal trap is toggled with `with_signal_trap(bool)` and is fixed to
+  ctrl-c + `SIGTERM`.
+* Drain budgets are enforced with a hard `tokio::time::timeout` per phase, yet
+  every stop hook is still polled at least once, so prompt hooks always run.
 
 ## Testing
 
@@ -158,4 +158,4 @@ Covers ordered start + reverse-ordered stop, start-hook failure rollback,
 server task lifecycle (start + drain + error short-circuit + clean-exit
 shutdown), joined stop-hook errors, drain-timeout reporting for both stop
 hooks and server tasks, zero-drain normalisation, handle clone/idempotency,
-Go-format error display, source chains, and Send + Sync bounds.
+joined error display, source chains, and Send + Sync bounds.

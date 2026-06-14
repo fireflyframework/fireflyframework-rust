@@ -159,7 +159,13 @@ pub fn mount(cfg: AdminConfig, deps: AdminDeps) -> Router {
     router = if base.is_empty() {
         router
     } else {
-        Router::new().nest(&base, router)
+        // axum's `nest` matches `{base}` and `{base}/{rest}` but NOT the bare
+        // `{base}/` with an empty rest — which is exactly the canonical URL
+        // `base_href()` injects (`/admin/`). Serve the SPA shell there too so a
+        // browser opening `http://host/admin/` gets the dashboard, not a 404.
+        Router::new()
+            .route(&format!("{base}/"), get(spa_shell))
+            .nest(&base, router)
     };
 
     router.with_state(state)

@@ -1,12 +1,11 @@
 # `firefly-eda-redis`
 
-> **Tier:** Platform · **Status:** Full (Redis Streams transport) · **Python original (pyfly):** `pyfly.eda.adapters.redis.RedisStreamsEventBus`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
 `firefly-eda-redis` is a **Redis Streams transport** for the Firefly
-[`firefly-eda`](../eda) event-driven architecture port — the Rust port
-of pyfly's `RedisStreamsEventBus`.
+[`firefly-eda`](../eda) event-driven architecture.
 
 `RedisStreamsBroker` implements `firefly_eda::Publisher` and
 `firefly_eda::Subscriber` (and therefore `firefly_eda::Broker`) over the
@@ -21,13 +20,12 @@ connection, using consumer groups for competing-consumer delivery:
   spawns an `XREADGROUP … BLOCK` consume loop;
 - the loop dispatches each entry to matching handlers, `XACK`s on
   success, and **leaves the entry pending (unacked) on handler error**
-  so Redis redelivers it later — at-least-once, exactly as pyfly does by
+  so Redis redelivers it later — at-least-once delivery achieved by
   skipping the `XACK`.
 
 The on-stream record uses the field name `envelope` carrying the
-`firefly_eda::Event` JSON, byte-for-byte compatible with the pyfly Redis
-adapter's `{b"envelope": …}` records, so a Rust producer and a Python
-consumer (or vice versa) interoperate.
+`firefly_eda::Event` JSON, so any producer and consumer that speak this
+record format interoperate.
 
 ## Usage
 
@@ -68,46 +66,33 @@ The starter selects this transport through the factory
 
 ## Configuration
 
-`RedisConfig::new(url)` applies pyfly's defaults; every field has a
+`RedisConfig::new(url)` applies sensible defaults; every field has a
 builder:
 
-| Field         | Default            | pyfly keyword        |
-|---------------|--------------------|----------------------|
-| `url`         | (required)         | `url`                |
-| `streams`     | `["firefly.events"]` | `streams`          |
-| `group`       | `"firefly-default"`  | `group`            |
-| `consumer_id` | machine hostname   | `consumer_id`        |
-| `block_ms`    | `5000`             | `block_ms`           |
-| `count`       | `10`               | `count`              |
+| Field         | Default            |
+|---------------|--------------------|
+| `url`         | (required)         |
+| `streams`     | `["firefly.events"]` |
+| `group`       | `"firefly-default"`  |
+| `consumer_id` | machine hostname   |
+| `block_ms`    | `5000`             |
+| `count`       | `10`               |
 
-## pyfly parity
+## Delivery semantics
 
-Behaviorally faithful to `RedisStreamsEventBus`:
+The transport drives the full Redis Streams consumer-group lifecycle:
+`XGROUP CREATE … MKSTREAM` with `BUSYGROUP` tolerance, `XADD` publish,
+`XREADGROUP` block loop, `XACK` on success, and leave-pending on handler
+error. `publish` auto-starts the broker on first use, so events produced
+before the first `subscribe` are not lost. Poison entries — missing the
+`envelope` field or carrying undeserializable bytes — are `XACK`-ed and
+skipped (logged), never redelivered forever.
 
-- `XGROUP CREATE … MKSTREAM` with `BUSYGROUP` tolerance, `XADD` publish,
-  `XREADGROUP` block loop, `XACK` on success, leave-pending on handler
-  error.
-- `publish` auto-starts the broker on first use (pyfly auto-starts the
-  bus so events produced before the first `subscribe` are not lost).
-- Poison entries — missing the `envelope` field or carrying
-  undeserializable bytes — are `XACK`-ed and skipped (logged), never
-  redelivered forever; pyfly does the same.
-- The stream record field name (`envelope`) and the JSON envelope are
-  wire-compatible across ports.
-
-**Deliberate divergences from pyfly:**
-
-- **Topic vs. event-type dispatch.** pyfly matches handler patterns
-  against the envelope `event_type`; this crate matches against the
-  envelope `topic`, consistent with the `firefly_eda::Subscriber`
-  contract shared by every Firefly transport (and `InMemoryBroker`).
-  Set the event `topic` to the value you would have matched on in pyfly.
-  Glob patterns (`*`, `?`, `[..]`, `{a,b}`) are honored via `globset`,
-  matching pyfly's `fnmatch` semantics.
-- **No serializer abstraction.** pyfly's pluggable `EventSerializer`
-  (with Avro/Protobuf stubs) collapses to the canonical wire-compatible
-  `Event` JSON serde used across the Rust port — Avro/Protobuf are stubs
-  even in pyfly.
+Handler patterns match against the envelope `topic`, consistent with the
+`firefly_eda::Subscriber` contract shared by every Firefly transport
+(including `InMemoryBroker`). Glob patterns (`*`, `?`, `[..]`, `{a,b}`)
+are honored via `globset`. Events carry the canonical wire-compatible
+`Event` JSON serde used across Firefly.
 
 ## Testing
 

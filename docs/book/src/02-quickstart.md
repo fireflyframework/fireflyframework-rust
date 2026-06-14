@@ -72,7 +72,7 @@ saga orchestration, scheduling, security, observability — and *every*
 # The one-dependency front door: the `firefly` facade re-exports the whole
 # framework AND every macro. Generated code resolves runtime types through the
 # facade, so Lumen never lists the underlying `firefly-*` crates.
-firefly = "26.6.3"
+firefly = "26.6.4"
 
 # The two ecosystem crates a Firefly service still writes against directly:
 # axum (you author the controller handlers) and serde (your messages and event
@@ -94,12 +94,12 @@ default = []
 streaming = []
 ```
 
-> **Spring parity.** A Spring Boot service pulls in a constellation of
-> `spring-boot-starter-*` artifacts, and pyfly enables subsystems with
-> `@enable_domain_stack`. Firefly for Rust collapses all of that into one
-> `firefly` line. There is no starter to forget and no version skew between
-> `firefly-web` and `firefly-cqrs` — they ship as one calendar-versioned
-> release and you depend on the facade.
+> **Design note.** Many frameworks make you assemble a constellation of
+> starter or plugin artifacts and keep their versions aligned by hand. Firefly
+> collapses all of that into one `firefly` line: there is no starter to forget
+> and no version skew between subsystems like `firefly-web` and `firefly-cqrs` —
+> every `firefly-*` crate ships as one calendar-versioned release, and you
+> depend on the facade.
 
 ## Lumen's two entry points
 
@@ -153,12 +153,11 @@ access log) — all from those defaulted `CoreConfig` fields. `WebStack` derefs 
 the infrastructure `Core`, so `app.web.bus`, `app.web.broker`, and friends are
 right there when later chapters need them.
 
-> **Spring parity.** `WebStack::new(CoreConfig { .. })` is the Rust spelling of
-> `@SpringBootApplication` + auto-configuration (and of pyfly's
-> `@enable_web_stack`): one declaration stands up the entire managed context.
-> The difference is that nothing is reflective or hidden — `CoreConfig` is a
-> plain struct whose fields *are* the knobs, so "what is wired" is exactly "what
-> the struct says."
+> **Design note.** `WebStack::new(CoreConfig { .. })` stands up the entire
+> managed context in one declaration — and nothing is reflective or hidden.
+> `CoreConfig` is a plain struct whose fields *are* the knobs, so "what is
+> wired" is exactly "what the struct says." Firefly chose explicit, inspectable
+> configuration over runtime magic on purpose.
 
 The process entry point lives in `src/main.rs`. It builds the app, turns on
 logging, prints the banner, serves the public API and the actuator on separate
@@ -240,7 +239,7 @@ cargo run
 You will see the Firefly banner, then Lumen's own line:
 
 ```text
-:: lumen :: digital-wallet & ledger (v26.6.3)
+:: lumen :: digital-wallet & ledger (v26.6.4)
 ```
 
 Even with no business routes yet, the actuator is live on the admin port:
@@ -252,7 +251,7 @@ curl localhost:8081/actuator/health
 
 # Build metadata — note app_name and app_version flow straight from CoreConfig.
 curl localhost:8081/actuator/info
-# {"app":{"name":"lumen","version":"26.6.3"}, ...}
+# {"app":{"name":"lumen","version":"26.6.4"}, ...}
 ```
 
 ## What you got for free
@@ -271,10 +270,10 @@ Without writing any of it yourself, Lumen already has:
   listener.
 - **Graceful shutdown.** `application.run()` traps SIGINT/SIGTERM and drains.
 
-> **Spring parity.** This is the Spring Boot Actuator experience — health, info,
-> metrics on a management port, plus production-grade request middleware — but
-> stood up by a single `WebStack::new`, with no `application.properties` to
-> author first and no annotations to remember.
+> **Design note.** Health, info, and metrics on a dedicated management port,
+> plus production-grade request middleware, all stood up by a single
+> `WebStack::new` — no config file to author first and no annotations to
+> remember. This is Firefly's actuator surface, on by default.
 
 ## Recap — what changed in Lumen
 

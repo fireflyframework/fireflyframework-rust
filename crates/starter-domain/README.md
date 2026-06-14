@@ -1,6 +1,6 @@
 # `firefly-starter-domain`
 
-> **Tier:** Starter · **Status:** Full · **Java original:** `firefly-starter-domain` · **Go module:** `starterdomain`
+> **Tier:** Starter · **Status:** Stable
 
 ## Overview
 
@@ -19,9 +19,8 @@ then, services that need persistent event storage register their own
 implementation by overriding `domain.events` after `Domain::new(...)` —
 the fields are public trait objects for exactly that reason.
 
-`Domain` dereferences to `Core` (the Rust analog of Go's embedded
-`*startercore.Core`), so every core field and convenience method —
-`apply_middleware`, `actuator_router`, `new_application`,
+`Domain` dereferences to `Core`, so every core field and convenience
+method — `apply_middleware`, `actuator_router`, `new_application`,
 `print_banner`, … — is available directly on the domain value.
 `starter_name` defaults to `"starter-domain"`.
 
@@ -36,7 +35,7 @@ pub struct Domain {
 }
 
 impl Domain {
-    pub fn new(cfg: CoreConfig) -> Self; // Go's starterdomain.New(cfg)
+    pub fn new(cfg: CoreConfig) -> Self;
 }
 ```
 
@@ -74,9 +73,9 @@ async fn main() {
 cargo test -p firefly-starter-domain
 ```
 
-Ports the Go test (the event-sourcing dependencies are wired, the
+The suite verifies that the event-sourcing dependencies are wired, the
 starter name is `"starter-domain"`, and an event round-trips through
-the wired store) and adds Rust-specific coverage: custom starter names
+the wired store, with coverage for: custom starter names
 pass through untouched while an explicit `"starter-core"` is renamed,
 core defaults flow through, the wired stores keep their
 optimistic-concurrency / `AggregateNotFound` / snapshot soft-miss

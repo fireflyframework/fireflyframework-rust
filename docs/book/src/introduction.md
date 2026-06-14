@@ -23,21 +23,25 @@ handlers, and routes; the framework wires the rest. And you depend on exactly
 
 ```toml
 [dependencies]
-firefly = { version = "26.6.3" }
+firefly = { version = "26.6.4" }
 ```
 
-This is the official Rust port of the Java/Spring Boot
-[`org.fireflyframework`](https://fireflyframework.org) platform — the fourth
-sibling port, joining the .NET, Go, and Python (PyFly) ports. A service running
-version *X* on Java, .NET, Go, Python, or Rust consumes the same contracts and
-emits the same wire format.
+Firefly is a production-grade platform for reactive, event-driven Rust
+microservices, built natively on tokio and axum. It speaks a stable,
+versioned, language-neutral wire contract — RFC 9457 problem documents,
+idempotency semantics, event envelopes, saga step definitions — so a Firefly
+service interoperates cleanly with any other service that honors the same
+contracts, regardless of the stack it runs on. The
+[`fireflyframework.org`](https://fireflyframework.org) contracts are the
+specification; this book is about building against them in Rust.
 
 ## What you build: Lumen
 
 This is a book you read with a terminal open. Rather than tour the framework
 feature by feature, you build **Lumen** — a digital-wallet and ledger service —
-from an empty crate into a secured, observable, event-sourced microservice. The
-same Lumen powers the PyFly, Go, and .NET books, so the four ports stay in step.
+from an empty crate into a secured, observable, event-sourced microservice.
+Lumen is the worked example the whole book is built around — every concept lands
+as real code in one service you grow chapter by chapter.
 
 Lumen's customer-facing surface is small and concrete:
 
@@ -66,10 +70,12 @@ read is what runs.
 
 You are comfortable with Rust and `async`/`await`, and you want to ship
 back-office services without re-litigating error envelopes, correlation IDs,
-saga compensation, and observability on every project. If you come from Spring
-Boot, WebFlux, or Project Reactor, you will feel at home immediately — there are
-**Spring parity** and **Reactor parity** notes throughout that save you the
-mental translation.
+saga compensation, and observability on every project. Firefly's ergonomics are
+deliberately familiar: an opinionated composition root, declarative macros, and
+a `Mono`/`Flux` reactive core. If you have used a batteries-included framework or
+a reactive-streams library before, the concepts will land quickly — **Design
+note** callouts throughout point out where an idea will feel familiar, framed as
+Firefly's own design choices rather than a translation table.
 
 ## How to read this book
 
@@ -90,19 +96,19 @@ reference afterward.
   observability, scheduling, caching — and lands the real Lumen code for it.
 - The **Shipping** chapters cover testing, the `firefly` CLI, and production
   deployment with graceful shutdown and a reactive streaming endpoint.
-- The **Appendices** map Spring Boot concepts to Firefly, index every crate, and
-  define the vocabulary.
+- The **Appendices** index every crate, define the framework vocabulary, and
+  offer a quick-reference for developers arriving from other ecosystems.
 
 > **Note.** Every code block in this book is real, compiling Rust against the
-> actual crate APIs at version 26.6.3. Where a snippet elides setup for brevity
+> actual crate APIs at version 26.6.4. Where a snippet elides setup for brevity
 > it is marked `ignore`/`no_run`, but the API names, types, and method
 > signatures are exactly what the crates expose.
 
 ## Conventions
 
-Inline code such as `Core::new` and `Mono::just` uses monospace. Mapping tables
-line up a familiar concept (Reactor, Spring) against its Firefly spelling.
-Callouts are blockquotes that open with a bold label:
+Inline code such as `Core::new` and `Mono::just` uses monospace. Reference
+tables collect related Firefly APIs in one place for quick scanning. Callouts
+are blockquotes that open with a bold label:
 
 > **Note.** Supplementary context worth reading.
 
@@ -110,10 +116,10 @@ Callouts are blockquotes that open with a bold label:
 
 > **Warning.** A sharp edge that causes hard-to-debug problems if ignored.
 
-> **Spring parity.** Where a Firefly concept maps directly onto something you
-> already know from Spring Boot / WebFlux / Firefly-Java.
-
-> **Reactor parity.** Where Firefly's `Mono`/`Flux` maps onto Project Reactor.
+> **Design note.** Why Firefly makes a particular design choice — and where that
+> choice will feel familiar if you have used a comparable framework or a
+> reactive-streams library. Offered as orientation, not as a claim that Firefly
+> reimplements anything else.
 
 The full set, with live examples and the Recap/Exercises structure every
 chapter follows, lives in the [Conventions](./00-front/00-conventions.md) page.

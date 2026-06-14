@@ -27,6 +27,7 @@ actuator = ["dep:firefly-actuator", "dep:firefly-observability"]
 firefly-data = { workspace = true }
 firefly-reactive = { workspace = true }
 firefly-kernel = { workspace = true }
+firefly-transactional = { workspace = true }
 firefly-actuator = { workspace = true, optional = true }
 firefly-observability = { workspace = true, optional = true }
 sqlx = { workspace = true }

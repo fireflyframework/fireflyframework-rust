@@ -1,15 +1,14 @@
 # `firefly-ecm-esignature-logalty`
 
-> **Tier:** Adapter · **Status:** Production (Logalty REST) · **Backing tech:** Logalty — EU qualified / eIDAS e-signature, REST + `X-Api-Key`
+> **Tier:** Adapter · **Status:** Production · **Backing tech:** Logalty — EU qualified / eIDAS e-signature, REST + `X-Api-Key`
 
 ## Overview
 
 `firefly-ecm-esignature-logalty` is the Logalty
 [`firefly_ecm::ESignatureProvider`] adapter (EU qualified / eIDAS e-signature).
 `RestProvider` is a **real REST integration** over
-[`reqwest`](https://docs.rs/reqwest), porting pyfly's
-`LogaltyESignatureAdapter`. Every operation calls the live Logalty REST API —
-there is no stub and no `not_implemented` path:
+[`reqwest`](https://docs.rs/reqwest). Every operation calls the live Logalty
+REST API — there is no stub and no `not_implemented` path:
 
 | Operation | Logalty REST call |
 |---|---|
@@ -61,7 +60,7 @@ async fn main() -> Result<(), firefly_ecm::EcmError> {
 header on every request. `.with_client(reqwest::Client)` reuses a
 caller-provided client for connection pooling, custom timeouts, or TLS.
 
-### Status mapping (pyfly parity)
+### Status mapping
 
 | Logalty `status` | `SignatureStatus` |
 |---|---|
@@ -80,7 +79,7 @@ caller-provided client for connection pooling, custom timeouts, or TLS.
 | `RestProvider` | Real Logalty `ESignatureProvider` over `reqwest`; `RestProvider::new(api_base, api_key)`, `.with_client(reqwest::Client)` |
 | `RestProvider::recipients(&id)` | `GET /envelopes/{id}` projected to `Vec<SignerState>` |
 | `RestProvider::download(&id)` | `GET /envelopes/{id}/document` → signed PDF bytes |
-| `map_status(&str)` | Logalty `status` → `SignatureStatus` (pyfly `_map_status` table) |
+| `map_status(&str)` | Logalty `status` → `SignatureStatus` |
 | `VERSION` | Framework version stamp |
 
 ## Capability notes
@@ -100,8 +99,8 @@ Every operation calls the real Logalty API — no operation is stubbed.
 cargo test -p firefly-ecm-esignature-logalty
 ```
 
-The REST behavior tests (`tests/rest_test.rs`, ported from pyfly's
-`test_logalty_behavior.py`) spin up an in-process axum mock on port 0 and assert
+The REST behavior tests (`tests/rest_test.rs`) spin up an in-process axum mock
+on port 0 and assert
 both the outbound request the adapter builds (method, path, `X-Api-Key` header,
 JSON payload) and how each canned response is parsed into the domain types —
 covering `create`, `status`, `get`, `cancel`, `recipients`, and `download`, plus

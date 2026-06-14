@@ -125,6 +125,7 @@ pub(crate) fn upsert_sql(
     dialect: &dyn SqlDialect,
     backend: Backend,
     cols: &[ColumnValue],
+    version_column: Option<&str>,
 ) -> (String, Vec<Value>) {
     let table_q = dialect.quote_ident(&cfg.table);
     let id_q = dialect.quote_ident(&cfg.id_column);
@@ -148,6 +149,9 @@ pub(crate) fn upsert_sql(
     // Non-id columns updated on conflict.
     let updatable: Vec<&ColumnValue> = cols.iter().filter(|c| c.column != cfg.id_column).collect();
 
+    // Whether an updatable column is the optimistic-locking version column.
+    let is_version = |col: &str| version_column == Some(col);
+
     let conflict = match backend {
         Backend::Postgres | Backend::Sqlite => {
             if updatable.is_empty() {
@@ -158,10 +162,28 @@ pub(crate) fn upsert_sql(
                     .iter()
                     .map(|c| {
                         let q = dialect.quote_ident(&c.column);
-                        format!("{q} = EXCLUDED.{q}")
+                        if is_version(&c.column) {
+                            // Bump the version on every conflict-update.
+                            format!("{q} = EXCLUDED.{q} + 1")
+                        } else {
+                            format!("{q} = EXCLUDED.{q}")
+                        }
                     })
                     .collect();
-                format!(" ON CONFLICT({id_q}) DO UPDATE SET {}", sets.join(", "))
+                let mut clause =
+                    format!(" ON CONFLICT({id_q}) DO UPDATE SET {}", sets.join(", "));
+                // Optimistic-lock guard: only update when the stored version
+                // still matches the loaded one, so a stale write affects 0 rows.
+                if let Some(vc) = version_column {
+                    let vq = dialect.quote_ident(vc);
+                    let target = match backend {
+                        Backend::Postgres => format!("{table_q}.{vq}"),
+                        // SQLite references the target column unqualified.
+                        _ => vq.clone(),
+                    };
+                    clause.push_str(&format!(" WHERE {target} = EXCLUDED.{vq}"));
+                }
+                clause
             }
         }
         Backend::MySql => {
@@ -170,11 +192,17 @@ pub(crate) fn upsert_sql(
                 // id keeps the statement an idempotent upsert.
                 format!(" ON DUPLICATE KEY UPDATE {id_q} = {id_q}")
             } else {
+                // MySQL's ON DUPLICATE KEY UPDATE takes no WHERE clause, so the
+                // version is bumped but the stale-write guard is not enforced.
                 let sets: Vec<String> = updatable
                     .iter()
                     .map(|c| {
                         let q = dialect.quote_ident(&c.column);
-                        format!("{q} = VALUES({q})")
+                        if is_version(&c.column) {
+                            format!("{q} = VALUES({q}) + 1")
+                        } else {
+                            format!("{q} = VALUES({q})")
+                        }
                     })
                     .collect();
                 format!(" ON DUPLICATE KEY UPDATE {}", sets.join(", "))
@@ -216,7 +244,7 @@ mod tests {
             ColumnValue::new("id", "u1"),
             ColumnValue::new("name", "alice"),
         ];
-        let (sql, args) = upsert_sql(&cfg(), &PostgresDialect, Backend::Postgres, &cols);
+        let (sql, args) = upsert_sql(&cfg(), &PostgresDialect, Backend::Postgres, &cols, None);
         assert_eq!(
             sql,
             r#"INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT("id") DO UPDATE SET "name" = EXCLUDED."name""#
@@ -230,7 +258,7 @@ mod tests {
             ColumnValue::new("id", "u1"),
             ColumnValue::new("name", "alice"),
         ];
-        let (sql, _) = upsert_sql(&cfg(), &SqliteDialect, Backend::Sqlite, &cols);
+        let (sql, _) = upsert_sql(&cfg(), &SqliteDialect, Backend::Sqlite, &cols, None);
         assert!(
             sql.contains(r#"ON CONFLICT("id") DO UPDATE SET "name" = EXCLUDED."name""#),
             "{sql}"
@@ -245,7 +273,7 @@ mod tests {
             ColumnValue::new("id", "u1"),
             ColumnValue::new("name", "alice"),
         ];
-        let (sql, _) = upsert_sql(&cfg(), &MySqlDialect, Backend::MySql, &cols);
+        let (sql, _) = upsert_sql(&cfg(), &MySqlDialect, Backend::MySql, &cols, None);
         assert_eq!(
             sql,
             "INSERT INTO `users` (`id`, `name`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`)"
@@ -256,7 +284,7 @@ mod tests {
     fn upsert_id_only_table_does_nothing_on_conflict() {
         let c = TableConfig::new("tags", "id", ["id"]);
         let cols = vec![ColumnValue::new("id", "t1")];
-        let (sql, _) = upsert_sql(&c, &PostgresDialect, Backend::Postgres, &cols);
+        let (sql, _) = upsert_sql(&c, &PostgresDialect, Backend::Postgres, &cols, None);
         assert!(sql.contains(r#"ON CONFLICT("id") DO NOTHING"#), "{sql}");
     }
 }

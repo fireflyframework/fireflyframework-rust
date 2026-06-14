@@ -27,6 +27,20 @@ use crate::authorization::AuthorizationResult;
 use crate::context::ExecutionContext;
 use crate::event::DomainEvent;
 use crate::fluent::MessageMetadata;
+
+/// Whether a [`Message`] is a **command** (mutates state) or a **query**
+/// (reads state) — the CQRS write/read split. Set by `#[derive(Command)]`
+/// (the default) / `#[derive(Query)]`, and recorded per handler so the bus can
+/// report registered commands and queries separately (pyfly's
+/// `get_registered_command_types()` / `get_registered_query_types()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MessageKind {
+    /// A state-mutating command.
+    #[default]
+    Command,
+    /// A read-only query.
+    Query,
+}
 use crate::CqrsError;
 
 /// A command or query that can be dispatched through the [`Bus`].
@@ -48,6 +62,14 @@ use crate::CqrsError;
 /// any struct — the JSON encoding seeds the query-cache key. [`Clone`]
 /// stands in for Go's pass-by-value handler invocation.
 pub trait Message: Clone + Serialize + Send + Sync + 'static {
+    /// Whether this message is a command or a query — the CQRS kind, used by
+    /// the bus to segregate registered command and query handlers. Defaults to
+    /// [`MessageKind::Command`]; `#[derive(Query)]` overrides it to
+    /// [`MessageKind::Query`].
+    fn kind() -> MessageKind {
+        MessageKind::Command
+    }
+
     /// Pre-dispatch validation hook honoured by [`ValidationMiddleware`].
     ///
     /// Return an error (conventionally [`CqrsError::validation`]) to
@@ -310,6 +332,7 @@ pub trait Middleware: Send + Sync + 'static {
 /// [`Bus::handler_names`]).
 struct RegisteredHandler {
     name: &'static str,
+    kind: MessageKind,
     handler: DynHandler,
 }
 
@@ -402,6 +425,7 @@ impl Bus {
                 TypeId::of::<C>(),
                 RegisteredHandler {
                     name: type_name::<C>(),
+                    kind: C::kind(),
                     handler: erased,
                 },
             );
@@ -423,6 +447,64 @@ impl Bus {
             .collect();
         names.sort_unstable();
         names
+    }
+
+    /// The fully-qualified type names of every registered handler of `kind`,
+    /// sorted — the building block behind [`Bus::command_handler_names`] /
+    /// [`Bus::query_handler_names`].
+    pub fn handler_names_by_kind(&self, kind: MessageKind) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = self
+            .inner
+            .read()
+            .expect("firefly/cqrs: bus lock poisoned")
+            .handlers
+            .values()
+            .filter(|registered| registered.kind == kind)
+            .map(|registered| registered.name)
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// Registered **command** handler type names (pyfly's
+    /// `get_registered_command_types()`).
+    pub fn command_handler_names(&self) -> Vec<&'static str> {
+        self.handler_names_by_kind(MessageKind::Command)
+    }
+
+    /// Registered **query** handler type names (pyfly's
+    /// `get_registered_query_types()`).
+    pub fn query_handler_names(&self) -> Vec<&'static str> {
+        self.handler_names_by_kind(MessageKind::Query)
+    }
+
+    /// The number of registered handlers.
+    pub fn handler_count(&self) -> usize {
+        self.inner
+            .read()
+            .expect("firefly/cqrs: bus lock poisoned")
+            .handlers
+            .len()
+    }
+
+    /// Whether a handler is registered for message type `C`.
+    pub fn has_handler<C: Message>(&self) -> bool {
+        self.inner
+            .read()
+            .expect("firefly/cqrs: bus lock poisoned")
+            .handlers
+            .contains_key(&TypeId::of::<C>())
+    }
+
+    /// Removes the handler for message type `C`, returning whether one was
+    /// present (pyfly's `HandlerRegistry.unregister`).
+    pub fn unregister<C: Message>(&self) -> bool {
+        self.inner
+            .write()
+            .expect("firefly/cqrs: bus lock poisoned")
+            .handlers
+            .remove(&TypeId::of::<C>())
+            .is_some()
     }
 
     /// Dispatches a command and returns its typed result — Go's

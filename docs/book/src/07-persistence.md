@@ -19,14 +19,14 @@ for Postgres, MySQL, SQLite, or MongoDB without touching a call site.
 `firefly-data` provides the framework's persistence vocabulary: a composable
 `Filter` query DSL, a `Page<T>` paged-result envelope, a blocking
 `Repository<T, K>` contract, and — built on `firefly-reactive` — a **reactive
-CRUD surface** that is the Rust analog of Spring Data R2DBC. This chapter covers
-both, with a real streaming SQL repository.
+CRUD surface** that returns `Mono` / `Flux` and streams rows lazily. This
+chapter covers both, with a real streaming SQL repository.
 
-> **Spring parity.** This is the Repository pattern as Spring Data popularized
-> it, translated to idiomatic Rust. `Repository<T, K>` is the analog of
-> `JpaRepository<T, ID>`; `ReactiveCrudRepository<T, ID>` is the analog of
-> Spring Data R2DBC's `ReactiveCrudRepository<T, ID>`. You depend on the trait;
-> the adapter supplies the SQL — exactly the JVM contract.
+> **Design note.** Firefly's data layer is the Repository pattern, expressed as
+> idiomatic Rust: you depend on a trait — `Repository<T, K>` (blocking) or
+> `ReactiveCrudRepository<T, ID>` (reactive) — and an adapter supplies the SQL.
+> Depend on the port, swap the backend. If you have used a reactive-streams
+> library before, the `Mono` / `Flux` surface will feel familiar.
 
 ## Lumen's read store, as a repository
 
@@ -82,8 +82,9 @@ contract, a real database behind it.
 
 ## The `Page<T>` envelope
 
-`Page<T>` is the canonical paged result, wire-identical to the
-Java/.NET/Go/Python `Page<T>` so SDK clients deserialize it uniformly:
+`Page<T>` is the canonical paged-result envelope with a stable, versioned JSON
+shape — any client that honors that contract deserializes it uniformly, so
+generated SDK clients consume it without per-service handling:
 
 ```rust,ignore
 pub struct Page<T> {
@@ -146,28 +147,26 @@ Lower it onto `Repository<WalletView, String>` and `find` / `find_by_id` /
 
 ## The reactive CRUD surface
 
-On top of the blocking contract, `firefly-data` adds a **reactive** surface —
-the Spring Data R2DBC analog — built on `Mono` / `Flux` (the publishers from
+On top of the blocking contract, `firefly-data` adds a **reactive** CRUD surface
+built on `Mono` / `Flux` (the publishers from
 [The Reactive Model](./05-reactive-model.md)). It is purely additive: nothing
 about the existing `Repository` API changes.
 
-| Spring Data R2DBC                 | firefly-data reactive                       |
+| Method                            | Returns                                     |
 |-----------------------------------|---------------------------------------------|
-| `ReactiveCrudRepository<T, ID>`   | `ReactiveCrudRepository<T, ID>`             |
-| `Flux<T> findAll()`               | `find_all() -> Flux<T>`                     |
-| `Flux<T> findAllById(ids)`        | `find_all_by_id(ids) -> Flux<T>`            |
-| `Mono<T> findById(id)`            | `find_by_id(id) -> Mono<T>`                 |
-| `Mono<Boolean> existsById(id)`    | `exists_by_id(id) -> Mono<bool>`            |
-| `Mono<T> save(e)`                 | `save(e) -> Mono<T>`                        |
-| `Flux<T> saveAll(es)`             | `save_all(es) -> Flux<T>`                   |
-| `Mono<Void> deleteById(id)`       | `delete_by_id(id) -> Mono<()>`              |
-| `Mono<Void> deleteAll()`          | `delete_all() -> Mono<()>`                  |
-| `Mono<Long> count()`              | `count() -> Mono<u64>`                       |
-| `findAll(Specification, Pageable)`| `ReactiveSpecificationRepository`           |
+| `find_all()`                      | `Flux<T>`                                   |
+| `find_all_by_id(ids)`             | `Flux<T>`                                   |
+| `find_by_id(id)`                  | `Mono<T>`                                   |
+| `exists_by_id(id)`                | `Mono<bool>`                                |
+| `save(e)`                         | `Mono<T>`                                   |
+| `save_all(es)`                    | `Flux<T>`                                   |
+| `delete_by_id(id)`                | `Mono<()>`                                  |
+| `delete_all()`                    | `Mono<()>`                                  |
+| `count()`                         | `Mono<u64>`                                 |
+| `Specification` + `Pageable`      | `ReactiveSpecificationRepository`           |
 
-A "no row" `find_by_id` maps to an **empty** `Mono` (Reactor's `Mono.empty()`),
-exactly as Spring Data signals a missing `findById` — the reactive equivalent of
-Lumen's `ReadModel::find` returning `None`.
+A "no row" `find_by_id` resolves to an **empty** `Mono` — the reactive
+equivalent of Lumen's `ReadModel::find` returning `None`.
 
 ### In-memory, for tests
 
@@ -270,10 +269,54 @@ store.)
 ### Reactive specification / paging
 
 `ReactiveSpecificationRepository` runs a composable `Specification` predicate
-with an optional `Pageable` window and **streams** the matches as a `Flux` — the
-reactive analog of `findAll(Specification, Pageable)`, but with no intermediate
-`Page<T>` envelope, so it plugs straight into an NDJSON / SSE endpoint with
-backpressure.
+with an optional `Pageable` window and **streams** the matches as a `Flux`, with
+no intermediate `Page<T>` envelope — so it plugs straight into an NDJSON / SSE
+endpoint with backpressure.
+
+### Sorting & paging — the `ReactiveSortingRepository` (free)
+
+firefly-data's `ReactiveSortingRepository<T, ID>` adds whole-collection sorting
+and paging — `find_all_sorted(RequestSort) -> Flux<T>` and
+`find_all_paged(Pageable) -> Flux<T>` — and you write **no** code for it: it is a
+blanket `impl` over any repository that is both a `ReactiveCrudRepository` and a
+`ReactiveSpecificationRepository`. The sort/page is run as a match-all
+`Specification`, so every `SqlxReactiveRepository` and `ReactiveMemoryRepository`
+acquires it automatically.
+
+```rust
+use firefly_data::{
+    Pageable, ReactiveCrudRepository, ReactiveMemoryRepository, ReactiveSortingRepository,
+    RequestSort,
+};
+
+#[derive(Clone, PartialEq, Debug, serde::Serialize)]
+struct WalletView { id: String, owner: String, balance: i64 }
+
+#[tokio::main]
+async fn main() {
+    let repo = ReactiveMemoryRepository::new(|w: &WalletView| w.id.clone());
+    for (id, owner) in [("w1", "carol"), ("w2", "alice"), ("w3", "bob")] {
+        repo.save(WalletView { id: id.into(), owner: owner.into(), balance: 0 })
+            .block().await.unwrap();
+    }
+
+    // find_all(Sort) — ordered by owner ascending, streamed as a Flux.
+    let sorted = repo
+        .find_all_sorted(RequestSort::by(["owner"]))
+        .collect_list().block().await.unwrap().unwrap();
+    assert_eq!(sorted[0].owner, "alice");
+
+    // find_all(Pageable) — page 1 (1-based), size 2, sorted; a Flux window.
+    let page = repo
+        .find_all_paged(Pageable::of(1, 2, RequestSort::by(["owner"])).unwrap())
+        .collect_list().block().await.unwrap().unwrap();
+    assert_eq!(page.len(), 2);
+}
+```
+
+> **Note.** `find_all_paged` streams the page as a `Flux` window rather than
+> buffering a `Page<T>` envelope — reach for `Page<T>` + a count query when you
+> actually need totals.
 
 ## Pluggable databases — a new DB is a new adapter
 
@@ -291,13 +334,14 @@ surface is what makes this hexagonal:
 - a **`Specification::to_mongo()`** / `Filter::to_mongo()` that lowers the same
   tree to a MongoDB `$`-operator filter document.
 
-Two adapter crates implement those ports so you code once and swap backends.
+Two adapter *crates* — `firefly-data-sqlx` (covering the three relational
+backends) and `firefly-data-mongodb` — implement those ports so you code once
+and swap backends.
 
-> **Spring parity.** This is hexagonal architecture / "ports & adapters" as
-> Spring practices it: your service depends on the repository *port*; the
-> *adapter* (the relational starter, the Mongo module) is chosen by
-> configuration. Swapping Postgres for MySQL is the Rust analog of swapping a
-> JDBC driver and dialect — a config change, not a code change.
+> **Design note.** This is hexagonal architecture — ports & adapters. Your
+> service depends on the repository *port*; the *adapter* (the relational crate,
+> the Mongo crate) is chosen at wiring time. Swapping Postgres for MySQL is a
+> pool change, not a code change — the call sites never move.
 
 ### Relational — `firefly-data-sqlx` (Postgres / MySQL / SQLite)
 
@@ -352,6 +396,283 @@ Switching to Postgres or MySQL is `Db::Postgres(pg_pool)` / `Db::MySql(my_pool)`
 `samples/lumen` comment promises: the in-memory `ReadModel` becomes a
 `SqlxReactiveRepository<WalletView, String>`, and the `GetWallet` handler is
 none the wiser.
+
+The constructor takes a `Db`, a `TableConfig`, a `RowMapper` (reads), and a
+`RowWriter` (writes); three chainable builders add cross-cutting behaviour, each
+returning a fresh repository:
+
+- `.with_auditor(Auditor)` — stamps `created_at` / `updated_at` /
+  `created_by` / `updated_by` on every write (insert vs update is decided by
+  whether the row already exists): automatic auditing.
+- `.with_soft_delete(SoftDeletePolicy)` — hides soft-deleted rows from every
+  read and turns `delete_by_id` into a `deleted_at` stamp instead of a physical
+  `DELETE`: logical (soft) delete.
+- `.with_version_column("version")` — turns on optimistic locking
+  (next section).
+
+### Building the pool from config — `auto_configure`
+
+In the examples above the pool is constructed by hand. In a real service the
+connection settings live in configuration, and Firefly turns them into a live
+pool — plus a registered transaction manager — in a single awaited call at
+startup. There is no dependency-injection container in the loop: you load the
+config, bind a plain `serde` struct, and `await` one function.
+
+`DataSourceProperties` is that struct, bound from the `firefly.datasource.*`
+config tree:
+
+```rust,ignore
+use firefly_data_sqlx::DataSourceProperties;
+
+// Bound from `firefly.datasource.*` (e.g. an application.yaml / env overrides).
+pub struct DataSourceProperties {
+    pub url: String,                  // scheme picks the backend (see below)
+    pub max_connections: Option<u32>,
+    pub min_connections: Option<u32>,
+    pub acquire_timeout_ms: Option<u64>,
+    pub idle_timeout_ms: Option<u64>,
+    pub max_lifetime_ms: Option<u64>,
+}
+```
+
+The **URL scheme selects the backend** (each behind its cargo feature):
+`postgres://` / `postgresql://` → PostgreSQL, `mysql://` → MySQL, `sqlite:` →
+SQLite. So a config change from `postgres://…` to `mysql://…` moves the whole
+service to MySQL with no code edit — the pluggable-database promise, driven from
+configuration.
+
+Three entry points build the `Db`:
+
+- `Db::connect(url).await -> Result<Db, FireflyError>` — a pool from a URL,
+  using driver defaults.
+- `Db::connect_with(&props).await` — a pool honouring the full
+  `DataSourceProperties` (sizes, timeouts, lifetimes).
+- `data_sqlx::auto_configure(&props).await` — the **one-call startup path**: it
+  builds the pool *and* registers a `SqlxTransactionManager`, so
+  `#[firefly::transactional]` resolves its manager with no manual wiring. The
+  returned `Db` then builds your typed repositories.
+
+The shape of a boot sequence is: load config → bind `DataSourceProperties` →
+`await auto_configure` once → build repositories from the returned `Db`.
+
+```rust,ignore
+use firefly_data::TableConfig;
+use firefly_data_sqlx::{data_sqlx, AnyRow, ColumnValue, DataSourceProperties, SqlxReactiveRepository};
+use firefly_kernel::FireflyError;
+
+#[derive(Debug, Clone, PartialEq)]
+struct WalletView { id: String, owner: String, balance: i64 }
+
+# async fn boot(props: DataSourceProperties) -> Result<(), Box<dyn std::error::Error>> {
+// One awaited call: builds the pool AND registers the SqlxTransactionManager.
+let db = data_sqlx::auto_configure(&props).await?;
+
+// The returned Db builds typed repositories — no DI container involved.
+let wallets: SqlxReactiveRepository<WalletView, String> = SqlxReactiveRepository::new(
+    db.clone(),
+    TableConfig::new("wallet_views", "id", ["id", "owner", "balance"]),
+    |row: &AnyRow| Ok::<_, FireflyError>(WalletView {
+        id: row.get_str("id")?,
+        owner: row.get_str("owner")?,
+        balance: row.get_i64("balance")?,
+    }),
+    |w: &WalletView| vec![
+        ColumnValue::new("id", w.id.clone()),
+        ColumnValue::new("owner", w.owner.clone()),
+        ColumnValue::new("balance", w.balance),
+    ],
+);
+// Because auto_configure registered the manager, a `#[firefly::transactional]`
+// fn that writes through `wallets` is now atomic with no further wiring.
+# Ok(())
+# }
+```
+
+> **Design note.** Configuration drives the runtime, not a container. A plain
+> `serde` struct is bound from `firefly.datasource.*`, and a single awaited
+> `auto_configure` builds the pool and registers the transaction manager — the
+> wiring is explicit, compiler-checked, and visible in one place rather than
+> assembled by reflection at runtime.
+
+### Optimistic locking — `with_version_column`
+
+`with_version_column("version")` makes a `save` a **version-guarded** conditional
+upsert: every write bumps the version column and guards the conflict-update on
+the version the entity was loaded with (`WHERE version = <loaded>`). If a
+concurrent writer moved the stored version on, the guarded update matches zero
+rows and the save fails with `DataError::OptimisticLock` rather than silently
+overwriting the other change. The entity's `RowWriter` must emit the version
+column carrying the loaded value. (Conflict detection is enforced on Postgres and
+SQLite; on MySQL the version is bumped but the guard is not applied.)
+
+```rust,ignore
+use firefly_data::{DataError, Repository, TableConfig};
+use firefly_data_sqlx::{AnyRow, ColumnValue, Db, SqlxRepository};
+use firefly_kernel::FireflyError;
+
+#[derive(Debug, Clone)]
+struct Account { id: String, balance: i64, version: i64 }
+
+# async fn ex(pool: sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
+let repo: SqlxRepository<Account, String> = SqlxRepository::new(
+    Db::Postgres(pool),
+    TableConfig::new("accounts", "id", ["id", "balance", "version"]),
+    |row: &AnyRow| Ok::<_, FireflyError>(Account {
+        id: row.get_str("id")?,
+        balance: row.get_i64("balance")?,
+        version: row.get_i64("version")?,
+    }),
+    |a: &Account| vec![
+        ColumnValue::new("id", a.id.clone()),
+        ColumnValue::new("balance", a.balance),
+        // The loaded version — the conditional upsert guards on it.
+        ColumnValue::new("version", a.version),
+    ],
+)
+.with_version_column("version");
+
+// Two callers loaded the same Account at version 1. The first save wins
+// (the row is now version 2); the second save's guard (WHERE version = 1)
+// matches nothing, so it fails with OptimisticLock — the caller reloads + retries.
+let stale = repo.save(Account { id: "acc_1".into(), balance: 50, version: 1 }).await;
+assert!(matches!(stale, Err(DataError::OptimisticLock)));
+# Ok(())
+# }
+```
+
+> **Note.** A stale write fails with `DataError::OptimisticLock` rather than
+> silently overwriting a concurrent change; the caller reloads and retries.
+> Lumen's *write* side reaches the same "lost-update prevention" guarantee
+> differently — through the event store's optimistic-concurrency `append` (see
+> [Event Sourcing](./11-event-sourcing.md)) — but a relational `Account` /
+> `Order` repository uses a version column.
+
+### Declarative derived queries — `#[firefly::repository]`
+
+Beyond CRUD, the `#[firefly::repository]` macro derives a query straight from a
+*method name*: `find_by_status(&str)` becomes `WHERE status = ?`. Apply it to an
+`impl` block of **typed stub methods** named with the framework's grammar
+(`find_by_…`, `count_by_…`, `exists_by_…`, `delete_by_…`); the macro discards the
+placeholder body and generates a real one that marshals the arguments and
+delegates to the tested runtime engine. The return type selects the operation:
+
+| Return shape                          | Generated call        |
+|---------------------------------------|-----------------------|
+| `Result<Vec<T>, DataError>`           | `find_by_derived`     |
+| `Result<Option<T>, DataError>`        | `find_by_derived` (first) |
+| `Result<i64, DataError>`              | `count_by_derived`    |
+| `Result<bool, DataError>`             | `exists_by_derived`   |
+| `Result<u64, DataError>`              | `delete_by_derived`   |
+
+Each impl-block type exposes the backing repository via `self.repository()`
+(override with `#[repository(repo = "…")]`), returning a
+`SqlxReactiveRepository<Entity, Id>`:
+
+```rust,ignore
+use firefly_data::DataError;
+use firefly_data_sqlx::SqlxReactiveRepository;
+
+struct Account { /* … */ }
+
+struct AccountRepo {
+    repo: SqlxReactiveRepository<Account, String>,
+}
+
+impl AccountRepo {
+    // The accessor the macro calls (default name `repository`).
+    fn repository(&self) -> &SqlxReactiveRepository<Account, String> {
+        &self.repo
+    }
+}
+
+#[firefly::repository]
+impl AccountRepo {
+    async fn find_by_status(&self, status: &str) -> Result<Vec<Account>, DataError> { unimplemented!() }
+    async fn find_by_owner_and_status(&self, owner: &str, status: &str) -> Result<Vec<Account>, DataError> { unimplemented!() }
+    async fn count_by_owner(&self, owner: &str) -> Result<i64, DataError> { unimplemented!() }
+    async fn exists_by_email(&self, email: &str) -> Result<bool, DataError> { unimplemented!() }
+    async fn delete_by_status(&self, status: &str) -> Result<u64, DataError> { unimplemented!() }
+}
+```
+
+#### Paged derived queries — a trailing `Pageable`
+
+A `find_by_…` method whose **last argument is a `Pageable`** and which returns
+`Result<Vec<T>, DataError>` is a *paged* derived query: the pageable's sort and
+window are appended to the generated `WHERE`, and the runtime backs it with
+`SqlxReactiveRepository::find_by_derived_paged(method_name, &args, &Pageable)`.
+Build the page with `Pageable::of(page, size, sort)` — `page` is **1-based** —
+and `RequestSort::of([Order::desc("id")])` for the ordering:
+
+```rust,ignore
+use firefly_data::{DataError, Order, Pageable, RequestSort};
+
+#[firefly::repository]
+impl AccountRepo {
+    // The trailing Pageable makes this a paged query: WHERE owner = ?,
+    // then the pageable's ORDER BY + LIMIT/OFFSET window.
+    async fn find_by_owner(&self, owner: &str, page: Pageable) -> Result<Vec<Account>, DataError> {
+        unimplemented!()
+    }
+}
+
+# async fn ex(accounts: &AccountRepo) -> Result<(), DataError> {
+let page = Pageable::of(1, 20, RequestSort::of([Order::desc("id")])).unwrap();
+let rows = accounts.find_by_owner("alice", page).await?;
+# Ok(())
+# }
+```
+
+#### Custom queries — `#[query(...)]`
+
+When the method-name grammar can't express the query you need, annotate the stub
+with `#[query(...)]` and write the SQL yourself. A `:name` placeholder binds to
+the argument named `name`, and the **return type selects the operation** exactly
+as for derived methods — `Vec<T>` / `Option<T>` for a list, `i64` for a count,
+`bool` for an exists, and `u64` for a *modifying* statement (`INSERT` / `UPDATE`
+/ `DELETE`, returning the affected-row count):
+
+```rust,ignore
+use firefly_data::DataError;
+
+#[firefly::repository]
+impl AccountRepo {
+    // Native SQL; :status binds to the `status` argument.
+    #[query("SELECT id, owner FROM accounts WHERE status = :status ORDER BY id DESC")]
+    async fn list_by_status(&self, status: &str) -> Result<Vec<Account>, DataError> {
+        unimplemented!()
+    }
+
+    // i64 return -> a count query.
+    #[query("SELECT COUNT(*) FROM accounts WHERE owner = :owner")]
+    async fn tally(&self, owner: &str) -> Result<i64, DataError> { unimplemented!() }
+
+    // u64 return -> a modifying statement; the value is the affected-row count.
+    #[query("UPDATE accounts SET status = :to WHERE status = :from")]
+    async fn retire(&self, from: &str, to: &str) -> Result<u64, DataError> { unimplemented!() }
+}
+```
+
+`#[query("…")]` is shorthand for `#[query(sql = "…")]` (native SQL). For a
+portable, entity-oriented query use the JPQL-like form
+`#[query(jpql = "…", entity = "Account")]`, whose `FROM <Entity>` is transpiled
+to the configured table so the same string runs on Postgres, MySQL, or SQLite.
+
+Under the hood the runtime engine does two things. `QueryMethodParser` parses the
+method name — prefix (`find` / `count` / `exists` / `delete`), `By`, then a chain
+of `And` / `Or` property conditions — into a query the active `SqlDialect` lowers
+to a parameterized statement, so the same `find_by_owner_and_status` runs on
+Postgres, MySQL, or SQLite; a trailing `Pageable` routes to
+`find_by_derived_paged`. The `#[query(...)]` attribute, in turn, lowers to the
+repository's `query_list` / `query_count` / `query_exists` / `query_execute`
+helpers — list, count, exists, and modifying ops respectively — binding the
+`:name` placeholders and (for the JPQL form) transpiling `FROM <Entity>` to the
+table.
+
+> **Tip.** Reach for the method-name grammar for simple predicates and a trailing
+> `Pageable` for paged reads; use `#[query(...)]` for anything the name grammar
+> can't express. A relational `Account` / `Order` service writes these; Lumen's
+> event-sourced read side stays a hand-rolled in-memory `ReadModel` instead.
 
 ### Document — `firefly-data-mongodb` (MongoDB)
 
@@ -424,15 +745,94 @@ The [CLI](./19-cli.md) wraps this: `firefly db init`, `firefly db migrate -m
 `firefly db status`. A `V001__wallet_views.sql` creating the read-model table is
 all the schema Lumen's durable read side needs.
 
-## Transactions
+## Transactions — `#[firefly::transactional]`
 
-`firefly-transactional` provides `with_tx(ctx, db, f)` over pluggable `Database`
-/ `Transaction` ports, so a unit of work commits or rolls back as a whole. Bind
-the ports to your driver and run your repository calls inside the closure. (The
-write side of Lumen reaches durability differently — through the event store's
-optimistic-concurrency `append`, covered in
-[Event Sourcing](./11-event-sourcing.md) — but a read model upserted from many
-events at once is a natural unit of work.)
+`firefly-transactional` brings declarative transactions to Rust: annotate an
+`async fn` that returns `Result<_, E>` (where
+`E: From<firefly::transactional::TxError>`) with `#[firefly::transactional]` and
+the body runs inside a transaction — **commit on `Ok`, rollback on `Err`**.
+
+```rust,ignore
+use firefly::transactional::TxError;
+use firefly_data_sqlx::SqlxReactiveRepository;
+
+#[derive(Debug)]
+enum TransferError { /* … */ Tx(TxError) }
+impl From<TxError> for TransferError { fn from(e: TxError) -> Self { TransferError::Tx(e) } }
+
+struct Accounts { repo: SqlxReactiveRepository<Account, String> }
+struct Ledger   { repo: SqlxReactiveRepository<Entry, String> }
+
+#[derive(Debug, Clone)] struct Account { id: String, balance: i64 }
+#[derive(Debug, Clone)] struct Entry   { id: String, account: String, delta: i64 }
+
+#[firefly::transactional(
+    propagation = "requires_new",
+    isolation = "serializable",
+    read_only,
+    timeout_ms = 5000,
+)]
+async fn record(accounts: &Accounts, ledger: &Ledger) -> Result<(), TransferError> {
+    // … repository writes here join this transaction automatically …
+    Ok(())
+}
+```
+
+The attributes are `propagation` (`required` / `requires_new` / `nested` /
+`supports` / `not_supported` / `mandatory` / `never`), `isolation`
+(`read_committed` / `repeatable_read` / `serializable` / …), `read_only`, and
+`timeout_ms`.
+
+**Ambient enlistment** is what makes this seamless. The manager opens a sqlx
+transaction and stows it in a task-local stack; while that scope is active,
+every `SqlxReactiveRepository` / `SqlxRepository` write *inside the fn* routes
+onto the active transaction instead of a fresh pool connection — so a plain
+sequence of `repo.save(...).await?` calls is atomic with **no change to the
+repository code**. An atomic two-repository money transfer:
+
+```rust,ignore
+use firefly::transactional::TxError;
+
+#[firefly::transactional]   // defaults: REQUIRED, datasource isolation, read-write
+async fn transfer(
+    accounts: &SqlxReactiveRepository<Account, String>,
+    ledger: &SqlxReactiveRepository<Entry, String>,
+    from: Account,
+    to: Account,
+    amount: i64,
+) -> Result<(), TxError> {
+    // All four writes enlist in the same ambient transaction. If any await
+    // returns Err, the whole unit of work rolls back; otherwise it commits.
+    accounts.save(Account { balance: from.balance - amount, ..from.clone() })
+        .into_future().await?;
+    accounts.save(Account { balance: to.balance + amount, ..to.clone() })
+        .into_future().await?;
+    ledger.save(Entry { id: "e1".into(), account: from.id, delta: -amount })
+        .into_future().await?;
+    ledger.save(Entry { id: "e2".into(), account: to.id, delta: amount })
+        .into_future().await?;
+    Ok(())
+}
+```
+
+For programmatic control there is `firefly::transactional::transactional(opts,
+f)` and `transactional_on(&manager, opts, f)` for an explicit manager, with
+`TxOptions`, `Propagation`, and `Isolation` builders. The sqlx adapter —
+`SqlxTransactionManager`, registered once at startup (the `auto_configure` path
+below does this for you) — supplies the real behaviour: full propagation
+(`REQUIRED` / `REQUIRES_NEW` / `NESTED` / `SUPPORTS` / `NOT_SUPPORTED` /
+`MANDATORY` / `NEVER`), isolation, read-only, a statement timeout, and
+`SAVEPOINT`-based `NESTED` nesting.
+
+> **Note.** The killer feature is **ambient enlistment**: while a transactional
+> scope is active, every repository write inside the fn joins the active
+> transaction automatically — a plain sequence of `repo.save(...).await?` calls
+> is atomic with no change to the repository code, carried on a task-local rather
+> than a thread-bound connection. (Lumen's write side reaches durability
+> differently — through the event store's optimistic-concurrency `append`,
+> covered in [Event Sourcing](./11-event-sourcing.md) — but a relational
+> `Account` / `Order` service spanning two repositories is exactly what
+> `#[transactional]` is for.)
 
 ## What changed in Lumen
 

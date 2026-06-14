@@ -56,8 +56,9 @@
 //!
 //! Every macro from [`firefly-macros`](firefly_macros) is re-exported at the
 //! crate root *and* in the [`prelude`], so `#[command_handler]`, `#[scheduled]`,
-//! `#[derive(Component)]`, `#[saga]`, … are reachable as `firefly::command_handler`
-//! or via `use firefly::prelude::*;`. Generated code references runtime types
+//! `#[derive(Component)]`, `#[rest_controller]`, … are reachable as
+//! `firefly::command_handler` or via `use firefly::prelude::*;`. Generated code
+//! references runtime types
 //! through the [`__rt`] contract path, so a user only ever needs the single
 //! `firefly` dependency.
 //!
@@ -143,6 +144,7 @@ pub mod __rt {
     pub use ::firefly_security;
     pub use ::firefly_starter_core;
     pub use ::firefly_starter_web;
+    pub use ::firefly_transactional;
     pub use ::firefly_web;
 
     // Third-party crate re-exported under the same contract so generated code
@@ -198,6 +200,7 @@ pub use firefly_scheduling as scheduling;
 pub use firefly_security as security;
 pub use firefly_starter_core as starter_core;
 pub use firefly_starter_web as starter_web;
+pub use firefly_transactional as transactional;
 pub use firefly_web as web;
 
 // Optional adapter aliases (feature-gated).

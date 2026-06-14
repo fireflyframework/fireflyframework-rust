@@ -1,5 +1,5 @@
 /**
- * PyFly Admin API client.
+ * Firefly Admin API client.
  *
  * Provides a thin wrapper around fetch() for communicating with
  * the admin REST endpoints.

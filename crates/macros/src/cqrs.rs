@@ -139,10 +139,21 @@ pub(crate) fn derive_message(input: DeriveInput, is_query: bool) -> syn::Result<
         _ => quote!(),
     };
 
-    let _ = is_query; // both kinds emit the same impl; kept for symmetry/docs.
+    // `#[derive(Query)]` overrides the CQRS kind to Query so the bus can report
+    // it under the query registry; `#[derive(Command)]` keeps the default.
+    let kind_impl = if is_query {
+        quote! {
+            fn kind() -> #cqrs::MessageKind {
+                #cqrs::MessageKind::Query
+            }
+        }
+    } else {
+        quote!()
+    };
 
     Ok(quote! {
         impl #impl_g #cqrs::Message for #ident #ty_g #where_g {
+            #kind_impl
             #validate_impl
             #cache_impl
         }

@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Scheduled Tasks View.
+ * Firefly Admin — Scheduled Tasks View.
  *
  * Displays registered scheduled tasks with trigger type detection
  * and a stat card summary.

@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Empty / Error State.
+ * Firefly Admin — Empty / Error State.
  *
  * A consistent, iconographic placeholder for "no data" and error states,
  * replacing the ad-hoc title+text blocks scattered across views.

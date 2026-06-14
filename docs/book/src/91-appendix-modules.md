@@ -24,7 +24,7 @@ index.
 | Crate | What it provides |
 |-------|------------------|
 | `firefly-kernel` | RFC 7807 `ProblemDetail`, `FireflyResult<T>`, `Clock`, the `FireflyError` hierarchy, task-local correlation/request/tenant scopes, the `ddd` kit (`Entity`/`Specification`/domain events) |
-| `firefly-reactive` | The `Mono<T>` / `Flux<T>` reactive core — the Project Reactor analog and keystone of every reactive surface |
+| `firefly-reactive` | The `Mono<T>` / `Flux<T>` reactive core — the keystone of every reactive surface in Firefly |
 | `firefly-utils` | Try helpers, retry with exponential backoff, slug, AES-256-GCM, templates |
 | `firefly-validators` | IBAN, BIC, Luhn, currency, phone, password, VAT, national/tax IDs |
 | `firefly-web` | Problem renderer, correlation, idempotency, PII masking, CORS, CSRF, security headers, server metrics, the reactive `MonoJson`/`NdJson`/`Sse` responders, TLS bootstrap |
@@ -55,8 +55,8 @@ index.
 | `firefly-sse` | Server-Sent Events writer with heartbeat + Last-Event-Id |
 | `firefly-transactional` | `with_tx(ctx, db, f)` over pluggable `Database`/`Transaction` ports |
 | `firefly-testkit` | HMAC signers, `SpyBroker`, JSON test helpers |
-| `firefly-aop` | Spring-style aspect advice — `Pointcut`, `JoinPoint`, `Aspect`, `intercept` |
-| `firefly-shell` | Spring-Shell-style CLI framework + `CommandLineRunner`/`ApplicationRunner` |
+| `firefly-aop` | Aspect-oriented advice — `Pointcut`, `JoinPoint`, `Aspect`, `intercept` |
+| `firefly-shell` | Interactive CLI framework + `CommandLineRunner`/`ApplicationRunner` startup hooks |
 | `firefly-websocket` | WebSocket server over axum + topic `BroadcastHub` |
 
 ## Adapters
@@ -64,7 +64,7 @@ index.
 | Crate | Port → backend |
 |-------|----------------|
 | `firefly-client` | REST `RestClient` + reactive `WebClient` + SOAP/gRPC/GraphQL/WS |
-| `firefly-config-server` | Spring-Cloud-Config-compatible REST endpoint |
+| `firefly-config-server` | Centralized configuration REST endpoint for distributed services |
 | `firefly-idp` + `idp-internal-db` / `idp-keycloak` / `idp-azure-ad` / `idp-aws-cognito` | Identity providers |
 | `firefly-ecm` + `ecm-storage-aws` / `ecm-storage-azure` / `ecm-esignature-*` | Content management + e-signature |
 | `firefly-notifications` + `notifications-smtp` / `-twilio` / `-firebase` / `-sendgrid` / `-resend` | Notification channels |
@@ -74,7 +74,7 @@ index.
 | `firefly-data-mongodb` | `firefly_data` ports → document store (MongoDB) |
 | `firefly-cache-redis` / `firefly-cache-postgres` | `cache::Adapter` → Redis (RESP) / Postgres key-value table |
 | `firefly-eda-kafka` / `-rabbitmq` / `-postgres` / `-redis` | `eda::Broker` → Kafka / RabbitMQ / Postgres outbox / Redis Streams |
-| `firefly-session-redis` / `firefly-session-postgres` | distributed `SessionRegistry` → Redis sorted set / Postgres table |
+| `firefly-session-redis` / `firefly-session-postgres` / `firefly-session-mongodb` | distributed `SessionRegistry` → Redis sorted set / Postgres table / MongoDB collection |
 
 ## Starters
 
@@ -93,7 +93,7 @@ index.
 | Crate | What it provides |
 |-------|------------------|
 | `firefly-container` | Opt-in `TypeId`-keyed DI container (service locator) |
-| `firefly-admin` | Spring-Boot-Admin-style embedded dashboard + JSON API + SSE |
+| `firefly-admin` | Embedded management dashboard + JSON API + SSE streams |
 | `firefly-cli` | The `firefly` developer binary (`new` / `generate` / `db` / `openapi` / `actuator` / `doctor` / `completion` / `sbom` / `license`) |
 
 For per-crate detail, open the crate's `README.md` in the

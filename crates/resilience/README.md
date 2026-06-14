@@ -1,11 +1,11 @@
 # `firefly-resilience`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** Resilience4j · **Go module:** `resilience`
+> **Tier:** Platform · **Status:** Full
 
 ## Overview
 
-`firefly-resilience` provides **Resilience4j-equivalent decorators** that
-compose around any async Rust operation:
+`firefly-resilience` provides **composable resilience decorators** that
+wrap around any async Rust operation:
 
 | Primitive        | Failure mode it shields against              | Error variant                          |
 |------------------|----------------------------------------------|----------------------------------------|
@@ -15,11 +15,10 @@ compose around any async Rust operation:
 | `Timeout`        | Stuck calls                                  | `ResilienceError::Timeout`             |
 | `Retry`          | Transient failures (re-run with backoff)     | the operation's own error after exhaustion |
 
-`Chain` composes them into a single guarded call. Error messages are
-byte-identical to the Go port's sentinels (`firefly/resilience: circuit
-open`, …) so logs and dashboards stay consistent across the sibling
-framework ports. Where Go threads a `context.Context` through every
-call for cancellation, the Rust analogue is dropping the future.
+`Chain` composes them into a single guarded call. Error messages use
+stable sentinels (`firefly/resilience: circuit open`, …) so logs and
+dashboards stay consistent. Cancellation is expressed the idiomatic Rust
+way: dropping the future aborts the in-flight call.
 
 ## Mental model — the canonical guarded call
 
@@ -80,7 +79,7 @@ let cb = CircuitBreaker::new(CircuitConfig {
 
 let result = cb.execute(|| async { charge(amount).await }).await;
 // matches!(err, ResilienceError::CircuitOpen) when the breaker is open
-// — or err.is_circuit_open(), the analogue of errors.Is(err, ErrCircuitOpen)
+// — or use the err.is_circuit_open() predicate
 ```
 
 State machine:
@@ -97,13 +96,13 @@ non-zero `window` counts failures within a rolling time window. While
 1 — the historical single-trial behavior); excess calls are gated with
 `CircuitOpen` until the trials settle.
 
-### Failure-rate window mode (pyfly parity)
+### Failure-rate window mode
 
 Setting `failure_rate_threshold` switches the breaker from
-consecutive-failure counting to pyfly's count-based failure-rate window
-(Resilience4j `COUNT_BASED`): the outcomes of the last `window_size`
-calls are kept in a ring buffer, and the breaker opens once the window
-is **full** and the failure fraction reaches the threshold.
+consecutive-failure counting to a count-based failure-rate window: the
+outcomes of the last `window_size` calls are kept in a ring buffer, and
+the breaker opens once the window is **full** and the failure fraction
+reaches the threshold.
 
 ```rust,ignore
 let cb = CircuitBreaker::new(CircuitConfig {
@@ -114,7 +113,7 @@ let cb = CircuitBreaker::new(CircuitConfig {
 });
 ```
 
-For manual instrumentation the breaker also exposes pyfly's hooks:
+For manual instrumentation the breaker also exposes low-level hooks:
 
 ```rust,ignore
 cb.before_call()?;  // Err(CircuitOpen) while open / probe budget spent
@@ -152,9 +151,8 @@ bh.try_execute(|| async { call().await }).await?; // non-blocking; BulkheadFull 
 
 ## Timeout
 
-Per-call deadline. Where the Go port runs `fn` in its own goroutine
-(leaving it running after the deadline), the Rust port cancels the
-operation's future outright — the caller-visible contract is identical.
+Per-call deadline. When the budget is exceeded the operation's future is
+cancelled outright (dropped), so no work continues past the deadline.
 
 ```rust,ignore
 let to = Timeout::new(Duration::from_secs(2));
@@ -164,8 +162,7 @@ let result = to.execute(|| async { slow_call().await }).await;
 
 ## Retry
 
-`Retry` is the declarative retry combinator — the port of pyfly's `@retry`
-decorator (Spring Retry / Resilience4j `@Retry`). It re-runs a **re-runnable**
+`Retry` is the declarative retry combinator. It re-runs a **re-runnable**
 async closure (`Fn() -> Future`) up to `max_attempts` times while the failure
 is retryable, sleeping `delay * backoff^attempt` (capped at `max_delay`, with
 optional ±`jitter`) between attempts, then surfacing the last error. Unlike the
@@ -175,29 +172,28 @@ produce a fresh future.
 ```rust,ignore
 use firefly_resilience::{Retry, ResilienceError, retry};
 
-// Fluent builder (all fields match pyfly's keyword arguments):
+// Fluent builder:
 let policy = Retry::new()
-    .max_attempts(5)                          // pyfly max_attempts (default 3)
-    .delay(Duration::from_millis(100))        // pyfly delay (default 0)
-    .backoff(2.0)                             // pyfly backoff (default 1.0)
-    .max_delay(Duration::from_secs(2))        // pyfly max_delay (optional cap)
-    .jitter(0.1)                              // pyfly jitter, ±10% (default 0)
-    .retry_on(|e| !e.is_circuit_open());      // pyfly exceptions=(...) filter
+    .max_attempts(5)                          // default 3
+    .delay(Duration::from_millis(100))        // base delay (default 0)
+    .backoff(2.0)                             // exponential factor (default 1.0)
+    .max_delay(Duration::from_secs(2))        // optional cap
+    .jitter(0.1)                              // ±10% (default 0)
+    .retry_on(|e| !e.is_circuit_open());      // which errors trigger a retry
 
 let out = policy.execute(|| async { charge(amount).await }).await;
 
-// The `retry(n)` free function keeps pyfly's `retry(...)` call shape:
+// The `retry(n)` free function offers a terse call shape:
 let out = retry(3).delay(Duration::from_millis(50)).execute(|| async {
     fetch().await
 }).await;
 ```
 
-`retry_on` decides which failures trigger a retry (pyfly's `exceptions=`);
-errors it rejects propagate immediately without consuming further attempts. By
-default **every** error is retried. The backoff schedule is exact —
-`delay_for(attempt)` returns the deterministic per-attempt wait — and jitter is
-drawn from an injectable sampler (`with_jitter_fn`) so tests are deterministic
-(the `Clock`-injection analogue for retry timing).
+`retry_on` decides which failures trigger a retry; errors it rejects propagate
+immediately without consuming further attempts. By default **every** error is
+retried. The backoff schedule is exact — `delay_for(attempt)` returns the
+deterministic per-attempt wait — and jitter is drawn from an injectable sampler
+(`with_jitter_fn`) so retry timing is fully deterministic under test.
 
 ### Composing retry with a `Chain`
 
@@ -229,24 +225,20 @@ let result = guarded.execute(|| async { charge(amount).await }).await;
 chains nest — implement it directly, and `from_fn` adapts plain
 functions of shape `for<'a> Fn(Operation<'a>) -> OpFuture<'a>`.
 
-## pyfly parity
+## Fallback
 
-The crate also ports pyfly's `pyfly.resilience` extensions:
-
-### Fallback
-
-`Fallback` is the graceful-degradation decorator (pyfly's `@fallback`).
-It forwards successes untouched; when the inner operation — or an inner
-decorator's short-circuit sentinel — fails with an error matched by the
-`on` predicate, the handler runs and its result replaces the
-operation's. `Chain` operations are unit-valued, so pyfly's static
-`fallback_value` becomes `Fallback::recover()` ("swallow and `Ok(())`");
-for value-returning calls plain `Result` combinators remain idiomatic.
+`Fallback` is the graceful-degradation decorator. It forwards successes
+untouched; when the inner operation — or an inner decorator's
+short-circuit sentinel — fails with an error matched by the `on`
+predicate, the handler runs and its result replaces the operation's.
+`Chain` operations are unit-valued, so a static fallback value is
+expressed as `Fallback::recover()` ("swallow and `Ok(())`"); for
+value-returning calls plain `Result` combinators remain idiomatic.
 
 ```rust,ignore
 let chain = Chain::new()
-    .with(Fallback::new(|err| { serve_cached(); Ok(()) })  // fallback_method
-        .on(ResilienceError::is_timeout))                  // pyfly on=(...)
+    .with(Fallback::new(|err| { serve_cached(); Ok(()) })  // recovery handler
+        .on(ResilienceError::is_timeout))                  // only fall back on timeouts
     .with(Timeout::new(Duration::from_secs(2)));
 // async handlers: Fallback::new_async(|err| async move { ... })
 ```
@@ -254,9 +246,8 @@ let chain = Chain::new()
 ### ResilienceRegistry
 
 `ResilienceRegistry` materialises named breakers / limiters / bulkheads /
-time-limiters from `firefly.resilience.*` configuration keys (pyfly's
-`ResilienceRegistry.from_config`), consuming the flat dot-keyed map that
-`firefly-config` sources produce:
+time-limiters from `firefly.resilience.*` configuration keys, consuming
+the flat dot-keyed map that `firefly-config` sources produce:
 
 ```yaml
 firefly:
@@ -293,11 +284,11 @@ let to = registry.timeout("slow-report")?;          // ready-made Timeout decora
 let rt = registry.retry("payment-api")?;            // ready-made Retry policy
 ```
 
-Unknown names return `RegistryError::NotFound` with pyfly's `KeyError`
+Unknown names return `RegistryError::NotFound` with a descriptive
 message (`No bulkhead named 'x'. Available: ['alpha', 'beta']`).
-Kebab-case and snake_case bind interchangeably (Spring relaxed binding,
-matching `firefly-config`'s merge normalization), for sections,
-properties, and instance names alike. Durations accept pyfly forms
+Kebab-case and snake_case bind interchangeably (relaxed binding,
+matching `firefly-config`'s merge normalization) for sections,
+properties, and instance names alike. Durations accept the common forms
 (`"5s"`, `"500ms"`, `"1m"`, `"2h"`, bare seconds `"2.5"`) plus anything
 `humantime` parses (`"1h 30m"`); the parser is exported as
 `parse_duration`.
@@ -311,7 +302,7 @@ pub struct CircuitConfig {
     pub window: Duration,                     // ZERO = consecutive-only
     pub open_duration: Duration,              // ZERO → 30 s
     pub now: Option<Clock>,                   // None → Instant::now
-    pub failure_rate_threshold: Option<f64>,  // Some(r) → count-based window mode (pyfly)
+    pub failure_rate_threshold: Option<f64>,  // Some(r) → count-based window mode
     pub window_size: usize,                   // 0 → 10 (ring-buffer length)
     pub half_open_max_calls: usize,           // 0 → 1 (probe budget)
 }
@@ -320,7 +311,7 @@ impl CircuitBreaker {
     pub fn new(cfg: CircuitConfig) -> Self;
     pub async fn execute<T, F, Fut>(&self, op: F) -> Result<T, ResilienceError>;
     pub fn state(&self) -> CircuitState;
-    // pyfly manual hooks
+    // manual hooks
     pub fn before_call(&self) -> Result<(), ResilienceError>;
     pub fn on_success(&self);
     pub fn on_failure(&self);
@@ -334,8 +325,8 @@ impl CircuitBreaker {
 
 impl RateLimiter {
     pub fn new(rate: f64, burst: usize) -> Self;
-    pub fn rate(&self) -> f64;     // pyfly refill_rate
-    pub fn burst(&self) -> usize;  // pyfly max_tokens
+    pub fn rate(&self) -> f64;     // refill rate (tokens/sec)
+    pub fn burst(&self) -> usize;  // bucket capacity (max tokens)
     pub fn allow(&self) -> bool;
     pub async fn execute<T, F, Fut>(&self, op: F) -> Result<T, ResilienceError>;
     pub async fn wait(&self);
@@ -355,15 +346,15 @@ impl Timeout {
 }
 
 pub struct RetryConfig {
-    pub max_attempts: usize,        // < 1 clamped to 1 (pyfly raises); default 3
+    pub max_attempts: usize,        // < 1 clamped to 1; default 3
     pub delay: Duration,            // base delay; default ZERO
     pub backoff: f64,               // delay * backoff^attempt; default 1.0
     pub max_delay: Option<Duration>,// per-attempt cap; default None
     pub jitter: f64,                // ±jitter * wait, clamped 0..=1; default 0
 }
-impl Default for RetryConfig;       // pyfly defaults
+impl Default for RetryConfig;       // sensible defaults
 impl Retry {
-    pub fn new() -> Self;                                  // pyfly defaults
+    pub fn new() -> Self;                                  // default policy
     pub fn from_config(cfg: RetryConfig) -> Self;
     pub fn config(&self) -> RetryConfig;
     pub fn max_attempts(self, n: usize) -> Self;           // fluent setters
@@ -371,12 +362,12 @@ impl Retry {
     pub fn backoff(self, b: f64) -> Self;
     pub fn max_delay(self, d: Duration) -> Self;
     pub fn jitter(self, j: f64) -> Self;
-    pub fn retry_on(self, pred) -> Self;                   // pyfly exceptions=(...)
+    pub fn retry_on(self, pred) -> Self;                   // which errors retry
     pub fn with_jitter_fn(self, sampler) -> Self;          // deterministic tests
     pub fn delay_for(&self, attempt: usize) -> Duration;   // deterministic schedule
     pub async fn execute<T, F: Fn, Fut>(&self, op: F) -> Result<T, ResilienceError>;
 }
-pub fn retry(max_attempts: usize) -> Retry;                // pyfly retry(...) call shape
+pub fn retry(max_attempts: usize) -> Retry;                // terse builder entry point
 
 #[async_trait]
 pub trait Decorator: Send + Sync {
@@ -409,18 +400,16 @@ Covers breaker trip + half-open trial + recovery (with a fake clock),
 half-open re-open and single-trial gating, rolling-window pruning,
 rate-limiter allow + wait semantics + burst capping, bulkhead concurrent
 cap, timeout cancellation, and chain ordering (verifies leftmost runs
-outermost) — plus Rust-specific cases: Go-identical sentinel messages,
-`Send`/`Sync` bounds, and nested chains.
+outermost) — plus stable sentinel messages, `Send`/`Sync` bounds, and
+nested chains.
 
-The pyfly-parity layer ports pyfly's test suites: failure-rate window
-trip/partial-window/sliding semantics and the half-open probe budget
-(`tests/resilience/test_resilience_tuning.py`), registry duration
-parsing, config materialisation, relaxed binding, unknown-name errors,
-and direct construction (`test_resilience_registry.py`), the
-fallback behaviors — success bypass, handler receives the error,
-predicate filtering, async handlers (`test_fallback.py`) — and the
-retry combinator: first-try success, retry-until-success,
-attempt-exhaustion-resurfaces-last-error, single-attempt-no-retry,
-non-retryable-error-propagates-immediately, the `delay * backoff^attempt`
-schedule, `max_delay` capping, jittered-wait bounds and zero-floor, and
-chain composition (`test_retry.py`).
+A dedicated tuning layer exercises failure-rate window
+trip/partial-window/sliding semantics and the half-open probe budget;
+registry duration parsing, config materialisation, relaxed binding,
+unknown-name errors, and direct construction; the fallback behaviors —
+success bypass, handler receives the error, predicate filtering, async
+handlers — and the retry combinator: first-try success,
+retry-until-success, attempt-exhaustion-resurfaces-last-error,
+single-attempt-no-retry, non-retryable-error-propagates-immediately, the
+`delay * backoff^attempt` schedule, `max_delay` capping, jittered-wait
+bounds and zero-floor, and chain composition.

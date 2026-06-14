@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Caches View.
+ * Firefly Admin — Caches View.
  *
  * Displays cache adapter status, stats, key listing with search,
  * per-key eviction, and bulk eviction with confirmation.

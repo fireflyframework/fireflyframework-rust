@@ -97,6 +97,7 @@ pub(crate) fn derive_config_properties(input: DeriveInput) -> syn::Result<TokenS
             #container::inventory::submit! {
                 #container::ComponentRegistration {
                     type_name: #type_name_lit,
+                    module_path: ::core::module_path!(),
                     bean_name: #bean_name,
                     stereotype: #container::BeanStereotype::ConfigProperties,
                     scope: #container::Scope::Singleton,

@@ -6,9 +6,9 @@
 
 `firefly-ecm-esignature-docusign` is the DocuSign
 [`firefly_ecm::ESignatureProvider`] adapter. `RestProvider` is a **real REST
-integration** over [`reqwest`](https://docs.rs/reqwest), porting pyfly's
-`DocuSignESignatureAdapter`. Every operation calls the live DocuSign eSignature
-REST API v2.1 — there is no stub and no `not_implemented` path:
+integration** over [`reqwest`](https://docs.rs/reqwest). Every operation calls
+the live DocuSign eSignature REST API v2.1 — there is no stub and no
+`not_implemented` path:
 
 | Operation | DocuSign eSignature REST v2.1 call |
 |---|---|
@@ -61,7 +61,7 @@ OAuth bearer token (DocuSign JWT-grant token refresh is the caller's
 responsibility). `.with_client(reqwest::Client)` reuses a caller-provided client
 for connection pooling, custom timeouts, or TLS.
 
-### Status mapping (pyfly parity)
+### Status mapping
 
 | DocuSign `status` | `SignatureStatus` |
 |---|---|
@@ -80,14 +80,14 @@ for connection pooling, custom timeouts, or TLS.
 | `RestProvider` | Real DocuSign `ESignatureProvider` over `reqwest`; `RestProvider::new(base_url, account_id, access_token)`, `.with_client(reqwest::Client)` |
 | `RestProvider::recipients(&id)` | `GET .../recipients` → `Vec<SignerState>` |
 | `RestProvider::download(&id)` | `GET .../documents/combined` → combined signed PDF bytes |
-| `map_status(&str)` | DocuSign envelope `status` → `SignatureStatus` (pyfly `_map_status` table) |
+| `map_status(&str)` | DocuSign envelope `status` → `SignatureStatus` |
 | `VERSION` | Framework version stamp |
 
 ## Capability notes
 
 The framework `SignatureStatus` enum has four states (`Pending`, `Signed`,
 `Declined`, `Expired`); DocuSign's `created` (draft-like) collapses onto
-`Pending`, matching pyfly. `recipients` and `download` are inherent methods on
+`Pending`. `recipients` and `download` are inherent methods on
 `RestProvider` (the `ESignatureProvider` port models `create`/`status`/`cancel`/
 `get`); callers holding a concrete `RestProvider` get the richer API, while
 callers behind `dyn ESignatureProvider` use the port surface. Every operation
@@ -99,8 +99,7 @@ calls the real DocuSign API — no operation is stubbed or unimplemented.
 cargo test -p firefly-ecm-esignature-docusign
 ```
 
-The REST behavior tests (`tests/rest_test.rs`, ported from pyfly's
-`test_docusign_behavior.py`) spin up an in-process axum mock on port 0 and
+The REST behavior tests (`tests/rest_test.rs`) spin up an in-process axum mock on port 0 and
 assert both the outbound request the adapter builds (method, path, auth header,
 JSON payload) and how each canned response is parsed into the domain types —
 covering `create`, `status`, `get`, `cancel`, `recipients`, and `download`, plus

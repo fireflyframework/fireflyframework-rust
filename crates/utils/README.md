@@ -1,6 +1,6 @@
 # `firefly-utils`
 
-> **Tier:** Foundational · **Status:** Full · **Java original:** `firefly-common-utils` · **Go module:** `utils`
+> **Tier:** Foundational · **Status:** Stable
 
 ## Overview
 
@@ -12,17 +12,14 @@ into a more specific module:
   value surfaced as a `TryError`.
 - **retry / retry_if** — async exponential-backoff retry with jitter
   and a pluggable retryable-error predicate (`RetryConfig`).
-- **slugify** — URL-safe lower-case slug from any UTF-8 string. Like
-  the Go port, input is canonically decomposed (NFD) and non-spacing
-  combining marks (Unicode `Mn`) are dropped, so every canonically
-  decomposable letter — Latin-1, Latin Extended-A/B, Vietnamese,
-  pinyin, … — folds to its ASCII base; all ports produce identical
-  slugs.
+- **slugify** — URL-safe lower-case slug from any UTF-8 string. Input
+  is canonically decomposed (NFD) and non-spacing combining marks
+  (Unicode `Mn`) are dropped, so every canonically decomposable
+  letter — Latin-1, Latin Extended-A/B, Vietnamese, pinyin, … — folds
+  to its ASCII base.
 - **AES-256-GCM crypto** — `encrypt_aes_gcm`, `decrypt_aes_gcm`, plus
-  `derive_key256` (SHA-256 KDF) and base64 helpers. The wire format
-  (`nonce || ciphertext || tag`) is byte-compatible with the Go,
-  Java, .NET, and Python ports — ciphertext produced by any port
-  decrypts in any other.
+  `derive_key256` (SHA-256 KDF) and base64 helpers. The wire format is
+  `nonce || ciphertext || tag`.
 - **Templates** — `render_text` and `render_html` (auto-escaping)
   over any `serde::Serialize` data.
 
@@ -50,17 +47,15 @@ set so the platform behaves uniformly.
 | Templates | `render_text(name, source, &data) -> Result<String, TemplateError>`          |
 | Templates | `render_html(name, source, &data)` — auto-escaping                           |
 
-Adaptations from Go, by design:
+Design notes:
 
-- Go's blocking `Do`/`DoValue` with `context.Context` become a single
-  async `retry` (Rust's `Result<T, E>` covers both); cancellation is
+- Retry is a single async `retry` over `Result<T, E>`; cancellation is
   the async-native kind — wrap the call in `tokio::time::timeout`.
-- Go's `RetryConfig.RetryableErr` field is the explicit `retry_if`
-  variant, keeping the config `Copy` and error-type agnostic.
+- The retryable-error predicate is the explicit `retry_if` variant,
+  keeping `RetryConfig` `Copy` and error-type agnostic.
 - Templates implement the field-interpolation subset the framework
-  uses (`{{.Field}}`, `{{.User.Name}}`, `{{.}}`); each port uses its
-  runtime's idiomatic engine, and missing fields fail fast here
-  instead of rendering Go's `<no value>`.
+  uses (`{{.Field}}`, `{{.User.Name}}`, `{{.}}`); missing fields fail
+  fast rather than rendering a placeholder.
 
 ## Quick start
 
@@ -103,11 +98,9 @@ async fn place_order() -> Result<String, std::io::Error> {
 cargo test -p firefly-utils
 ```
 
-Suite ports every Go test case — panic-as-error, retry attempts +
-non-retryable short-circuit, slug edge cases (combining marks,
-leading/trailing separators, Unicode), AES-GCM round-trip + tamper
-detection, base64 round-trip, and HTML-escape preservation — and adds
-Rust-specific cases: a Go-produced AES-GCM ciphertext that must
-decrypt here (cross-port wire compatibility), all three AES key
-sizes, backoff growth/cap/jitter bounds, template parse/execute
-errors, and `Send + Sync` bounds on every error type.
+The suite covers panic-as-error, retry attempts + non-retryable
+short-circuit, slug edge cases (combining marks, leading/trailing
+separators, Unicode), AES-GCM round-trip + tamper detection, base64
+round-trip, HTML-escape preservation, all three AES key sizes, backoff
+growth/cap/jitter bounds, template parse/execute errors, and
+`Send + Sync` bounds on every error type.

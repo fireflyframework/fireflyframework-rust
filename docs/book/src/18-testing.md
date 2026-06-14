@@ -13,11 +13,16 @@ crate scales up to real-infrastructure integration tests when you need a live
 Postgres or Kafka. Lumen's gate is **34 unit tests + 7 HTTP tests + 1 doctest**,
 all hermetic; the streaming feature adds 3 more.
 
-> **Spring parity.** The three tiers mirror Spring's: `@Test` unit tests,
-> `@WebMvcTest` / `WebTestClient` slice tests, and `@SpringBootTest` +
-> Testcontainers integration tests. `TestClient` is the Rust spelling of
-> `WebTestClient` / pyfly's `PyFlyTestClient`; `Slice` is a `@…Test` slice; the
-> event assertions match pyfly's `assert_event_published`.
+> **Design note.** Firefly's testing surface is built as three deliberate tiers
+> that map onto how a service actually layers: plain `#[tokio::test]` unit tests
+> with no I/O, in-process slice and HTTP tests that drive the real router without
+> binding a socket, and env-gated integration tests against live infrastructure.
+> `TestClient` is Firefly's in-process HTTP client, `Slice` is a focused
+> dependency-injection container for a single test, and `assert_event_published`
+> is the event-emission assertion — one terse helper per tier. The split will
+> feel familiar if you've used a batteries-included framework, but each piece is
+> a native Firefly API designed around the in-memory-first stack the rest of the
+> book builds on.
 
 ## The in-process testing model
 
@@ -189,8 +194,9 @@ returns `&Self` so they chain. (Blocking variants — `post_blocking`,
 ### Slice — a focused DI container for a test
 
 `Slice` builds a minimal `firefly-container` for a slice test: register only the
-collaborators the unit under test needs, then resolve them. It is the analog of a
-Spring `@…Test` slice — the container without the full application context:
+collaborators the unit under test needs, then resolve them. It gives you a
+focused dependency-injection container — the wiring for the unit under test
+without standing up the full application context:
 
 ```rust,ignore
 use firefly_testkit::Slice;
@@ -256,8 +262,9 @@ let sig = sign_stripe(b"whsec_test", br#"{"type":"charge.succeeded"}"#, 1_700_00
 
 The streaming endpoint (Chapter 20) builds a `Flux`. A reactive pipeline is
 tested by driving it to a terminal — `block()`, `collect_list()`, `count()` — and
-asserting the resolved value. This is the `firefly-reactive` analog of Reactor's
-`StepVerifier`:
+asserting the resolved value. This is `firefly-reactive`'s way to verify a stream
+end to end; it will feel familiar if you've worked with a reactive-streams
+library, but it is plain async Rust assertions over a resolved `Flux`:
 
 ```rust
 use firefly_reactive::Flux;

@@ -40,8 +40,14 @@ pub(crate) enum Stereotype {
     Service,
     Repository,
     Configuration,
+    AutoConfiguration,
     Controller,
 }
+
+/// Default `order` for `#[derive(AutoConfiguration)]` holders so they sort
+/// *after* user components/configurations in `Container::scan()` — the Rust
+/// analog of Spring Boot loading auto-configurations last.
+const AUTOCONFIG_ORDER: i32 = 100_000;
 
 impl Stereotype {
     fn label(self) -> &'static str {
@@ -50,6 +56,7 @@ impl Stereotype {
             Stereotype::Service => "service",
             Stereotype::Repository => "repository",
             Stereotype::Configuration => "configuration",
+            Stereotype::AutoConfiguration => "autoconfiguration",
             Stereotype::Controller => "controller",
         }
     }
@@ -61,6 +68,7 @@ impl Stereotype {
             Stereotype::Service => "Service",
             Stereotype::Repository => "Repository",
             Stereotype::Configuration => "Configuration",
+            Stereotype::AutoConfiguration => "AutoConfiguration",
             Stereotype::Controller => "Controller",
         };
         proc_macro2::Ident::new(name, proc_macro2::Span::call_site())
@@ -192,7 +200,14 @@ pub(crate) fn derive_component(
     let _lazy = opts.lazy;
     let bean_name = opts.name.clone().unwrap_or_default();
     let primary = opts.primary;
-    let order: i32 = opts.order.unwrap_or(0);
+    // Auto-configurations default to a late order so they register after user
+    // components/configurations (Spring Boot loads auto-config last).
+    let default_order = if stereotype == Stereotype::AutoConfiguration {
+        AUTOCONFIG_ORDER
+    } else {
+        0
+    };
+    let order: i32 = opts.order.unwrap_or(default_order);
     let stereo_variant = stereotype.variant();
     let stereo_label = stereotype.label();
 
@@ -286,6 +301,7 @@ pub(crate) fn derive_component(
             #container::inventory::submit! {
                 #container::ComponentRegistration {
                     type_name: #type_name_lit,
+                    module_path: ::core::module_path!(),
                     bean_name: #bean_name,
                     stereotype: #container::BeanStereotype::#stereo_variant,
                     scope: #scope_tokens,

@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Health View.
+ * Firefly Admin — Health View.
  *
  * Displays overall application health status and a component tree
  * with expand/collapse and live updates via SSE.

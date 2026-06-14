@@ -1,6 +1,6 @@
 # `firefly-sse`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** Spring `ServerSentEvent` · **Go module:** `sse`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -39,8 +39,7 @@ let app: Router = Router::new().route("/orders/live", get(live_orders));
 
 ## Wire format
 
-The writer emits the canonical SSE syntax, byte-for-byte identical to
-the Java, .NET, Go, and Python ports:
+The writer emits the canonical SSE syntax:
 
 ```
 retry: 5000
@@ -52,8 +51,8 @@ data: {"id":"o1","customer":"alice"}
 
 Each `Event` ends with a blank line; `data` containing newlines is
 split into multiple `data:` lines per the spec. The heartbeat is a
-comment frame: `: ping <unix-seconds>`. The response carries the same
-headers Go's `NewWriter` writes: `Content-Type: text/event-stream`,
+comment frame: `: ping <unix-seconds>`. The response carries the
+headers SSE streaming needs: `Content-Type: text/event-stream`,
 `Cache-Control: no-cache`, `Connection: keep-alive`, and
 `X-Accel-Buffering: no` (disables nginx buffering).
 
@@ -97,18 +96,16 @@ pub fn last_event_id(headers: &http::HeaderMap) -> Option<String>;
 pub const LAST_EVENT_ID_HEADER: &str = "Last-Event-Id";
 ```
 
-Pass `ping_interval = Duration::ZERO` to disable heartbeats, exactly
-like the Go `NewWriter(rw, r, 0)`.
+Pass `ping_interval = Duration::ZERO` to disable heartbeats.
 
-## Adaptation from Go
+## Streaming model
 
-Go wraps an `http.ResponseWriter` and flushes after every write; axum
-inverts the flow — the writer feeds a channel-backed streaming body, so
-flushing is implicit and Go's `ErrUnsupported` (a `ResponseWriter`
-without `http.Flusher`) has no Rust counterpart. Client disconnects
-surface as `SseError::Disconnected` from `send`, the analog of Go's
-request-context cancellation; `send` after `close` returns `Ok(())`
-silently, matching Go's nil return on a closed writer.
+The writer feeds a channel-backed streaming body, so flushing is
+implicit — every frame hits the wire as soon as it is sent, with no
+explicit flush call. Client disconnects surface as
+`SseError::Disconnected` from `send`; a `send` after `close` returns
+`Ok(())` silently, so cleanup paths never have to special-case a
+closed writer.
 
 ## Concurrency
 

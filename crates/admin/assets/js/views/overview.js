@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Overview View.
+ * Firefly Admin — Overview View.
  *
  * Dashboard landing page showing health status, bean statistics,
  * stereotype donut chart, wiring breakdown, app info, and quick links.
@@ -7,7 +7,7 @@
  * Data source: GET /admin/api/overview
  */
 
-import { DonutChart, GaugeChart, createLineChart, createGaugeChart, createBarChart } from '../charts.js';
+import { DonutChart, GaugeChart, createLineChart, createGaugeChart } from '../charts.js';
 import { createEmptyStateCard } from '../components/empty-state.js';
 import { pageSkeleton } from '../components/skeleton.js';
 import { createStatusBadge } from '../components/status-badge.js';
@@ -201,7 +201,7 @@ export async function render(container, api) {
     statsRow.appendChild(createStatCard({
         label: 'Uptime',
         value: formatUptime(app.uptime_seconds),
-        subtitle: `Port ${app.web_port || 8080}`,
+        subtitle: app.platform ? `on ${app.platform}` : undefined,
         iconClass: 'info',
         icon: STAT_ICONS.uptime,
     }));
@@ -211,7 +211,7 @@ export async function render(container, api) {
     statsRow.appendChild(createStatCard({
         label: 'Active Profiles',
         value: profiles.length > 0 ? profiles.join(', ') : 'default',
-        subtitle: `Python ${app.python_version || ''}`,
+        subtitle: app.rust_version ? `Rust ${app.rust_version}` : undefined,
         iconClass: 'warning',
         icon: STAT_ICONS.profiles,
     }));
@@ -350,7 +350,7 @@ export async function render(container, api) {
     if (app.name) appMeta.push(['Application', app.name]);
     if (app.version) appMeta.push(['Version', app.version]);
     if (app.framework_version) appMeta.push(['Framework', `Firefly ${app.framework_version}`]);
-    if (app.python_version) appMeta.push(['Python', app.python_version]);
+    if (app.rust_version) appMeta.push(['Rust', app.rust_version]);
     if (app.platform) appMeta.push(['Platform', app.platform]);
     if (app.description) appMeta.push(['Description', app.description]);
 
@@ -380,9 +380,10 @@ export async function render(container, api) {
     const MAX_DATA_POINTS = 60;
     const memoryData = [];
     const memoryLabels = [];
+    const taskData = [];
     let memChart = null;
     let threadGauge = null;
-    let gcChart = null;
+    let tasksChart = null;
 
     const runtimeRow = document.createElement('div');
     runtimeRow.className = 'grid-3 mb-lg';
@@ -410,7 +411,7 @@ export async function render(container, api) {
     const threadHeader = document.createElement('div');
     threadHeader.className = 'admin-card-header';
     const threadTitle = document.createElement('h3');
-    threadTitle.textContent = 'Thread Count';
+    threadTitle.textContent = 'Worker Threads';
     threadHeader.appendChild(threadTitle);
     threadCard.appendChild(threadHeader);
     const threadBody = document.createElement('div');
@@ -425,22 +426,22 @@ export async function render(container, api) {
     threadCard.appendChild(threadBody);
     runtimeRow.appendChild(threadCard);
 
-    // 3) GC Collections Bar Chart card
-    const gcCard = document.createElement('div');
-    gcCard.className = 'admin-card';
-    const gcHeader = document.createElement('div');
-    gcHeader.className = 'admin-card-header';
-    const gcTitle = document.createElement('h3');
-    gcTitle.textContent = 'GC Collections';
-    gcHeader.appendChild(gcTitle);
-    gcCard.appendChild(gcHeader);
-    const gcBody = document.createElement('div');
-    gcBody.className = 'admin-card-body';
-    gcBody.style.height = '200px';
-    const gcCanvas = document.createElement('canvas');
-    gcBody.appendChild(gcCanvas);
-    gcCard.appendChild(gcBody);
-    runtimeRow.appendChild(gcCard);
+    // 3) Active Tasks line chart card (tokio alive-task count over time)
+    const tasksCard = document.createElement('div');
+    tasksCard.className = 'admin-card';
+    const tasksHeader = document.createElement('div');
+    tasksHeader.className = 'admin-card-header';
+    const tasksTitle = document.createElement('h3');
+    tasksTitle.textContent = 'Active Tasks';
+    tasksHeader.appendChild(tasksTitle);
+    tasksCard.appendChild(tasksHeader);
+    const tasksBody = document.createElement('div');
+    tasksBody.className = 'admin-card-body';
+    tasksBody.style.height = '200px';
+    const tasksCanvas = document.createElement('canvas');
+    tasksBody.appendChild(tasksCanvas);
+    tasksCard.appendChild(tasksBody);
+    runtimeRow.appendChild(tasksCard);
 
     wrapper.appendChild(runtimeRow);
 
@@ -453,46 +454,45 @@ export async function render(container, api) {
 
         threadGauge = createGaugeChart(threadCanvas, {
             value: 0,
-            label: 'Threads',
+            label: 'Workers',
             thresholds: { warning: 60, danger: 80 },
         });
 
-        gcChart = createBarChart(gcCanvas, {
-            labels: ['Gen 0', 'Gen 1', 'Gen 2'],
-            data: [0, 0, 0],
-            colors: ['--admin-primary', '--admin-success', '--admin-warning'],
+        tasksChart = createLineChart(tasksCanvas, {
+            label: 'Active Tasks',
+            color: '--admin-info',
         });
     });
 
     // Connect SSE for real-time runtime data
     sse.connectTyped('/runtime', 'runtime', (data) => {
-        // Memory line chart — rolling window
+        const ts = data.timestamp
+            ? new Date(data.timestamp).toLocaleTimeString()
+            : new Date().toLocaleTimeString();
+        const tokio = data.tokio || {};
+
+        // Memory + active-tasks line charts — shared rolling window
         const rss = data.memory && data.memory.rss_mb;
         if (rss != null) {
-            const ts = data.timestamp
-                ? new Date(data.timestamp).toLocaleTimeString()
-                : new Date().toLocaleTimeString();
             memoryData.push(rss);
+            taskData.push(tokio.alive_tasks || 0);
             memoryLabels.push(ts);
             if (memoryData.length > MAX_DATA_POINTS) {
                 memoryData.shift();
+                taskData.shift();
                 memoryLabels.shift();
             }
             if (memChart) {
                 memChart.update([...memoryData], [...memoryLabels]);
             }
+            if (tasksChart) {
+                tasksChart.update([...taskData], [...memoryLabels]);
+            }
         }
 
-        // Thread gauge
-        const threads = data.threads && data.threads.active;
-        if (threads != null && threadGauge) {
-            threadGauge.update(threads);
-        }
-
-        // GC bar chart
-        const collections = data.gc && data.gc.collections;
-        if (Array.isArray(collections) && gcChart) {
-            gcChart.update([...collections]);
+        // Worker-threads gauge
+        if (tokio.worker_threads != null && threadGauge) {
+            threadGauge.update(tokio.worker_threads);
         }
     });
 

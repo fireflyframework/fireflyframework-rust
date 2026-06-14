@@ -1,6 +1,6 @@
 # `firefly-notifications-firebase`
 
-> **Tier:** Adapter · **Status:** Implemented · **Backing tech:** Firebase Cloud Messaging HTTP v1 (push)
+> **Tier:** Adapter · **Status:** Stable · **Backing tech:** Firebase Cloud Messaging HTTP v1 (push)
 
 ## Overview
 
@@ -12,15 +12,14 @@ endpoint over `reqwest`; there is no stub or not-implemented sentinel.
 The crate exposes two interchangeable surfaces, both backed by the same live
 API:
 
-* **`FirebasePushProvider`** — the rich provider (pyfly parity). It implements
+* **`FirebasePushProvider`** — the rich provider. It implements
   the `PushProvider` port, POSTs once per device token to
   `…/v1/projects/{id}/messages:send` with a bearer token, and folds the
   per-token outcomes into a single `NotificationResult` with partial-success
   semantics. It also exposes `send_multicast` (the explicit multi-token fan-out)
   and `send_to_topic` (FCM topic messaging).
-* **`Channel` / `Config`** — the Go-parity envelope adapter (port of
-  `fireflyframework-go/notificationsfirebase`). It keeps the Go module's
-  `Config` wiring surface, and `Channel::send` performs a **real**
+* **`Channel` / `Config`** — the channel-agnostic envelope adapter. It provides a
+  simple `Config` wiring surface, and `Channel::send` performs a **real**
   `messages:send` POST by mapping the channel-agnostic `Notification` envelope to
   a single-token `PushMessage` and delegating to `FirebasePushProvider`.
 
@@ -66,8 +65,7 @@ pub struct Config {
 }
 ```
 
-The shape is field-for-field identical to the Go `notificationsfirebase.Config`
-struct. Note that `server_key` is the **legacy** FCM credential and is not used
+Note that `server_key` is the **legacy** FCM credential and is not used
 by the HTTP v1 API — supply an OAuth2 bearer token via the access-token seam
 below.
 
@@ -80,9 +78,9 @@ below.
 | `FirebasePushProvider` | The rich FCM v1 provider. `new(project_id, access_token)` takes a fixed token; `with_token_provider(project_id, src)` takes a refreshing source; `with_base_url(..)` / `with_http_client(..)` are wiring seams. Adds `send_multicast(msg)` and `send_to_topic(topic, msg)`. |
 | `PushProvider` | The async port (`name`, `send(PushMessage) -> Result<NotificationResult, FirebaseError>`), object-safe behind `Arc`/`Box`. |
 | `AccessTokenProvider` | The token-source seam (see below); blanket-impl'd for `Fn() -> Result<String, String>`. |
-| `PushMessage` | Port of pyfly's `PushMessage` (`id` defaults to a UUID v4, `device_tokens`, `title`, `body`, `data`). `new(tokens, title, body)` + `with_data(..)`. |
-| `NotificationResult` | Port of pyfly's `NotificationResult` (`id`, `provider`, `status`, `provider_id`, `error`). |
-| `DeliveryStatus` | Port of pyfly's `EmailStatus` enum (`QUEUED`/`SENT`/`DELIVERED`/`BOUNCED`/`FAILED`/`SUPPRESSED`). |
+| `PushMessage` | The push payload (`id` defaults to a UUID v4, `device_tokens`, `title`, `body`, `data`). `new(tokens, title, body)` + `with_data(..)`. |
+| `NotificationResult` | The send outcome (`id`, `provider`, `status`, `provider_id`, `error`). |
+| `DeliveryStatus` | Delivery-state enum (`QUEUED`/`SENT`/`DELIVERED`/`BOUNCED`/`FAILED`/`SUPPRESSED`). |
 | `FirebaseError` | `Transport(..)` and `Token(..)`. |
 | `VERSION` | Framework version stamp (`"26.6.1"`). |
 
@@ -95,14 +93,14 @@ intentionally does not implement the service-account JWT → OAuth2 exchange**
 injected `AccessTokenProvider` (a `Fn() -> Result<String, String>` works),
 invoked once per send so the token can refresh. Wire it to whatever
 mints/refreshes tokens in your deployment (GCP metadata server,
-workload-identity sidecar, `google-auth`-style library, …). Because the Go-parity
+workload-identity sidecar, `google-auth`-style library, …). Because the
 `Config` has no token field, build the `Channel` with
 `Channel::with_access_token` (fixed token) or `Channel::with_token_provider`
 (refreshing source).
 
 ## Behavior
 
-### Send / multicast (matches pyfly `FirebasePushProvider`)
+### Send / multicast
 
 One HTTP send per device token, in order (FCM v1 has no native multi-token
 endpoint; the deprecated batch endpoint and the Admin SDK's
@@ -115,8 +113,7 @@ aggregate result follows partial-success rules:
   `provider_id` and `error = "{token}: http {status}; …"` populated;
 * **none delivered** → `FAILED`, `provider_id = None`.
 
-`data` values are coerced to strings, matching pyfly's
-`{k: str(v) for k, v in message.data.items()}`.
+`data` values are coerced to strings before they are sent.
 
 ### Topic messaging
 

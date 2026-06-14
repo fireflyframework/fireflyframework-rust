@@ -58,6 +58,7 @@ use std::path::Path;
 
 use tracing::Level;
 
+use crate::appender::FileConfig;
 use crate::logging::{LogConfig, LogFormat, ROOT_TARGET};
 
 /// An error loading or parsing an external logging config file. The caller
@@ -276,6 +277,58 @@ pub fn apply_external_config(path: impl AsRef<Path>, base: LogConfig) -> (LogCon
     }
 }
 
+/// Builds a [`LogConfig`] from a flat property map folded over `base` — the
+/// Spring-Boot `logging.*` integration, so logging is configured straight from
+/// the application's main config (bind the `firefly.logging` section, e.g.
+/// `container.config_properties("firefly.logging")`, and pass it here).
+///
+/// | Key | Effect |
+/// |-----|--------|
+/// | `level` / `root.level` | root level (`trace`/`debug`/`info`/`warn`/`error`) |
+/// | `level.<target>` | per-logger level — Spring's `logging.level.<logger>` (e.g. `level.firefly_web = warn`) |
+/// | `format` | `json` (default), `text`/`logfmt`, or `console` |
+/// | `service` | the `service` field stamped on every line |
+/// | `file.name` | enable the rolling file appender |
+/// | `file.path` / `file.max_size` / `file.max_history` | file-appender tuning |
+///
+/// Unknown or unparseable values are ignored (a bad entry never drops the rest
+/// of the config), matching [`apply_external_config`].
+pub fn log_config_from_properties(
+    props: &std::collections::HashMap<String, String>,
+    base: LogConfig,
+) -> LogConfig {
+    let mut raw = RawLoggingConfig::default();
+    let mut file = base.file.clone();
+    for (key, value) in props {
+        let key = key.trim();
+        let value = value.trim().to_string();
+        match key {
+            "level" | "root.level" => raw.level = Some(value),
+            "format" => raw.format = Some(value),
+            "service" => raw.service = Some(value),
+            "file.name" => file.get_or_insert_with(FileConfig::default).name = value,
+            "file.path" => file.get_or_insert_with(FileConfig::default).path = value,
+            "file.max_size" | "file.max-size" => {
+                file.get_or_insert_with(FileConfig::default).max_size = value
+            }
+            "file.max_history" | "file.max-history" => {
+                if let Ok(n) = value.parse::<u32>() {
+                    file.get_or_insert_with(FileConfig::default).max_history = n;
+                }
+            }
+            _ => {
+                if let Some(target) = key.strip_prefix("level.") {
+                    raw.levels.insert(target.to_string(), value);
+                }
+            }
+        }
+    }
+    let mut cfg = raw.apply_to(base);
+    // A file appender is attached only when a file name was configured.
+    cfg.file = file.filter(|f| !f.name.is_empty());
+    cfg
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -303,6 +356,48 @@ mod tests {
         assert_eq!(cfg.service, "orders");
         assert_eq!(cfg.levels.get("firefly_web"), Some(&Level::WARN));
         assert_eq!(cfg.levels.get("app::orders"), Some(&Level::TRACE));
+    }
+
+    // The `firefly.logging.*` (application-config) binding — Spring's
+    // `logging.level.*` / `logging.file.*` parity from the main config.
+    #[test]
+    fn from_properties_binds_levels_format_and_file() {
+        let props: std::collections::HashMap<String, String> = [
+            ("level", "debug"),
+            ("format", "console"),
+            ("service", "orders"),
+            ("level.firefly_web", "warn"),
+            ("level.app::ledger", "trace"),
+            ("file.name", "app.log"),
+            ("file.path", "/var/log/orders"),
+            ("file.max_size", "50MB"),
+            ("file.max_history", "14"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        let cfg = log_config_from_properties(&props, LogConfig::default());
+        assert_eq!(cfg.level, Level::DEBUG);
+        assert_eq!(cfg.format, LogFormat::Console);
+        assert_eq!(cfg.service, "orders");
+        assert_eq!(cfg.levels.get("firefly_web"), Some(&Level::WARN));
+        assert_eq!(cfg.levels.get("app::ledger"), Some(&Level::TRACE));
+        let file = cfg.file.expect("file appender enabled by file.name");
+        assert_eq!(file.name, "app.log");
+        assert_eq!(file.path, "/var/log/orders");
+        assert_eq!(file.max_size, "50MB");
+        assert_eq!(file.max_history, 14);
+    }
+
+    // No `file.name` → no file appender attached (console-only stays the default).
+    #[test]
+    fn from_properties_without_file_name_leaves_appender_off() {
+        let props: std::collections::HashMap<String, String> =
+            [("level", "warn")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let cfg = log_config_from_properties(&props, LogConfig::default());
+        assert_eq!(cfg.level, Level::WARN);
+        assert!(cfg.file.is_none());
     }
 
     // pyfly: test_apply_fileconfig_ini (flat key=value fileConfig analog).

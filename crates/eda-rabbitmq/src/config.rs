@@ -26,20 +26,20 @@
 pub struct RabbitMqBrokerConfig {
     /// AMQP connection URL, e.g. `amqp://guest:guest@localhost:5672/`.
     ///
-    /// Defaults to `amqp://guest:guest@localhost/`, matching pyfly.
+    /// Defaults to `amqp://guest:guest@localhost/`.
     pub url: String,
     /// Name of the durable `direct` exchange to declare and publish to.
     ///
-    /// Defaults to `pyfly`, matching pyfly's `exchange_name`.
+    /// Defaults to `firefly`.
     pub exchange: String,
     /// Routing keys the consumer binds to. Each destination gets a
     /// durable queue named `<group>.<destination>` bound with that
     /// destination as routing key.
     ///
-    /// Defaults to `["pyfly.events"]`, matching pyfly.
+    /// Defaults to `["firefly.events"]`.
     pub destinations: Vec<String>,
     /// Consumer-group prefix used in queue names. Defaults to
-    /// `pyfly-default`, matching pyfly.
+    /// `firefly-default`.
     pub group: String,
 }
 
@@ -47,17 +47,17 @@ impl Default for RabbitMqBrokerConfig {
     fn default() -> Self {
         Self {
             url: "amqp://guest:guest@localhost/".to_string(),
-            exchange: "pyfly".to_string(),
-            destinations: vec!["pyfly.events".to_string()],
-            group: "pyfly-default".to_string(),
+            exchange: "firefly".to_string(),
+            destinations: vec!["firefly.events".to_string()],
+            group: "firefly-default".to_string(),
         }
     }
 }
 
 impl RabbitMqBrokerConfig {
     /// Returns the default configuration (the local-guest broker, the
-    /// `pyfly` exchange, the `pyfly.events` destination, the
-    /// `pyfly-default` group).
+    /// `firefly` exchange, the `firefly.events` destination, the
+    /// `firefly-default` group).
     pub fn new() -> Self {
         Self::default()
     }
@@ -170,12 +170,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_matches_pyfly_defaults() {
+    fn default_uses_firefly_topology() {
         let cfg = RabbitMqBrokerConfig::default();
         assert_eq!(cfg.url, "amqp://guest:guest@localhost/");
-        assert_eq!(cfg.exchange, "pyfly");
-        assert_eq!(cfg.destinations, vec!["pyfly.events".to_string()]);
-        assert_eq!(cfg.group, "pyfly-default");
+        assert_eq!(cfg.exchange, "firefly");
+        assert_eq!(cfg.destinations, vec!["firefly.events".to_string()]);
+        assert_eq!(cfg.group, "firefly-default");
     }
 
     #[test]

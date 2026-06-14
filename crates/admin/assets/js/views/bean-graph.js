@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Bean Dependency Graph View.
+ * Firefly Admin — Bean Dependency Graph View.
  *
  * D3 force-directed graph showing bean dependencies.
  * Nodes colored by stereotype, sized by resolution count.

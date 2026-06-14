@@ -1,6 +1,6 @@
 # `firefly-rule-engine`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `firefly-common-rule-engine` · **Go module:** `ruleengine` · **.NET project:** `FireflyFramework.RuleEngine.{Interfaces,Models,Core,Web,Sdk}`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -10,16 +10,14 @@ the [`models`](src/models.rs) module), parsed into an AST, and evaluated
 by a recursive walker that resolves fact-paths against a JSON-object
 fact.
 
-Sub-modules mirror the Go package split (one crate, five modules):
+The crate is organized into five modules:
 
 * `models` — AST: `Rule`, `RuleSet`, `Logic`, `Condition`, `Action`,
   `Op`.
 * `interfaces` — port: `Evaluator`, `Verdict`, `Fact`.
 * `core` — `AstEvaluator`, the default `Evaluator`.
-* `web` — REST admin (axum router) — planned for v26.06 in Go,
-  implemented here.
-* `sdk` — typed admin client — planned for v26.06 in Go, implemented
-  here.
+* `web` — REST admin (axum router).
+* `sdk` — typed admin client.
 
 ## Rule shape
 
@@ -47,17 +45,17 @@ rules:
         params: { name: vip }
 ```
 
-The field names and omission rules of the JSON/YAML projection match
-the Go struct tags exactly, so rule files transfer across the Java,
-.NET, Go, Python, and Rust runtimes verbatim.
+The JSON/YAML projection uses a stable, well-defined set of field names
+and omission rules, so rule files are portable across deployments and
+tooling.
 
 ## Operators
 
-**Go-parity set:** `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `notIn`,
+**Core set:** `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `notIn`,
 `contains`, `startsWith`, `endsWith`, `matches` (regex), `isNull`,
 `isNotNull`.
 
-**pyfly-parity additions:** `between`, `notContains`, `exists`,
+**Extended set:** `between`, `notContains`, `exists`,
 `isEmpty`:
 
 | Op            | Semantics                                                            |
@@ -67,20 +65,20 @@ the Go struct tags exactly, so rule files transfer across the Java,
 | `exists`      | true when the field is present **and** non-null; operand ignored.    |
 | `isEmpty`     | true when the field is null/absent, `""`, `[]`, or `{}`; `0`/`false` are *not* empty; operand ignored. |
 
-`Op::from` also accepts pyfly's **snake_case** spellings (`not_in`,
+`Op::from` also accepts **snake_case** spellings (`not_in`,
 `starts_with`, `ends_with`, `is_null`, `is_not_null`, `not_contains`,
 `is_empty`, and `regex` → `matches`), normalising them to the canonical
-camelCase variant — so rule documents authored against the pyfly DSL
-parse unchanged. Re-serialization always emits the canonical camelCase
-wire spelling, keeping the Go-parity byte stream intact.
+camelCase variant — so rule documents authored in either style parse
+unchanged. Re-serialization always emits the canonical camelCase wire
+spelling, keeping the wire byte stream stable.
 
-Like Go's open `type Op string`, an unrecognised operator survives
-parsing (`Op::Other`) and is rejected at **evaluation** time with
+The `Op` type is open: an unrecognised operator survives parsing
+(`Op::Other`) and is rejected at **evaluation** time with
 `ruleengine: unknown op: …`.
 
 ### Rule `otherwise` / `enabled` and `EvaluationMode`
 
-On top of the Go set, the Rust `Rule` carries pyfly's two extra fields:
+Beyond the core operator set, the `Rule` carries two extra fields:
 
 * `otherwise` — else-branch actions emitted when `when` evaluates
   **false** (the verdict collects them but the rule is **not** listed in
@@ -89,8 +87,8 @@ On top of the Go set, the Rust `Rule` carries pyfly's two extra fields:
   matches and fires no actions). Defaults to `true` and is omitted from
   the wire when enabled.
 
-Both serialize byte-for-byte as before for any rule that does not opt in,
-so existing Go-parity rule files are unaffected.
+Both serialize byte-for-byte unchanged for any rule that does not opt in,
+so existing rule files are unaffected.
 
 `AstEvaluator::evaluate_with_mode` and `RuleEngineService::with_mode`
 accept an `EvaluationMode`:
@@ -100,20 +98,20 @@ accept an `EvaluationMode`:
   (non-matching rules before it are still evaluated and their
   `otherwise` actions still fire).
 
-### Number semantics (Go parity)
+### Number semantics
 
-The Go reference runtime ingests facts through `encoding/json`, which
-decodes **every** fact number as `float64`, while yaml.v3 keeps an
-integer rule operand (`value: 18`) as `int`. `eq` / `ne` / `in` /
-`notIn` and list-`contains` use `reflect.DeepEqual`, so an *integer*
-operand never equals a fact number — write a float operand
-(`value: 18.0`) for magnitude equality. The range operators
+Facts are ingested as JSON, which decodes **every** fact number as a
+floating-point value, while an integer rule operand (`value: 18`)
+authored in YAML is kept as an integer. The equality operators (`eq` /
+`ne` / `in` / `notIn` and list-`contains`) compare values structurally,
+so an *integer* operand never equals a fact number — write a float
+operand (`value: 18.0`) for magnitude equality. The range operators
 (`lt`/`lte`/`gt`/`gte`) coerce both sides numerically and are
 unaffected. The string-coercing operators (`startsWith` / `endsWith` /
-`matches` / string-`contains`) render floats the way Go's `%v` does —
-whole-number floats print without a fractional part (`1500.0` ⇒
-`"1500"`, `1e6` ⇒ `"1e+06"`). The Rust port reproduces all of this
-verbatim so identical wire bytes yield identical verdicts.
+`matches` / string-`contains`) render whole-number floats without a
+fractional part (`1500.0` ⇒ `"1500"`, `1e6` ⇒ `"1e+06"`). These rules
+are applied deterministically so identical wire bytes always yield
+identical verdicts.
 
 ## Public surface
 
@@ -224,18 +222,17 @@ let verdict = client.evaluate_yaml(yaml, &fact).await?;
 cargo test -p firefly-rule-engine
 ```
 
-Ports every Go test (`all` / `any` / `not` composition, regex
-`matches`, priority ordering) and adds range fall-through,
-unknown-operator rejection, wire-format assertions against the Go
-struct tags, serde round-trips, in-process router tests, and SDK ↔
+Covers `all` / `any` / `not` composition, regex `matches`, priority
+ordering, range fall-through, unknown-operator rejection, wire-format
+assertions, serde round-trips, in-process router tests, and SDK ↔
 router round-trips.
 
-## pyfly parity — action execution + named-ruleset service
+## Action execution + named-ruleset service
 
-The Go-parity [`AstEvaluator`](src/core.rs) is a **pure** engine: it
-returns the matched actions in a `Verdict` but never runs them. The
-pyfly port adds an action-execution layer and a named-ruleset service on
-top, without changing any Go-parity surface.
+The [`AstEvaluator`](src/core.rs) is a **pure** engine: it returns the
+matched actions in a `Verdict` but never runs them. On top of it, the
+crate provides an action-execution layer and a named-ruleset service,
+without changing the pure evaluator's surface.
 
 ### `actions` — the `ActionHandler` SPI + builtins
 
@@ -244,7 +241,7 @@ pub trait ActionHandler: Send + Sync {
     fn apply(&self, action: &Action, facts: &mut Fact) -> Result<(), ActionError>;
 }
 // Any `Fn(&Action, &mut Fact) -> Result<(), ActionError>` is an ActionHandler
-// (blanket impl) — the Rust counterpart of pyfly's __call__ protocol.
+// (blanket impl) — a closure can stand in for a handler directly.
 
 pub struct ActionRegistry; // default(): set / increment / log builtins
 impl ActionRegistry {
@@ -262,13 +259,11 @@ Builtins, keyed by the action's `type` and reading `params`:
 * `increment` — adds `params["value"]` (default `1`) to the current
   numeric value at `params["target"]` (absent ⇒ `0`); integer arithmetic
   stays integral, a float operand promotes to float.
-* `log` — a side-effect-only no-op on the context (matches pyfly's
-  logger-only `log` action).
+* `log` — a logger-only action: a side-effect-only no-op on the context.
 
-An unregistered action type fails with `ActionError::Unsupported`
-(pyfly's loud-failure, audit #215). `execute` **isolates** each action:
-a failure is recorded in `ActionOutcome::error` and the remaining
-actions still run (audit #216).
+An unregistered action type fails loudly with `ActionError::Unsupported`.
+`execute` **isolates** each action: a failure is recorded in
+`ActionOutcome::error` and the remaining actions still run.
 
 ### `service` — `RuleSetRepository` + `RuleEngineService`
 
@@ -296,7 +291,7 @@ pub struct EvaluationOutcome {
 }
 ```
 
-Rulesets are keyed by `RuleSet::name` (the Rust port has no separate
+Rulesets are keyed by `RuleSet::name` (there is no separate
 `id`). `evaluate`/`evaluate_by_name` run the matched verdict's actions
 over a **copy** of the input fact (the input is never mutated) and return
 the post-execution `facts` alongside the verdict. The service honours its
@@ -309,9 +304,7 @@ rules are skipped.
 
 Calling `with_metrics(&registry)` (the
 `firefly_observability::MetricsRegistry`) enables four `ruleset`-labelled
-counters, recorded after every `evaluate` / `evaluate_by_name` — the Rust
-spelling of pyfly's `RuleEngineService(metrics=...)`, so the same
-dashboards port across the Python and Rust runtimes:
+counters, recorded after every `evaluate` / `evaluate_by_name`:
 
 | Counter                            | Incremented …                                  |
 |------------------------------------|------------------------------------------------|
@@ -321,7 +314,7 @@ dashboards port across the Python and Rust runtimes:
 | `firefly_rule_errors_total`        | when the outcome carries an error              |
 
 Metrics are entirely opt-in: a service built without `with_metrics`
-records nothing (matching pyfly, where omitting the recorder is a no-op).
+records nothing.
 
 ```rust,ignore
 use firefly_observability::MetricsRegistry;
@@ -330,9 +323,9 @@ let service = RuleEngineService::in_memory().with_metrics(&MetricsRegistry::new(
 
 ### `validation` — `validate_ruleset` / `RuleSetValidator`
 
-A static linter (pyfly's `rule_engine.validation`) that returns a list of
-human-readable issues a consumer can run before deploying a rule set —
-the AST itself only rejects malformed DSL at parse time.
+A static linter that returns a list of human-readable issues a consumer
+can run before deploying a rule set — the AST itself only rejects
+malformed DSL at parse time.
 
 ```rust,ignore
 pub fn validate_ruleset(&RuleSet) -> Vec<String>;   // empty = valid

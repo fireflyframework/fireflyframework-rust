@@ -1,12 +1,11 @@
 # `firefly-cache-postgres`
 
-> **Tier:** Platform · **Status:** Full · **pyfly original:** `pyfly.cache.adapters.postgres.PostgresCacheAdapter`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
 `firefly-cache-postgres` is the PostgreSQL implementation of the
-[`firefly_cache::Adapter`](../cache) port — the Rust port of pyfly's
-`PostgresCacheAdapter`. It stores cache entries in a single key/value/expiry
+[`firefly_cache::Adapter`](../cache) port. It stores cache entries in a single key/value/expiry
 table and speaks SQL over [`tokio-postgres`](https://crates.io/crates/tokio-postgres),
 so a `PostgresCacheAdapter` drops in wherever an `Arc<dyn Adapter>` is
 expected (CQRS query cache, idempotency guards, `FallbackAdapter` primaries,
@@ -23,8 +22,7 @@ firefly_cache::Adapter  (port)
 ## Table shape
 
 The adapter owns one table, created on `init()` (`CREATE TABLE IF NOT
-EXISTS`), identical in shape to pyfly's `pyfly_cache_entries` under the Rust
-framework's `firefly_` prefix:
+EXISTS`), under the framework's `firefly_` prefix:
 
 ```sql
 CREATE TABLE IF NOT EXISTS firefly_cache_entries (
@@ -41,7 +39,7 @@ CREATE TABLE IF NOT EXISTS firefly_cache_entries (
 * **`expires_at`** — `NULL` for a persistent entry, otherwise an absolute
   UTC timestamp (`now + ttl`). Expiry is enforced **lazily at read time** by
   an `expires_at IS NULL OR expires_at > now` predicate — there is no
-  background sweeper, exactly as in pyfly.
+  background sweeper.
 
 ## Port mapping
 
@@ -57,12 +55,12 @@ CREATE TABLE IF NOT EXISTS firefly_cache_entries (
 | `stats`         | `SELECT COUNT(*) … (not expired)` + in-process hit/miss counters   |
 | `health_check`  | `SELECT 1`                                                        |
 
-Extras beyond the port (parity with pyfly): `keys(pattern, limit)`
+Extras beyond the port: `keys(pattern, limit)`
 (`get_keys`) and `is_available()` (fail-soft `SELECT 1`).
 
 ### `set_if_absent` and expired rows
 
-Like pyfly's `put_if_absent`, `set_if_absent` keeps the fast `ON CONFLICT DO
+`set_if_absent` keeps the fast `ON CONFLICT DO
 NOTHING` path. An **expired** row still physically exists and therefore still
 blocks the insert, even though `get`/`exists` treat it as a miss. Callers must
 not rely on `set_if_absent` overwriting a stale entry — use `set` for that.
@@ -89,11 +87,10 @@ assert_eq!(adapter.get("k").await?, b"v");
 The connection string accepts a `postgresql://` URL, a `tokio-postgres`
 keyword/value string (`host=… user=…`), or a SQLAlchemy-style URL with a
 dialect marker (`postgresql+asyncpg://…`) — the marker is stripped
-automatically so pyfly-style URLs connect unchanged. You can also inject an
+automatically so SQLAlchemy-style URLs connect unchanged. You can also inject an
 already-built `tokio_postgres::Client` via `from_client`.
 
-Unlike pyfly (which has explicit `start()`/`stop()` hooks over an injected
-SQLAlchemy engine), this adapter's `init()` runs the DDL and there is no
+This adapter's `init()` runs the DDL and there is no
 `stop` — the `Client`'s lifecycle belongs to its owner.
 
 ## Custom table name
@@ -140,8 +137,7 @@ Unit tests (`src/lib.rs`) cover everything verifiable without a live database:
 the SQL/DDL string shapes, the glob→`LIKE` / TTL→timestamp / DSN-normalisation
 logic, and `Adapter` object-safety. They run with a plain `cargo test`.
 
-The behavioural round-trips (`tests/postgres_cache_adapter_test.rs`, ported
-from pyfly's `tests/cache/test_postgres_cache_adapter.py`) are **env-gated**:
+The behavioural round-trips (`tests/postgres_cache_adapter_test.rs`) are **env-gated**:
 they read `FIREFLY_TEST_POSTGRES_URL` (falling back to `DATABASE_URL` /
 `POSTGRES_URL`). When it is unset each test prints a one-line `skipping …` and
 returns, so a plain `cargo test` on a bare machine is green; when it is set

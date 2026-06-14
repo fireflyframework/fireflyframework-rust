@@ -57,12 +57,12 @@ const navbar  = document.getElementById('navbar');
 /* ── Theme Management ─────────────────────────────────────────── */
 
 function getTheme() {
-    return localStorage.getItem('pyfly-admin-theme') || settings.theme || 'dark';
+    return localStorage.getItem('firefly-admin-theme') || settings.theme || 'dark';
 }
 
 function setTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('pyfly-admin-theme', theme);
+    localStorage.setItem('firefly-admin-theme', theme);
 }
 
 function toggleTheme() {

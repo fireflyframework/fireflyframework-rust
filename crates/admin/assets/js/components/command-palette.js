@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Command Palette (⌘K / Ctrl-K).
+ * Firefly Admin — Command Palette (⌘K / Ctrl-K).
  *
  * A keyboard-first launcher that fuzzy-filters every view + quick action and
  * navigates on Enter. Built with safe DOM construction (no innerHTML with data).

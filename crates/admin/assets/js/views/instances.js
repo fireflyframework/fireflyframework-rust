@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Instances View.
+ * Firefly Admin — Instances View.
  *
  * Fleet overview showing registered application instances with status
  * badges, URLs, and last-checked timestamps.  Provides stat cards for

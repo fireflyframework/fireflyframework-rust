@@ -1,6 +1,6 @@
 # `firefly-migrations`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** Flyway · **Go module:** `migrations`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -12,19 +12,16 @@ a transaction. The applied versions are recorded in a
 
 The runner works against **any** store reachable through the small
 synchronous `Database` port — the SQL it issues is parameter-free and
-ANSI-compatible (plus one `?`-placeholder insert). Tested against
-SQLite via rusqlite, exactly as the Go module tested against
-`modernc.org/sqlite`.
+ANSI-compatible (plus one `?`-placeholder insert). It is tested against
+SQLite via rusqlite.
 
 ## Why a separate module?
 
-Flyway and DbUp are mature in the JVM and .NET worlds. The Rust
-ecosystem has several migration crates, each with a slightly different
-file-name convention, locking strategy, and recovery story.
+The Rust ecosystem has several migration crates, each with a slightly
+different file-name convention, locking strategy, and recovery story.
 `firefly-migrations` provides **one** convention so every Firefly Rust
-service handles schema evolution the same way — and the `V###__name.sql`
-naming is wire-identical across the Java, Go, .NET, Python, and Rust
-ports.
+service handles schema evolution the same way, using the familiar
+`V###__name.sql` naming popularized by mature migration tooling.
 
 ## File layout
 
@@ -52,7 +49,7 @@ pub struct Migration {
 pub trait Source { fn list(&self) -> Result<Vec<Migration>, MigrationError>; }
 
 pub struct DirSource { pub dir: PathBuf }       // filesystem directory
-pub struct EmbeddedSource;                      // include_str! pairs (Go's embed.FS)
+pub struct EmbeddedSource;                      // include_str! pairs (compiled-in)
 pub struct SliceSource { pub items: Vec<Migration> } // hand-built (tests)
 
 pub trait Database {                            // sync port over your driver
@@ -104,7 +101,7 @@ are append-only history), a subsequent `run` returns
 ## Quick start
 
 Adapt your driver to the `Database` port once (rusqlite shown), embed
-your migrations with `include_str!` — the analog of Go's `embed.FS` —
+your migrations with `include_str!` so they compile into the binary,
 and run:
 
 ```rust
@@ -202,5 +199,5 @@ cargo test -p firefly-migrations
 
 Covers fresh apply, idempotent re-run, checksum-mismatch rejection, the
 directory and embedded source variants, transactional rollback of a
-failed migration, pending/applied inspection, error-string parity with
-the Go port, and Send + Sync / trait-object usability.
+failed migration, pending/applied inspection, stable error-string
+formatting, and Send + Sync / trait-object usability.

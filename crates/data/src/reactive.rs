@@ -303,7 +303,7 @@ where
     fn find_by_spec_paged(&self, spec: crate::Specification, pageable: crate::Pageable) -> Flux<T> {
         let store = Arc::clone(&self.store);
         Flux::defer(move || {
-            let matched: Vec<T> = {
+            let mut matched: Vec<T> = {
                 let guard = store.read().expect("data: store lock poisoned");
                 guard
                     .values()
@@ -311,6 +311,28 @@ where
                     .cloned()
                     .collect()
             };
+            // Honour the pageable's sort (each entity is compared by its JSON
+            // projection) before windowing — so `find_all_sorted` orders
+            // correctly even on the in-memory repository.
+            if pageable.sort.is_sorted() {
+                let orders = pageable.sort.orders.clone();
+                matched.sort_by(|a, b| {
+                    let va = serde_json::to_value(a).unwrap_or(serde_json::Value::Null);
+                    let vb = serde_json::to_value(b).unwrap_or(serde_json::Value::Null);
+                    for o in &orders {
+                        let fa = va.get(&o.property).unwrap_or(&serde_json::Value::Null);
+                        let fb = vb.get(&o.property).unwrap_or(&serde_json::Value::Null);
+                        let mut ord = compare_json_values(fa, fb);
+                        if matches!(o.direction, crate::Direction::Desc) {
+                            ord = ord.reverse();
+                        }
+                        if ord != std::cmp::Ordering::Equal {
+                            return ord;
+                        }
+                    }
+                    std::cmp::Ordering::Equal
+                });
+            }
             let windowed = if pageable.is_paged() {
                 let from = pageable.offset().min(matched.len());
                 let to = (from + pageable.size).min(matched.len());
@@ -321,6 +343,70 @@ where
             Flux::from_iter(windowed)
         })
     }
+}
+
+/// Orders two JSON scalars for the in-memory sort: numbers numerically,
+/// strings/bools lexically, with `null` sorting first. Mixed/!comparable types
+/// fall back to `Equal` (stable order preserved).
+fn compare_json_values(a: &serde_json::Value, b: &serde_json::Value) -> std::cmp::Ordering {
+    use serde_json::Value;
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Value::Null, Value::Null) => Ordering::Equal,
+        (Value::Null, _) => Ordering::Less,
+        (_, Value::Null) => Ordering::Greater,
+        (Value::Number(x), Value::Number(y)) => x
+            .as_f64()
+            .unwrap_or(f64::NAN)
+            .partial_cmp(&y.as_f64().unwrap_or(f64::NAN))
+            .unwrap_or(Ordering::Equal),
+        (Value::String(x), Value::String(y)) => x.cmp(y),
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        _ => Ordering::Equal,
+    }
+}
+
+/// Spring Data's reactive **sorting + paging** repository — the
+/// `ReactiveSortingRepository` / `PagingAndSortingRepository` analog for
+/// WebFlux. It adds whole-table `findAll(Sort)` and `findAll(Pageable)` on top
+/// of [`ReactiveCrudRepository`], and is implemented **for free** over any
+/// repository that is also a [`ReactiveSpecificationRepository`] (the sort /
+/// page is run as a match-all [`Specification`](crate::Specification)). So
+/// every [`SqlxReactiveRepository`](crate) and
+/// [`ReactiveMemoryRepository`] gains it automatically — no per-adapter code.
+pub trait ReactiveSortingRepository<T, ID>:
+    ReactiveCrudRepository<T, ID> + ReactiveSpecificationRepository<T>
+where
+    T: Send + 'static,
+    ID: Send + Sync + 'static,
+{
+    /// Streams every entity in the given sort order — Spring's
+    /// `Flux<T> findAll(Sort)`.
+    fn find_all_sorted(&self, sort: crate::RequestSort) -> Flux<T> {
+        let pageable = crate::Pageable {
+            sort,
+            ..crate::Pageable::unpaged()
+        };
+        self.find_by_spec_paged(crate::Specification::all(), pageable)
+    }
+
+    /// Streams the requested page (offset / limit + sort) — Spring's
+    /// `PagingAndSortingRepository` `findAll(Pageable)`. WebFlux-style, the page
+    /// is streamed as a `Flux` window rather than buffered into a `Page<T>`
+    /// (use [`Page`](crate::Page) + a count query when you need the envelope).
+    fn find_all_paged(&self, pageable: crate::Pageable) -> Flux<T> {
+        self.find_by_spec_paged(crate::Specification::all(), pageable)
+    }
+}
+
+/// Blanket impl: any reactive repository that is both a CRUD repository and a
+/// specification repository is automatically a sorting/paging repository.
+impl<R, T, ID> ReactiveSortingRepository<T, ID> for R
+where
+    R: ReactiveCrudRepository<T, ID> + ReactiveSpecificationRepository<T>,
+    T: Send + 'static,
+    ID: Send + Sync + 'static,
+{
 }
 
 /// Maps a `tokio-postgres` [`Row`] into a domain entity `T`.
@@ -956,5 +1042,61 @@ mod tests {
         assert_eq!(repo.count().block().await.unwrap(), Some(2));
         repo.delete_all().block().await.unwrap();
         assert_eq!(repo.count().block().await.unwrap(), Some(0));
+    }
+
+    /// `ReactiveSortingRepository` (Spring's `findAll(Sort)` / `findAll(Pageable)`)
+    /// over the in-memory repository: orders and windows correctly.
+    #[tokio::test]
+    async fn reactive_sorting_repository_orders_and_pages() {
+        #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+        struct Item {
+            id: i64,
+            name: String,
+        }
+        let repo = ReactiveMemoryRepository::new(|i: &Item| i.id);
+        for (id, name) in [(1, "charlie"), (2, "alice"), (3, "bob")] {
+            repo.save(Item {
+                id,
+                name: name.into(),
+            })
+            .block()
+            .await
+            .unwrap();
+        }
+
+        // find_all_sorted(name asc)
+        let asc = repo
+            .find_all_sorted(crate::RequestSort::by(["name"]))
+            .collect_list()
+            .block()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            asc.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+            ["alice", "bob", "charlie"]
+        );
+
+        // find_all_sorted(name desc)
+        let desc = repo
+            .find_all_sorted(crate::RequestSort::by(["name"]).descending())
+            .collect_list()
+            .block()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(desc.first().unwrap().name, "charlie");
+
+        // find_all_paged(page 1, size 2, sorted by name) → first window
+        let page = repo
+            .find_all_paged(crate::Pageable::of(1, 2, crate::RequestSort::by(["name"])).unwrap())
+            .collect_list()
+            .block()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].name, "alice");
+        assert_eq!(page[1].name, "bob");
     }
 }

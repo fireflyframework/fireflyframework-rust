@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Reusable Table Component.
+ * Firefly Admin — Reusable Table Component.
  *
  * Creates sortable, searchable, clickable tables using safe DOM construction.
  */

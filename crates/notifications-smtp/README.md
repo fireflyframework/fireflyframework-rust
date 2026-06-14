@@ -1,11 +1,10 @@
 # `firefly-notifications-smtp`
 
-> **Tier:** Adapter · **Status:** Working · **Backing tech:** SMTP (via [`lettre`](https://docs.rs/lettre))
+> **Tier:** Adapter · **Status:** Stable · **Backing tech:** SMTP (via [`lettre`](https://docs.rs/lettre))
 
 ## Overview
 
-`firefly-notifications-smtp` is a real SMTP e-mail provider — the Rust port of
-pyfly `pyfly.notifications.providers.smtp.SmtpEmailProvider`. It builds a
+`firefly-notifications-smtp` is a real SMTP e-mail provider. It builds a
 standards-compliant MIME message from a rich `EmailMessage` and delivers it
 over SMTP with optional STARTTLS and SMTP AUTH.
 
@@ -33,9 +32,9 @@ let msg = EmailMessage {
 let result = provider.send(msg).await; // NotificationResult { status: SENT | FAILED, .. }
 ```
 
-## Behavior (matches pyfly)
+## Behavior
 
-* MIME structure mirrors pyfly's stdlib `EmailMessage` construction:
+* MIME structure is assembled from the `EmailMessage` contents:
   * text only → a single `text/plain` part;
   * HTML only → a single `text/html` part;
   * text + HTML → a `multipart/alternative` (plain first, then HTML);
@@ -51,14 +50,14 @@ let result = provider.send(msg).await; // NotificationResult { status: SENT | FA
   both username and password are present.
 * Any failure (bad address, connection error, server rejection) is folded into
   `EmailStatus::FAILED` carrying the error text — `send` never returns an
-  `Err`, matching pyfly's `_send_blocking` try/except.
+  `Err`.
 
 ## Public surface
 
 | Item | Description |
 | --- | --- |
 | `SmtpEmailProvider` | The provider: `new(cfg)`, `from_config(get)`. Implements `EmailProvider` and a thin `firefly_notifications::Channel` (`name()` = `"notificationssmtp"`). |
-| `SmtpConfig` | `{ host, port, username?, password?, use_tls }`; defaults match pyfly (port 587, STARTTLS on). `from_config(get)` parses flat config keys. |
+| `SmtpConfig` | `{ host, port, username?, password?, use_tls }`; defaults to port 587 with STARTTLS on. `from_config(get)` parses flat config keys. |
 | `build_message(&EmailMessage)` | The pure message-builder. Returns the exact `lettre::Message` the provider would transmit — used by the structure tests. |
 | `EmailMessage` / `Attachment` | Rich e-mail message model. |
 | `EmailStatus` | `QUEUED` / `SENT` / `DELIVERED` / `BOUNCED` / `FAILED` / `SUPPRESSED`. |
@@ -75,10 +74,8 @@ cargo test -p firefly-notifications-smtp
 Per the framework's bare-machine test policy the unit suite needs **no live
 SMTP server**. `build_message` is a pure function over `EmailMessage`; the
 tests assert the resulting `lettre::Message` — its headers, MIME parts,
-envelope recipients, and the bcc-not-leaked invariant — directly, the Rust
-analogue of `tests/notifications/test_smtp_behavior.py` (which captures the
-delivered MIME via an in-process `aiosmtpd`). Connection-failure mapping is
-exercised against a closed port.
+envelope recipients, and the bcc-not-leaked invariant — directly.
+Connection-failure mapping is exercised against a closed port.
 
 A genuine end-to-end send lives in `tests/smtp_integration.rs` as an
 **env-gated** integration test (no `#[ignore]`): with `FIREFLY_TEST_SMTP_ADDR`

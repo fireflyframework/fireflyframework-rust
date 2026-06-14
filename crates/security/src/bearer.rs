@@ -181,8 +181,11 @@ where
 
             let Some(raw) = raw else {
                 if cfg.allow_anonymous {
-                    req.extensions_mut().insert(Authentication::anonymous());
-                    return inner.call(req).await;
+                    let auth = Authentication::anonymous();
+                    req.extensions_mut().insert(auth.clone());
+                    // Scope the authentication so `#[pre_authorize]` /
+                    // `current_authentication()` see it downstream.
+                    return crate::with_authentication_scope(auth, inner.call(req)).await;
                 }
                 return Ok(cfg.reject(&req, &SecurityError::Unauthenticated));
             };
@@ -193,8 +196,11 @@ where
 
             match cfg.verifier.verify(token).await {
                 Ok(auth) => {
-                    req.extensions_mut().insert(auth);
-                    inner.call(req).await
+                    req.extensions_mut().insert(auth.clone());
+                    // Scope the resolved authentication for the downstream call
+                    // so method-security macros and `current_authentication()`
+                    // observe the caller without it riding every signature.
+                    crate::with_authentication_scope(auth, inner.call(req)).await
                 }
                 Err(err) => Ok(cfg.reject(&req, &err)),
             }

@@ -1,7 +1,7 @@
 /**
- * PyFly Admin — Chart Library (Chart.js Adapters).
+ * Firefly Admin — Chart Library (Chart.js Adapters).
  *
- * Wraps Chart.js instances with PyFly theme integration.
+ * Wraps Chart.js instances with Firefly theme integration.
  * All colours are read from CSS custom properties so they
  * match the active theme automatically.
  *
@@ -28,9 +28,9 @@ export function hexToRgba(hex, alpha) {
 }
 
 function resolveColor(colorVar) {
-    if (!colorVar) return cssVar('--admin-primary') || '#5fbf2e';
+    if (!colorVar) return cssVar('--admin-primary') || '#f5921e';
     if (colorVar.startsWith('#')) return colorVar;
-    return cssVar(colorVar) || cssVar('--admin-primary') || '#5fbf2e';
+    return cssVar(colorVar) || cssVar('--admin-primary') || '#f5921e';
 }
 
 function themeDefaults() {
@@ -117,7 +117,7 @@ export function createLineChart(canvas, options = {}) {
  */
 export function createBarChart(canvas, options = {}) {
     const theme = themeDefaults();
-    const defaultColor = cssVar('--admin-primary') || '#5fbf2e';
+    const defaultColor = cssVar('--admin-primary') || '#f5921e';
     const colors = (options.colors || []).map(c => resolveColor(c));
 
     const chart = new Chart(canvas, {

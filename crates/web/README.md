@@ -1,6 +1,6 @@
 # `firefly-web`
 
-> **Tier:** Foundational · **Status:** Full · **Go module:** `web` · **Java original:** `firefly-web` + `firefly-spring-utils`
+> **Tier:** Foundational · **Status:** Stable
 
 ## Overview
 
@@ -11,17 +11,14 @@ out of log lines. Composed at the outermost edge of every Firefly
 service via `firefly-starter-core`.
 
 Every middleware is a [`tower::Layer`], so it composes with axum and any
-tower-compatible router — the Rust analog of the Go module's
-`func(http.Handler) http.Handler` middlewares.
+tower-compatible router.
 
 ## Why a separate crate?
 
-Spring's `@ControllerAdvice` and ASP.NET's exception handlers cover
-problem-detail rendering only. The framework needs four orthogonal
-middlewares to behave identically across runtimes, with the same header
+The framework needs four orthogonal middlewares with consistent header
 names, response shapes, and conflict semantics — `firefly-web` provides
-them as one composable bundle, wire-compatible with the Java, .NET, Go,
-and Python ports.
+them as one composable bundle so problem-detail rendering, correlation,
+idempotency, and PII scrubbing behave uniformly across every service.
 
 ## Mental model
 
@@ -58,13 +55,13 @@ This is the chain composed by `firefly-starter-core`.
 | `problem_response(&ProblemDetail)` | Builds the `application/problem+json` response with the problem's status |
 | `error_response(&dyn Error)`    | Converts via `firefly_kernel::as_problem` then renders                     |
 | `ProblemLayer`                  | Catches panics, renders 500 with `firefly_kernel::TYPE_INTERNAL`           |
-| `WebError` / `WebResult<T>`     | Handler error type: `FireflyError` → `?` → RFC 7807 response (the Go `ErrorHandler` adapter) |
+| `WebError` / `WebResult<T>`     | Handler error type: `FireflyError` → `?` → RFC 7807 response |
 
 ### Correlation
 
 | Symbol                | Behaviour                                                                                       |
 |-----------------------|-------------------------------------------------------------------------------------------------|
-| `CorrelationLayer`    | Reads / generates `X-Correlation-Id`, scopes it via `firefly_kernel::with_correlation_id`, stores `CorrelationId` in request extensions, echoes back — including on the panic→500 path recovered by `ProblemLayer`, as in Go |
+| `CorrelationLayer`    | Reads / generates `X-Correlation-Id`, scopes it via `firefly_kernel::with_correlation_id`, stores `CorrelationId` in request extensions, echoes back — including on the panic→500 path recovered by `ProblemLayer` |
 | `CorrelationId(String)` | Extractable in handlers with `axum::Extension<CorrelationId>`                                 |
 
 ### Idempotency
@@ -73,39 +70,38 @@ This is the chain composed by `firefly-starter-core`.
 |------------------------------------------|-------------------------------------------------------------------------|
 | `IdempotencyConfig { store, ttl, methods }` | Tunes the middleware                                                 |
 | `IdempotencyConfig::default()`           | 24 h TTL, memory store, POST/PUT/PATCH                                  |
-| `IdempotencyLayer`                       | Replays cached 2xx responses (`Idempotent-Replay: true`); returns 409 on key reuse with a different body; first-pass responses stream through unbuffered while being captured (Go `captureWriter` parity) |
+| `IdempotencyLayer`                       | Replays cached 2xx responses (`Idempotent-Replay: true`); returns 409 on key reuse with a different body; first-pass responses stream through unbuffered while being captured |
 | `MemoryIdempotencyStore`                 | Default in-process store                                                |
 | `IdempotencyStore` trait                 | Plug your own (Redis / Postgres / etc.)                                 |
-| `IdempotencyRecord`                      | Stored response; JSON shape matches the Go port for cross-runtime stores |
+| `IdempotencyRecord`                      | Stored response; stable JSON shape for cross-runtime stores |
 
 ### PII masking
 
 | Symbol                  | Behaviour                                                                |
 |-------------------------|---------------------------------------------------------------------------|
-| `mask_pii(&str) -> String` | Redacts emails, IBANs, cards, E.164 phones as `[REDACTED:<kind>]`; matches Go RE2's ASCII `\b`/`\d` semantics, so numbers adjacent to non-ASCII text are still masked |
+| `mask_pii(&str) -> String` | Redacts emails, IBANs, cards, E.164 phones as `[REDACTED:<kind>]`; uses ASCII `\b`/`\d` semantics, so numbers adjacent to non-ASCII text are still masked |
 | `mask_map(&Map) -> Map` | Recursive redaction over a JSON object; sensitive keys (`password`, `token`, `secret`, `authorization`, `cookie`, `api_key`, `apikey`, `private_key`) replaced wholesale |
 
-## pyfly parity
+## Extended middleware surface
 
-Beyond the Go-parity chain above, the crate ships the full pyfly
-`web` + `server` middleware surface. Every layer follows the same
-hand-rolled `tower::Layer` style (the workspace deliberately avoids
-`tower-http`) and keeps wire formats byte-identical to the Java, .NET,
-Go, and Python ports.
+Beyond the core chain above, the crate ships a full `web` + `server`
+middleware surface. Every layer follows the same hand-rolled
+`tower::Layer` style (the workspace deliberately avoids `tower-http`)
+and keeps wire formats stable across services.
 
 ### CORS — `cors.rs`
 
 | Symbol | Behaviour |
 |--------|-----------|
 | `CorsConfig { allowed_origins, allowed_methods, allowed_headers, allow_credentials, exposed_headers, max_age }` | Config struct (serde kebab-case); `default()` permits `*` origin/header with `GET`, `max_age` 600 |
-| `CorsConfig::permit_defaults()` | Spring's permit set: `GET`/`HEAD`/`POST` (`PERMIT_DEFAULT_METHODS`) |
+| `CorsConfig::permit_defaults()` | Standard permit set: `GET`/`HEAD`/`POST` (`PERMIT_DEFAULT_METHODS`) |
 | `CorsLayer` | Short-circuits preflight `OPTIONS` (400 on disallowed origin/method, echoes requested headers for `*`), decorates simple responses with `Access-Control-Allow-*`, reflects origin under credentials |
 
 ### Security headers — `headers.rs`
 
 | Symbol | Behaviour |
 |--------|-----------|
-| `SecurityHeadersConfig` | Same 7 fields/defaults as pyfly: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, HSTS, `X-XSS-Protection: 0`, `Referrer-Policy`, optional CSP + Permissions-Policy |
+| `SecurityHeadersConfig` | 7 fields with secure defaults: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, HSTS, `X-XSS-Protection: 0`, `Referrer-Policy`, optional CSP + Permissions-Policy |
 | `SecurityHeadersLayer` | Pre-encodes the static header pairs once and appends them to every response |
 
 ### CSRF — `csrf.rs`
@@ -126,7 +122,7 @@ Go, and Python ports.
 | Symbol | Behaviour |
 |--------|-----------|
 | `MetricsLayer` | Records `method` / templated `uri` (axum `MatchedPath`, not raw path) / `status` / `Outcome` / `exception` + duration per request, plus the two-window rolling `_max` (`HTTP_SERVER_REQUESTS_MAX_METRIC`) |
-| `RequestObserver` trait | Local sink (no `firefly-actuator` dep — starter-core bridges to the `MetricRegistry` later); `RequestMetric` carries the Micrometer-parity tags |
+| `RequestObserver` trait | Local sink (no `firefly-actuator` dep — starter-core bridges to the `MetricRegistry` later); `RequestMetric` carries the dimensional tags |
 
 ### Extended correlation — `correlation.rs`
 
@@ -146,16 +142,16 @@ additionally mints/echoes `X-Request-Id`, propagates `X-Tenant-Id` and
 
 ### Exception handlers — `exception_handler.rs`
 
-The Rust analog of pyfly's `@controller_advice` + `@exception_handler`
-(Spring's `@ExceptionHandler`). The default RFC 7807 path is unchanged;
-this is an opt-in hook for translating a *specific* domain error into a
-*custom* status + body.
+A declarative controller-advice mechanism for translating errors into
+custom responses. The default RFC 7807 path is unchanged; this is an
+opt-in hook for translating a *specific* domain error into a *custom*
+status + body.
 
 | Symbol | Behaviour |
 |--------|-----------|
-| `ExceptionHandlerRegistry::on_type(type, fn)` | Map errors whose problem `type` matches (the analog of pyfly keying by exception class) through a `ProblemDetail` transform |
+| `ExceptionHandlerRegistry::on_type(type, fn)` | Map errors whose problem `type` matches (keyed by error type) through a `ProblemDetail` transform |
 | `ExceptionHandlerRegistry::on_status(code, fn)` | Coarser by-status catch-all; by-`type` handlers are always tried first |
-| `ExceptionHandlerRegistry::with_overrides(local)` | Layer controller-local rules over global advice — local wins, global fills the gaps (pyfly's local-overrides-global precedence) |
+| `ExceptionHandlerRegistry::with_overrides(local)` | Layer controller-local rules over global advice — local wins, global fills the gaps |
 | `ExceptionHandlerRegistry::map(&WebError)` / `handle(&WebError)` | Resolve to a transformed `ProblemDetail`, or render the custom RFC 7807 `Response` directly (falls through to the default when nothing matches) |
 
 ### Server bootstrap — `server.rs`
@@ -167,23 +163,22 @@ this is an opt-in hook for translating a *specific* domain error into a
 | `ServerInfo { name, version, host, port, http_protocol, tls }` | Runtime snapshot for `/actuator/info` |
 | `Server::bind(props)` / `serve(router, props, shutdown)` | Builds the listener (socket2 backlog/`SO_REUSEADDR`, `ConcurrencyLimitLayer`), serves plain-HTTP or TLS, honours the lifecycle drain — drops straight into `Application::on_server` |
 
-## Reactive (WebFlux/Reactor) surface — `reactive.rs`
+## Reactive HTTP surface — `reactive.rs`
 
 An **additive** reactive HTTP surface built on the [`firefly-reactive`]
-crate (`Mono<T>` / `Flux<T>`). It is the Rust analog of returning
-`Mono<T>` / `Flux<T>` from a Spring WebFlux `@RestController` — and it
-reuses this crate's RFC 7807 problem renderer plus
-[`firefly-sse`]'s wire format, so every reactive response is
-byte-compatible with the rest of the framework. Nothing here changes an
-existing signature or wire format; it sits alongside.
+crate (`Mono<T>` / `Flux<T>`). Handlers return reactive values directly
+and the responders resolve them — reusing this crate's RFC 7807 problem
+renderer plus [`firefly-sse`]'s wire format, so every reactive response
+is byte-compatible with the rest of the framework. Nothing here changes
+an existing signature or wire format; it sits alongside.
 
-| Spring WebFlux | firefly-web |
+| Reactive value | firefly-web responder |
 |----------------|-------------|
-| `Mono<T>` handler return | `MonoJson(Mono<T>)` |
+| `Mono<T>` | `MonoJson(Mono<T>)` |
 | `Mono<T>` empty → `404` | `Ok(None)` → `application/problem+json` 404 |
 | `Mono<T>` error → problem | `Err(FireflyError)` → that error's RFC 7807 response |
-| `Flux<T>` + `APPLICATION_NDJSON_VALUE` | `NdJson(Flux<T>)` |
-| `Flux<ServerSentEvent<T>>` | `Sse(Flux<T>)` / `SseEvents(Flux<Event>)` |
+| `Flux<T>` as NDJSON | `NdJson(Flux<T>)` |
+| `Flux<T>` as server-sent events | `Sse(Flux<T>)` / `SseEvents(Flux<Event>)` |
 
 | Symbol | Behaviour |
 |--------|-----------|
@@ -267,8 +262,8 @@ Suite covers panic→500, the typed `WebResult` handler, correlation id
 generation + echo-back + extension extraction (including the echo on
 the panic→500 path), idempotency replay (replay header, body, captured
 headers), streaming passthrough of first-pass keyed responses, conflict
-on key reuse, store TTL expiry, Go-compatible record JSON, and PII
-redaction across emails / IBANs / cards / phones — with Go-parity ASCII
+on key reuse, store TTL expiry, stable record JSON, and PII
+redaction across emails / IBANs / cards / phones — with ASCII
 `\b`/`\d` semantics next to non-ASCII text — plus map-key
 sensitive-name scrubbing. The reactive surface adds `MonoJson`
 (200 / 404 / problem), exact NDJSON multi-line body bytes,

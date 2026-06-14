@@ -47,6 +47,10 @@ pub enum Stereotype {
     Repository,
     /// A bean-factory holder (`#[derive(Configuration)]`).
     Configuration,
+    /// An auto-configuration holder (`#[derive(AutoConfiguration)]`) — a
+    /// configuration whose beans are contributed *last*, so user-defined beans
+    /// (paired with `#[bean(condition_on_missing_bean = ...)]`) always win.
+    AutoConfiguration,
     /// A web controller bean (`#[derive(Controller)]`).
     Controller,
     /// A `@ConfigurationProperties` bean (`#[derive(ConfigProperties)]`).
@@ -64,6 +68,7 @@ impl Stereotype {
             Stereotype::Service => "service",
             Stereotype::Repository => "repository",
             Stereotype::Configuration => "configuration",
+            Stereotype::AutoConfiguration => "autoconfiguration",
             Stereotype::Controller => "controller",
             Stereotype::ConfigProperties => "config_properties",
             Stereotype::Bean => "bean",
@@ -82,6 +87,12 @@ impl Stereotype {
 pub struct ComponentRegistration {
     /// The short type name (e.g. `OrderService`), for diagnostics + `/beans`.
     pub type_name: &'static str,
+    /// The defining module path (`my_crate::services`), captured via
+    /// `module_path!()` at the derive site. Used by
+    /// [`Container::scan_packages`](crate::Container::scan_packages) to restrict
+    /// discovery to a set of base packages (Spring's
+    /// `@ComponentScan(basePackages = …)`).
+    pub module_path: &'static str,
     /// The explicit bean name, or `""` when anonymous.
     pub bean_name: &'static str,
     /// This bean's stereotype.

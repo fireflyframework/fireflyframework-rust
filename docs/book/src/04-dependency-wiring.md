@@ -13,7 +13,7 @@ the repositories, the services that depend on them. Firefly calls that the
 *composition root*, and it gives you two ways to write it. The explicit style
 builds collaborators with plain constructors and passes them where they are
 needed — idiomatic Rust, checked entirely by the compiler. The container style
-is a Spring-grade dependency-injection engine: declare beans with stereotype
+is a full dependency-injection engine: declare beans with stereotype
 derives, mark dependencies `#[autowired]`, and let `firefly::scan` discover and
 wire the whole graph. This chapter covers both, using Lumen as the worked
 example, and is honest about when to reach for each.
@@ -88,11 +88,10 @@ Three ideas carry the whole design:
 > it compiles, it is wired. For an application as focused as Lumen, this is the
 > clearest choice — and it is why the book uses it.
 
-> **Spring parity.** This is constructor injection done by hand: the
-> `LumenApp { .. }` literal is the place where dependencies are "injected." Where
-> Spring infers the graph from a single constructor and pyfly reads `__init__`
-> type hints, Lumen spells it out. The trade-off is verbosity for transparency —
-> and for many Rust services, transparency wins.
+> **Design note.** This is constructor injection done by hand: the
+> `LumenApp { .. }` literal is the place where dependencies are "injected." Lumen
+> spells the graph out explicitly rather than inferring it — the trade-off is
+> verbosity for transparency, and for many Rust services transparency wins.
 
 ## The container as a composition root
 
@@ -124,12 +123,14 @@ the adapter, keep the code" move you will make per subsystem throughout the book
 ## The best-in-class DI container — `firefly-container`
 
 When you would rather *declare* beans and let the framework discover and wire
-them — the Spring / pyfly experience — Firefly ships a full dependency-injection
+them, Firefly ships a full dependency-injection
 container with **component scanning**, stereotype derives, constructor-style
 `#[autowired]` injection, qualifier/primary/order disambiguation, `Vec` and
 `Provider` injection, `#[bean]` factories, lifecycle hooks, and
 conditional/profile gating. It is `TypeId`-keyed, `Send + Sync`, and shareable
-as `Arc<Container>`.
+as `Arc<Container>`. Beans default to singleton lifetime; the container also
+supports transient, request, and session scopes, which [Dependency
+Injection](./04a-dependency-injection.md) covers in full.
 
 ### Stereotypes — declaring your beans
 
@@ -145,12 +146,11 @@ each name communicates (and that the web layer uses to find controllers):
 | `#[derive(Configuration)]` | A factory holder that can carry `#[bean]` methods.     |
 | `#[derive(Controller)]`    | HTTP layer (`#[rest_controller]` builds on this).      |
 
-> **Spring parity.** `#[derive(Service / Component / Repository / Configuration /
-> Controller)]` map one-to-one onto Spring's `@Service`, `@Component`,
-> `@Repository`, `@Configuration`, `@Controller` and pyfly's `@service`,
-> `@component`, `@repository`, `@configuration`, `@rest_controller`. The
-> stereotype is recorded on each bean so the admin dashboard's `/beans` view can
-> group beans by layer, exactly as the JVM and Python ports do.
+> **Design note.** The five stereotype derives document an architectural role —
+> business logic (`Service`), generic managed bean (`Component`), data access
+> (`Repository`), factory configuration (`Configuration`), or HTTP layer
+> (`Controller`). The role is recorded on each bean, so the admin dashboard's
+> `/beans` view can group beans by layer.
 
 ### `#[autowired]` — constructor injection without a constructor
 
@@ -180,7 +180,7 @@ a clear resolution error at startup — not a panic three frames deep at runtime
 `#[autowired]` injects more than a single `Arc<T>`:
 
 - `#[autowired] widgets: Vec<Arc<Widget>>` injects **every** registered `Widget`,
-  ordered by each bean's `order` — Spring's `List<T>` injection.
+  ordered by each bean's `order` (collection injection).
 - `#[autowired] maybe: Option<Arc<Thing>>` injects `Some` when a `Thing` is
   registered and `None` when it is not — an optional dependency.
 - `#[autowired] tickets: Provider<Ticket>` injects a **deferred** handle:
@@ -209,10 +209,11 @@ let c = ctx.container();
 let svc = c.resolve::<WalletService>().expect("scan registered the service");
 ```
 
-> **Spring parity.** `firefly::scan` / `ApplicationContext::builder()` is the
-> Rust analog of `@ComponentScan` and pyfly's `scan_packages`. The semantics
-> match: every stereotype-derived type in the linked crate graph is registered,
-> subject to its conditions and the active profiles. The one Rust-specific note:
+> **Design note.** `firefly::scan` / `ApplicationContext::builder()` discover
+> every stereotype-derived type in the linked crate graph and register it,
+> subject to its conditions and the active profiles. Because Rust has no runtime
+> reflection, discovery is link-time (via `inventory`): a bean is discoverable
+> exactly when its crate is compiled into the binary. The one Rust-specific note:
 > generic types can't be inventoried (the monomorphization is chosen at the use
 > site), so you register those with the explicit `register_all!` fallback below.
 
@@ -234,17 +235,24 @@ impl Clock for SystemClock { fn now(&self) -> u64 { 42 } }
 
 When several beans satisfy the same interface, `#[firefly(... primary)]` picks
 the default for `resolve`, and `resolve_all::<dyn Trait>()` returns *all* of
-them ordered by `order` — Spring's `@Primary` and `@Order`. For the rare case
+them ordered by `order`. For the rare case
 where you need a *specific* named instance rather than any satisfying one, the
 container supports qualifier-by-name resolution.
+
+Declaring `provides =` on the derive is the scan-friendly way to bind a trait to
+an implementation. When you are wiring a container by hand instead, the
+equivalent move is an explicit `Container::bind::<dyn Trait, Concrete>()` call;
+both register the same trait-to-adapter mapping. [Dependency
+Injection](./04a-dependency-injection.md) covers `bind`, named beans, and the
+full disambiguation surface in depth.
 
 ### `#[bean]` factories — wiring things you do not own
 
 Not every dependency is a type you can annotate. Third-party clients need
 constructor arguments; some beans are clearest as a factory. A
 `#[derive(Configuration)]` holder with `#[firefly::bean]` methods produces beans
-by their **return type** — the same move pyfly's `@configuration` / `@bean`
-makes:
+keyed by their **return type** — the way you wire a third-party client or a
+hand-built adapter the container does not construct directly:
 
 ```rust,ignore
 use firefly::prelude::*;
@@ -290,9 +298,9 @@ started after the store is torn down before it. This is precisely the lifecycle
 Lumen drives by hand in `main` today (subscribe the projection, then run); the
 container would manage it for you.
 
-> **Spring parity.** `#[firefly(post_construct = "...", pre_destroy = "...")]`
-> are `@PostConstruct` / `@PreDestroy` (JSR-250) and pyfly's `@post_construct` /
-> `@pre_destroy`, with the same "destroy in reverse init order" guarantee.
+> **Design note.** `#[firefly(post_construct = "...", pre_destroy = "...")]` name
+> a method to run after a bean's dependencies are injected and a method to run on
+> shutdown, with a "destroy in reverse construction order" guarantee.
 
 ### Conditional and profile gating — the same codebase in every environment
 
@@ -332,7 +340,7 @@ let svc = c.resolve::<WalletService>().expect("service resolves");
 
 ### Errors and introspection
 
-The error taxonomy mirrors Spring's: a missing bean, a non-unique bean with no
+The error taxonomy is precise: a missing bean, a non-unique bean with no
 `primary`, and a detected circular dependency each surface as a distinct,
 named error at resolution time. For diagnostics, the container can list its
 registered beans and report per-bean resolution stats — the data the admin
@@ -348,7 +356,7 @@ Both styles are first-class; neither is required by the core or the starters.
 - **The container** shines as a service grows many beans, many adapters, and
   many environment-specific variations — when "declare the bean, let scan find
   it" removes more boilerplate than the indirection costs. Reach for it when you
-  want the Spring/pyfly authoring experience or the `/beans` introspection.
+  want declarative, scan-driven wiring or the `/beans` introspection.
 
 You can even mix them: keep an explicit root and resolve a scanned sub-graph
 from a `Container` field on `LumenApp`.

@@ -1,14 +1,13 @@
 # `firefly-websocket`
 
-> **Tier:** Platform · **Status:** Full · **Python original:** pyfly `pyfly.websocket` · **Built on:** `axum` (`ws` feature)
+> **Tier:** Platform · **Status:** Stable · **Built on:** `axum` (`ws` feature)
 
 ## Overview
 
 `firefly-websocket` provides **WebSocket server support over axum** — the
-full-duplex companion to [`firefly-sse`](../sse)'s half-duplex stream. It is the
-Rust port of pyfly's `pyfly.websocket` package: a typed session handle, a
-lifecycle handler trait, explicit route registration, and a topic-based
-broadcast hub.
+full-duplex companion to [`firefly-sse`](../sse)'s half-duplex stream. It gives
+you a typed session handle, a lifecycle handler trait, explicit route
+registration, and a topic-based broadcast hub.
 
 ```rust
 use std::sync::Arc;
@@ -60,7 +59,7 @@ pub trait WebSocketHandler: Send + Sync + 'static {
     async fn on_disconnect(&self, session: &mut WsSession) -> Result<(), WsError>; // auto-called after handle returns
 }
 
-// Route glue — explicit registration replaces pyfly's decorator + DI registrar.
+// Route glue — explicit registration on an axum::Router.
 pub fn serve_ws<H: WebSocketHandler>(upgrade: WebSocketUpgrade, handler: Arc<H>) -> Response;
 pub fn ws_route<H: WebSocketHandler>(handler: Arc<H>) -> MethodRouter;
 
@@ -80,10 +79,9 @@ pub enum HubMessage { Text(String), Binary(Vec<u8>) }
 pub enum WsError { Disconnected, Protocol(String), Transport(String), Serde(serde_json::Error) }
 ```
 
-## Lifecycle contract (preserved from pyfly)
+## Lifecycle contract
 
-The contract is locked in by pyfly's `test_ws_lifecycle.py` /
-`test_ws_e2e.py`, and ported verbatim into `tests/e2e.rs`:
+The contract is locked in by `tests/e2e.rs`:
 
 * **`handle` owns the full lifecycle.** It runs the receive loop and decides
   when to send — the framework dispatches only this method per connection.
@@ -95,33 +93,27 @@ The contract is locked in by pyfly's `test_ws_lifecycle.py` /
   closes (`disconnect_callback_fires`, `clean_close_from_client`).
 * **Cleanup failures are logged, not swallowed and not propagated.** An error
   from `on_disconnect` is logged via `tracing::warn!` and the task ends cleanly
-  (`on_disconnect_error_is_logged_not_propagated`, pyfly audit #232). An
-  unexpected error returned from `handle` is likewise logged at warn; a
-  `WsError::Disconnected` is treated as a clean close and swallowed.
+  (`on_disconnect_error_is_logged_not_propagated`). An unexpected error returned
+  from `handle` is likewise logged at warn; a `WsError::Disconnected` is treated
+  as a clean close and swallowed.
 
-## Adaptation from pyfly
+## Route registration & axum integration
 
-pyfly is decorator-driven: a `@websocket_mapping` method on a
-`@rest_controller`/`@controller` bean, discovered by a DI-scanning
-`WebSocketRegistrar` that composes `@request_mapping` base paths and builds
-Starlette `WebSocketRoute`s with lazy bean resolution. Those pieces are Python
-DI plumbing with no Rust analog and collapse into a single explicit
-registration on an `axum::Router`, consistent with starter-core's
-`apply_middleware` pattern:
+Routes are wired explicitly on an `axum::Router`, consistent with starter-core's
+`apply_middleware` pattern — `Router::new().route("/ws/echo", ws_route(Arc::new(handler)))`.
+There is no separate handshake step: axum runs the upgrade callback only after
+the handshake completes, so a `WsSession` is always already accepted. That also
+means `on_disconnect` is gated **structurally** — `serve_ws`'s closure only runs
+after a successful handshake.
 
-| pyfly | firefly-websocket |
-| --- | --- |
-| `@websocket_mapping("/echo")` + `WebSocketRegistrar` | `Router::new().route("/ws/echo", ws_route(Arc::new(handler)))` |
-| `WebSocketSession` | `WsSession` |
-| `session.accept(subprotocol)` + `session.accepted` | *removed* — axum runs the upgrade callback only post-handshake, so a `WsSession` is always already accepted |
-| `session.path_params` / `query_params` / `headers` | axum extractors (`Path` / `Query` / `HeaderMap`) at the route layer; write the handler by hand and call `serve_ws` |
-| subprotocol selection in `accept()` | `WebSocketUpgrade::protocols([...])` then `serve_ws` |
-| `WebSocketDisconnect` exception | `WsError::Disconnected` returned from `recv_*` |
-| `on_disconnect` gated on `session.accepted` | gated **structurally** — `serve_ws`'s closure only runs after the handshake |
+To read request context at the route layer, use axum extractors (`Path` /
+`Query` / `HeaderMap`), write the handler by hand, and call `serve_ws`. Select
+subprotocols with `WebSocketUpgrade::protocols([...])` before handing off to
+`serve_ws`. A peer disconnect surfaces as `WsError::Disconnected` returned from
+the `recv_*` methods.
 
-The `BroadcastHub` has no pyfly analog (pyfly's package stops at
-single-connection handling) but covers the common chat/presence fan-out the Go
-and Java ports expose, keyed by `WsSession::id`.
+The `BroadcastHub` covers the common chat/presence fan-out pattern, keyed by
+`WsSession::id`.
 
 ## Testing
 
@@ -132,9 +124,9 @@ cargo test -p firefly-websocket
 `tests/e2e.rs` spawns a real axum server on an ephemeral port
 (`127.0.0.1:0`) and connects with `tokio-tungstenite` (a dev-dependency),
 exercising real round-trips through `ws_route` / `serve_ws` — not a fake
-socket. It ports every pyfly websocket scenario (echo single/multiple, the
+socket. It covers every websocket scenario (echo single/multiple, the
 disconnect callback, clean client close, the `on_message`-never-dispatched
-contract, and logged-not-propagated cleanup failures) and adds JSON/binary
+contract, and logged-not-propagated cleanup failures) plus JSON/binary
 round-trips, subprotocol negotiation, and `BroadcastHub` fan-out across two
 live clients. `BroadcastHub` join/leave/broadcast/prune logic is unit-tested in
 `src/hub.rs` with no sockets. No test sleeps more than ~200 ms (lifecycle waits

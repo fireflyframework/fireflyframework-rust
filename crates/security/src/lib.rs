@@ -137,6 +137,8 @@
 
 mod authentication;
 mod bearer;
+mod config;
+mod context;
 mod csrf;
 mod filter_chain;
 pub mod guards;
@@ -153,6 +155,14 @@ pub use authentication::{
     Verifier, VerifierFn, ANONYMOUS_ID,
 };
 pub use bearer::{BearerConfig, BearerLayer, BearerService, UnauthorizedHandler};
+pub use config::{
+    bearer_layer_from_config, verifier_from_config, BearerProperties, JwtProperties,
+    SecurityProperties,
+};
+pub use context::{
+    check_access, current_authentication, with_authentication_scope,
+    with_authentication_scope_sync, AccessRule,
+};
 pub use csrf::{
     generate_csrf_token, is_safe_method, validate_csrf_token, CsrfLayer, CsrfService,
     CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SAFE_METHODS,
@@ -169,4 +179,4 @@ pub use session_auth::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.3";
+pub const VERSION: &str = "26.6.4";

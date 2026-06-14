@@ -13,11 +13,12 @@ banner, two servers (public API + actuator) wired through the lifecycle
 `Application`, graceful SIGINT/SIGTERM shutdown, and the streaming endpoint
 (`GET /api/v1/wallets/:id/events` → NDJSON / SSE) behind the `streaming` feature.
 
-> **Spring parity.** The lifecycle `Application` is `SpringApplication.run()`: it
-> traps the termination signals, drains in-flight work, and runs lifecycle hooks.
-> Running the actuator on a second port is the Spring Boot
-> `management.server.port` split. The reactive endpoint is WebFlux's streaming
-> `Flux<T>` response.
+> **The lifecycle Application.** `firefly-lifecycle`'s `Application` is the
+> process supervisor: it traps SIGINT/SIGTERM, gives each server task its own
+> drain signal, runs lifecycle hooks, and exits cleanly once in-flight work
+> drains. Running the actuator on a second listener keeps the management surface
+> off the public network. A streaming endpoint returns a `Flux<T>` as NDJSON or
+> SSE.
 
 ## The lifecycle and graceful shutdown
 
@@ -182,10 +183,10 @@ async fn events_stream_as_ndjson_by_default() {
 }
 ```
 
-> **Spring parity.** Returning a `Flux<T>` as `application/x-ndjson` or
-> `text/event-stream` is exactly WebFlux's streaming response. `Flux::just` is
-> Reactor's `Flux.just`; a production stream would use `Flux::from_stream` over a
-> live subscription instead of a materialized `Vec`.
+> **Streaming responses.** Returning a `Flux<T>` as `application/x-ndjson` or
+> `text/event-stream` streams element-by-element with backpressure. `Flux::just`
+> materializes a known `Vec`; a production stream would use `Flux::from_stream`
+> over a live subscription so the body is produced lazily rather than buffered.
 
 ## The management split in production
 
@@ -204,7 +205,7 @@ health sub-paths feed your orchestrator's probes:
 
 Lumen's `WebStack::new` already turns on CORS, OWASP security headers, request
 metrics, and the access log (the web-tier batteries). The remaining
-pyfly-parity middleware is opt-in through `CoreConfig`, weaving in at the correct
+production middleware is opt-in through `CoreConfig`, weaving in at the correct
 filter order:
 
 | Knob               | Adds                                                  |
@@ -329,6 +330,5 @@ arc adds:
    one sentence why `Ledger`, the projection, and the tests need no change.
 
 That completes the guided tour of Lumen. The remaining chapters revisit the
-declarative macros as a capstone and provide reference material: a
-[Spring Boot migration map](./90-appendix-spring.md), the
-[Module Index](./91-appendix-modules.md), and the [Glossary](./92-glossary.md).
+declarative macros as a capstone and provide reference material: the
+[Module Index](./91-appendix-modules.md) and the [Glossary](./92-glossary.md).

@@ -292,11 +292,6 @@ crate.
 
 ## Appendices (reference, not Lumen growth)
 
-- **Migrating from Spring Boot** (`90-appendix-spring.md`) — maps Lumen's
-  macros to their Spring/pyfly annotations (`@RestController` →
-  `#[rest_controller]`, `@Component` → `#[derive(Component)]`,
-  `@KafkaListener` → `#[event_listener]`, `@Scheduled` → `#[scheduled]`,
-  `@Saga` → `Saga`/`Step`, …).
 - **Module Index** (`91-appendix-modules.md`) — the crates behind the facade
   surfaces Lumen touches.
 - **Glossary** (`92-glossary.md`) — value object, aggregate, projection, saga

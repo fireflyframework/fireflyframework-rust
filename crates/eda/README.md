@@ -1,10 +1,10 @@
 # `firefly-eda`
 
-> **Tier:** Platform · **Status:** Partial (in-memory full; Kafka/RabbitMQ scaffolds) · **Java original:** `firefly-common-eda` · **Go module:** `eda`
+> **Tier:** Platform · **Status:** Partial (in-memory full; Kafka/RabbitMQ scaffolds)
 
 ## Overview
 
-`firefly-eda` is the framework's **event-driven architecture port**. It
+`firefly-eda` is the framework's **event-driven architecture layer**. It
 defines the `Event` envelope every Firefly event flows through, the
 `Publisher` / `Subscriber` / `Broker` ports, and an in-process fan-out
 `InMemoryBroker`. Production transports — Kafka and RabbitMQ — share
@@ -16,27 +16,23 @@ the typed sentinels `EdaError::KafkaUnavailable` /
 `EdaError::RabbitMqUnavailable` so a misconfigured deployment fails
 loud at startup rather than silently falling back to in-memory.
 
-`Event` is wire-compatible with the Java/.NET/Go/Python ports: the same
-JSON field names (`id`, `type`, `source`, `topic`, `correlationId`,
-`time`, `headers`, `payload`), the same omission rules (`correlationId`
-and `headers` are dropped when empty), and the same `payload` encoding
-(standard base64, `null` when absent — Go's `[]byte`).
+`Event` has a stable, language-neutral wire format: fixed JSON field
+names (`id`, `type`, `source`, `topic`, `correlationId`, `time`,
+`headers`, `payload`), deterministic omission rules (`correlationId`
+and `headers` are dropped when empty), and standard-base64 `payload`
+encoding (`null` when absent).
 
 ## Design notes
 
 - **Synchronous fan-out.** `InMemoryBroker::publish` awaits each
-  subscribed handler sequentially on the publisher's task — the Rust
-  analog of the Go broker invoking handlers in the publisher's
-  goroutine. The first handler error short-circuits dispatch and is
-  returned to the publisher unchanged (wrapped transparently in
-  `EdaError::Handler`), matching the Java/.NET semantics.
+  subscribed handler sequentially on the publisher's task. The first
+  handler error short-circuits dispatch and is returned to the publisher
+  unchanged (wrapped transparently in `EdaError::Handler`).
 - **Closed means closed.** After `close()`, publish and subscribe fail
-  with `EdaError::Closed` (the Go broker returns `context.Canceled`);
-  `close` itself stays idempotent.
+  with `EdaError::Closed`; `close` itself stays idempotent.
 - **Correlation propagation.** `Event::new` stamps `correlationId` from
   the kernel's task-local correlation scope
-  (`firefly_kernel::with_correlation_id`) — the Rust analog of Go's
-  `NewEvent(ctx, …)` reading `kernel.CorrelationIDFrom(ctx)`.
+  (`firefly_kernel::with_correlation_id`).
 - **Object-safe ports.** `Publisher` / `Subscriber` are `async_trait`
   traits, so adapters compose behind `Arc<dyn Broker>`. `Handler` is a
   reference-counted async closure; build one with the `handler(...)`
@@ -120,11 +116,13 @@ async fn main() {
 }
 ```
 
-## pyfly parity
+## Messaging surface
 
-`firefly-eda` mirrors the abstraction-layer surface of pyfly's
-`messaging` and `eda` packages (the transports themselves live in the
-dedicated `firefly-eda-kafka` / `firefly-eda-rabbitmq` crates):
+The abstraction-layer surface below covers raw-bytes publishing,
+serialization, routing keys, glob topics, consumer groups, retry/DLQ,
+filters, a queryable dead-letter store, and broker health (the
+transports themselves live in the dedicated `firefly-eda-kafka` /
+`firefly-eda-rabbitmq` crates):
 
 ### Raw-bytes publish convenience
 
@@ -147,15 +145,15 @@ It is blanket-implemented for every publisher, including
 ### Pluggable event serializer
 
 `EventSerializer` is the codec port a transport uses to turn an `Event`
-into wire bytes and back — pyfly's `EventSerializer` protocol. The
-built-in `JsonEventSerializer` encodes via the **canonical `Event` JSON
-codec**, so its bytes are byte-for-byte wire-compatible with every sibling
-port and the in-memory broker; selecting it is a zero-behaviour-change
-default. `AvroEventSerializer` / `ProtobufEventSerializer` are the
-failing-loud, not-yet-implemented sentinels pyfly ships (construct them,
-but `serialize`/`deserialize` return `EdaError::Serialization` until a
-Schema-Registry / descriptor adapter is wired in). `serializer_for(name)`
-selects one by name for a `serialization-format` config key:
+into wire bytes and back. The built-in `JsonEventSerializer` encodes via
+the **canonical `Event` JSON codec**, so its bytes are byte-for-byte
+compatible with the in-memory broker's wire format; selecting it is a
+zero-behaviour-change default. `AvroEventSerializer` /
+`ProtobufEventSerializer` are failing-loud, not-yet-implemented sentinels
+(construct them, but `serialize`/`deserialize` return
+`EdaError::Serialization` until a Schema-Registry / descriptor adapter is
+wired in). `serializer_for(name)` selects one by name for a
+`serialization-format` config key:
 
 ```rust,ignore
 use firefly_eda::{serializer_for, EventSerializer, JsonEventSerializer};
@@ -174,12 +172,12 @@ the canonical `Event` JSON codec directly (the identical bytes).
 
 ### Partition / routing key on `Event`
 
-`Event` carries an optional `key: Option<Vec<u8>>` — pyfly's
-`Message.key`, the value brokers use for Kafka partitioning and
-RabbitMQ routing. It serializes as a standard-base64 string and is
-**omitted** from the wire when absent (unlike `payload`, which encodes
-`null`), so events produced before the field existed stay byte-for-byte
-identical and cross-port wire-compatible. Set it with `Event::with_key`:
+`Event` carries an optional `key: Option<Vec<u8>>` — the value brokers
+use for Kafka partitioning and RabbitMQ routing. It serializes as a
+standard-base64 string and is **omitted** from the wire when absent
+(unlike `payload`, which encodes `null`), so events produced before the
+field existed stay byte-for-byte identical. Set it with
+`Event::with_key`:
 
 ```rust
 use firefly_eda::Event;
@@ -191,11 +189,10 @@ let ev = Event::new("orders", "OrderPlaced", "svc", Some(b"{}".to_vec()))
 
 `subscribe(topic, …)` treats `topic` as a glob pattern (`*`, `?`,
 `[..]`, `{a,b}`); a published event is delivered to a subscription when
-the event's `topic` matches. This is pyfly's `fnmatch`-based event-type
-dispatch (`bus.subscribe("user.*", …)` matches `user.created`). A
-pattern with no glob metacharacters matches only its literal, so exact
-subscriptions behave exactly as before. An invalid pattern is rejected
-at subscribe time with a `400` `EdaError::Handler`.
+the event's `topic` matches (`subscribe("user.*", …)` matches
+`user.created`). A pattern with no glob metacharacters matches only its
+literal, so exact subscriptions behave exactly as before. An invalid
+pattern is rejected at subscribe time with a `400` `EdaError::Handler`.
 
 ### Consumer groups (round-robin)
 
@@ -205,15 +202,14 @@ consumer `group`. Within a group each matching event goes to exactly
 distinct groups — and ungrouped subscriptions — each receive their own
 copy. The trait default delegates to `subscribe` (correct for transports
 whose broker enforces group delivery natively); `InMemoryBroker`
-overrides it to implement competing-consumer delivery in-process. This
-is pyfly's `subscribe(topic, handler, group=…)`.
+overrides it to implement competing-consumer delivery in-process.
 
 ### Retry + dead-letter listener wrapper
 
 `wrap_listener(handler, publisher, ListenerPolicy { retries, retry_delay,
-dead_letter_topic })` is the adapter-agnostic retry/DLQ wrapper — pyfly's
-`messaging.wrap_listener` and Spring Kafka's `@RetryableTopic`. A failing
-delivery is retried up to `retries` times with **linear backoff**
+dead_letter_topic })` is the adapter-agnostic retry/DLQ wrapper, in the
+style of retryable-topic patterns from mature messaging frameworks. A
+failing delivery is retried up to `retries` times with **linear backoff**
 (`retry_delay * attempt`); on exhaustion the event is republished to
 `dead_letter_topic` (when set) carrying the original payload/key/headers
 plus the `x-original-topic` (`HEADER_ORIGINAL_TOPIC`) and `x-exception`
@@ -243,13 +239,13 @@ broker.subscribe("orders", wrapped).unwrap();
 ### Event filters (delivery gates)
 
 `EventFilter` is a per-envelope delivery gate layered *over* the broker's
-glob topic matching — pyfly's `eda.filter`. Where the broker decides
-*which* subscriptions a topic reaches, a filter decides whether a reached
-subscription actually *runs*. Two filters ship:
+glob topic matching. Where the broker decides *which* subscriptions a
+topic reaches, a filter decides whether a reached subscription actually
+*runs*. Two filters ship:
 
 - `HeaderEventFilter::new(name, pattern)` — accepts events whose header
-  `name` matches a start-anchored regular expression (pyfly's
-  `re.match` semantics; a missing header is treated as the empty string).
+  `name` matches a start-anchored regular expression (a missing header
+  is treated as the empty string).
 - `PredicateEventFilter::new(closure)` — accepts events for which an
   arbitrary `Fn(&Event) -> bool` returns `true`.
 
@@ -273,8 +269,8 @@ broker.subscribe("orders", gated).unwrap();
 ### Queryable dead-letter store
 
 `EdaDeadLetterStore` is a store of *failed events* captured for operator
-inspection and replay — pyfly's `eda.dlq`. It is distinct from the
-routing DLQ above: `wrap_listener`'s `dead_letter_topic` republishes an
+inspection and replay. It is distinct from the routing DLQ above:
+`wrap_listener`'s `dead_letter_topic` republishes an
 exhausted event to a dead-letter *topic*, whereas the store keeps an
 inspectable, queryable record (`add` / `list(limit)` / `get(id)` /
 `remove(id)`) of the failed events themselves. `EdaDeadLetterEntry`
@@ -309,9 +305,9 @@ broker.subscribe("orders", wrapped).unwrap();
 `EventPublisherHealthIndicator` adapts any broker that implements the
 `BrokerHealth` trait (a `ping()` liveness probe) to a
 `firefly_observability::Indicator`, surfacing broker liveness on
-`/actuator/health` under the `eventPublisher` id — pyfly's
-`eda.health.EventPublisherHealthIndicator`. `InMemoryBroker` implements
-`BrokerHealth` (live unless closed); the Kafka / RabbitMQ transport
+`/actuator/health` under the `eventPublisher` id. `InMemoryBroker`
+implements `BrokerHealth` (live unless closed); the Kafka / RabbitMQ
+transport
 crates can implement it with a real connection probe and register their
 own indicator.
 
@@ -347,7 +343,7 @@ let broker = new_kafka_broker(KafkaConfig {
 
 ## Reactive
 
-An **additive** Reactor / WebFlux-style surface layers over
+An **additive** reactive-streams-style surface layers over
 `InMemoryBroker`, built on the [`firefly-reactive`](../reactive) crate's
 `Flux<T>` / `Mono<T>`. It is strictly additive: every existing
 `Publisher` / `Subscriber` / `InMemoryBroker` signature and wire format
@@ -355,24 +351,21 @@ is untouched; the reactive entry points sit alongside.
 
 - `InMemoryBroker::subscribe_reactive(topic) -> EdaResult<Flux<Event>>` —
   the reactive twin of `subscribe_channel`: a `Flux` that emits every
-  event delivered to `topic`, so it composes with the whole Reactor
-  operator set (`take`, `filter`, `map`, `collect_list`, …). This is the
-  EDA analog of Reactor Kafka's `KafkaReceiver.receive()` yielding a
-  `Flux<ReceiverRecord>`. Deliveries are buffered through a **bounded**
-  channel (default `DEFAULT_REACTIVE_BUFFER` = 256); when the downstream
-  consumer falls behind and the buffer fills, the newest events are
-  *dropped* (`onBackpressureDrop`) rather than blocking or failing the
-  publisher — extending the broker's "a slow/gone consumer never fails
-  publishers" invariant to the reactive surface. Size the window with
+  event delivered to `topic`, so it composes with the whole reactive
+  operator set (`take`, `filter`, `map`, `collect_list`, …). Deliveries
+  are buffered through a **bounded** channel (default
+  `DEFAULT_REACTIVE_BUFFER` = 256); when the downstream consumer falls
+  behind and the buffer fills, the newest events are *dropped*
+  (`onBackpressureDrop`) rather than blocking or failing the publisher —
+  extending the broker's "a slow/gone consumer never fails publishers"
+  invariant to the reactive surface. Size the window with
   `subscribe_reactive_with_buffer(topic, n)`. The `Flux` **terminates**
   when the broker is `close()`d (the retained subscription, and thus the
   channel sender, is dropped).
 - `Arc<InMemoryBroker>::publish_mono(event) -> Mono<()>` — the **cold**
   reactive publish helper: building the `Mono` does nothing; the publish
-  fan-out runs only when the `Mono` is subscribed/awaited, the Reactor
-  analog of a reactive `KafkaTemplate.send(..)` returning `Mono<Void>`.
-  A handler error or a closed broker surfaces as the `Mono`'s error
-  signal.
+  fan-out runs only when the `Mono` is subscribed/awaited. A handler
+  error or a closed broker surfaces as the `Mono`'s error signal.
 
 ```rust
 use std::sync::Arc;
@@ -403,9 +396,9 @@ cargo test -p firefly-eda
 Covers in-memory fan-out across multiple subscribers, correlation-id
 propagation through `Event::new`, handler-error short-circuit, the
 Kafka / RabbitMQ sentinel returns, closed-broker semantics, channel
-subscriptions, object safety of the ports, and byte-for-byte JSON
-parity with the Go envelope (including base64 payloads and omission
-rules). The reactive surface is covered too: `subscribe_reactive`
-yielding published events as a `Flux` (`take(n).collect_list`),
-backpressure-drop under a slow consumer, `close()` terminating the
-`Flux`, the cold `publish_mono`, and composition with Reactor operators.
+subscriptions, object safety of the ports, and the stable byte-for-byte
+JSON envelope format (including base64 payloads and omission rules). The
+reactive surface is covered too: `subscribe_reactive` yielding published
+events as a `Flux` (`take(n).collect_list`), backpressure-drop under a
+slow consumer, `close()` terminating the `Flux`, the cold `publish_mono`,
+and composition with reactive operators.

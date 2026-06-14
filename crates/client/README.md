@@ -1,57 +1,53 @@
 # `firefly-client`
 
-> **Tier:** Adapter · **Status:** REST + GraphQL + SOAP + reactive `WebClient` Full; WebSocket / gRPC feature-gated · **Go module:** `client` · **Java original:** `firefly-service-client`
+> **Tier:** Adapter · **Status:** REST + GraphQL + SOAP + reactive `WebClient` Full; WebSocket / gRPC feature-gated
 
 ## Overview
 
 `firefly-client` is the framework's **outbound HTTP client builder** — a
 fluent [`RestBuilder`] that composes timeouts, retries, default headers,
 and correlation-id propagation into a [`RestClient`] whose
-`request` / `send` methods are the Rust spelling of the Go port's single
-`Do(ctx, method, path, body, out)`. Non-2xx responses are decoded into
-the kernel's `FireflyError` (RFC 7807-aware), so every consumer of every
-external service sees the same error shape.
+`request` / `send` methods issue a single typed call. Non-2xx responses
+are decoded into the kernel's `FireflyError` (RFC 7807-aware), so every
+consumer of every external service sees the same error shape.
 
-Beyond REST it ships the four thin protocol clients from pyfly's
-`client` package — see the [pyfly parity](#pyfly-parity-protocol-clients)
-section. The legacy `new_soap` / `new_grpc` / `new_websocket` free
-functions remain for backward compatibility and still return
-`ClientError::TransportNotRegistered`; the typed builders are the
-supported entry points.
+Beyond REST it ships four thin protocol clients — see the
+[protocol clients](#protocol-clients) section. The legacy `new_soap` /
+`new_grpc` / `new_websocket` free functions remain for backward
+compatibility and still return `ClientError::TransportNotRegistered`;
+the typed builders are the supported entry points.
 
 ## Why a separate crate?
 
-The Java `firefly-service-client` integrates Resilience4j + service
-discovery + OAuth2 token caching + a GraphQL helper. ASP.NET defers much
-of this to `IHttpClientFactory` plus Polly. Go settles on a small stdlib
-builder. All ports converge on the same shape: a typed builder that
-yields a typed client. This crate is the Rust equivalent — small,
-`reqwest`-based, composable with `firefly-resilience` decorators.
+A typed builder that yields a typed client is the shape that keeps
+outbound calls consistent across a service. This crate is small,
+`reqwest`-based, and composable with `firefly-resilience` decorators —
+resilience, service discovery, and token caching are layered on rather
+than baked into the client.
 
 ## Public surface
 
 ```rust,ignore
 pub struct RestBuilder { /* … */ }
-pub fn new_rest(base_url: impl AsRef<str>) -> RestBuilder; // Go: NewREST
+pub fn new_rest(base_url: impl AsRef<str>) -> RestBuilder;
 impl RestBuilder {
     pub fn new(base_url: impl AsRef<str>) -> Self;
-    pub fn with_header(self, key, value) -> Self;          // Go: WithHeader
-    pub fn with_timeout(self, Duration) -> Self;           // Go: WithTimeout
-    pub fn with_http_client(self, reqwest::Client) -> Self; // Go: WithHTTPClient
-    pub fn with_retries(self, attempts: usize) -> Self;    // Go: WithRetries
-    pub fn with_backoff_base(self, Duration) -> Self;      // Rust extension
+    pub fn with_header(self, key, value) -> Self;
+    pub fn with_timeout(self, Duration) -> Self;
+    pub fn with_http_client(self, reqwest::Client) -> Self;
+    pub fn with_retries(self, attempts: usize) -> Self;
+    pub fn with_backoff_base(self, Duration) -> Self;
     pub fn build(self) -> RestClient;
 }
 
 pub struct RestClient { /* … */ }
 impl RestClient {
-    // Go's Do(ctx, method, path, body, out) split into:
     pub async fn request<B, T>(&self, Method, path, Option<&B>) -> Result<T, ClientError>;
     pub async fn send<B>(&self, Method, path, Option<&B>) -> Result<Vec<u8>, ClientError>;
 }
 pub const NO_BODY: Option<&()> = None;
 
-// Legacy Go-parity sentinels (always TransportNotRegistered)
+// Legacy sentinels (always TransportNotRegistered)
 pub fn new_soap(&str) -> Result<SoapPlaceholder, ClientError>;
 pub fn new_grpc(&str) -> Result<GrpcPlaceholder, ClientError>;
 pub fn new_websocket(&str) -> Result<WebSocketPlaceholder, ClientError>;
@@ -64,7 +60,7 @@ pub enum ClientError {
     Decode(serde_json::Error),
     Exhausted(usize),
     GraphQl(Vec<serde_json::Value>), // non-empty GraphQL `errors` array
-    TransportNotRegistered, // Go: ErrTransportNotRegistered
+    TransportNotRegistered,
 }
 ```
 
@@ -76,8 +72,7 @@ Every request automatically:
 * Forwards the correlation id from the kernel task-local scope
   (`firefly_kernel::with_correlation_id`) as `X-Correlation-Id`, plus the
   W3C `traceparent` / `tracestate` from the observability task-local
-  scope when present (pyfly's httpx adapter behaviour), keeping the
-  distributed trace unbroken across hops.
+  scope when present, keeping the distributed trace unbroken across hops.
 * Retries on network errors and 429 / 5xx status codes (exponential
   backoff: 100 ms doubling per attempt, capped at 2 s), re-sending the
   full JSON body on every attempt.
@@ -85,13 +80,10 @@ Every request automatically:
   `FireflyError` populated with `code`, `title`, `status`, `detail`,
   and `fields`.
 
-> **Porting note (retry body):** the Go port creates the body's
-> `bytes.Reader` once, outside its retry loop, so the first attempt
-> exhausts it and every retried request is sent with an **empty body**
-> (`ContentLength: 0`) — a bodied retry can never succeed, and no Go
-> test exercises one. The Rust port deliberately diverges and re-sends
-> the encoded body on every attempt, implementing the documented
-> contract rather than the accidental behavior.
+> **Retry body:** the encoded request body is re-sent in full on every
+> attempt, so a bodied request retries correctly — a retry after a 5xx
+> carries the same payload as the first attempt rather than an empty
+> body.
 
 ## Quick start
 
@@ -132,19 +124,18 @@ async fn main() {
 }
 ```
 
-## pyfly parity: protocol clients
+## Protocol clients
 
-The crate ports the four thin protocol clients from pyfly's `client`
-package. GraphQL and SOAP need no extra dependencies and are always
-available; WebSocket and gRPC are feature-gated to keep the core build
-light.
+Alongside REST, the crate ships four thin protocol clients. GraphQL and
+SOAP need no extra dependencies and are always available; WebSocket and
+gRPC are feature-gated to keep the core build light.
 
-| pyfly | Rust | Feature | Entry point |
+| Client | Type | Feature | Entry point |
 | --- | --- | --- | --- |
-| `GraphQLClient` | `GraphQlClient` / `GraphQlBuilder` | — | `execute<V, T>(query, variables, operation_name)` |
-| `SoapClient` | `SoapClient` / `SoapBuilder` | — | `call(body_xml) -> String` |
-| `WebSocketClient` | `WsClient` / `WsBuilder` | `websocket` | `connect() -> WsStream`, `stream(send) -> impl Stream` |
-| `GrpcClientBuilder` | `GrpcBuilder` | `grpc` (`grpc-tls` for TLS) | `connect() -> tonic Channel`, `connect_lazy()`, `endpoint()` |
+| GraphQL | `GraphQlClient` / `GraphQlBuilder` | — | `execute<V, T>(query, variables, operation_name)` |
+| SOAP | `SoapClient` / `SoapBuilder` | — | `call(body_xml) -> String` |
+| WebSocket | `WsClient` / `WsBuilder` | `websocket` | `connect() -> WsStream`, `stream(send) -> impl Stream` |
+| gRPC | `GrpcBuilder` | `grpc` (`grpc-tls` for TLS) | `connect() -> tonic Channel`, `connect_lazy()`, `endpoint()` |
 
 ```rust,ignore
 // GraphQL — POSTs {query, variables?, operationName?}; raises
@@ -175,29 +166,27 @@ let channel = GrpcBuilder::new("http://127.0.0.1:50051").connect().await?;
 // let stub = my_proto::GreeterClient::new(channel);
 ```
 
-Deliberate adaptations from pyfly:
+Design notes:
 
 * `GraphQlClient::execute` is generic over both variables (`V: Serialize`)
-  and the response (`T: DeserializeOwned`); pyfly returns a loose `dict`.
-  GraphQL errors surface as the typed `ClientError::GraphQl(Vec<Value>)`
-  (the structured array is preserved, not stringified). A non-2xx HTTP
-  status decodes into `ClientError::Problem` like every other Firefly
-  client, where pyfly raises `httpx.HTTPStatusError`.
-* `SoapClient::call` returns the raw response XML; the envelope template
-  is byte-for-byte identical to pyfly's. `wrap_envelope` is exported for
-  callers that want to inspect the exact wire payload.
+  and the response (`T: DeserializeOwned`). GraphQL errors surface as the
+  typed `ClientError::GraphQl(Vec<Value>)` (the structured array is
+  preserved, not stringified). A non-2xx HTTP status decodes into
+  `ClientError::Problem` like every other Firefly client.
+* `SoapClient::call` returns the raw response XML. `wrap_envelope` is
+  exported for callers that want to inspect the exact wire payload.
 * `WsClient` returns the raw `tokio-tungstenite` `WebSocketStream` (which
-  drives Ping/Pong transparently); `with_ping_interval` is recorded for
-  API symmetry with pyfly's `ping_interval`.
-* `GrpcBuilder` is channel-only, like pyfly — it never depends on a
-  generated stub. `secured(true)` requires the `grpc-tls` feature;
-  without it a secured target returns `GrpcError::TlsUnsupported` rather
-  than silently downgrading.
+  drives Ping/Pong transparently); `with_ping_interval` is recorded on
+  the builder for callers that want to surface a configured interval.
+* `GrpcBuilder` is channel-only — it never depends on a generated stub.
+  `secured(true)` requires the `grpc-tls` feature; without it a secured
+  target returns `GrpcError::TlsUnsupported` rather than silently
+  downgrading.
 
 ## Reactive
 
 Alongside the eager `RestClient`, the crate ships a **reactive** HTTP
-client — the Rust analog of Spring WebFlux's `WebClient`, built on
+client — a WebFlux-style `WebClient` built on
 [`firefly-reactive`](../reactive)'s `Mono<T>` / `Flux<T>`. It is strictly
 **additive**: the eager `RestClient` surface, its wire format, and all of
 its tests are untouched. Where `RestClient` returns bare futures,
@@ -206,12 +195,12 @@ outbound call drops straight into a reactive pipeline (and composes with
 `firefly-web`'s `Flux`→NDJSON/SSE responders end-to-end).
 
 ```rust,ignore
-pub fn new_web_client(base_url: impl AsRef<str>) -> WebClientBuilder; // Spring: WebClient.builder().baseUrl(..)
+pub fn new_web_client(base_url: impl AsRef<str>) -> WebClientBuilder;
 
 pub struct WebClientBuilder { /* … */ }
 impl WebClientBuilder {
     pub fn new(base_url: impl AsRef<str>) -> Self;
-    pub fn with_header(self, key, value) -> Self;   // Spring: defaultHeader
+    pub fn with_header(self, key, value) -> Self;
     pub fn with_timeout(self, Duration) -> Self;
     pub fn with_http_client(self, reqwest::Client) -> Self;
     pub fn build(self) -> WebClient;
@@ -219,7 +208,7 @@ impl WebClientBuilder {
 
 pub struct WebClient { /* … */ }
 impl WebClient {
-    pub fn method(&self, Method) -> RequestSpec;  // Spring: webClient.method(..)
+    pub fn method(&self, Method) -> RequestSpec;
     pub fn get/post/put/delete/patch(&self) -> RequestSpec;
 }
 
@@ -228,7 +217,7 @@ impl RequestSpec {
     pub fn uri(self, impl AsRef<str>) -> Self;     // absolute or base-relative
     pub fn header(self, key, value) -> Self;
     pub fn query(self, key, value) -> Self;        // repeatable
-    pub fn body<B: Serialize>(self, &B) -> Self;   // Spring: bodyValue
+    pub fn body<B: Serialize>(self, &B) -> Self;
     pub fn retrieve(self) -> ResponseSpec;
 }
 
@@ -239,7 +228,7 @@ impl ResponseSpec {
     pub fn exchange(self) -> Mono<WebClientResponse>;          // raw status + headers + body
 }
 
-pub struct WebClientResponse { /* … */ }   // Spring: ClientResponse
+pub struct WebClientResponse { /* … */ }
 impl WebClientResponse {
     pub fn status(&self) -> u16;
     pub fn is_success(&self) -> bool;
@@ -250,7 +239,7 @@ impl WebClientResponse {
 }
 ```
 
-The fluent chain is the WebFlux spelling:
+The fluent chain reads as a WebFlux-style pipeline:
 
 ```rust,no_run
 use firefly_client::WebClientBuilder;
@@ -306,7 +295,7 @@ decoder is chosen from the response `Content-Type`:
   `id:` lines and keep-alive blocks are ignored.
 
 A malformed element terminates the stream with a decode `FireflyError`
-(Reactor's first-error-is-terminal semantics).
+(first error is terminal).
 
 ### Same automatics, same problem decode
 
@@ -322,26 +311,24 @@ can inspect `status()` / `problem()` and decide.
 
 > **No baked-in retry:** unlike `RestBuilder::with_retries`, `WebClient`
 > has no retry budget — retries on a reactive pipeline are composed with
-> `Mono::retry` / `Mono::retry_backoff` on the returned publisher, exactly
-> as WebFlux composes `retryWhen(..)` rather than baking it into the
+> `Mono::retry` / `Mono::retry_backoff` on the returned publisher, so the
+> retry strategy lives in the pipeline rather than being baked into the
 > client.
 
-## `RetryPolicy` — standalone retry (pyfly `client.RetryPolicy`)
+## `RetryPolicy` — standalone retry
 
-`RetryPolicy` is the Rust port of pyfly's public `client.RetryPolicy`: a
-free-standing, cloneable value you build once and wrap around **any**
-fallible async operation, not just one HTTP client. It retries with
-exponential backoff (`base_delay * 2^attempt`), matching pyfly's
-`base_delay * (2 ** attempt)`.
+`RetryPolicy` is a free-standing, cloneable value you build once and wrap
+around **any** fallible async operation, not just one HTTP client. It
+retries with exponential backoff (`base_delay * 2^attempt`).
 
 ```rust,ignore
 use std::time::Duration;
 use firefly_client::RetryPolicy;
 
-let policy = RetryPolicy::new()          // pyfly defaults: 3 attempts, 1s base
+let policy = RetryPolicy::new()          // defaults: 3 attempts, 1s base
     .with_max_attempts(5)
     .with_base_delay(Duration::from_millis(200))
-    // optional: only retry a chosen error class (pyfly's retry_on=(...))
+    // optional: only retry a chosen error class
     .with_retry_on(|e: &ClientError| e.is_retryable());
 
 let charge = policy
@@ -349,19 +336,18 @@ let charge = policy
     .await?;
 ```
 
-| Knob                  | pyfly equivalent              | Default        |
-|-----------------------|-------------------------------|----------------|
-| `with_max_attempts`   | `max_attempts`                | 3              |
-| `with_base_delay`     | `base_delay`                  | 1 s (doubling) |
-| `with_retry_on`       | `retry_on=(Exception, ...)`   | retry all      |
+| Knob                  | Default        |
+|-----------------------|----------------|
+| `with_max_attempts`   | 3              |
+| `with_base_delay`     | 1 s (doubling) |
+| `with_retry_on`       | retry all      |
 
 The `op` closure produces a fresh future on every attempt, so the call is
 re-issued cleanly; on exhaustion the last error is returned.
 
-## `ClientError` status predicates (pyfly exception hierarchy)
+## `ClientError` status predicates
 
-Rather than a separate typed-exception class per status (pyfly's
-`ServiceNotFoundException`, `ServiceConflictException`, …), `ClientError`
+Rather than a separate typed-error variant per status, `ClientError`
 exposes convenience predicates so callers branch on a decoded upstream
 status idiomatically:
 
@@ -378,12 +364,13 @@ match client.send(Method::GET, "/orders/1", NO_BODY).await {
 `is_validation` (400), `is_unauthorized` (401/403), `is_not_found` (404),
 `is_conflict` (409), `is_unprocessable_entity` (422), `is_rate_limited`
 (429), `is_server_error` (5xx), and `is_retryable` (transport / 429 / 5xx)
-map onto pyfly's `Service*Exception` types and their `retryable` flag.
+cover the common upstream status classes, with `is_retryable` flagging
+the ones worth re-issuing.
 
 ## Composition with `firefly-resilience`
 
 The client is deliberately small; wrap calls in resilience decorators
-exactly as the Go port composes with `resilience.Chain`:
+with `firefly-resilience`'s `chain`:
 
 ```rust,ignore
 let guarded = chain(vec![as_decorator(timeout), as_decorator(circuit_breaker)]);
@@ -397,23 +384,20 @@ cargo test -p firefly-client                          # REST + GraphQL + SOAP
 cargo test -p firefly-client --features websocket,grpc # all protocols
 ```
 
-Covers the Go suite — happy-path JSON round-trip, `ProblemDetail`
-decoding into a `FireflyError`, retry on 5xx (3 attempts), and the
-legacy SOAP / gRPC / WS sentinel returns — plus Rust-specific cases:
-correlation-id propagation from the kernel task-local, default /
-`Accept` / `Content-Type` header behavior, 429 retry, attempt
+Covers happy-path JSON round-trip, `ProblemDetail` decoding into a
+`FireflyError`, retry on 5xx (3 attempts), the legacy SOAP / gRPC / WS
+sentinel returns, correlation-id propagation from the kernel task-local,
+default / `Accept` / `Content-Type` header behavior, 429 retry, attempt
 exhaustion, zero-attempt budget, network-error retry, trailing-slash
 trimming, empty-body decode, and raw-byte `send`.
 
-The pyfly protocol clients are tested 1:1 against pyfly's cases:
-GraphQL and SOAP against in-process axum mocks (envelope wrapping,
-`SOAPAction`, omitting `None` fields, the `errors`-array path);
-WebSocket against an in-process axum ws **echo** route (connect +
-send/recv and the `stream(send)` helper); and gRPC builder-only
-(target validation, option chaining, lazy channel construction — no
-server). All tests run against a real axum server bound to a random
-localhost port (the `httptest` analog) and stay well under the 200 ms
-budget.
+The protocol clients are tested against in-process axum mocks: GraphQL
+and SOAP (envelope wrapping, `SOAPAction`, omitting `None` fields, the
+`errors`-array path); WebSocket against an in-process axum ws **echo**
+route (connect + send/recv and the `stream(send)` helper); and gRPC
+builder-only (target validation, option chaining, lazy channel
+construction — no server). All tests run against a real axum server
+bound to a random localhost port and stay well under the 200 ms budget.
 
 The reactive `WebClient` is tested (`tests/webclient_test.rs`) against
 in-process axum servers emitting NDJSON and SSE: `body_to_flux` streams

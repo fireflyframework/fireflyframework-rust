@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Fullscreen / Expand affordance for cards.
+ * Firefly Admin — Fullscreen / Expand affordance for cards.
  *
  * Adds a maximize button to a card; toggling it makes the card fill the
  * viewport (position: fixed) so large content — dependency graphs, log

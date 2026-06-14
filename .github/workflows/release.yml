@@ -1,0 +1,62 @@
+name: Release
+
+# Tagging `vYY.M.P` (CalVer, e.g. v26.6.4) cuts a GitHub release: it gates the
+# tagged commit, pulls the matching CHANGELOG section as the notes, and attaches
+# the designed book PDF + EPUB (committed under docs/book/dist/).
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.85"
+
+jobs:
+  release:
+    name: gate + publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+
+      # Release gate: the tagged commit must build and pass the workspace suite.
+      - name: build (locked)
+        run: cargo build --workspace --locked
+      - name: test
+        run: cargo test --workspace
+
+      # Pull the CHANGELOG entry for this tag (e.g. tag v26.6.4 -> the
+      # "## v26.6.4 …" section) to use as the release body.
+      - name: extract release notes
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="$VERSION" '
+            $0 ~ "^## v" v "([^0-9].*)?$" {capture=1; next}
+            capture && /^## v[0-9]/ {exit}
+            capture {print}
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Release ${GITHUB_REF_NAME}" > release-notes.md
+          fi
+
+      - name: verify book artifacts are present
+        run: |
+          test -f docs/book/dist/firefly-rust-by-example.pdf
+          test -f docs/book/dist/firefly-rust-by-example.epub
+
+      - name: publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          files: |
+            docs/book/dist/firefly-rust-by-example.pdf
+            docs/book/dist/firefly-rust-by-example.epub

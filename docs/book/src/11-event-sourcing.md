@@ -36,11 +36,13 @@ stream, a transactional outbox, and multi-tenancy. Where the
 fact, the `DomainEvent` here is the *record* of it — the durable truth from which
 state is rebuilt.
 
-> **Spring parity** — This is the `firefly-event-sourcing` starter / Axon-style
-> model: `AggregateRoot::raise`, an `EventStore` with optimistic concurrency, and
-> projections that build read models. `raise` ~ `AggregateLifecycle.apply`; the
-> `apply` fold ~ `@EventSourcingHandler`. The `DomainEvent` JSON is
-> wire-compatible across every port.
+> **Design note.** `firefly-eventsourcing` provides the event-sourced aggregate
+> primitives used here: `AggregateRoot::raise` to record an event, an `EventStore`
+> with optimistic concurrency, and projections that build read models. A command
+> `raise`s an event; the same `apply` fold runs on both the write path and replay —
+> that symmetry is the correctness guarantee of event sourcing. The `DomainEvent`
+> serializes to a stable, versioned, language-neutral JSON contract, so any service
+> that honors it interoperates regardless of the language it is written in.
 
 ## State storage vs event storage
 
@@ -136,10 +138,13 @@ JSON-encodes the payload into a framework `DomainEvent`. That generated
 `EVENT_TYPE` is the only thing the aggregate and its `apply` fold reference, so a
 rename of the struct flows through automatically.
 
-> **Spring parity** — `#[derive(DomainEvent)]` is the macro analog of an Axon
-> event class plus its registration: the struct name becomes the routing type,
-> and serialization to the store's `DomainEvent` is generated rather than
-> hand-written. The wire JSON matches pyfly's `DomainEvent` field-for-field.
+> **Note.** `#[derive(DomainEvent)]` generates, per struct, a `pub const
+> EVENT_TYPE` equal to the struct name (the routing discriminator), an
+> `event_type()` accessor, and a `to_domain_event(...)` that JSON-encodes the
+> payload into a framework `DomainEvent` — so the event type is never a bare string
+> literal at the call sites, and a struct rename flows through automatically. The
+> generated JSON is a stable, versioned, language-neutral contract that any service
+> honoring it can consume.
 
 ## The Wallet aggregate — raise, then apply
 
@@ -251,6 +256,13 @@ fn apply(&mut self, event: &DomainEvent) {
 }
 ```
 
+Note that `apply` folds `MoneyWithdrawn` with a raw subtraction
+(`Money::cents(self.balance.cents_value() - p.amount)`) rather than the
+overdraft-guarded `Money::subtract` the `withdraw` command uses. That asymmetry is
+deliberate: replay never re-validates. The guard already ran at *write* time and a
+failed withdrawal raised no event, so every event in the stream is a fact that
+already passed its invariant — replay simply applies it.
+
 The folding logic in `apply` is matched on the *same* `EVENT_TYPE` constant the
 commands raise under, so the two halves can never disagree about an event's name.
 Lumen's unit tests prove the replay law directly: open + deposit + withdraw on a
@@ -258,11 +270,11 @@ Lumen's unit tests prove the replay law directly: open + deposit + withdraw on a
 wallet from that stream and assert the rebuilt balance, owner, and version match —
 state recomputed from events, never stored.
 
-> **Spring parity** — `raise` + `apply` is Axon's `AggregateLifecycle.apply(...)`
-> + `@EventSourcingHandler`. The discipline is identical: the command applies the
-> event, the handler mutates the fields, and load replays the same handlers to
-> rebuild state. Lumen registers no handler table — it `match`es on the generated
-> `EVENT_TYPE` const, which is the Rust-idiomatic spelling of the same idea.
+> **Design note.** The discipline: a command `raise`s the event, `apply` mutates
+> the projected fields, and load replays the same `apply` to rebuild state. Lumen
+> registers no handler table — it `match`es on the generated `EVENT_TYPE` const, the
+> Rust-idiomatic way to keep the write fold and the replay fold from ever
+> disagreeing about an event's name.
 
 ## Raising and appending events
 
@@ -364,10 +376,10 @@ detail ("concurrent modification") so the caller retries from a fresh load. You
 never manage version numbers by hand — the version the wallet rehydrated to is
 the token, and the store enforces it.
 
-> **Spring parity** — `append(id, expected_version, events)` is Axon's
-> optimistic-locking append; the `Concurrency` error is its
-> `ConcurrencyException`. The rule is the same in both: catch it and retry the
-> load-mutate-save cycle (or surface a 409), never swallow it.
+> **Note.** `append(id, expected_version, events)` enforces optimistic
+> concurrency: the version the wallet rehydrated to is the token, and a stale
+> append fails with `EventSourcingError::Concurrency`. Catch it and retry the
+> load-mutate-save cycle (or surface a 409) — never swallow it.
 
 ## Typed aggregates and the repository
 
@@ -432,9 +444,12 @@ time a wallet's stream crosses a 100-event boundary. Snapshots are an
 optimization, never a correctness requirement: remove them and the system is
 slower but still correct.
 
-> **Spring parity** — `MemorySnapshotStore` + `snapshot_interval` is Axon's
-> snapshotting with a `SnapshotTriggerDefinition`. The interval-crossing trigger
-> handles a batch that straddles the threshold (version 95 → 105 still snapshots).
+> **Note.** `with_snapshots(store, MemorySnapshotStore::new(), interval)`
+> checkpoints aggregate state every time a stream crosses an interval boundary; on
+> load, the repository deserializes the latest snapshot and replays only the events
+> after it. The interval-crossing trigger handles a batch that straddles the
+> threshold (version 95 → 105 still snapshots). Snapshots are an optimization, never
+> a correctness requirement.
 
 ## Projections — building read models
 
@@ -511,10 +526,13 @@ append, and let the relay guarantee at-least-once delivery to the broker even
 across crashes — which is exactly why the projection was built to be
 **idempotent** in the last chapter.
 
-> **Spring parity** — `TransactionalOutbox` is the portable equivalent of Spring
-> Modulith's `EventPublicationRegistry` and `@TransactionalEventListener(phase =
-> AFTER_COMMIT)`: record the event durably *before* dispatching it. Axon Server's
-> stored log fulfils the same role for Axon apps.
+> **Design note.** `TransactionalOutbox` closes the append-then-publish gap:
+> instead of publishing directly, a writer `enqueue`s the `DomainEvent` in the same
+> store transaction as the append, and a background relay forwards each pending
+> record to an `OutboxSink`, retrying up to `max_attempts` and dead-lettering on
+> exhaustion. Recording the event durably *before* dispatching it is what gives
+> at-least-once delivery across crashes — and why the projection was built to be
+> idempotent.
 
 ## Schema evolution — upcasters
 

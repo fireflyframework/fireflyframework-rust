@@ -32,7 +32,7 @@ A snippet annotated `rust,ignore` or `rust,no_run` elides surrounding setup for 
 
 ```text
 $ cargo run -p firefly-sample-lumen
-:: lumen :: digital-wallet & ledger (v26.6.3)
+:: lumen :: digital-wallet & ledger (v26.6.4)
 ```
 
 ### The One-Dependency Reminder
@@ -47,7 +47,7 @@ When a chapter introduces a new framework type, the prose names the facade path 
 
 ### Callouts
 
-Five callout styles appear throughout the body. Each is a blockquote that opens with a bold label, and the design theme styles them distinctly:
+Four callout styles appear throughout the body. Each is a blockquote that opens with a bold label, and the design theme styles them distinctly:
 
 > **Note.** Notes provide supplementary context or clarify a subtlety in the main text. Worth reading, but not blocking.
 
@@ -55,20 +55,18 @@ Five callout styles appear throughout the body. Each is a blockquote that opens 
 
 > **Warning.** Warnings flag a common mistake or a sharp edge that causes hard-to-debug problems if ignored — for example, that Lumen's free-function CQRS handlers publish their collaborators through a process-global `OnceLock`, so a second `build_app()` in the same test binary keeps the *first* wiring.
 
-> **Spring parity.** Spring-parity callouts map a Firefly concept directly to its Spring Boot / Firefly-Java equivalent — ideal for developers migrating from the JVM ecosystem. For example: `#[rest_controller]` is Lumen's `@RestController`; `#[event_listener]` is `@KafkaListener`; the `Saga` / `Step` API is the Java `@Saga`. You will meet these in nearly every chapter.
+> **Design note.** Design-note callouts explain *why* Firefly does something a particular way, and point out where an idea will feel familiar if you have used an opinionated, batteries-included framework or a reactive-streams library before. They are orientation, framed as Firefly's own design choices — not a translation table for another framework. You will meet these in nearly every chapter.
 
-> **Reactor parity.** Reactor-parity callouts map Firefly's `Mono`/`Flux` surface onto Project Reactor and WebFlux, so the reactive idioms you know transfer directly. For example: `Flux::just(items)` is Reactor's `Flux.fromIterable(...)`, and returning a `Flux` from a handler is the WebFlux streaming-endpoint model — exactly how Lumen's `GET /api/v1/wallets/:id/events` works.
+### Reference Tables
 
-### Mapping Tables
+When a chapter introduces a family of related APIs, a reference table collects them in one place so you can take in the whole surface at a glance:
 
-When a Firefly spelling has a one-to-one counterpart in a framework you already know, a mapping table lines them up so you translate by lookup rather than by guesswork:
-
-| Concept | Spring Boot | Firefly for Rust |
-|---|---|---|
-| HTTP controller | `@RestController` | `#[rest_controller]` |
-| Message listener | `@KafkaListener` | `#[event_listener]` |
-| Scheduled task | `@Scheduled` | `#[scheduled]` |
-| Distributed transaction | `@Saga` | `Saga` + `Step` |
+| Declarative attribute | What it generates |
+|---|---|
+| `#[rest_controller]` | an axum router from the annotated handler methods |
+| `#[event_listener]` | a broker subscription bound to an event type |
+| `#[scheduled]` | a task registered on the scheduler |
+| `#[saga]` / `Step` | an orchestrated, compensating distributed transaction |
 
 ### Recap & Exercises
 

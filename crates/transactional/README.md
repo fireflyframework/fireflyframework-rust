@@ -1,12 +1,12 @@
 # `firefly-transactional`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** Spring `@Transactional` · **Go module:** `transactional`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
-`firefly-transactional` provides Spring-`@Transactional`-equivalent
-**context-bound transaction management** over a database port. The
-canonical service shape:
+`firefly-transactional` provides **context-bound transaction
+management** over a database port, in the declarative style of mature
+transaction frameworks. The canonical service shape:
 
 ```rust,ignore
 let outcome = with_tx(&TxContext::root(), &db, |ctx| {
@@ -22,12 +22,11 @@ want to participate read the transaction off the context with
 `TxContext::tx` (or use the convenience `exec` helper) and fall back to
 the supplied `Executor` when no transaction is active.
 
-Where Go threads the `*sql.Tx` through `context.Context`, Rust has no
-ambient context — the transaction travels in an explicit, `Copy`
-`TxContext` handle instead. And where Go builds on the concrete
-`*sql.DB`, Rust defines small synchronous **port traits**
-(`Database` / `Transaction` / `Executor`) so any driver — rusqlite,
-postgres, a mock — can plug in.
+Rust has no ambient context, so the transaction travels in an
+explicit, `Copy` `TxContext` handle rather than thread-local state.
+Rather than binding to a concrete connection type, the crate defines
+small synchronous **port traits** (`Database` / `Transaction` /
+`Executor`) so any driver — rusqlite, postgres, a mock — can plug in.
 
 ## Why not `begin()` directly?
 
@@ -37,12 +36,11 @@ rollback in every code path. `with_tx` lifts the boilerplate:
 * Commit on the closure returning `Ok`.
 * Rollback on any `Err` from the closure (the original error is
   returned; a rollback failure is joined into
-  `TxError::RollbackFailed`, like Go's `errors.Join`).
+  `TxError::RollbackFailed`).
 * Rollback on panic — a `Drop` guard rolls back while the panic
-  unwinds, then the panic resumes (Go: `recover`, rollback, re-panic).
-* Nested `with_tx` calls reuse the outer transaction (Spring's
-  `Propagation.REQUIRED`); commit/rollback is owned by the outermost
-  caller.
+  unwinds, then the panic resumes.
+* Nested `with_tx` calls reuse the outer transaction (a required-style
+  propagation); commit/rollback is owned by the outermost caller.
 
 ## Mental model
 
@@ -66,17 +64,17 @@ with_tx(ctx, db, f) ─┐
 ## Public surface
 
 ```rust,ignore
-pub trait Executor: Send + Sync {                    // Go: DBTX
+pub trait Executor: Send + Sync {
     fn execute(&self, sql: &str, params: &[SqlValue]) -> Result<u64, TxError>;
     fn query(&self, sql: &str, params: &[SqlValue]) -> Result<Vec<Row>, TxError>;
     fn query_row(&self, sql: &str, params: &[SqlValue]) -> Result<Option<Row>, TxError>;
 }
 
-pub trait Database: Executor {                       // Go: *sql.DB
+pub trait Database: Executor {
     fn begin(&self) -> Result<Box<dyn Transaction + '_>, TxError>;
 }
 
-pub trait Transaction: Executor {                    // Go: *sql.Tx
+pub trait Transaction: Executor {
     fn commit(self: Box<Self>) -> Result<(), TxError>;
     fn rollback(self: Box<Self>) -> Result<(), TxError>;
 }
@@ -85,8 +83,8 @@ pub fn with_tx<T, D, F>(ctx: &TxContext<'_>, db: &D, f: F) -> Result<T, TxError>
 pub fn exec<'a>(ctx: &TxContext<'a>, db: &'a dyn Executor) -> Conn<'a>;
 
 impl TxContext<'_> {
-    pub const fn root() -> Self;                     // Go: context.Background()
-    pub fn tx(&self) -> Option<&dyn Transaction>;    // Go: TxFromContext
+    pub const fn root() -> Self;
+    pub fn tx(&self) -> Option<&dyn Transaction>;
     pub fn in_transaction(&self) -> bool;
 }
 ```
@@ -94,8 +92,8 @@ impl TxContext<'_> {
 `exec(ctx, db)` returns a `Conn` wrapping the transaction if one is
 active on the context, otherwise `db` — exactly what every repository
 wants. `Conn` implements `Executor` either way. `SqlValue` (Null /
-Integer / Real / Text / Blob) and `Row` form the parameter and column
-model that `database/sql` handled with `any` in Go.
+Integer / Real / Text / Blob) and `Row` form the typed parameter and
+column model used across the port traits.
 
 ## Quick start
 
@@ -127,7 +125,7 @@ fn place_order<D: Database>(repo: &OrderRepo, db: &D) -> Result<(), TxError> {
 
 Implement the three port traits once per driver. The integration tests
 in `tests/with_tx.rs` contain a complete reference implementation over
-`rusqlite` (the role `modernc.org/sqlite` plays in the Go tests).
+`rusqlite`.
 
 ## Testing
 
@@ -135,11 +133,10 @@ in `tests/with_tx.rs` contain a complete reference implementation over
 cargo test -p firefly-transactional
 ```
 
-Covers the four Go cases — commit on success, rollback on error,
+Covers the four core cases — commit on success, rollback on error,
 nested participation (two inserts inside a single outer tx), and the
 `exec` fallback when no tx is active — against a real SQLite database,
 plus mock-driven coverage of begin/commit wrapping, the
-`errors.Join`-style rollback-failure join, nested commit ownership,
-rollback-on-panic via the `Drop` guard, application-error downcasting
-(the `errors.Is` analog), value-returning closures, and Send + Sync
-bounds.
+rollback-failure join, nested commit ownership, rollback-on-panic via
+the `Drop` guard, application-error downcasting, value-returning
+closures, and Send + Sync bounds.

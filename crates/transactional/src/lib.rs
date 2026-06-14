@@ -101,10 +101,17 @@
 use std::error::Error as StdError;
 use std::fmt;
 
+mod manager;
+pub use manager::{
+    register_transaction_manager, transaction_manager, transactional, transactional_on,
+    transactional_with, transactional_with_on, BoxedTxOp, Isolation, Propagation,
+    TransactionManager, TxOptions, TxOutcome,
+};
+
 /// The released framework version. Calendar-versioned (`YY.M.PATCH`)
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to
-/// `26.6.3` in the June 2026 release window.
-pub const VERSION: &str = "26.6.3";
+/// `26.6.4` in the June 2026 release window.
+pub const VERSION: &str = "26.6.4";
 
 /// Errors produced by the transaction helper and the database port.
 ///
@@ -713,6 +720,6 @@ mod tests {
 
     #[test]
     fn version_is_stamped() {
-        assert_eq!(VERSION, "26.6.3");
+        assert_eq!(VERSION, "26.6.4");
     }
 }

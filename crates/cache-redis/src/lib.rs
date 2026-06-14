@@ -70,22 +70,27 @@ use async_trait::async_trait;
 use firefly_cache::{Adapter, CacheError, CacheStats};
 use redis::aio::MultiplexedConnection;
 use redis::{AsyncCommands, Client, ExistenceCheck, SetExpiry, SetOptions};
-use tokio::sync::Mutex;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.3";
+pub const VERSION: &str = "26.6.4";
+
+/// Fixed `COUNT` hint for cursor-driven `SCAN` loops. This is a per-round
+/// batch-size suggestion to Redis, independent of any caller-supplied total
+/// `limit`; the caller's limit is applied client-side as keys are collected.
+const SCAN_COUNT: usize = 100;
 
 /// A [`firefly_cache::Adapter`] backed by a single Redis logical database.
 ///
 /// See the [crate docs](crate) for the command mapping. The adapter holds a
-/// cloneable [`MultiplexedConnection`] behind a [`Mutex`] so concurrent
-/// callers serialize their pipelined requests over the one connection
-/// (multiplexed connections are cheap to share this way). Hit/miss/eviction
-/// counters are kept in-process (atomic), exactly like pyfly's adapter —
-/// Redis itself does not expose per-adapter hit counters.
+/// cloneable, `Arc`-backed [`MultiplexedConnection`]; each `&self` method
+/// works on its own cheap clone of it, so concurrent callers' pipelined
+/// requests are demultiplexed over the shared connection rather than
+/// serialized behind a lock. Hit/miss/eviction counters are kept in-process
+/// (atomic), exactly like pyfly's adapter — Redis itself does not expose
+/// per-adapter hit counters.
 #[derive(Debug)]
 pub struct RedisAdapter {
-    conn: Mutex<MultiplexedConnection>,
+    conn: MultiplexedConnection,
     hits: AtomicU64,
     misses: AtomicU64,
     evictions: AtomicU64,
@@ -114,7 +119,7 @@ impl RedisAdapter {
     #[must_use]
     pub fn from_connection(conn: MultiplexedConnection) -> Self {
         Self {
-            conn: Mutex::new(conn),
+            conn,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
@@ -133,7 +138,7 @@ impl RedisAdapter {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         let mut keys: Vec<String> = Vec::new();
         let mut cursor: u64 = 0;
         loop {
@@ -142,8 +147,8 @@ impl RedisAdapter {
                 .arg("MATCH")
                 .arg(pattern)
                 .arg("COUNT")
-                .arg(limit)
-                .query_async(&mut *conn)
+                .arg(SCAN_COUNT)
+                .query_async(&mut conn)
                 .await
                 .map_err(backend_err)?;
             for k in batch {
@@ -170,9 +175,9 @@ impl RedisAdapter {
 
     /// Issues `PING`, returning the transport error on failure.
     async fn ping(&self) -> Result<(), CacheError> {
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         redis::cmd("PING")
-            .query_async::<()>(&mut *conn)
+            .query_async::<()>(&mut conn)
             .await
             .map_err(backend_err)
     }
@@ -181,7 +186,7 @@ impl RedisAdapter {
 #[async_trait]
 impl Adapter for RedisAdapter {
     async fn get(&self, key: &str) -> Result<Vec<u8>, CacheError> {
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         let raw: Option<Vec<u8>> = conn.get(key).await.map_err(backend_err)?;
         match raw {
             Some(bytes) => {
@@ -196,7 +201,7 @@ impl Adapter for RedisAdapter {
     }
 
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<(), CacheError> {
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         match px_millis(ttl) {
             // `SET key value PX <ms>`.
             Some(ms) => {
@@ -211,7 +216,7 @@ impl Adapter for RedisAdapter {
     }
 
     async fn delete(&self, key: &str) -> Result<(), CacheError> {
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         let removed: i64 = conn.del(key).await.map_err(backend_err)?;
         if removed > 0 {
             self.evictions.fetch_add(removed as u64, Ordering::Relaxed);
@@ -220,9 +225,9 @@ impl Adapter for RedisAdapter {
     }
 
     async fn clear(&self) -> Result<(), CacheError> {
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         redis::cmd("FLUSHDB")
-            .query_async::<()>(&mut *conn)
+            .query_async::<()>(&mut conn)
             .await
             .map_err(backend_err)
     }
@@ -244,7 +249,7 @@ impl Adapter for RedisAdapter {
         value: &[u8],
         ttl: Option<Duration>,
     ) -> Result<bool, CacheError> {
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         let mut opts = SetOptions::default().conditional_set(ExistenceCheck::NX);
         if let Some(ms) = px_millis(ttl) {
             opts = opts.with_expiration(SetExpiry::PX(ms));
@@ -260,7 +265,7 @@ impl Adapter for RedisAdapter {
 
     /// `EXISTS key` — pyfly's `exists`.
     async fn exists(&self, key: &str) -> Result<bool, CacheError> {
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         let count: i64 = conn.exists(key).await.map_err(backend_err)?;
         Ok(count > 0)
     }
@@ -270,7 +275,7 @@ impl Adapter for RedisAdapter {
     /// the number of keys removed.
     async fn delete_prefix(&self, prefix: &str) -> Result<u64, CacheError> {
         let pattern = format!("{}*", glob_escape(prefix));
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         let mut matched: Vec<String> = Vec::new();
         let mut cursor: u64 = 0;
         loop {
@@ -279,8 +284,8 @@ impl Adapter for RedisAdapter {
                 .arg("MATCH")
                 .arg(&pattern)
                 .arg("COUNT")
-                .arg(100)
-                .query_async(&mut *conn)
+                .arg(SCAN_COUNT)
+                .query_async(&mut conn)
                 .await
                 .map_err(backend_err)?;
             matched.extend(batch);
@@ -302,8 +307,8 @@ impl Adapter for RedisAdapter {
     /// pyfly's `get_stats`.
     async fn stats(&self) -> Option<CacheStats> {
         let size: i64 = {
-            let mut conn = self.conn.lock().await;
-            redis::cmd("DBSIZE").query_async(&mut *conn).await.ok()?
+            let mut conn = self.conn.clone();
+            redis::cmd("DBSIZE").query_async(&mut conn).await.ok()?
         };
         Some(CacheStats::from_counters(
             size.max(0) as u64,

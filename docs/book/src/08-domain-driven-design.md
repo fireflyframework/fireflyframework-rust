@@ -21,11 +21,11 @@ files are drawn verbatim from `samples/lumen`.
 > strings surface verbatim as RFC 9457 problem details. The aggregate carries
 > `#[derive(AggregateRoot)]`; nothing carries `thiserror`.
 
-> **Spring parity.** This is the DDD vocabulary you know from the JVM — value
-> objects, aggregates, aggregate roots, domain events — expressed as idiomatic
-> Rust. `#[derive(AggregateRoot)]` is the analog of jMolecules's
-> `@AggregateRoot` / Spring Data's `AbstractAggregateRoot`, generating the
-> event-buffer plumbing so your code holds only the rules.
+> **Design note.** This chapter builds Lumen's domain core with the classic DDD
+> building blocks — value objects, aggregates, aggregate roots, domain events —
+> as idiomatic Rust. `#[derive(AggregateRoot)]` generates the
+> uncommitted-event-buffer plumbing and the `AGGREGATE_TYPE` constant, so your
+> code holds only the rules.
 
 ## The `Money` value object
 
@@ -146,11 +146,10 @@ impl std::error::Error for MoneyError {}
 > and the book keeps that promise *all the way down* — even the error enums. Two
 > trait impls per error type is a small price for an honest dependency list.
 
-> **Spring parity.** A frozen, value-equal `Money` maps to a Java `record` (the
-> JVM's value type) or jMolecules's `@ValueObject`. The "minor units, never a
-> float" discipline is the same one Spring teams reach for `BigDecimal` or
-> integer cents to enforce — Rust just makes the immutability a compiler
-> guarantee.
+> **Design note.** `Money` is a frozen, value-equal type — Rust makes the
+> immutability a compiler guarantee. The "integer minor units, never a float"
+> discipline is what any correct money type needs: floating-point drift is the
+> classic correctness bug a money type exists to prevent.
 
 ## The `Wallet` aggregate
 
@@ -338,12 +337,11 @@ The `From<MoneyError> for DomainError` impl is what lets `withdraw` write
 aggregate translates it into domain language. Like `MoneyError`, `DomainError`
 hand-writes its `Display` and `Error` impls: no `thiserror`, one dependency.
 
-> **Spring parity.** Where a Spring `Wallet` aggregate would throw a
-> `BusinessRuleViolation` (mapped to HTTP 422) and an `AggregateNotFound`
-> (mapped to 404), Lumen returns a typed `DomainError`. `InsufficientFunds` /
-> `NonPositiveAmount` / `OwnerRequired` become 422 problems and `NotFound`
-> becomes a 404 — the same status mapping, decided by a `match` at the web
-> boundary instead of an exception-to-status table.
+> **Note.** Lumen returns a typed `DomainError` rather than throwing:
+> `InsufficientFunds` / `NonPositiveAmount` / `OwnerRequired` become 422 problems
+> and `NotFound` becomes a 404, decided by a `match` at the web boundary (a
+> returned value, checked by the compiler — no exception-to-status table to keep
+> in sync).
 
 ## The read-model view
 

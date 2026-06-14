@@ -1,24 +1,24 @@
 ## Preface
 
-Rust gives you fearless concurrency, zero-cost abstractions, and a compiler that refuses to ship a data race. What it does not give you is *cohesion*. Every new back-office service forces the same cascade of decisions before a single line of business logic is written: which HTTP layer, which database story, how to wire dependencies, how to handle configuration, errors, correlation IDs, metrics, and graceful shutdown. **Firefly** changes that. It brings the cohesive, convention-over-configuration experience that Spring Boot gave the JVM world, rebuilt from the ground up for Rust 1.85+ on `tokio` and `axum`.
+Rust gives you fearless concurrency, zero-cost abstractions, and a compiler that refuses to ship a data race. What it does not give you is *cohesion*. Every new back-office service forces the same cascade of decisions before a single line of business logic is written: which HTTP layer, which database story, how to wire dependencies, how to handle configuration, errors, correlation IDs, metrics, and graceful shutdown. **Firefly** changes that. It is an opinionated, convention-over-configuration framework that makes those cross-cutting decisions once, so every service shares one idiom — built from the ground up for Rust 1.85+ on `tokio` and `axum`.
 
-This book teaches Firefly **by example**. You build one real application from an empty crate to a secured, observable, event-sourced service — making every concept concrete before moving to the next. The code in these pages is not illustrative pseudocode: every listing is a slice of a **real project that compiles, boots, and passes its tests** against the framework at version 26.6.x. Each snippet was lifted from the running sample and checked against the crate APIs, so what you read is what actually works. When a listing drifts from the source, the sample's build breaks and a test fails — the same guarantee the sibling PyFly, Go, and .NET books make.
+This book teaches Firefly **by example**. You build one real application from an empty crate to a secured, observable, event-sourced service — making every concept concrete before moving to the next. The code in these pages is not illustrative pseudocode: every listing is a slice of a **real project that compiles, boots, and passes its tests** against the framework at version 26.6.x. Each snippet was lifted from the running sample and checked against the crate APIs, so what you read is what actually works. When a listing drifts from the source, the sample's build breaks and a test fails — that is the guarantee behind every listing in this book.
 
 ### Who This Book Is For
 
 This book is for intermediate Rust developers comfortable with `async`/`await`, traits, and the basics of HTTP services. You need no prior framework expertise — if you have built anything with `axum`, `actix`, or `sqlx`, you are well prepared.
 
-Spring Boot, WebFlux, and Project Reactor developers will feel especially at home. Wherever Firefly mirrors a concept you already know — beans and stereotypes, declarative messaging, application events, `Mono`/`Flux` — a **Spring parity** or **Reactor parity** callout draws the parallel explicitly, so you map what you already know rather than learning from zero.
+If you have used an opinionated, batteries-included framework or a reactive-streams library before, Firefly's concepts — beans and stereotypes, declarative messaging, application events, `Mono`/`Flux` — will land quickly. A **Design note** callout appears wherever an idea will feel familiar, so you can lean on what you already know; each one is framed as Firefly's own design choice, not a translation from another framework.
 
 ### What You Will Build: Lumen
 
-Every chapter advances **Lumen**, a digital-wallet and ledger service — the Rust analog of the same Lumen the PyFly, Go, and .NET books grow. Lumen lets a customer open a wallet, deposit and withdraw money, transfer funds between wallets, and read a live balance. Behind that small surface sits the full spread of patterns a real back-office service needs: a value object that does exact money arithmetic, an aggregate that enforces invariants, CQRS with a read-side cache, domain events, an event-sourced ledger, a compensating transfer saga, JWT-secured endpoints, an actuator surface, a scheduled task, and an end-to-end test suite.
+Every chapter advances **Lumen**, a digital-wallet and ledger service — the worked example this book is built around. Lumen lets a customer open a wallet, deposit and withdraw money, transfer funds between wallets, and read a live balance. Behind that small surface sits the full spread of patterns a real back-office service needs: a value object that does exact money arithmetic, an aggregate that enforces invariants, CQRS with a read-side cache, domain events, an event-sourced ledger, a compensating transfer saga, JWT-secured endpoints, an actuator surface, a scheduled task, and an end-to-end test suite.
 
 The single most important property of Lumen is its dependency list:
 
 ```toml
 [dependencies]
-firefly = { version = "26.6.3" }   # the whole framework — and every macro
+firefly = { version = "26.6.4" }   # the whole framework — and every macro
 axum   = { version = "0.7" }       # you author the handler functions
 serde  = { version = "1", features = ["derive"] }
 ```
@@ -54,7 +54,7 @@ Each chapter closes with a **Recap** of what changed in the Lumen codebase and a
 
 ### Conventions in Brief
 
-Typographic and structural conventions — code-listing captions, callout types, and the Spring-parity boxes — are demonstrated, with live examples, in the **Conventions** section that follows.
+Typographic and structural conventions — code-listing captions, callout types, and design notes — are demonstrated, with live examples, in the **Conventions** section that follows.
 
 ### The Companion Code
 

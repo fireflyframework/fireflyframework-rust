@@ -1,6 +1,6 @@
 # `firefly-ecm`
 
-> **Tier:** Adapter · **Status:** Full (port + LocalStore + pyfly parity) · **Java original:** `firefly-ecm` · **Go module:** `ecm`
+> **Tier:** Adapter · **Status:** Stable
 
 ## Overview
 
@@ -55,9 +55,8 @@ pub trait DocumentService: Send + Sync {
 pub struct SignatureRequest { pub document_id: String, pub signers: Vec<String>, pub title: String, pub provider: String }
 pub enum SignatureStatus { Pending, Signed, Declined, Expired } // "pending" | "signed" | "declined" | "expired"
 
-// Envelope metadata returned by `get` (pyfly's ESignatureEnvelope dataclass +
-// the additive per-signer breakdown). Core fields mirror pyfly field-for-field;
-// `signers` is additive and omitted from JSON when empty.
+// Envelope metadata returned by `get`, with a per-signer breakdown.
+// `signers` is omitted from JSON when empty.
 pub struct ESignatureEnvelope {
     pub id: String,
     pub provider: String,                       // omitted when empty
@@ -77,9 +76,8 @@ pub trait ESignatureProvider: Send + Sync {
     async fn cancel(&self, id: &str) -> Result<(), EcmError>;
     fn name(&self) -> &str;
 
-    // pyfly's `ESignatureAdapter.get(envelope_id) -> ESignatureEnvelope | None`:
-    // the full envelope metadata, not just the bare status. The default body
-    // bridges to `status` (NotFound → Ok(None); other errors surface) and
+    // Returns the full envelope metadata, not just the bare status. The default
+    // body bridges to `status` (NotFound → Ok(None); other errors surface) and
     // synthesizes a minimal envelope, so adapters predating it keep compiling
     // and still answer `get`. Richer adapters (NoOpESignature, the DocuSign /
     // Adobe Sign / Logalty crates) override it to populate timestamps + signers.
@@ -89,14 +87,13 @@ pub trait ESignatureProvider: Send + Sync {
 pub enum EcmError { NotFound, Io(std::io::Error), Provider(String) }
 ```
 
-`ContentReader` is the async analog of Go's `io.ReadCloser`
+`ContentReader` is an async byte stream
 (`Pin<Box<dyn AsyncRead + Send>>`); build one from in-memory bytes
-with `bytes_reader`. The `EcmError::NotFound` sentinel renders
-bytes-equal to the Go port's `ecm.ErrNotFound`
-(`firefly/ecm: not found`), and the JSON wire shapes of `Document`,
-`Folder`, `SignatureRequest`, and `SignatureStatus` match the
-Go/Java/.NET/Python ports exactly (`omitempty` semantics included) —
-SDKs can transparently swap stores, providers, *and* runtimes.
+with `bytes_reader`. The `EcmError::NotFound` sentinel renders as the
+stable string `firefly/ecm: not found`, and the JSON wire shapes of
+`Document`, `Folder`, `SignatureRequest`, and `SignatureStatus` use
+stable, documented field names (`omitempty` semantics included) — so
+SDKs can transparently swap stores and providers.
 
 ### Default implementations
 
@@ -145,9 +142,10 @@ async fn main() -> Result<(), firefly_ecm::EcmError> {
 For S3-backed content storage in production, swap the `LocalStore`
 for `firefly_ecm_storage_aws::Store` (once that adapter is wired).
 
-## pyfly parity
+## Versioning, folders, and metadata
 
-On top of the Go-parity core, this crate ports pyfly's ECM surface:
+On top of the core ports, the crate offers a richer ECM surface — document
+versioning, folder hierarchies, and a separable metadata store:
 
 ```rust
 // DocumentVersion model + version-aware blob keys.
@@ -160,7 +158,7 @@ pub struct DocumentVersion {
 }
 pub fn version_key(document_id: &str, version: i64) -> String; // "<id>__v<n>"
 
-// Metadata + folder ports (pyfly MetadataStoragePort / FolderRepositoryPort).
+// Metadata + folder ports.
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
     async fn save(&self, doc: Document) -> Result<Document, EcmError>;
@@ -175,22 +173,22 @@ pub trait FolderRepository: Send + Sync {
     async fn list(&self, parent_id: Option<&str>) -> Result<Vec<Folder>, EcmError>;
     async fn delete(&self, id: &str) -> Result<bool, EcmError>;
 }
-pub struct InMemoryMetadataStore;     // pyfly InMemoryMetadataStorage
-pub struct InMemoryFolderRepository;  // pyfly InMemoryFolderRepository
+pub struct InMemoryMetadataStore;     // in-memory metadata storage
+pub struct InMemoryFolderRepository;  // in-memory folder repository
 
-// Public no-op signer (pyfly NoOpESignatureAdapter) — signs immediately and
-// stores full ESignatureEnvelope metadata, so `get` returns the same
-// status + sent_at/signed_at + per-signer breakdown pyfly's no-op adapter does.
+// Public no-op signer — signs immediately and stores full ESignatureEnvelope
+// metadata, so `get` returns the full status + sent_at/signed_at + per-signer
+// breakdown.
 pub struct NoOpESignature; // name() == "noop"
 
-// E-signature envelope metadata (pyfly ESignatureEnvelope dataclass) returned
-// by ESignatureProvider::get, alongside the additive per-SignerState breakdown.
+// E-signature envelope metadata returned by ESignatureProvider::get, alongside
+// the per-SignerState breakdown.
 pub struct ESignatureEnvelope { /* id, provider, document_id, status, provider_envelope_id, sent_at, signed_at, signers */ }
 pub struct SignerState { /* email, status, signed_at */ }
 ```
 
-`ESignatureProvider::get` returns the full [`ESignatureEnvelope`] (pyfly's
-`ESignatureAdapter.get`) rather than the bare `SignatureStatus` that
+`ESignatureProvider::get` returns the full [`ESignatureEnvelope`]
+rather than the bare `SignatureStatus` that
 `status` returns — surfacing the envelope's provider, document, provider-side
 id, `sent_at` / `signed_at` lifecycle timestamps, and per-signer breakdown.
 It is a **default trait method** (bridging to `status`, mapping `NotFound`
@@ -198,7 +196,7 @@ to `Ok(None)`), so adapters predating it keep compiling and still answer
 `get`; `NoOpESignature` and the DocuSign / Adobe Sign / Logalty crates can
 override it to populate the rich shape.
 
-The in-memory `Service` gains pyfly-parity inherent methods:
+The in-memory `Service` gains inherent methods for folders and versioning:
 
 ```rust
 impl Service {
@@ -213,8 +211,8 @@ impl Service {
 }
 ```
 
-A `from_config` factory selects providers from config strings — the DI-free
-analog of pyfly's `EcmAutoConfiguration`:
+A `from_config` factory selects providers from config strings — a DI-free
+autoconfiguration entry point:
 
 ```rust
 pub struct EcmConfig { pub storage: StorageConfig, pub esignature: EsignatureConfig } // serde Deserialize
@@ -235,9 +233,8 @@ dedicated adapter crate (which implements the same ports and drops straight into
 cargo test -p firefly-ecm
 ```
 
-Covers the create + get + read + delete lifecycle (the Go
-`TestServiceCRUD` contract), file-backed read after create,
-404-after-delete, LocalStore put/get/delete with nested keys,
-truncation, and idempotent deletes, checksum computation and
+Covers the create + get + read + delete lifecycle, file-backed read
+after create, 404-after-delete, LocalStore put/get/delete with nested
+keys, truncation, and idempotent deletes, checksum computation and
 verification, JSON wire-shape pins for every model, sentinel-error
-parity, and object-safety/Send+Sync guards.
+stability, and object-safety/Send+Sync guards.

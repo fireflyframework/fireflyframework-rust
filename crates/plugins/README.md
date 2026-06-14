@@ -1,6 +1,6 @@
 # `firefly-plugins`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `firefly-platform-plugins` · **Go module:** `plugins`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -8,12 +8,10 @@
 `Plugin` trait and a composite `Registry` that starts every plugin in
 registration order and stops them in reverse on shutdown.
 
-Rust's static-binary model, like Go's, does not support hot reload out of
-the box. The Java port uses PF4J; the .NET port uses
-`McMaster.NETCore.Plugins`. This crate focuses on the **lifecycle
-contract** — services that need dynamic loading integrate a loader (e.g.
-`libloading`) at the application entry point and feed the discovered
-values into the same `Registry`.
+Rust's static-binary model does not support hot reload out of the box, so
+this crate focuses on the **lifecycle contract** — services that need
+dynamic loading integrate a loader (e.g. `libloading`) at the application
+entry point and feed the discovered values into the same `Registry`.
 
 ## Public surface
 
@@ -41,7 +39,7 @@ pub enum ResolutionError { MissingDependency { plugin, missing }, Cycle }
 pub enum PluginState { Loaded, Started, Stopped, Failed }
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-// pyfly-parity: dependency-aware manager + extension points
+// dependency-aware manager + extension points
 pub struct PluginManager { /* ... */ }       // start_plugin/stop_plugin cascade, descriptors, shared registry
 pub struct PluginDescriptor { /* id, depends_on, state, loaded_at, last_state_change, failed_reason */ }
 pub struct ExtensionRegistry { /* ... */ }   // TypeId-keyed extension points
@@ -49,9 +47,8 @@ pub struct ExtensionPoint { /* ... */ }
 pub fn extension_point<T: ?Sized + 'static>() -> ExtensionPoint;
 ```
 
-Error messages mirror the Go wrapping format — `plugin "name" start: <cause>`
-— and aggregated errors join their messages with `\n` exactly like Go's
-`errors.Join`.
+Error messages use a consistent wrapping format — `plugin "name" start: <cause>`
+— and aggregated errors join their messages with `\n`.
 
 ## Quick start
 
@@ -94,12 +91,11 @@ async fn main() -> Result<(), firefly_plugins::PluginError> {
 `firefly-starter-application` exposes a pre-wired `Registry` ready to
 receive plugins.
 
-## pyfly parity
+## Dependency-aware lifecycle
 
-The platform-tier port adds dependency-aware lifecycle on top of the
-Go-parity `Registry` — all backward compatible (the original
-registration-order semantics are unchanged when no plugin declares a
-dependency).
+The platform tier adds dependency-aware lifecycle on top of the base
+`Registry` — all backward compatible (the original registration-order
+semantics are unchanged when no plugin declares a dependency).
 
 ### `Plugin::depends_on`
 
@@ -130,15 +126,13 @@ impl Registry { pub fn state(&self, name: &str) -> Option<PluginState>; }
 
 A plugin is `Loaded` on registration, `Started` after a successful
 `start_all`, `Stopped` after `stop_all`, and `Failed` if a lifecycle hook
-errors during the most recent sweep. Mirrors pyfly's `PluginState`.
+errors during the most recent sweep.
 
 ### `ExtensionRegistry` + `extension_point`
 
 A `TypeId`-keyed registry of extension points and the extensions
-contributed to them. The Rust adaptation of pyfly's `ExtensionRegistry`:
-Python keys a point by an interface *class* and validates via `isinstance`;
-Rust keys by id carrying the interface's `TypeId` and validates that
-contributions register under that type.
+contributed to them. Each point is keyed by an id carrying the interface's
+`TypeId`, and contributions are validated to register under that type.
 
 ```rust,ignore
 let point = extension_point::<dyn Formatter>();
@@ -150,14 +144,14 @@ let typed = reg.get_as::<JsonFormatter>("formatters").await;   // downcast helpe
 ```
 
 Contributions for ids with **no** declared point type remain accepted
-(lenient, backward-compatible), exactly like pyfly. Extensions sort
-highest-priority first, ties in insertion order.
+(lenient, backward-compatible). Extensions sort highest-priority first,
+ties in insertion order.
 
 ### `PluginManager`
 
-A dependency-aware manager (richer than `Registry`) mirroring pyfly's
-`PluginManager`: per-plugin `start_plugin`/`stop_plugin` with transitive
-cascade (dependencies start first; dependents stop first), `start_all` /
+A dependency-aware manager (richer than `Registry`): per-plugin
+`start_plugin`/`stop_plugin` with transitive cascade (dependencies start
+first; dependents stop first), `start_all` /
 `stop_all` / `remove` / `unload_all`, `PluginDescriptor` tracking
 (`loaded_at`, `last_state_change`, `failed_reason`), and a shared
 `ExtensionRegistry`. Plugins already in the target state are skipped so
@@ -179,10 +173,9 @@ cargo test -p firefly-plugins
 ```
 
 Covers ordered start, reverse-order stop, rollback when a downstream
-start fails, replace-by-name registration, error wrapping/joining parity
-with the Go module, and `Send`/`Sync` bounds — plus the pyfly-parity
-surface: Kahn topological ordering with missing-dependency and cycle
-rejection, per-plugin `PluginState` transitions, `ExtensionRegistry`
-type validation / priority ordering / lenient unknown points, and the
-`PluginManager` lifecycle cascade (ported from pyfly's
-`tests/plugins/`).
+start fails, replace-by-name registration, error wrapping/joining, and
+`Send`/`Sync` bounds — plus the dependency-aware surface: Kahn
+topological ordering with missing-dependency and cycle rejection,
+per-plugin `PluginState` transitions, `ExtensionRegistry` type validation
+/ priority ordering / lenient unknown points, and the `PluginManager`
+lifecycle cascade.

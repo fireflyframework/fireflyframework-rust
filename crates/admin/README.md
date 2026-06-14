@@ -1,13 +1,13 @@
 # `firefly-admin`
 
-> **Tier:** Platform · **Status:** Full · **Spring original:** Spring Boot Admin · **Python original:** `pyfly.admin`
+> **Tier:** Platform · **Status:** Full
 
 ## Overview
 
 `firefly-admin` is an embedded, **Spring-Boot-Admin-style management
 dashboard**: a self-contained single-page app mounted at a configurable path,
-backed by a JSON API and live SSE streams. It is the Rust port of pyfly's
-`pyfly.admin` package, modeled on [`firefly-actuator`]'s `mount()` idiom.
+backed by a JSON API and live SSE streams. It is modeled on
+[`firefly-actuator`]'s `mount()` idiom.
 
 `mount(cfg, deps)` returns an axum `Router` exposing, under the configured
 base path (default `/admin`):
@@ -37,38 +37,33 @@ Bind the dashboard on a separate admin port, or guard it with
 
 ## Why a separate crate?
 
-Spring Boot Admin is the canonical "single pane of glass" every operator
-expects — live health, metrics trends, log tailing, request traces, and
-runtime-level logger tweaks, without redeploying. pyfly ships the same
-dashboard; `firefly-admin` brings it to the Rust port with a byte-identical
-`/admin/api` contract, so the **vendored SPA assets are reused verbatim** —
-the JavaScript never had to change.
+A "single pane of glass" is the canonical operator experience — live health,
+metrics trends, log tailing, request traces, and runtime-level logger tweaks,
+without redeploying. `firefly-admin` delivers exactly that, serving a vendored
+SPA over a stable `/admin/api` contract.
 
-Three adaptations from pyfly:
+The crate adapts the dashboard idiom to idiomatic Rust:
 
-- **Explicit wiring instead of a DI container.** pyfly discovers its
-  providers' collaborators from the application container; Rust has none, so
-  every collaborator is handed in through the `AdminDeps` struct (constructor
-  injection). Required pieces (health, metrics, a `TraceBuffer`, a
+- **Explicit wiring via `AdminDeps`.** Every collaborator is handed in through
+  the `AdminDeps` struct (constructor injection) rather than discovered from an
+  ambient container. Required pieces (health, metrics, a `TraceBuffer`, a
   `LogBuffer`) are always present; the rest are `Option`s the endpoints
   degrade gracefully around.
-- **`tracing` instead of Python `logging`.** The log viewer is fed by
-  `LogBuffer`, which is *both* a ring buffer and a
-  `tracing_subscriber::Layer`; logger-level mutation rewrites an `EnvFilter`
-  directive through a `reload::Handle` (via `firefly-actuator`'s
-  `LoggersState`).
+- **`tracing`-backed log viewer.** The log viewer is fed by `LogBuffer`, which
+  is *both* a ring buffer and a `tracing_subscriber::Layer`; logger-level
+  mutation rewrites an `EnvFilter` directive through a `reload::Handle` (via
+  `firefly-actuator`'s `LoggersState`).
 - **DI introspection via `firefly-container`.** The Beans view
   (`/api/beans`, `/api/beans/{name}`, `/api/beans/graph`, the `/api/sse/beans`
   stream, and the overview `beans`/`wiring` blocks) is backed by the optional
   `AdminDeps::container` — when wired it reports each registered bean's
   name/type/scope/stereotype/primary plus its `initialized` flag and
-  resolution count, sourced from `Container::beans()` / `bean_stats()`. The
-  reflection-only fields pyfly fills via runtime type-hint inspection
-  (constructor `dependencies`/dependency-graph `edges`, `conditions`,
-  `creation_time_ms`, lifecycle methods) have no zero-cost Rust analogue and
-  carry empty/`null` defaults, so the bean graph is nodes-only. Python
-  GC/thread stats and ASGI server specifics remain dropped; `runtime` reports
-  tokio task/worker counts + process RSS via `sysinfo`.
+  resolution count, sourced from `Container::beans()` / `bean_stats()`.
+  Reflection-only fields (constructor `dependencies`/dependency-graph `edges`,
+  `conditions`, `creation_time_ms`, lifecycle methods) have no zero-cost Rust
+  analogue and carry empty/`null` defaults, so the bean graph is nodes-only.
+  The `runtime` view reports tokio task/worker counts + process RSS via
+  `sysinfo`.
 
 ## Public surface
 
@@ -169,8 +164,7 @@ let app: axum::Router = axum::Router::new()
 Each `/api/sse/*` route returns an `axum::response::Sse` driven by a
 `tokio::time::interval`. The `health` stream pushes only on status change;
 `traces` and `logfile` are incremental — they track a cursor (insertion count
-/ monotonic id) and push only new rows, matching pyfly's `last_count` /
-`last_id` semantics.
+/ monotonic id) and push only new rows.
 
 ## Auth guard
 
@@ -198,22 +192,5 @@ surface 401s from the API.
   on, the app POSTs `{name, url}` to the remote admin server on start and
   DELETEs it on stop; both swallow their own errors so a down admin server
   never blocks startup.
-
-## Mapping from pyfly
-
-| pyfly | firefly-admin |
-|-------|---------------|
-| `AdminProperties` / `AdminServerProperties` / `AdminClientProperties` | `AdminConfig` / `AdminServerConfig` / `AdminClientConfig` |
-| `AdminRouteBuilder.build_routes()` | `mount(cfg, deps)` |
-| `AdminViewExtension` / `AdminViewRegistry` | `AdminView` trait / `AdminViewRegistry` |
-| `TraceCollectorFilter` | `TraceBuffer` + `TraceLayer` |
-| `AdminLogHandler` | `LogBuffer` (a `tracing` Layer) |
-| `InstanceRegistry` / `StaticDiscovery` | `InstanceRegistry` (+ `discover_static`) |
-| `AdminClientRegistration` | `AdminClient` |
-| `BeansProvider.get_beans` / `get_bean_detail` / `get_bean_graph` | `/api/beans` / `/api/beans/{name}` / `/api/beans/graph` (via `AdminDeps::container`) |
-| `OverviewProvider` `beans`/`wiring` blocks | overview `beans` (`Container::bean_stats`) + `wiring` (live `cqrs_handlers`/`scheduled` counts) |
-| `beans_stream` (SSE `beans`) | `/api/sse/beans` (resolution-count deltas) |
-| conditions / autowired / dependency-edge reflection | *empty/`null` defaults (no runtime type-hint reflection)* |
-| Python GC/thread runtime, ASGI server info | tokio task/worker + RSS runtime, axum/tokio server info |
 
 [`firefly-actuator`]: ../actuator/README.md

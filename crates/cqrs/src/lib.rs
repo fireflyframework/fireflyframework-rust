@@ -168,6 +168,7 @@ mod authorization;
 mod bus;
 mod cache;
 mod context;
+mod correlation;
 mod eda_bridge;
 mod error;
 mod event;
@@ -182,9 +183,11 @@ pub use authorization::{
     AUTHORIZATION_ERROR_CODE,
 };
 pub use bus::{
-    AnyResult, Bus, DynHandler, Envelope, HandlerFuture, Message, Middleware, ValidationMiddleware,
+    AnyResult, Bus, DynHandler, Envelope, HandlerFuture, Message, MessageKind, Middleware,
+    ValidationMiddleware,
 };
 pub use cache::{QueryCache, QueryCacheMiddleware};
+pub use correlation::CorrelationMiddleware;
 pub use context::{ExecutionContext, ExecutionContextBuilder};
 pub use eda_bridge::{
     resolve_pattern, CacheInvalidationEvent, EdaCacheInvalidationBridge, CACHE_INVALIDATION_TOPIC,
@@ -205,5 +208,5 @@ pub use validation::{
 
 /// The released framework version. Calendar-versioned (`YY.M.PATCH`)
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to
-/// `26.6.3` in the June 2026 release window.
-pub const VERSION: &str = "26.6.3";
+/// `26.6.4` in the June 2026 release window.
+pub const VERSION: &str = "26.6.4";

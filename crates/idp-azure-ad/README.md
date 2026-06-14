@@ -1,14 +1,13 @@
 # `firefly-idp-azure-ad`
 
-> **Tier:** Adapter · **Status:** Full · **Backing tech:** Microsoft Graph `v1.0` + `login.microsoftonline.com` ROPC over `reqwest`
+> **Tier:** Adapter · **Status:** Stable · **Backing tech:** Microsoft Graph `v1.0` + `login.microsoftonline.com` ROPC over `reqwest`
 
 ## Overview
 
 `firefly-idp-azure-ad` is a real `firefly_idp::Adapter` for Azure AD / Microsoft
 Entra ID. It talks to the Microsoft Graph `v1.0` API and the
 `login.microsoftonline.com` token endpoint over `reqwest` — no MSAL or Azure SDK
-is pulled in — and is a behavior-for-behavior port of pyfly's
-`AzureAdIdpAdapter`.
+is pulled in.
 
 ```rust
 use firefly_idp::Adapter as _;
@@ -26,7 +25,7 @@ let token = idp.login("alice@contoso.com", "pw").await?;
 ## What it does
 
 * **App-token caching** — the `client_credentials` Graph app token is fetched
-  once and cached (mirroring pyfly).
+  once and cached.
 * **ROPC login** — the resource-owner password-credentials grant against
   `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`, then a user
   lookup; a non-200 token response maps to `Error::InvalidCredentials`.
@@ -70,18 +69,15 @@ Empty `base_url` / `graph_base_url` / `scope` fall back to the public Microsoft
 hosts and the `https://graph.microsoft.com/.default` scope; the host overrides
 exist so the adapter can be exercised against an in-process mock.
 
-## pyfly parity
+## Port contract notes
 
-| pyfly `AzureAdIdpAdapter` | Rust |
-| --- | --- |
-| `create_user` / `get_user` / `find_by_username` / `update_user` / `delete_user` / `list_users` | Graph `/users` CRUD |
-| `login` → `AuthResult` | `login` → `Token` (port contract); `login_full` → `AuthResult` |
-| `logout` (always true) / `refresh` / `introspect` (`/me`) | same |
-| `change_password` / `reset_password` (`passwordProfile`) | same |
-| `assign_role` / `revoke_role` / `list_roles` / `get_roles` | groups-as-roles |
-| `get_user_info` (`/me`) / `register_user` | same |
-| `mfa_challenge` (raised `NotImplementedError`) | real `POST .../authentication/softwareOathMethods` + `list_authentication_methods` |
-| `mfa_verify` (raised `NotImplementedError`) | typed `Error::UnsupportedByProvider` (Graph has no out-of-band verify) |
+`login` returns a `Token` per the `firefly_idp::Adapter` port contract; the
+richer `login_full` variant returns a full `AuthResult`. `logout` always
+succeeds, and `refresh`, `introspect`, and `get_user_info` map onto the Graph
+`/me` endpoint. Both `mfa_challenge` and `list_authentication_methods` drive the
+real Graph authentication-methods API, while `mfa_verify` returns a typed
+`Error::UnsupportedByProvider` because Graph has no out-of-band verify (see
+above).
 
 ## Testing
 
@@ -91,5 +87,4 @@ cargo test -p firefly-idp-azure-ad
 
 Behavior tests (`tests/azure_ad_behavior.rs`) drive the real `reqwest` path
 against an in-process `axum` mock server (port 0, no network), asserting both
-the outbound request shape and the parsed domain object — the Rust analog of
-pyfly's `tests/idp/test_azure_ad_behavior.py`.
+the outbound request shape and the parsed domain object.

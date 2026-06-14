@@ -20,7 +20,10 @@ darling = { workspace = true }
 [dev-dependencies]
 # The macros are exercised end-to-end against the one-dependency facade, so a
 # user-style consumer compiles the generated `::firefly::__rt::...` paths.
-firefly = { workspace = true }
+# `data-sqlx` is enabled so the `#[repository]` derived-query macro can be
+# tested against a real SQLite repository.
+firefly = { workspace = true, features = ["data-sqlx"] }
+sqlx = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

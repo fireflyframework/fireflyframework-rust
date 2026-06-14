@@ -1,6 +1,6 @@
 # `firefly-callbacks`
 
-> **Tier:** Adapter · **Status:** Full · **Go module:** `callbacks` · **Java original:** `firefly-callbacks` · **.NET project:** `FireflyFramework.Callbacks.{Interfaces,Models,Core,Web,Sdk}`
+> **Tier:** Adapter · **Status:** Stable
 
 ## Overview
 
@@ -11,7 +11,7 @@ attempt to a pluggable `Store` for audit. A REST admin endpoint
 manages targets; an SDK type-safely calls the admin endpoint from
 upstream services.
 
-Sub-modules mirror the Go sub-packages (and the .NET project split):
+The crate is organised into focused sub-modules:
 
 | Module                  | What it provides                                                          |
 |-------------------------|---------------------------------------------------------------------------|
@@ -37,36 +37,35 @@ Everything is re-exported flat from the crate root.
 | `X-Correlation-Id`    | When `event.correlation_id` is set             |
 | (custom)              | Anything from `target.headers`                 |
 
-Header names and the `sha256=<lowercase hex>` HMAC-SHA256 encoding are
-byte-identical to the Java / .NET / Go / Python ports — a webhook
-receiver written against any of them verifies this crate's deliveries
-unchanged.
+The header names and the `sha256=<lowercase hex>` HMAC-SHA256 encoding
+follow a stable, language-neutral wire contract — any webhook receiver
+that implements standard HMAC-SHA256 signature verification validates
+this crate's deliveries unchanged.
 
 ## Retry policy
 
 `DispatcherConfig { max_attempts, initial_delay }` — defaults:
 3 attempts, 200 ms initial delay, doubling, **capped at 5 min** per
-retry (pyfly's `min(backoff_ms * 2**(attempt-1), 300_000)`). Each
+retry (`min(backoff_ms * 2**(attempt-1), 300_000)`). Each
 attempt records an `Attempt` audit row regardless of outcome. Per-target
 delivery failures are best-effort: they are audited and the dispatcher
-continues with the next matching target, exactly as in the Go port.
+continues with the next matching target.
 
-**Retryable vs permanent (pyfly #194).** A non-2xx *response* is retried
+**Retryable vs permanent.** A non-2xx *response* is retried
 only when its status is transient — `408`, `429`, or any `5xx`. A 4xx
 other than `408`/`429` (a deterministic `400`/`401`/`403`/`404`/`422`) is
 a **permanent** client error: the dispatcher stops retrying it
 immediately rather than burning the whole attempt budget against a target
 that will keep rejecting it. Transport errors (no response) are always
-retried. This matches pyfly's `_is_retryable` exactly.
+retried.
 
 > Retry tuning is **dispatcher-global** (`DispatcherConfig`), not
-> per-`Target`. The wire shape of `Target` is byte-for-byte the Go port's
-> struct (camelCase, `omitempty`, `secret` never serialised), so adding
-> per-target `max_attempts`/`backoff_ms`/`tenant` fields — and the
-> per-tenant `dispatch(tenant_id, …)` fan-out pyfly offers — is a
-> deliberate divergence kept out to preserve that wire contract and the
-> single-tenant Go model. Run one dispatcher per tenant/policy for the
-> same effect.
+> per-`Target`. The wire shape of `Target` is intentionally compact
+> (camelCase, fields omitted when empty, `secret` never serialised), so
+> per-target `max_attempts`/`backoff_ms`/`tenant` fields — and per-tenant
+> `dispatch(tenant_id, …)` fan-out — are deliberately kept out to preserve
+> that wire contract and the single-dispatcher model. Run one dispatcher
+> per tenant/policy for the same effect.
 
 ## Public surface
 
@@ -76,7 +75,7 @@ retried. This matches pyfly's `_is_retryable` exactly.
 pub struct Target {
     pub id: String,
     pub url: String,
-    pub secret: String,            // #[serde(skip)] — Go's `json:"-"`
+    pub secret: String,            // #[serde(skip)] — never serialised
     pub event_types: Vec<String>,  // empty = match-all
     pub headers: HashMap<String, String>,
     pub active: bool,
@@ -86,7 +85,7 @@ pub struct Target {
 pub struct CallbackEvent {
     pub id: String,
     pub event_type: String,        // JSON "type"
-    pub payload: Vec<u8>,          // JSON base64, like Go's []byte
+    pub payload: Vec<u8>,          // JSON base64-encoded
     pub headers: HashMap<String, String>,
     pub correlation_id: String,
 }
@@ -125,7 +124,7 @@ pub enum CallbackError {
 }
 ```
 
-`CallbackError` `Display` strings are bytes-equal to the Go sentinels
+`CallbackError` `Display` strings are stable, machine-matchable sentinels
 (`firefly/callbacks: not found`,
 `callback delivery failed: status=%d err=%v`).
 
@@ -133,17 +132,17 @@ pub enum CallbackError {
 
 ```rust,ignore
 pub struct DispatcherConfig {
-    pub http_client: Option<reqwest::Client>,   // Go: HTTPClient
-    pub max_attempts: u32,                      // Go: MaxAttempts
-    pub initial_delay: Duration,                // Go: InitialDelay
-    pub clock: Option<Arc<dyn Clock>>,          // Go: Now func() time.Time
-    pub authorized_domains: Vec<AuthorizedDomain>, // pyfly: SSRF allowlist (#190)
+    pub http_client: Option<reqwest::Client>,
+    pub max_attempts: u32,
+    pub initial_delay: Duration,
+    pub clock: Option<Arc<dyn Clock>>,
+    pub authorized_domains: Vec<AuthorizedDomain>, // SSRF allowlist
 }
-// DispatcherConfig::default() == Go's core.Default() (empty allowlist)
+// DispatcherConfig::default() uses an empty allowlist (check disabled)
 
-pub struct HmacDispatcher { /* Go: core.Dispatcher */ }
+pub struct HmacDispatcher { /* HMAC-signing dispatcher */ }
 impl HmacDispatcher {
-    // Zero-valued cfg fields are filled with the defaults, like Go.
+    // Zero-valued cfg fields are filled with the defaults.
     pub fn new(store: Arc<dyn Store>, cfg: DispatcherConfig) -> Self;
 }
 impl Dispatcher for HmacDispatcher { /* dispatch(ev) */ }
@@ -166,34 +165,30 @@ pub fn handler(store: Arc<dyn Store>) -> axum::Router;
 //   GET    /callbacks/attempts/{eventId}
 ```
 
-Error responses reproduce Go's `http.Error` wire format
+Error responses use a plain-text wire format
 (`text/plain; charset=utf-8`, `X-Content-Type-Options: nosniff`,
-message + `\n`). JSON responses reproduce Go's `writeJSON`
-(`json.Encoder.Encode`), terminating every document with `\n`, and
+message + `\n`). JSON responses terminate every document with `\n`, and
 `/callbacks/attempts/{eventId}` answers JSON `null` (so `null\n` on
-the wire) when the event has no recorded attempts — byte parity with
-the Go port's nil slice through `encoding/json`.
+the wire) when the event has no recorded attempts.
 
 ### `sdk`
 
 ```rust,ignore
-pub struct CallbacksClient { /* Go: sdk.Client */ }
+pub struct CallbacksClient { /* typed admin client */ }
 impl CallbacksClient {
-    pub fn new(base_url: impl AsRef<str>) -> Self;                        // Go: sdk.New
-    pub async fn targets(&self) -> Result<Vec<Target>, ClientError>;      // Go: Targets
-    pub async fn upsert(&self, t: &Target) -> Result<Target, ClientError>; // Go: Upsert
-    pub async fn delete(&self, id: &str) -> Result<(), ClientError>;      // Go: Delete
+    pub fn new(base_url: impl AsRef<str>) -> Self;
+    pub async fn targets(&self) -> Result<Vec<Target>, ClientError>;
+    pub async fn upsert(&self, t: &Target) -> Result<Target, ClientError>;
+    pub async fn delete(&self, id: &str) -> Result<(), ClientError>;
 }
 ```
 
-Built on `firefly_client::RestClient` (as the Go SDK builds on
-`client.NewREST`), so it inherits correlation-id propagation and
-429/5xx retry for free.
+Built on `firefly_client::RestClient`, so it inherits correlation-id
+propagation and 429/5xx retry for free.
 
-## pyfly parity — `AuthorizedDomain` allowlist (SSRF protection)
+## `AuthorizedDomain` allowlist (SSRF protection)
 
-Mirrors pyfly's `CallbackConfig.authorized_domains` / `_is_authorized`
-(#190): an optional outbound-URL allowlist enforced on dispatch.
+An optional outbound-URL allowlist enforced on dispatch.
 
 ```rust,ignore
 pub struct AuthorizedDomain {
@@ -211,13 +206,12 @@ target is delivered to only if its URL **host** equals an authorized
 domain or is a subdomain of one (`host == domain` or `host` ends with
 `".{domain}"`), matched case-insensitively. A target failing the check
 is **rejected before any HTTP request**: a rejection audit row is
-recorded (`status: 0`, `attempt: 0`, `error: "domain not authorized"` —
-pyfly's failed-execution audit) and the dispatcher continues with the
-next target. A URL with no parseable host is fail-closed (never
-authorized).
+recorded (`status: 0`, `attempt: 0`, `error: "domain not authorized"`)
+and the dispatcher continues with the next target. A URL with no
+parseable host is fail-closed (never authorized).
 
 An **empty** allowlist (the default) disables the check entirely, so
-existing Go-parity behaviour — every target reachable — is preserved.
+the unrestricted behaviour — every target reachable — is preserved.
 
 ```rust,ignore
 let dispatcher = HmacDispatcher::new(

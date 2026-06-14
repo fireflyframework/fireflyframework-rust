@@ -26,7 +26,7 @@ an `AggregateRoot` whose state is rebuilt by replaying its `DomainEvent`s
 A component field the DI container resolves and injects by type
 (`#[autowired]`, `firefly-container`). The field type sets the shape: `Arc<T>`
 (required), `Option<Arc<T>>` (optional), `Vec<Arc<T>>` (all implementations),
-`Provider<T>` (deferred). The Rust analog of Spring's `@Autowired`.
+`Provider<T>` (deferred). Resolves and injects a component field by type.
 
 ### Backpressure
 A slow consumer throttling a fast producer. Firefly's reactive `Flux` streams
@@ -62,16 +62,15 @@ compensation failure).
 Link-time bean discovery (`Container::scan()` / `firefly::scan`): every
 non-generic stereotype derive submits an `inventory` thunk, and `scan` collects
 them across the crate graph, applies **conditions** and **profiles**, and
-registers the survivors. The Rust analog of Spring's `@ComponentScan` (link-time,
-not reflective). Generic beans use the `register_all!` fallback.
+registers the survivors. Discovery is link-time, not reflective. Generic beans
+use the `register_all!` fallback.
 
 ### Conditional bean
 A bean registered only when the environment matches — `#[firefly(profile = "…",
 condition_on_property = "k=v", condition_on_bean = "T",
 condition_on_missing_bean = "T", condition_on_class = "label",
 condition_on_single_candidate = "T")]`. Evaluated by `scan` in two passes
-(config/profile facts first, registry-dependent checks second). Spring's
-`@Profile` / `@ConditionalOn*`.
+(config/profile facts first, registry-dependent checks second).
 
 ### Container
 The opt-in, `TypeId`-keyed DI service locator (`firefly-container`): registers
@@ -92,12 +91,12 @@ every outbound client call so a request stitches together across services.
 ### DomainEvent
 The event-sourced, versioned, wire-formatted event in `firefly-eventsourcing`
 (distinct from the transient `TransientDomainEvent` in `firefly_kernel::ddd`).
-Its JSON is byte-compatible across the ports.
+Its JSON uses a stable, versioned wire format.
 
 ### Event (EDA)
 The envelope every `firefly-eda` event flows through — `id`, `type`, `source`,
 `topic`, `correlationId`, `time`, `headers`, `payload`, `key`. Constructed with
-`Event::new`, wire-compatible across the ports.
+`Event::new`; the envelope follows a stable JSON schema.
 
 ### Experience tier (BFF)
 The top service tier (`firefly-starter-experience`, `ExperienceStack` / `Bff`): a
@@ -115,11 +114,11 @@ of the reactive `Mono`/`Flux` (their terminal `Err` signal).
 ### FilterChain
 The path-based authorization matcher in `firefly-security` (`permit` / `require`
 / glob `permit_pattern` / `require_pattern`). Fail-closed once any rule is
-declared (Spring Security 6 deny-by-default).
+declared: an undeclared path is denied by default.
 
 ### Flux
 A reactive publisher of *0..N* values plus a terminal completion-or-error
-(`firefly_reactive::Flux`). The Rust analog of Reactor's `Flux<T>`.
+(`firefly_reactive::Flux`).
 
 ### Idempotency
 The replay behaviour applied to `POST`/`PUT`/`PATCH` requests carrying an
@@ -128,8 +127,7 @@ The replay behaviour applied to `POST`/`PUT`/`PATCH` requests carrying an
 
 ### Mono
 A reactive publisher of *at most one* value plus a terminal error
-(`firefly_reactive::Mono`). The Rust analog of Reactor's `Mono<T>`. An empty
-`Mono` (`Ok(None)`) is the equivalent of `Mono.empty()`.
+(`firefly_reactive::Mono`). An empty `Mono` is `Ok(None)`.
 
 ### NDJSON
 Newline-delimited JSON (`application/x-ndjson`) — one compact JSON document per
@@ -148,19 +146,18 @@ depends on the port; an **adapter** implements it.
 ### Primary
 The disambiguator (`#[firefly(primary)]`) that picks one bean when several
 implementations are bound to the same port. Resolving with no primary among
-multiple candidates is a `NoUniqueBean` error naming every candidate. Spring's
-`@Primary`.
+multiple candidates is a `NoUniqueBean` error naming every candidate.
 
 ### Problem (RFC 7807 / 9457)
 The `application/problem+json` error envelope (`type`, `title`, `status`,
-`detail`) that every Firefly service renders for errors and panics, identical
-across the ports. RFC 9457 obsoletes and is wire-compatible with RFC 7807; the
+`detail`) that every Firefly service renders for errors and panics, following the
+RFC 9457 standard. RFC 9457 obsoletes and is wire-compatible with RFC 7807; the
 book uses both numbers interchangeably.
 
 ### Profile
 A named environment (`prod`, `dev`, `test`) that gates conditional beans
 (`#[firefly(profile = "expr")]`). The expression grammar supports `&`, `|`, `!`,
-comma-as-OR, and parentheses (Spring Boot 2.4+). Active profiles live on the
+comma-as-OR, and parentheses. Active profiles live on the
 `ApplicationContext` / `ConditionContext`.
 
 ### Projection
@@ -170,13 +167,12 @@ the global stream (`drive_once` / `replay_all`).
 
 ### Qualifier
 A name used to select a specific bean when several share a type
-(`#[firefly(qualifier = "replica")]` → `resolve_named`). Spring's
-`@Qualifier`.
+(`#[firefly(qualifier = "replica")]` → `resolve_named`).
 
 ### Reactive
 The `Mono`/`Flux` programming model (`firefly-reactive`) and everything built on
-it — reactive endpoints, repositories, the `WebClient`, reactive EDA/CQRS. The
-Rust analog of Project Reactor / Spring WebFlux.
+it — reactive endpoints, repositories, the `WebClient`, reactive EDA/CQRS. If
+you have used a reactive-streams library, the publisher model will feel familiar.
 
 ### Saga
 A sequential distributed-transaction engine (`firefly_orchestration::Saga`) with
@@ -189,14 +185,12 @@ FixedDelay triggers, each on its own tokio task with panic recovery.
 ### Scope
 A bean's lifecycle (`#[firefly(scope = "…")]`): `singleton` (one cached
 instance, the default), `transient` (fresh per resolve), `request`, or `session`
-(both driven by a `ScopeHandler`). Spring's `singleton` / `prototype` (Firefly:
-`transient`) / `request` / `session`.
+(both driven by a `ScopeHandler`).
 
 ### Signal
 An external event that satisfies a parked workflow gate in the **experience
 tier** (`SignalService::deliver` / `Node::wait_for_signal`). Delivery is
-buffered, so a signal that arrives before the gate parks is not lost. Spring's
-`@WaitForSignal`.
+buffered, so a signal that arrives before the gate parks is not lost.
 
 ### SSE (Server-Sent Events)
 A one-way streaming protocol (`text/event-stream`). The `Sse(Flux<T>)` responder
@@ -215,7 +209,7 @@ and `firefly-starter-experience` add the domain and BFF tiers.
 The architectural-role label a DI bean carries (`component`, `service`,
 `repository`, `configuration`, `controller`, `bean`), set by which derive
 declared it. Functionally equivalent; the differences are the documented intent
-and the grouping shown in the admin `/beans` view. Spring's `@Component` family.
+and the grouping shown in the admin `/beans` view.
 
 ### TCC (Try-Confirm-Cancel)
 A two-phase distributed-transaction engine (`firefly_orchestration::Tcc`): Try
@@ -235,8 +229,7 @@ closures all satisfy it.
 
 ### WebClient
 The reactive HTTP client (`firefly_client::WebClient`) whose terminal operators
-return `Mono`/`Flux` (`body_to_mono`, `body_to_flux`, `exchange`). The Rust
-analog of WebFlux's `WebClient`.
+return `Mono`/`Flux` (`body_to_mono`, `body_to_flux`, `exchange`).
 
 ### Workflow
 A DAG distributed-transaction engine (`firefly_orchestration::Workflow`):

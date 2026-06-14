@@ -1,7 +1,7 @@
 # firefly-macros
 
-The Firefly Framework's **declarative service-development layer** — the Rust
-answer to Spring annotations and the pyfly decorator set. A `proc-macro` crate
+The Firefly Framework's **declarative service-development layer** — a Rust
+take on annotation-style, declaration-next-to-code wiring. A `proc-macro` crate
 of `#[derive(...)]` and `#[...]` attribute macros that collapse the framework's
 closure/builder wiring into declarations sitting next to the code they describe.
 
@@ -75,8 +75,8 @@ register_handle_create_user(&bus);
 Every stereotype derive also submits an [`inventory`] thunk, so
 `Container::scan()` (or `firefly::scan(&container)`, or
 `ApplicationContext`) discovers and registers it across the whole crate graph —
-the Rust analog of pyfly's `scan_package`. *Generic* types can't be inventoried;
-register those with `register_all!`.
+classpath-style component scanning at compile time. *Generic* types can't be
+inventoried; register those with `register_all!`.
 
 ```rust,ignore
 #[derive(Repository, Default)]
@@ -150,8 +150,8 @@ struct DbProperties { url: String, pool_size: u32 }
 ### Scheduling
 
 `#[scheduled]` on a zero-argument `async fn` generates `schedule_<fn>(scheduler)`.
-**Exactly one trigger is required — a violation is a compile error** (pyfly's
-runtime `ValueError`, lifted to compile time).
+**Exactly one trigger is required — a violation is a compile error** (the
+constraint is enforced at compile time rather than deferred to runtime).
 
 ```rust,ignore
 #[scheduled(cron = "0 2 * * *", zone = "America/New_York")]

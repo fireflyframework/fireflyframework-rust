@@ -1,11 +1,11 @@
 /**
- * PyFly Admin — Configuration View.
+ * Firefly Admin — Configuration View.
  *
  * Displays application configuration properties grouped by prefix
  * using collapsible accordion sections with search filtering.
  *
  * Data source:  GET /admin/api/config
- *   -> { groups: { "pyfly.web": { "port": {value, origin, sensitive}, ... }, ... } }
+ *   -> { groups: { "firefly.web": { "port": {value, origin, sensitive}, ... }, ... } }
  *      (effective values, sorted, masked, attributed to their source)
  */
 

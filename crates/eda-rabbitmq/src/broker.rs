@@ -74,6 +74,12 @@ pub struct RabbitMqBroker {
     config: RabbitMqBrokerConfig,
     subscriptions: Arc<Mutex<Vec<Subscription>>>,
     state: Mutex<State>,
+    /// Serializes the whole [`start`](Self::start) sequence (connect +
+    /// declare + consumer-spawn) so two concurrent callers cannot each
+    /// build a connection: the loser awaits this guard, then observes the
+    /// already-started state and returns without opening a second
+    /// connection. Held across `.await` points, hence a `tokio` mutex.
+    start_guard: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -94,6 +100,7 @@ impl RabbitMqBroker {
             config,
             subscriptions: Arc::new(Mutex::new(Vec::new())),
             state: Mutex::new(State::default()),
+            start_guard: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -112,6 +119,26 @@ impl RabbitMqBroker {
     /// On any declaration error the half-open connection is closed so no
     /// resources leak, then the error is returned.
     pub async fn start(&self) -> LapinResult<()> {
+        // Fast path: already started, no need to take the start guard.
+        {
+            let state = self
+                .state
+                .lock()
+                .expect("firefly/eda-rabbitmq: lock poisoned");
+            if state.started {
+                return Ok(());
+            }
+        }
+
+        // Hold the start guard across connect + declare + consumer-spawn so
+        // only one caller ever builds a connection. A second concurrent
+        // start() blocks here, then re-checks `started` below and returns
+        // without opening a redundant connection (which would leak the
+        // connection and orphan its consumer tasks).
+        let _guard = self.start_guard.lock().await;
+
+        // Re-check under the guard: a racing caller may have completed the
+        // start while we were waiting to acquire it.
         {
             let state = self
                 .state
@@ -127,15 +154,35 @@ impl RabbitMqBroker {
 
         match self.declare_and_consume(&connection).await {
             Ok((publish_channel, consumers)) => {
-                let mut state = self
-                    .state
-                    .lock()
-                    .expect("firefly/eda-rabbitmq: lock poisoned");
-                state.connection = Some(connection);
-                state.publish_channel = Some(publish_channel);
-                state.consumers = consumers;
-                state.started = true;
-                state.closed = false;
+                // Install the freshly built connection under the state lock,
+                // unless some other path already installed one. The guard is
+                // dropped before any `.await` so the future stays `Send`.
+                let redundant = {
+                    let mut state = self
+                        .state
+                        .lock()
+                        .expect("firefly/eda-rabbitmq: lock poisoned");
+                    if state.started {
+                        true
+                    } else {
+                        state.connection = Some(connection);
+                        state.publish_channel = Some(publish_channel);
+                        state.consumers = consumers;
+                        state.started = true;
+                        state.closed = false;
+                        return Ok(());
+                    }
+                };
+                // Defensive: under the start guard this should never fire, but
+                // if some other path already installed a connection, close the
+                // one we just built and abort its consumers rather than
+                // overwrite (and thereby orphan) the live one.
+                if redundant {
+                    for c in consumers {
+                        c.abort();
+                    }
+                    let _ = connection.close(0, "redundant start").await;
+                }
                 Ok(())
             }
             Err(err) => {

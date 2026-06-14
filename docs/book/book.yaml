@@ -58,8 +58,7 @@ parts:
       - {id: ch23, file: 20-production.md,               num: 23, title: "Extending Firefly & Going to Production", opener: art/openers/ch23.svg}
   - title: "Appendices"
     chapters:
-      - {id: appa,     file: 90-appendix-spring.md,  num: "A", title: "Spring Boot → Firefly Cheat-Sheet", opener: art/openers/appa.svg}
-      - {id: appb,     file: 91-appendix-modules.md, num: "B", title: "Crate & Module Index",             opener: art/openers/appb.svg}
+      - {id: appb,     file: 91-appendix-modules.md, num: "A", title: "Crate & Module Index",             opener: art/openers/appb.svg}
       - {id: glossary, file: 92-glossary.md,         num: "",  title: "Glossary"}
 
 back: []

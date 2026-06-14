@@ -113,4 +113,4 @@ pub use pointcut::{matches_pointcut, Pointcut};
 pub use registry::{AdviceBinding, AspectRegistry};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.3";
+pub const VERSION: &str = "26.6.4";

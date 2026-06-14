@@ -1,15 +1,12 @@
 # Configuration
 
-Unlike the Go port's first release, the Rust port ships a full typed
-configuration loader from day one: [`firefly-config`](../crates/config/README.md)
-brings Spring Boot-style layered binding — YAML files, environment
+[`firefly-config`](../crates/config/README.md) is Firefly's typed
+configuration loader: layered binding — YAML files, environment
 variables, profile selection — onto plain `serde`-deserializable
 structs.
 
-This document covers the loader itself, and then the canonical mapping
-from the Java `application.yml` keys onto Rust wiring, so operators can
-translate ops-runbooks across runtimes without re-learning the field
-names.
+This document covers the loader itself, and then the configuration keys
+that wire each subsystem.
 
 ## The loader — `firefly-config`
 
@@ -37,13 +34,13 @@ let cfg: AppCfg = load(&sources)?;
 
 The binder is type-driven: `"9090"` binds onto an integer field,
 `"alpha,beta"` splits onto a `Vec<String>`, `"true"` parses onto a
-`bool` (Go `strconv.ParseBool` acceptance set), and missing keys
-produce zero values — plain `#[derive(Deserialize)]` structs bind
-without `#[serde(default)]`. Supported leaf kinds: `String`, `bool`,
-all integer widths, `f32`/`f64`, `char`, unit enums, `Option<T>`,
-sequences of scalars (comma-separated), and `HashMap<String, _>`
-subtrees. Durations travel as an `i64` field plus your own conversion
-(`Duration::from_millis(cfg.timeout_ms as u64)`), matching the Go port.
+`bool` (the usual `true`/`false`/`1`/`0`/`yes`/`no` acceptance set), and
+missing keys produce zero values — plain `#[derive(Deserialize)]`
+structs bind without `#[serde(default)]`. Supported leaf kinds:
+`String`, `bool`, all integer widths, `f32`/`f64`, `char`, unit enums,
+`Option<T>`, sequences of scalars (comma-separated), and
+`HashMap<String, _>` subtrees. Durations travel as an `i64` field plus
+your own conversion (`Duration::from_millis(cfg.timeout_ms as u64)`).
 
 ## Source precedence
 
@@ -77,13 +74,12 @@ reads `application.yaml`, then
 `FIREFLY_*` environment variables. `active_profile(fallback)` and
 `profile_sources(dir, app, profile)` expose the pieces individually.
 
-YAML files are flattened to the same dot-keyed shape the Go port's
-scanner produces: nested mappings become dot-joined lower-cased keys,
-sequences of scalars are comma-joined. Sequences containing mappings
-are rejected — the configuration contract is "sequences of scalars
-only", exactly as documented for the Go module.
+YAML files are flattened to a dot-keyed shape: nested mappings become
+dot-joined lower-cased keys, sequences of scalars are comma-joined.
+Sequences containing mappings are rejected — the configuration contract
+is "sequences of scalars only".
 
-## Placeholder resolution (PyFly parity)
+## Placeholder resolution
 
 `load` / `bind` run a post-merge pass that resolves `${...}`
 placeholders inside values (also available standalone as
@@ -123,24 +119,24 @@ actuator `/actuator/refresh` endpoint returns `{"refreshed": [keys…]}`.
 ## Property-source introspection + masking
 
 `Layered::property_sources()` returns ordered `PropertySourceView`s
-(highest precedence first, Spring `/actuator/env` style): a synthetic
-`systemEnvironment` source leads, then the chain's sources in reverse
-merge order, each property carrying `{value, origin}`. Values are
-sanitized by the public `mask` module (Spring Boot `Sanitizer` parity):
-keys naming secrets (`password`, `secret`, `token`, `credential`,
-`*key`, …) mask wholesale to `******`; URI-shaped values get the
-userinfo password redacted (`postgresql://user:******@host`). This is
-what backs `/actuator/env`.
+(highest precedence first): a synthetic `systemEnvironment` source
+leads, then the chain's sources in reverse merge order, each property
+carrying `{value, origin}`. Values are sanitized by the public `mask`
+module: keys naming secrets (`password`, `secret`, `token`,
+`credential`, `*key`, …) mask wholesale to `******`; URI-shaped values
+get the userinfo password redacted (`postgresql://user:******@host`).
+This is what backs the actuator `/actuator/env` endpoint.
 
 ## Multi-profile + config server
 
 `active_profiles("dev")` reads a **comma-separated** `FIREFLY_PROFILE`
 (`dev,cloud` → `["dev", "cloud"]`); `multi_profile_sources` overlays one
 `application-{p}.yaml` per profile in order. A `ConfigClient`
-(`fetch_source()` / `fetch_source_or_empty()`) pulls a Spring-Cloud-Config
-`/{app}/{profile}/{label}` document into a `StaticSource` you insert into
-the layered chain (above defaults, below env/flags); a non-2xx response
-soft-misses to an empty map.
+(`fetch_source()` / `fetch_source_or_empty()`) pulls a remote
+configuration document — compatible with the Spring Cloud Config server
+wire format `/{app}/{profile}/{label}` — into a `StaticSource` you insert
+into the layered chain (above defaults, below env/flags); a non-2xx
+response soft-misses to an empty map.
 
 ## Wiring it into a service
 
@@ -158,11 +154,11 @@ let core = Core::new(CoreConfig {
 });
 ```
 
-## Java key → Rust wiring
+## Configuration keys → wiring
 
 ### Top level — `firefly_starter_core::CoreConfig`
 
-| Java key               | Rust field / wiring                          |
+| Config key             | Rust field / wiring                          |
 |------------------------|----------------------------------------------|
 | `firefly.app.name`     | `CoreConfig.app_name`                        |
 | `firefly.app.version`  | `CoreConfig.app_version`                     |
@@ -170,18 +166,18 @@ let core = Core::new(CoreConfig {
 
 ### Cache — `firefly_cache::Adapter`
 
-| Java key                                | Rust wiring                                  |
+| Config key                              | Rust wiring                                  |
 |-----------------------------------------|----------------------------------------------|
 | `firefly.cache.adapter=memory`          | `MemoryAdapter::new()` (default)             |
 | `firefly.cache.adapter=noop`            | `NoOpAdapter`                                |
 | `firefly.cache.adapter=redis`           | `firefly_cache_redis::RedisAdapter::connect(url)` (real adapter — see the **Redis** section below) |
-| `firefly.cache.adapter=postgres`        | `firefly-cache-postgres` (Postgres key/value table with TTL — **port pending**) |
+| `firefly.cache.adapter=postgres`        | `firefly_cache_postgres::PostgresCacheAdapter` (real adapter — Postgres key/value table with TTL) |
 | `firefly.cache.fallback.adapter=memory` | `FallbackAdapter::new(primary, secondary)`   |
 | `firefly.cache.ttl`                     | Per-call TTL on `set` / `Typed::get_or_set`  |
 
 ### Idempotency — `firefly_web::IdempotencyConfig`
 
-| Java key                            | Rust field / wiring                                |
+| Config key                          | Rust field / wiring                                |
 |-------------------------------------|----------------------------------------------------|
 | `firefly.idempotency.enabled`       | Don't apply `IdempotencyLayer`                     |
 | `firefly.idempotency.ttl`           | `IdempotencyConfig.ttl` (default 24 h)             |
@@ -191,16 +187,32 @@ let core = Core::new(CoreConfig {
 
 ### Observability — `firefly_observability::LogConfig`
 
-| Java key                       | Rust field                                  |
-|--------------------------------|---------------------------------------------|
-| `firefly.logging.level`        | `LogConfig.level`                           |
-| `firefly.logging.format=json`  | `LogConfig.format = LogFormat::Json` (default) |
-| `firefly.logging.format=text`  | `LogConfig.format = LogFormat::Text`        |
-| `firefly.app.name`             | `LogConfig.service`                         |
+Bind the `firefly.logging.*` section into a `LogConfig` with
+`firefly_observability::log_config_from_properties(props, base)` — the
+application-config logging integration (Spring Boot's `logging.*`). Levels,
+per-logger levels, format, and the rolling file appender are all configured
+from your one main config file:
+
+| Config key                            | Rust field                                       |
+|---------------------------------------|--------------------------------------------------|
+| `firefly.logging.level`               | `LogConfig.level` (root level)                   |
+| `firefly.logging.level.<target>`      | `LogConfig.levels[target]` — per-logger level (Spring's `logging.level.<logger>`, e.g. `firefly.logging.level.firefly_web=warn`) |
+| `firefly.logging.format=json`         | `LogFormat::Json` (default)                      |
+| `firefly.logging.format=text` (`logfmt`) | `LogFormat::Text`                             |
+| `firefly.logging.format=console`      | `LogFormat::Console` (dev-friendly)              |
+| `firefly.logging.service` / `firefly.app.name` | `LogConfig.service`                     |
+| `firefly.logging.file.name`           | enable the rolling file appender (`FileConfig.name`) |
+| `firefly.logging.file.path`           | `FileConfig.path`                                |
+| `firefly.logging.file.max-size`       | `FileConfig.max_size` (e.g. `10MB`)              |
+| `firefly.logging.file.max-history`    | `FileConfig.max_history` (rotated-file backups)  |
+
+Levels can also be changed **at runtime** through `GET/POST /actuator/loggers[/{name}]`
+(the `LevelHandle` behind the actuator), and an external logging file can be
+folded in with `apply_external_config(path, base)`.
 
 ### EDA — `firefly_eda::Broker`
 
-| Java key                          | Rust wiring                                            |
+| Config key                        | Rust wiring                                            |
 |-----------------------------------|--------------------------------------------------------|
 | `firefly.eda.broker=in-memory`    | `InMemoryBroker::new()` (default)                      |
 | `firefly.eda.broker=kafka`        | `firefly_eda_kafka::new_kafka_broker(KafkaConfig { .. })` (real transport) |
@@ -219,7 +231,7 @@ deployment fails loud at startup.
 
 ### IDP — `firefly_idp::Adapter`
 
-| Java key                              | Rust wiring                                       |
+| Config key                            | Rust wiring                                       |
 |---------------------------------------|---------------------------------------------------|
 | `firefly.idp.adapter=internal-db`     | `firefly_idp_internal_db` adapter + `Config { .. }` |
 | `firefly.idp.adapter=keycloak`        | `firefly-idp-keycloak` (real: OIDC + admin REST)  |
@@ -230,7 +242,7 @@ deployment fails loud at startup.
 
 ### Callbacks — `firefly_callbacks::DispatcherConfig`
 
-| Java key                                     | Rust field                       |
+| Config key                                   | Rust field                       |
 |----------------------------------------------|----------------------------------|
 | `firefly.callbacks.dispatcher.timeout`       | `DispatcherConfig.http_client` (a tuned `reqwest::Client`) |
 | `firefly.callbacks.dispatcher.retries`       | `DispatcherConfig.max_attempts`  |
@@ -238,15 +250,15 @@ deployment fails loud at startup.
 
 ### Webhooks — `firefly_webhooks` pipeline
 
-Validators are registered explicitly per provider, as in the Go port —
-see [`crates/webhooks/README.md`](../crates/webhooks/README.md) for the
+Validators are registered explicitly per provider — see
+[`crates/webhooks/README.md`](../crates/webhooks/README.md) for the
 registration shape.
 
 ## HTTP server — `firefly_web::ServerProperties`
 
-`ServerProperties` is serde-bound under the `server.*` prefix (the
-Spring Boot `server.*` namespace), feeding `firefly_web::Server::bind` /
-`serve`, which drops into `Application::on_server`:
+`ServerProperties` is serde-bound under the `server.*` prefix, feeding
+`firefly_web::Server::bind` / `serve`, which drops into
+`Application::on_server`:
 
 | Key                                  | Field                          | Default        |
 |--------------------------------------|--------------------------------|----------------|
@@ -279,8 +291,8 @@ prefixes.
 | `exposed-headers`   | `Access-Control-Expose-Headers`                             |
 | `max-age`           | preflight cache seconds (default `600`)                     |
 
-`SecurityHeadersConfig` (`SecurityHeadersLayer`) — same 7 fields/defaults
-as pyfly: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`SecurityHeadersConfig` (`SecurityHeadersLayer`) — 7 fields with secure
+defaults: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
 HSTS, `X-XSS-Protection: 0`, `Referrer-Policy`, optional CSP and
 Permissions-Policy.
 
@@ -312,9 +324,9 @@ starter builds; the per-transport fields:
 | Builder          | Default                                  |
 |------------------|------------------------------------------|
 | `with_url`       | `amqp://guest:guest@localhost/`          |
-| `with_exchange`  | `pyfly` (durable `direct`)               |
-| `with_destinations` | `["pyfly.events"]`                    |
-| `with_group`     | `pyfly-default` (→ queue `<group>.<destination>`) |
+| `with_exchange`  | `firefly` (durable `direct`)             |
+| `with_destinations` | `["firefly.events"]`                  |
+| `with_group`     | `firefly-default` (→ queue `<group>.<destination>`) |
 
 **Postgres outbox** (`firefly_eda_postgres::PostgresConfig`, builder):
 
@@ -371,8 +383,7 @@ It implements both `EmailProvider` and a thin
 ## Admin dashboard — `firefly.admin.*`
 
 `AdminConfig` / `AdminServerConfig` / `AdminClientConfig`
-(`firefly-admin`) bind from a `firefly-config` document, mirroring
-pyfly's `AdminProperties` family.
+(`firefly-admin`) bind from a `firefly-config` document.
 
 | Key                                  | Field            | Default          |
 |--------------------------------------|------------------|------------------|
@@ -396,7 +407,10 @@ When `require_auth` is on, every `/admin/api/*` route is guarded by a
 
 ## Config server
 
-[`firefly-config-server`](../crates/config-server/README.md) serves the
-Spring-Cloud-Config-compatible REST shape, so a Java, .NET, Go, Python,
-or Rust service can pull its environment from the same endpoint. A
-pulled environment is just another `Source` in the layered chain.
+[`firefly-config-server`](../crates/config-server/README.md) exposes a
+centralized configuration endpoint over a stable, language-neutral REST
+wire contract (compatible with the Spring Cloud Config server format),
+so any service that honors that contract — regardless of the language or
+runtime it is written in — can pull its environment from the same
+endpoint. A pulled environment is just another `Source` in the layered
+chain.

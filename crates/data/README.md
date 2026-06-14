@@ -1,6 +1,6 @@
 # `firefly-data`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `firefly-common-data` (R2DBC) · **Go module:** `data`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -33,8 +33,8 @@ impl<T> Page<T> {
 ```
 
 The wire shape (`content` / `number` / `size` / `totalElements` /
-`totalPages`) is identical to the Java/.NET/Go `Page<T>` so SDK clients
-dispatch on the same JSON.
+`totalPages`) is a stable JSON contract so SDK clients across languages
+dispatch on the same envelope.
 
 ### Filter DSL
 
@@ -77,21 +77,21 @@ pub trait Repository<T, K>: Send + Sync {
 }
 
 pub enum DataError {
-    NotFound,         // "firefly/data: not found" — same message as Go's ErrNotFound
+    NotFound,         // "firefly/data: not found"
     Backend(String),  // store-specific failure
 }
 ```
 
-The Go port's `context.Context` parameter is implicit in async Rust —
+There is no explicit cancellation-context parameter — in async Rust,
 cancellation rides on the future itself.
 
 ### `MemoryRepository`
 
 In-process implementation of `Repository`, parameterised on a
 user-supplied keyer closure `Fn(&T) -> K`. Honours paging; does not
-honour predicates (use a SQL-backed Repository for filtering). Unlike
-the Go original it is internally `RwLock`-guarded, so it is
-`Send + Sync` and safe to share across tasks.
+honour predicates (use a SQL-backed Repository for filtering). It is
+internally `RwLock`-guarded, so it is `Send + Sync` and safe to share
+across tasks.
 
 ## Quick start
 
@@ -124,9 +124,9 @@ For a real Postgres-backed repository, implement the `Repository` trait
 against your SQL driver, using `f.to_sql()` to render the WHERE /
 ORDER BY / LIMIT clauses.
 
-## pyfly parity
+## Data primitives
 
-On top of the Go-parity surface above, `firefly-data` ports pyfly's
+On top of the core surface above, `firefly-data` provides a richer set of
 Spring-Data-style data primitives. They stay **storage-agnostic** — no
 SQL engine is implied; everything lowers to the existing `Filter` DSL,
 renders parameterised SQL fragments, or evaluates in memory.
@@ -150,7 +150,7 @@ impl Specification {
 }
 ```
 
-Composable query predicates (Spring Data's `Specification<T>`), combined
+Composable, Specification-style query predicates, combined
 with `&` (AND), `|` (OR), `!` (NOT). A pure conjunction lowers to the
 flat AND-only `Filter` via `to_filter`; any tree renders to a
 parenthesised parameterised SQL fragment via `to_sql` (no leading
@@ -160,7 +160,7 @@ spec in memory against any `serde`-serialisable entity (supporting `eq`,
 
 ### Dialects & document lowering
 
-`firefly-data` is a **technology-agnostic PORT crate**: the `Filter` /
+`firefly-data` is **technology-agnostic**: the `Filter` /
 `Specification` tree is the single source of truth, and it lowers to
 **three** backends — relational SQL (any vendor), an in-memory matcher,
 *and* a MongoDB-style document filter. Relational and document adapters
@@ -245,8 +245,7 @@ impl ParsedQuery   { pub fn to_mongo(&self, args: &[Value]) -> Result<Value, Que
 
 `to_mongo()` lowers the **same** tree to a MongoDB `$`-operator filter
 document, so a document adapter (e.g. `firefly-data-mongodb`) reuses the
-`Specification` tree instead of re-walking it — mirroring pyfly's
-`MongoSpecification` / `MongoQueryMethodCompiler`:
+`Specification` tree instead of re-walking it:
 
 | spec node / op | Mongo |
 |---|---|
@@ -299,8 +298,7 @@ impl Auditor {
 An adapter holds a `UserProvider` (wired from the request-context /
 security crate) and an `Auditor`/`SoftDeletePolicy`, then auto-applies
 them on every write/read path without the caller threading the user
-through each call — the Rust analogue of pyfly's implicit
-`RequestContext.current()` user lookup. The explicit
+through each call. The explicit
 `on_insert(stamps, Some("alice"))` / `apply(filter)` helpers are
 unchanged; the provider form is purely additive.
 
@@ -325,8 +323,8 @@ impl Auditor {
 
 `on_insert` sets all four fields (created/updated equal); `on_update`
 moves only the modification fields. The current user is supplied
-explicitly — the Rust idiom for pyfly's implicit
-`RequestContext.current()`.
+explicitly, or resolved from a `UserProvider` (see above) when an
+adapter wires one in.
 
 ### `SoftDelete` + `SoftDeletePolicy`
 
@@ -347,9 +345,9 @@ impl SoftDeletePolicy {
 
 `apply` prepends a `deleted_at IS NULL` guard to a `Filter`, so
 `WHERE "deleted_at" IS NULL AND <user predicates>` — the read-path
-exclusion pyfly threads through `SoftDeleteRepository`. `apply_spec`
-ANDs the same guard onto a `Specification`, keeping any OR sub-tree
-grouped.
+exclusion a soft-delete repository threads through every query.
+`apply_spec` ANDs the same guard onto a `Specification`, keeping any OR
+sub-tree grouped.
 
 ### `RoutingPolicy` + `read_only` + `NamedDataSources`
 
@@ -377,15 +375,14 @@ impl<S> NamedDataSources<S> {
 }
 ```
 
-`RoutingPolicy` is Spring's `AbstractRoutingDataSource`: it routes to a
-read-replica inside a `read_only()` scope (when one is configured) and
-to the primary otherwise. `read_only()` returns an RAII guard backed by
-a thread-local flag — the Rust idiom for pyfly's `contextvar`-based
-context manager; nesting restores the outer scope's state. The factory
-type `S` is generic, so the crate stays free of any SQL driver.
+`RoutingPolicy` is an `AbstractRoutingDataSource`-style router: it routes
+to a read-replica inside a `read_only()` scope (when one is configured)
+and to the primary otherwise. `read_only()` returns an RAII guard backed
+by a thread-local flag; nesting restores the outer scope's state. The
+factory type `S` is generic, so the crate stays free of any SQL driver.
 `NamedDataSources` is the registry of additional named datasources.
 
-### `Mapper` (runtime object-to-object mapper / MapStruct equivalent)
+### `Mapper` (runtime object-to-object mapper, MapStruct-style)
 
 ```rust,ignore
 pub struct Mapper { /* registered mappings + projections, keyed by (S, D) */ }
@@ -408,7 +405,7 @@ let projection = Projection::new()
     .computed("total", |src| json!(src["quantity"].as_f64().unwrap() * src["unit_price"].as_f64().unwrap()));
 ```
 
-The Rust port of pyfly's `data.mapper`. Rust has no runtime field
+A runtime object-to-object mapper. Rust has no runtime field
 reflection, so the mapper bridges through `serde_json`: the source is
 serialised to a JSON object, renames / exclusions / transformers are
 applied, and the result is deserialised into the destination type — so
@@ -416,9 +413,8 @@ applied, and the result is deserialised into the destination type — so
 serde. `map` does name-matched conversion (with optional `Mapping`
 config); `map_list` maps a slice; `project` maps onto a (usually
 smaller) projection type with optional `Projection::computed` fields
-that receive the whole source. Field renaming is **source → destination**
-(pyfly's `field_map`); transformers and computed fields are keyed by
-**destination** name.
+that receive the whole source. Field renaming is **source → destination**;
+transformers and computed fields are keyed by **destination** name.
 
 ### `Pageable` + `RequestSort` + `Order` (pagination request types)
 
@@ -450,9 +446,9 @@ impl Pageable {
 }
 ```
 
-The Rust port of pyfly's `data.pageable`. These are the **request**
-side of paging (what the caller asks for), distinct from the `Page<T>`
-**response** envelope. The page number is **1-based** with `page >= 1`
+The **request** side of paging (what the caller asks for), distinct from
+the `Page<T>` **response** envelope. The page number is **1-based** with
+`page >= 1`
 validation (`PageableError`); `to_filter` translates it to the filter
 DSL's **0-based** page index. The sort collection is named `RequestSort`
 (not `Sort`) to avoid colliding with the SQL-render `Sort` already
@@ -487,9 +483,8 @@ impl ParsedQuery {
 }
 ```
 
-The Rust port of pyfly's `data.query_parser`. Parses
-`find_by_status_and_role_order_by_name_desc`-style method names into a
-structured `ParsedQuery` (prefixes `find_by`/`count_by`/`exists_by`/
+Parses `find_by_status_and_role_order_by_name_desc`-style method names
+into a structured `ParsedQuery` (prefixes `find_by`/`count_by`/`exists_by`/
 `delete_by`, connectors `_and_`/`_or_`, operator suffixes checked
 longest-first so `_greater_than_equal` beats `_greater_than`, and
 chainable `_order_by_…` clauses). A `ParsedQuery` lowers — **with bound
@@ -509,10 +504,9 @@ ELSE 0 END` (exists), `DELETE …` (delete) — and `to_mongo` lowers to a
 `firefly-data-mongodb` adapters call these from their
 `find_by_derived` / `count_by_derived` / `exists_by_derived` /
 `delete_by_derived` helpers, so a `find_by_email` method name runs as a
-real query (the Rust analogue of pyfly's repository bean
-post-processor).
+real query.
 
-### `CustomQuery` (the `@query` custom-query path)
+### `CustomQuery` (the `#[query]` custom-query path)
 
 ```rust,ignore
 pub struct CustomQuery { /* value + native flag */ }
@@ -529,8 +523,8 @@ pub fn transpile_jpql(jpql: &str, entity_name: &str, table: &str) -> String;
 pub fn substitute_named_params(value: &Value, params: &BTreeMap<String, Value>) -> Value;
 ```
 
-The Rust port of pyfly's `@query` decorator + `QueryExecutor` /
-`MongoQueryExecutor`. A relational `CustomQuery` carries raw SQL
+The custom-query path behind a `#[query]` annotation. A relational
+`CustomQuery` carries raw SQL
 (`native`) or a JPQL-like string (`jpql`, transpiled by `transpile_jpql`
 — `FROM Entity alias` → `FROM table`, `SELECT alias`/`COUNT(alias)` →
 `SELECT *`/`COUNT(*)`, `alias.field` → `field`, `= true`/`= false` →
@@ -558,40 +552,41 @@ impl ColumnProjection {
 The DB-side complement of `Mapper::project`: where the mapper projects an
 *already-fetched* full entity object-to-object, a `ColumnProjection`
 narrows the `SELECT` list (or Mongo projection document) so **only** the
-projected columns cross the wire — the missing half of pyfly's
-projection-aware query compiler. The adapters run it via
+projected columns cross the wire. The adapters run it via
 `project_by_spec`.
 
 ## Reactive
 
 On top of the blocking `async fn` `Repository` contract, this crate adds
-a **reactive** CRUD surface — the Spring Data **R2DBC** analog — built on
-the [`firefly-reactive`](../reactive) crate (Rust's Project Reactor /
-WebFlux `Mono` / `Flux`). It is purely **additive**: nothing about the
-existing `Repository` / `MemoryRepository` API changes; the reactive
-types sit alongside.
+a **reactive**, R2DBC-style CRUD surface, built on the
+[`firefly-reactive`](../reactive) crate (Firefly's `Mono` / `Flux`
+publishers). It is purely **additive**: nothing about the existing
+`Repository` / `MemoryRepository` API changes; the reactive types sit
+alongside.
 
-| Spring Data R2DBC                 | firefly-data reactive                       |
-|-----------------------------------|---------------------------------------------|
-| `ReactiveCrudRepository<T, ID>`   | `ReactiveCrudRepository<T, ID>`             |
-| `Flux<T> findAll()`               | `find_all() -> Flux<T>`                     |
-| `Flux<T> findAllById(ids)`        | `find_all_by_id(ids) -> Flux<T>`            |
-| `Mono<T> findById(id)`            | `find_by_id(id) -> Mono<T>`                 |
-| `Mono<Boolean> existsById(id)`    | `exists_by_id(id) -> Mono<bool>`            |
-| `Mono<T> save(e)`                 | `save(e) -> Mono<T>`                        |
-| `Flux<T> saveAll(es)`             | `save_all(es) -> Flux<T>`                   |
-| `Mono<Void> deleteById(id)`       | `delete_by_id(id) -> Mono<()>`              |
-| `Mono<Void> deleteAll()`          | `delete_all() -> Mono<()>`                  |
-| `Mono<Long> count()`              | `count() -> Mono<u64>`                       |
-| `findAll(Specification, Pageable)`| `ReactiveSpecificationRepository`           |
+`ReactiveCrudRepository<T, ID>` exposes the reactive CRUD surface:
 
-A "no row" `find_by_id` maps to an **empty** `Mono` (Reactor's
-`Mono.empty()`), exactly as Spring Data signals a missing `findById`.
+| method                          | result        |
+|---------------------------------|---------------|
+| `find_all()`                    | `Flux<T>`     |
+| `find_all_by_id(ids)`           | `Flux<T>`     |
+| `find_by_id(id)`                | `Mono<T>`     |
+| `exists_by_id(id)`              | `Mono<bool>`  |
+| `save(e)`                       | `Mono<T>`     |
+| `save_all(es)`                  | `Flux<T>`     |
+| `delete_by_id(id)`              | `Mono<()>`    |
+| `delete_all()`                  | `Mono<()>`    |
+| `count()`                       | `Mono<u64>`   |
+
+Composable-spec + paging queries are served by a separate
+`ReactiveSpecificationRepository` (see below). A "no row" `find_by_id`
+resolves to an **empty** `Mono`, the canonical reactive signal for a
+missing record.
 
 ### In-memory (`ReactiveMemoryRepository`)
 
 The reactive twin of `MemoryRepository`, for tests. Drive the publishers
-with `block()` / `collect_list()` (Reactor's `block()`):
+with `block()` / `collect_list()`:
 
 ```rust
 use firefly_data::{ReactiveCrudRepository, ReactiveMemoryRepository};
@@ -675,10 +670,9 @@ projecting the configured columns is streamed row-by-row through the same
 
 `ReactiveSpecificationRepository` (implemented by `ReactiveMemoryRepository`)
 runs a composable `Specification` predicate with an optional `Pageable`
-window and **streams** the matches as a `Flux` — the reactive analog of
-`findAll(Specification, Pageable)`, but with no intermediate `Page<T>`
-envelope, so it plugs straight into an NDJSON / SSE endpoint with
-backpressure.
+window and **streams** the matches as a `Flux`, with no intermediate
+`Page<T>` envelope, so it plugs straight into an NDJSON / SSE endpoint
+with backpressure.
 
 ## Testing
 

@@ -1,6 +1,6 @@
 # `firefly-notifications`
 
-> **Tier:** Adapter · **Status:** Full (port + dispatcher + memory channel) · **Java original:** `firefly-notifications` · **Go module:** `notifications`
+> **Tier:** Adapter · **Status:** Stable
 
 ## Overview
 
@@ -16,27 +16,22 @@
 Concrete provider adapters (`firefly-notifications-sendgrid`,
 `firefly-notifications-resend`, `firefly-notifications-twilio`,
 `firefly-notifications-firebase`) live in dedicated crates and
-currently ship as port-asserting stubs, mirroring the Go port's
-roadmap.
+currently ship as port-asserting stubs on the roadmap.
 
 ## Design notes
 
-* The Go `type Kind string` becomes an open `Kind` newtype over a
-  string: the canonical values are the `Kind::EMAIL`, `Kind::SMS`, and
-  `Kind::PUSH` constants, but custom transports may mint their own
-  kinds via `Kind::new`.
-* Go's `Channel` interface becomes an `async_trait` object-safe trait
-  (`Send + Sync`), so channels can be shared as `Arc<dyn Channel>` and
-  dispatched from any task.
-* `Dispatcher` keeps its registry behind an `RwLock`, matching the Go
-  `sync.RWMutex` semantics: `register` overwrites any previous channel
-  for the same kind, and `dispatch` returns
-  `NotificationError::NoChannel` (the Go `ErrNoChannel` sentinel,
-  message-for-message) when nothing is registered.
-* The JSON shape of `Notification` is byte-identical to
-  `json.Marshal` in Go — `subject`, `template`, and `variables` are
-  omitted when empty, and `created_at` marshals as RFC 3339 under the
-  `createdAt` key (the default envelope stamps the Go zero time,
+* `Kind` is an open newtype over a string: the canonical values are the
+  `Kind::EMAIL`, `Kind::SMS`, and `Kind::PUSH` constants, but custom
+  transports may mint their own kinds via `Kind::new`.
+* `Channel` is an `async_trait` object-safe trait (`Send + Sync`), so
+  channels can be shared as `Arc<dyn Channel>` and dispatched from any
+  task.
+* `Dispatcher` keeps its registry behind an `RwLock`: `register`
+  overwrites any previous channel for the same kind, and `dispatch`
+  returns `NotificationError::NoChannel` when nothing is registered.
+* The JSON shape of `Notification` omits `subject`, `template`, and
+  `variables` when empty, and `created_at` marshals as RFC 3339 under
+  the `createdAt` key (the default envelope stamps the zero time,
   `0001-01-01T00:00:00Z`).
 
 ## Public surface
@@ -119,21 +114,20 @@ cargo test -p firefly-notifications
 
 Covers dispatch routing by channel `Kind`, the `NoChannel` sentinel for
 unrouted messages, register-overwrite semantics, concurrent dispatch,
-and Go wire-format parity for the `Notification` JSON envelope.
+and the wire format of the `Notification` JSON envelope.
 
-## pyfly parity
+## Channel-specific messaging
 
-Alongside the Go-parity envelope above (which is **unchanged** — the
-`Notification` / `Dispatcher` / `Channel` / `MemoryChannel` types and their
-wire formats are preserved), this crate ships the richer
-`pyfly.notifications` surface for channel-specific messaging with hexagonal
+Alongside the envelope above (the `Notification` / `Dispatcher` /
+`Channel` / `MemoryChannel` types and their wire formats), this crate
+ships a richer surface for channel-specific messaging with hexagonal
 provider adapters.
 
-### What's added
+### What it provides
 
 * **Rich models** — `DeliveryStatus` (`QUEUED` / `SENT` / `DELIVERED` /
-  `BOUNCED` / `FAILED` / `SUPPRESSED`, serialized as the upper-case wire value
-  exactly like pyfly's `EmailStatus`), `Attachment`, `EmailMessage`
+  `BOUNCED` / `FAILED` / `SUPPRESSED`, serialized as the upper-case wire
+  value), `Attachment`, `EmailMessage`
   (cc/bcc/attachments/custom headers/separate text+html bodies/provider-native
   template routing), `SmsMessage`, `PushMessage`, and `NotificationResult`.
 * **Ports** — `EmailProvider` / `SmsProvider` / `PushProvider` (object-safe
@@ -148,7 +142,7 @@ provider adapters.
   * **template precedence** — an injected local engine renders into `body_html`
     and clears `template_id` / `template_data`; with no engine, those fields are
     forwarded for provider-native routing;
-  * **provider-error → FAILED** conversion (pyfly's `_send_safely`);
+  * **provider-error → FAILED** conversion (safe send);
   * **metrics** — sent / failed / suppressed counters via the
     `NotificationMetrics` hook.
 * **Preferences** — `PreferenceService` trait + `InMemoryPreferenceService`
@@ -158,7 +152,7 @@ provider adapters.
 * **Templates** — `TemplateEngine` trait, `NoOpTemplateEngine` (errors on any
   render — the safe default), and `MiniJinjaTemplateEngine` (feature
   `minijinja`, on by default) — a Jinja-compatible engine with HTML
-  autoescaping always on, the counterpart of pyfly's `Jinja2TemplateEngine`.
+  autoescaping always on.
 * **Metrics hook** — `NotificationMetrics` trait (`record_sent` /
   `record_failed` / `record_suppressed`, with default no-op methods) +
   `InMemoryNotificationMetrics` for tests.
@@ -210,6 +204,6 @@ async fn main() {
 }
 ```
 
-The pyfly-parity tests live in `tests/pyfly_parity.rs` (ports of
-`test_template_and_preferences.py` and `test_optout_per_recipient.py`) and
-`tests/models_and_config.rs` (model wire shapes and config selection).
+The channel-messaging tests live in `tests/pyfly_parity.rs` (template
+rendering and per-recipient opt-out) and `tests/models_and_config.rs`
+(model wire shapes and config selection).

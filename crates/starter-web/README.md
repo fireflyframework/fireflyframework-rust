@@ -1,23 +1,23 @@
 # `firefly-starter-web`
 
-> **Tier:** Starter · **Status:** Full · **Java original:** `firefly-starter-web` · **pyfly module:** `pyfly.starters.web`
+> **Tier:** Starter · **Status:** Stable
 
 ## Overview
 
 `firefly-starter-web` is the **web-tier starter**: it composes
 [`firefly-starter-core`](../starter-core/) with the HTTP middleware bundle
 switched **on** and an optional [`firefly-security`](../security/) filter
-chain — the Rust spelling of pyfly's dedicated `WEB` starter (one of the
-five: `core` / `web` / `application` / `data` / `domain`).
+chain. It is the dedicated `WEB` starter — one of the five
+(`core` / `web` / `application` / `data` / `domain`).
 
-Where `Core` leaves every pyfly-parity middleware knob **off** (so a
+Where `Core` leaves every middleware knob **off** (so a
 non-HTTP worker / scheduler / CLI can opt out of the web stack entirely —
-the rationale pyfly's `web.py` documents for splitting the web tier out of
-`core`), `WebStack::new` flips the HTTP batteries on by default:
+the reason the web tier is split out of `core`), `WebStack::new` flips the
+HTTP batteries on by default:
 
 | Battery | Wired by `WebStack::new` |
 |---------|--------------------------|
-| `CorsLayer` | Spring permit-default CORS edge (`CorsConfig::permit_defaults`) |
+| `CorsLayer` | permit-default CORS edge (`CorsConfig::permit_defaults`) |
 | `SecurityHeadersLayer` | OWASP response headers (`X-Frame-Options`, `X-Content-Type-Options`, …) |
 | `CorrelationLayer` | `X-Correlation-Id` (inherited, always on) |
 | request metrics | `http_server_requests_seconds` timer bridged into the actuator `MetricRegistry` |
@@ -31,18 +31,17 @@ from `Core` via `Deref`). The defaults are assembled from the same
 `CoreConfig` knobs, so any of them can be overridden (or turned back off)
 by passing an explicit value to `WebStack::new`.
 
-`WebStack` dereferences to `Core` (the Rust analog of Go's embedded
-`*startercore.Core`), so every core field and convenience method —
-`actuator_router`, `new_application`, `print_banner`, the admin-dashboard
-accessors, … — is available directly on the web value. `starter_name`
-defaults to `"starter-web"`.
+`WebStack` dereferences to `Core`, so every core field and convenience
+method — `actuator_router`, `new_application`, `print_banner`, the
+admin-dashboard accessors, … — is available directly on the web value.
+`starter_name` defaults to `"starter-web"`.
 
 ## Public surface
 
 ```rust,ignore
 pub struct WebStack {
     pub core: Core,                  // Deref/DerefMut target
-    pub security: Option<FilterChain>, // optional Spring-Security-6 chain
+    pub security: Option<FilterChain>, // optional filter chain
 }
 
 impl WebStack {
@@ -92,8 +91,7 @@ async fn main() {
 
 ## Optional security filter chain
 
-A `FilterChain` declares path-based access rules (pyfly's `HttpSecurity` /
-Spring Security 6 `SecurityFilterChain`). Install one with
+A `FilterChain` declares path-based access rules. Install one with
 `with_security`; `apply_middleware` then layers it **inside** the
 inherited core chain (just above your routes, after
 correlation/CORS/security-headers have run) so a denied request is still
@@ -107,9 +105,8 @@ rules expect an `Authentication` to have been populated upstream by a
 cargo test -p firefly-starter-web
 ```
 
-Covers the wiring parity with pyfly's web starter (batteries on,
-`"starter-web"` name, starter-name rules matching the siblings, explicit
-CORS override winning over the permit-default), the headline **boot test**
+Covers the wiring (batteries on, `"starter-web"` name, starter-name rules,
+explicit CORS override winning over the permit-default), the headline **boot test**
 (build the stack, mount a router through its middleware, oneshot a request
 asserting OWASP security headers + CORS decoration + correlation id, plus
 a CORS preflight short-circuit and an `/actuator/health` probe), the

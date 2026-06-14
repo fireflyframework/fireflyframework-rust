@@ -1,6 +1,6 @@
 # `firefly-notifications-sendgrid`
 
-> **Tier:** Adapter · **Status:** Implemented · **Backing tech:** SendGrid v3 `/mail/send` (email)
+> **Tier:** Adapter · **Status:** Stable · **Backing tech:** SendGrid v3 `/mail/send` (email)
 
 ## Overview
 
@@ -12,14 +12,13 @@ REST endpoint over `reqwest`; there is no stub or not-implemented sentinel.
 The crate exposes two interchangeable surfaces, both backed by the same live
 API:
 
-* **`SendGridEmailProvider`** — the rich provider (pyfly
-  `SendGridEmailProvider`). It POSTs an `EmailMessage` to `/mail/send`, building
-  `personalizations`, `dynamic_template_data`, and base64 attachments, and
-  parses the `X-Message-Id` response header.
-* **`Channel` / `Config`** — the Go-parity envelope adapter. It keeps the Go
-  module's `Config` wiring surface, and `Channel::send` performs a **real**
-  `/mail/send` call by mapping the channel-agnostic `Notification` envelope to an
-  `EmailMessage` (using `from_address` as the sender) and delegating to
+* **`SendGridEmailProvider`** — the rich provider. It POSTs an `EmailMessage` to
+  `/mail/send`, building `personalizations`, `dynamic_template_data`, and base64
+  attachments, and parses the `X-Message-Id` response header.
+* **`Channel` / `Config`** — the envelope adapter. It exposes a compact `Config`
+  wiring surface, and `Channel::send` performs a **real** `/mail/send` call by
+  mapping the channel-agnostic `Notification` envelope to an `EmailMessage`
+  (using `from_address` as the sender) and delegating to
   `SendGridEmailProvider`.
 
 ```rust
@@ -57,8 +56,9 @@ pub struct Config {
 }
 ```
 
-The shape is field-for-field identical to the Go `notificationssendgrid.Config`
-struct.
+`api_key` and `from_address` are the only fields this adapter reads; the
+remaining fields are part of the shared vendor-config surface used across
+Firefly's notification adapters and are ignored here.
 
 ## Public surface
 
@@ -90,7 +90,7 @@ dispatcher.register(Arc::new(Channel::new(Config {
 })));
 ```
 
-## Behavior (matches pyfly `SendGridEmailProvider`)
+## Behavior
 
 * POSTs `{api_base}/mail/send` (default `https://api.sendgrid.com/v3`) with
   `Authorization: Bearer <key>` and `Content-Type: application/json`.
@@ -115,8 +115,7 @@ cargo test -p firefly-notifications-sendgrid
 `tests/mock_send.rs` runs both surfaces against an **in-process axum mock** on
 `127.0.0.1:0` (no network, no Docker) that captures the outbound request and
 asserts the exact method, path, auth header, and JSON payload, then parses a
-realistic response — the Rust port of
-`tests/notifications/test_sendgrid_behavior.py`.
+realistic response.
 
 > **Live round trip:** A real SendGrid round trip requires a valid `SG.…` API
 > key and a verified sender, which are deployment secrets. The test suite

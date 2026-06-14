@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Log Viewer.
+ * Firefly Admin — Log Viewer.
  *
  * Real-time log viewer with SSE live tail, level filtering,
  * pause/resume, clear, and auto-scroll controls.

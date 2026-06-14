@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — CQRS View.
+ * Firefly Admin — CQRS View.
  *
  * Displays CQRS command and query handler registrations with
  * stat cards, bus pipeline feature indicators, searchable table,

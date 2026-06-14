@@ -38,15 +38,13 @@ pub struct RedisConfig {
     /// Redis connection URL (`redis://` or `rediss://`).
     pub url: String,
     /// Streams the consumer reads from; each stream key is a
-    /// destination. Defaults to `["firefly.events"]`, mirroring pyfly's
-    /// `["pyfly.events"]` default.
+    /// destination. Defaults to `["firefly.events"]`.
     pub streams: Vec<String>,
-    /// Consumer-group name. Defaults to `"firefly-default"`
-    /// (pyfly: `"pyfly-default"`).
+    /// Consumer-group name. Defaults to `"firefly-default"`.
     pub group: String,
     /// Stable consumer identifier inside the group; used by
     /// `XREADGROUP` for pending-entry tracking. Defaults to the
-    /// machine hostname (pyfly: `socket.gethostname()`).
+    /// machine hostname.
     pub consumer_id: String,
     /// `XREADGROUP` long-poll block timeout, in milliseconds. Defaults
     /// to `5000` (pyfly: `block_ms=5000`).

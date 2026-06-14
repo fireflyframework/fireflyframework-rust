@@ -1,6 +1,6 @@
 # `firefly-data-mongodb`
 
-> **Tier:** Platform · **Status:** Full · **pyfly original:** `pyfly.data.document.mongodb`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -18,8 +18,7 @@ queries: `Specification::to_mongo()` lowers it to a MongoDB
 relational stores, so the *same* spec drives SQL, in-memory matching, and
 MongoDB.
 
-This is the Rust port of pyfly's `MongoRepository`, `MongoSpecification`,
-and `BaseDocument`.
+It provides `MongoRepository`, `MongoSpecification`, and `BaseDocument`.
 
 ## Public surface
 
@@ -45,8 +44,8 @@ Plus, beyond the shared ports:
 - `with_auditor(Auditor)` — wire automatic audit stamping on writes.
 - `with_soft_delete(SoftDeletePolicy)` — wire automatic soft-delete
   filtering on reads and turn `delete_by_id` into a logical delete.
-- **Derived & custom queries executed end-to-end** — the document analogue
-  of pyfly's repository bean post-processor:
+- **Derived & custom queries executed end-to-end** — the document
+  repository's method-name query support:
   - `find_by_derived` / `count_by_derived` / `exists_by_derived` /
     `delete_by_derived` parse a `find_by_status_and_role`-style method name
     and lower it (through the shared `Specification` tree) to a
@@ -95,7 +94,7 @@ let hits = repo.find_by_spec(spec).collect_list().block().await?;
 ### `BaseDocument`
 
 The audit-stamp + soft-delete mixin every document embeds with
-`#[serde(flatten)]` — the Rust analogue of pyfly's `BaseDocument`. Its
+`#[serde(flatten)]`. Its
 fields surface at the document's top level (`createdAt`, `updatedAt`,
 `createdBy`, `updatedBy`, `deletedAt`). Stamping is delegated to
 firefly-data's `Auditor` and `SoftDelete`, so audit / soft-delete
@@ -150,8 +149,7 @@ path** (`find_all`, `find_all_by_id`, `find_by_id`, `exists_by_id`,
 `count`, `find_by_spec`, `find_by_spec_paged`, `find_page`) injects a
 `{"<column>": null}` guard so logically deleted documents stay hidden,
 and `delete_by_id` becomes a `$set` of the stamp column rather than a
-physical removal. `delete_all` always removes physically (Spring Data
-`deleteAll` parity).
+physical removal. `delete_all` always removes physically.
 
 ## Testing
 
@@ -173,11 +171,10 @@ FIREFLY_TEST_MONGODB_URL=mongodb://localhost:27017 \
 
 ## Actuator integration (feature `actuator`)
 
-Enable the `actuator` feature for a database health component, the Rust port
-of pyfly's database health probe:
+Enable the `actuator` feature for a database health component:
 
 ```toml
-firefly-data-mongodb = { version = "26.6.3", features = ["actuator"] }
+firefly-data-mongodb = { version = "26.6.4", features = ["actuator"] }
 ```
 
 `MongoHealthIndicator` implements `firefly_actuator::HealthIndicator`: it

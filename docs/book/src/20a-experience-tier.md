@@ -12,11 +12,12 @@ disconnect by persisting journey state.
 This is the one Firefly tier Lumen itself never enters, so the chapter introduces
 it from first principles and then wires it against the service you already have.
 
-> **Spring parity.** The experience tier is the Firefly Java
-> `firefly-starter-application`-driving-`@Workflow`s pattern (and pyfly's
-> `transactional/workflow` + `client` building blocks composed into a BFF). Its
-> Rust home is the `firefly-starter-experience` crate. A signal-gated step is
-> Spring's `@WaitForSignal`; the domain-SDK registry is the `ClientFactory`.
+> **What the experience tier is.** The experience tier is Firefly's
+> Backend-for-Frontend layer, built on the `firefly-starter-experience` crate: it
+> composes downstream domain SDKs, drives multi-request journeys with signal-gated
+> workflows, and persists journey state across requests. A signal gate parks a
+> workflow step until a named signal arrives; a domain-SDK registry resolves each
+> downstream client by logical name.
 
 ## The three service tiers
 
@@ -37,11 +38,11 @@ aggregates several domain SDKs into APIs shaped for *one* frontend or channel. I
 calls a sibling experience service — it composes domain SDKs (over
 `firefly-client`) and nothing else.
 
-> **Spring parity.** The strict `channel → experience → domain → core` direction
-> is the same layering Spring Cloud microservice estates enforce: a BFF/edge
-> service calls domain services; domain services own their data. The Rust
-> starters make the boundary a *type*: an experience stack can register domain
-> SDKs and nothing else.
+> **The tier boundary is a type.** The strict `channel → experience → domain →
+> core` direction is enforced by the starters themselves: an experience stack can
+> register domain SDKs and nothing else. A BFF never owns a database and never
+> calls a core service or a sibling BFF directly — the dependency direction is
+> one-way by construction.
 
 ## `ExperienceStack` — batteries for a BFF
 
@@ -64,8 +65,8 @@ The stack exposes five public fields (`Bff` is an alias for `ExperienceStack`):
 
 | Field | Type | Role |
 |-------|------|------|
-| `clients` | `DomainClients` | the domain-SDK registry (the `ClientFactory` equivalent) |
-| `signals` | `Arc<SignalService>` | `@WaitForSignal`-style gates a workflow step parks on |
+| `clients` | `DomainClients` | the domain-SDK registry, resolved by logical name |
+| `signals` | `Arc<SignalService>` | the signal gates a workflow step parks on |
 | `state` | `WorkflowState` | Redis-capable persisted journey state, keyed by correlation id |
 | `query` | `Arc<WorkflowQueryService>` | the journey-status query surface |
 | `children` | `Arc<ChildWorkflowService>` | child-workflow composition for nested journeys |
@@ -73,16 +74,17 @@ The stack exposes five public fields (`Bff` is an alias for `ExperienceStack`):
 `ExperienceStack` `Deref`s to its `WebStack` (which derefs to `Core`), so every
 web + core method you met building Lumen — `apply_middleware`, `actuator_router`,
 `new_application`, `with_security`, `cache`, `bus`, `scheduler` — is reachable
-directly on the BFF value. There is also a pyfly-parity bootstrap pair,
+directly on the BFF value. There is also a bootstrap pair,
 `register_experience_stack(cfg)` (== `ExperienceStack::new`) and
 `enable_experience_stack(cfg)` (stamps the tier defaults onto a `CoreConfig`), so
-a migrating service reaches the tier by the spelling it already knows.
+you can reach the tier through whichever spelling reads more naturally at the
+call site.
 
-> **Spring parity.** `register_experience_stack` / `enable_experience_stack`
-> mirror pyfly's `register_*_stack` / `@enable_*_stack` (and .NET's
-> `services.AddFireflyExperience`). `ExperienceStack` deref-ing to `WebStack` is
-> the Rust analog of Go's embedded `*WebStack` — the BFF *is* a web service plus
-> the journey machinery.
+> **Two ways to build the stack.** `ExperienceStack::new(cfg)` and the equivalent
+> `register_experience_stack(cfg)` both build the BFF; `enable_experience_stack(cfg)`
+> stamps the tier defaults onto a `CoreConfig`. Because `ExperienceStack` derefs to
+> `WebStack` (which derefs to `Core`), the BFF *is* a web service plus the journey
+> machinery.
 
 ## Composing domain SDKs — `DomainClients`
 
@@ -105,10 +107,10 @@ client)` takes a pre-tuned `RestClient` (custom timeout, headers, retry policy).
 Re-registering a name replaces it (last wins), and `names()` lists every
 registered SDK.
 
-> **Spring parity.** `DomainClients` is the `ClientFactory`: instead of
-> threading a `RestBuilder` through every call site, a step resolves the right
-> client by logical name. The clients carry the same correlation propagation and
-> RFC 7807 decoding the [HTTP-clients chapter](./13-http-clients.md) covered.
+> **Resolve clients by name.** `DomainClients` lets a step resolve the right
+> downstream client by logical name instead of threading a `RestBuilder` through
+> every call site. The clients carry the same correlation propagation and RFC 7807
+> decoding the [HTTP-clients chapter](./13-http-clients.md) covered.
 
 ## Signal-driven journeys
 
@@ -146,9 +148,10 @@ resumes. Delivery is **buffered** — if the signal arrives before the gate park
 there is no lost wakeup. `signals.list_active()` lists the journeys currently
 parked on a gate.
 
-> **Spring parity.** `Node::wait_for_signal(...)` is the engine spelling of
-> `@WaitForSignal("confirmed")`; `signals.deliver(...)` is the external event
-> that satisfies the gate. The workflow is the same DAG-with-compensation engine
+> **Signal gates.** `Node::wait_for_signal(...)` parks a workflow node until
+> `signals.deliver(...)` delivers the named signal — the external event that
+> satisfies the gate. Delivery is buffered, so a signal that arrives before the
+> gate parks is not lost. The workflow is the same DAG-with-compensation engine
 > from the [sagas chapter](./12-sagas.md) (`firefly-orchestration`), here driven
 > by signals rather than run to completion in one call.
 
@@ -182,11 +185,12 @@ bff.state.delete("j-1").await?;
 A miss on an unknown journey is `Ok(None)`, not an error — so a status check on a
 journey that never existed is a clean 404, not a 500.
 
-> **Spring parity.** `WorkflowState` is the experience-tier analog of
-> `DurableWorkflowState`, but persisted through the **cache** `Adapter` — the
-> Firefly convention of "hold workflow state in Redis." A parked journey saves
-> its `StepContext`; a later request loads it and resumes, surviving the client
-> disconnect an in-memory waiter would not.
+> **Durable journey state.** `WorkflowState` persists a workflow run's
+> `StepContext` through the **cache** `Adapter`, keyed by correlation id — point
+> it at Redis for cross-restart durability, the Firefly convention of "hold
+> workflow state in Redis." A parked journey saves its `StepContext`; a later
+> request loads it and resumes, surviving the client disconnect an in-memory
+> waiter would not.
 
 ## Querying journey status — `WorkflowQueryService`
 

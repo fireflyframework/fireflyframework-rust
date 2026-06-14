@@ -1,6 +1,6 @@
 # `firefly-validators`
 
-> **Tier:** Foundational · **Status:** Full · **Java original:** `firefly-common-validators` · **Go module:** `validators`
+> **Tier:** Foundational · **Status:** Stable
 
 ## Overview
 
@@ -28,31 +28,29 @@ Coverage:
 | `validate_dni`         | Spanish DNI with letter checksum                                            |
 | `validate_nie`         | Spanish NIE (X/Y/Z prefix variant)                                          |
 | `validate_nif`         | Spanish NIF (DNI ∪ NIE)                                                     |
-| `validate_cvv`         | Card CVV/CVC — 3 or 4 digits *(pyfly parity)*                               |
-| `validate_pin`         | Card PIN — 4 digits by default, `_with_length` variant *(pyfly parity)*    |
-| `validate_amount`      | Monetary amount — finite, non-negative, ≤ 18 integer digits *(pyfly parity)* |
-| `validate_account_number` | Bank account number — 6..34 alphanumerics *(pyfly parity)*               |
-| `validate_interest_rate` | Percentage band 0..=100, `_within` variant *(pyfly parity)*               |
-| `validate_date`        | ISO-8601 calendar date, `_with_format` strftime variant *(pyfly parity)*    |
-| `validate_datetime`    | ISO-8601 datetime (`T` or space, fractional secs, offset or `Z`) *(pyfly parity)* |
-| `validate_national_id` | Generic national id — 5..20 alphanumerics after stripping spaces/dashes *(pyfly parity)* |
-| `validate_tax_id`      | Generic tax id — `^[A-Z0-9]{3,20}$` after upper-casing (no separator stripping) *(pyfly parity)* |
+| `validate_cvv`         | Card CVV/CVC — 3 or 4 digits                                                |
+| `validate_pin`         | Card PIN — 4 digits by default, `_with_length` variant                     |
+| `validate_amount`      | Monetary amount — finite, non-negative, ≤ 18 integer digits                |
+| `validate_account_number` | Bank account number — 6..34 alphanumerics                               |
+| `validate_interest_rate` | Percentage band 0..=100, `_within` variant                               |
+| `validate_date`        | ISO-8601 calendar date, `_with_format` strftime variant                     |
+| `validate_datetime`    | ISO-8601 datetime (`T` or space, fractional secs, offset or `Z`)            |
+| `validate_national_id` | Generic national id — 5..20 alphanumerics after stripping spaces/dashes     |
+| `validate_tax_id`      | Generic tax id — `^[A-Z0-9]{3,20}$` after upper-casing (no separator stripping) |
 
 ## Why pure functions?
 
-The .NET port uses validation attributes (`[ValidIban]`); Java uses
-Jakarta Bean Validation annotations; the Go port exposes plain
-functions returning `error`. Rust has no annotation runtime either, so
-this crate keeps the Go shape: plain functions returning
-`Result<(), ValidationError>`. Services can:
+Where annotation-driven frameworks reach for validation attributes,
+Rust has no annotation runtime, so this crate stays close to the
+language: plain functions returning `Result<(), ValidationError>`.
+Services can:
 
 * Call them directly from CQRS command/query `validate()` methods.
 * Compose them per field and collect failures into a multi-field
   validation report.
-* Match on `ValidationError::Invalid(reason)` — the single error kind
-  is the analog of Go's `errors.Is(err, ErrInvalid)` sentinel, and its
-  `Display` rendering (`firefly/validators: invalid: <reason>`) matches
-  the Go port byte for byte.
+* Match on `ValidationError::Invalid(reason)` — a single error kind
+  acts as a sentinel, and its `Display` rendering
+  (`firefly/validators: invalid: <reason>`) is stable across the crate.
 
 ## Public surface
 
@@ -88,7 +86,7 @@ impl Default for PasswordPolicy { /* 12+ chars, upper, lower, digit, symbol */ }
 pub const IBAN_COUNTRY_LENGTHS: &[(&str, usize)];
 pub fn iban_country_length(country: &str) -> Option<usize>;
 
-// pyfly parity — banking predicates (see below)
+// banking predicates (see below)
 pub fn validate_cvv(s: &str) -> Result<(), ValidationError>;
 pub fn validate_pin(s: &str) -> Result<(), ValidationError>;                       // length 4
 pub fn validate_pin_with_length(s: &str, length: usize) -> Result<(), ValidationError>;
@@ -104,48 +102,44 @@ pub fn validate_national_id(s: &str) -> Result<(), ValidationError>;            
 pub fn validate_tax_id(s: &str) -> Result<(), ValidationError>;                    // ^[A-Z0-9]{3,20}$ after upper
 ```
 
-## pyfly parity
+## Banking predicates
 
-The banking predicates from `pyfly.validation.domain` that the Go
-lineage lacked ship as the same `Result<(), ValidationError>` functions
-as the rest of the crate:
+A second family of predicates covers card, money, and date fields, all
+returning the same `Result<(), ValidationError>` as the rest of the
+crate:
 
-* **Error reasons are pyfly's messages verbatim** — `invalid CVV`,
-  `invalid pin`, `invalid amount`, `invalid account number`,
+* **Concise error reasons** — `invalid CVV`, `invalid pin`,
+  `invalid amount`, `invalid account number`,
   `interest rate out of range`, `invalid date`, `invalid datetime` —
-  wrapped in the crate-canonical `Display`
-  (`firefly/validators: invalid: invalid CVV`). pyfly's boolean
-  `is_valid_*` and its pydantic `valid_*` factory collapse into one
-  function here.
-* **Keyword arguments become `_with`/`_within` variants**: the
-  unsuffixed function applies pyfly's defaults (PIN length 4, amount
+  each wrapped in the crate-canonical `Display`
+  (`firefly/validators: invalid: invalid CVV`). One function per check;
+  there is no separate boolean predicate.
+* **`_with`/`_within` variants accept overrides**: the unsuffixed
+  function applies sensible defaults (PIN length 4, amount
   `allow_zero=false`/`max_digits=18`, interest band `0..=100`, date
   format `%Y-%m-%d`).
-* **`validate_amount` mirrors pyfly's hardening**: `inf`/`-inf`/`NaN`
-  are rejected (never panic), negatives are rejected, zero needs
-  `allow_zero`, and the truncated integer part may carry at most
-  `max_digits` decimal digits (Python's `len(str(int(v))) <= max_digits`).
+* **`validate_amount` is hardened**: `inf`/`-inf`/`NaN` are rejected
+  (never panic), negatives are rejected, zero needs `allow_zero`, and
+  the truncated integer part may carry at most `max_digits` decimal
+  digits.
 * **`validate_date`/`validate_datetime` parse with chrono**:
   `validate_date_with_format` takes `chrono::format::strftime`
-  specifiers (the same `%Y-%m-%d`-style directives `datetime.strptime`
-  uses); `validate_datetime` accepts the `datetime.fromisoformat`
-  shapes — `T` or space separator, optional fractional seconds,
-  `±HH:MM`/`±HHMM` offsets or trailing `Z`, minute precision, and bare
-  dates. Compact "basic" forms (`20260507T120000`) and hour-only times
-  are deliberately not accepted.
+  specifiers (the familiar `%Y-%m-%d`-style directives);
+  `validate_datetime` accepts the common ISO-8601 shapes — `T` or space
+  separator, optional fractional seconds, `±HH:MM`/`±HHMM` offsets or
+  trailing `Z`, minute precision, and bare dates. Compact "basic" forms
+  (`20260507T120000`) and hour-only times are deliberately not accepted.
 * **`validate_national_id` / `validate_tax_id` are GENERIC format
   checks** — distinct from the nation-specific `validate_dni` / `nie` /
   `nif` / `ssn` / `vat` validators above. `validate_national_id` strips
-  spaces and dashes, upper-cases, then requires 5..=20 alphanumerics
-  (pyfly's `is_valid_national_id`); `validate_tax_id` only upper-cases
-  (no separator stripping) and matches `^[A-Z0-9]{3,20}$` (pyfly's
-  `is_valid_tax_id`), so any space/dash/punctuation in a tax id is
-  rejected. Reasons are pyfly's `invalid national id` / `invalid tax id`.
-* **Deliberate divergences**: alphabets are ASCII-only (Python's
-  `str.isdigit`/`str.isalnum` would also accept non-ASCII Unicode
-  digits/letters — this applies to `validate_national_id` too), and the
-  amount/interest validators take a typed `f64` instead of pyfly's
-  "anything `float()` can coerce".
+  spaces and dashes, upper-cases, then requires 5..=20 alphanumerics;
+  `validate_tax_id` only upper-cases (no separator stripping) and
+  matches `^[A-Z0-9]{3,20}$`, so any space/dash/punctuation in a tax id
+  is rejected. Reasons are `invalid national id` / `invalid tax id`.
+* **ASCII-only alphabets**: digit and alphanumeric checks accept only
+  ASCII characters (not non-ASCII Unicode digits/letters — this applies
+  to `validate_national_id` too), and the amount/interest validators
+  take a typed `f64`.
 
 ```rust
 use firefly_validators::{validate_amount_with, validate_cvv, validate_datetime};
@@ -155,7 +149,7 @@ validate_amount_with(0.0, true, 18).unwrap();          // allow_zero
 validate_datetime("2026-05-07T12:00:00Z").unwrap();    // Z == +00:00
 assert_eq!(
     validate_cvv("12").unwrap_err().reason(),
-    "invalid CVV"                                      // pyfly's message, verbatim
+    "invalid CVV"
 );
 ```
 
@@ -210,6 +204,6 @@ cargo test -p firefly-validators
 Suite includes mod-97 round-trips on canonical IBAN test vectors
 (GB, DE, FR, ES), Luhn against a known-good and known-bad pair,
 DNI checksum letter table (including the Y/Z NIE prefixes), and
-password-policy boundary cases — plus Rust-specific checks that the
-error `Display` format matches the Go port and that `ValidationError`
-is `Send + Sync + Clone + Eq`.
+password-policy boundary cases — plus checks that the error `Display`
+format is stable and that `ValidationError` is
+`Send + Sync + Clone + Eq`.

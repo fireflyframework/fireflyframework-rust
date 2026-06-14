@@ -1,12 +1,12 @@
 # `firefly-session-postgres`
 
-> **Tier:** Platform · **Status:** Full · **pyfly original:** `pyfly.session.adapters.postgres_registry.PostgresSessionRegistry`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
 `firefly-session-postgres` is the **Postgres-backed, durable, distributed**
-implementation of the [`firefly_session::SessionRegistry`](../session) port —
-the Rust port of pyfly's `PostgresSessionRegistry`. It gives relational-only
+implementation of the [`firefly_session::SessionRegistry`](../session) port.
+It gives relational-only
 deployments (no Redis required) a shared, per-principal index of live sessions:
 every application instance reads and writes the same table, so the per-principal
 concurrency cap enforced by
@@ -33,9 +33,8 @@ CREATE TABLE IF NOT EXISTS firefly_session_registry (
 ```
 
 `created_at` is the session's epoch-millis creation time, stored as a `BIGINT`
-so it round-trips the `SessionRegistry` contract's `i64` exactly (pyfly uses
-`DOUBLE PRECISION`; the Rust trait's timestamp is an integer, so `BIGINT` is the
-faithful column type).
+so it round-trips the `SessionRegistry` contract's `i64` exactly (the trait's
+timestamp is an integer, so `BIGINT` is the natural column type).
 
 | `SessionRegistry` method | SQL                                                                            |
 |--------------------------|--------------------------------------------------------------------------------|
@@ -50,7 +49,7 @@ UPDATE` makes `register` an idempotent upsert.
 
 ## Auto-DDL
 
-Like pyfly, the backing table is created **lazily and idempotently** on first
+The backing table is created **lazily and idempotently** on first
 use: the first registry method to run executes the `CREATE TABLE IF NOT EXISTS`
 (plus the supporting index) exactly once, guarded by an async mutex so
 concurrent first calls don't race the DDL. Call `init()` to force the DDL

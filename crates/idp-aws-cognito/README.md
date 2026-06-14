@@ -11,11 +11,9 @@ talks directly to the **Cognito Identity Provider JSON API** over `reqwest` —
 `X-Amz-Target: AWSCognitoIdentityProviderService.{Action}` header and a JSON
 body, exactly the wire protocol the AWS SDK speaks underneath.
 
-This is a behavior port of pyfly's `AwsCognitoIdpAdapter` (which wraps boto3)
-with a deliberate, brief-mandated divergence: instead of an SDK we drive the raw
-JSON API and sign the **admin** calls with a self-contained SigV4 signer
-(`src/sigv4.rs`), validated against the official AWS SigV4 Known-Answer-Test
-vectors.
+Rather than depending on an SDK, the adapter drives the raw JSON API directly and
+signs the **admin** calls with a self-contained SigV4 signer (`src/sigv4.rs`),
+validated against the official AWS SigV4 Known-Answer-Test vectors.
 
 ```rust
 use firefly_idp::Adapter as _;
@@ -85,20 +83,6 @@ against the official `aws4_testsuite` Known-Answer-Test vectors (`get-vanilla`,
 `get-vanilla-query`, `post-header-key-sort`, and the derived signing key), so
 its output is byte-for-byte identical to AWS's reference signer.
 
-## pyfly parity
-
-| pyfly `AwsCognitoIdpAdapter` (boto3) | Rust (raw JSON API) |
-| --- | --- |
-| `initiate_auth` USER_PASSWORD_AUTH | `InitiateAuth` (unsigned) |
-| `initiate_auth` REFRESH_TOKEN_AUTH | `InitiateAuth` (unsigned) |
-| `admin_create_user` + `admin_set_user_password` | `AdminCreateUser` + `AdminSetUserPassword` (signed) |
-| `admin_get_user` / `list_users` | `AdminGetUser` / `ListUsers` (signed) |
-| `get_user` / `global_sign_out` | `GetUser` / `GlobalSignOut` (unsigned) |
-| `admin_add/remove_user_to_group` / `list_groups` / `admin_list_groups_for_user` | signed group ops |
-| `SECRET_HASH` computation | `Adapter::secret_hash` |
-| `login` → `AuthResult` | `login` → `Token`; `login_full` → `AuthResult` |
-| `mfa_challenge` / `mfa_verify` (raised `NotImplementedError`) | real `AssociateSoftwareToken` / `VerifySoftwareToken` + `AdminSetUserMFAPreference` |
-
 ## Testing
 
 ```bash
@@ -109,5 +93,4 @@ Unit tests cover the SigV4 KAT vectors and the SECRET_HASH KAT. Behavior tests
 (`tests/cognito_behavior.rs`) drive the real `reqwest` path against an in-process
 `axum` mock server (port 0, no network, no AWS credentials), asserting the
 `X-Amz-Target` action header, the JSON request body, and (for admin calls) the
-SigV4 `Authorization` header — the Rust analog of pyfly's
-`tests/idp/test_cognito_behavior.py`.
+SigV4 `Authorization` header.

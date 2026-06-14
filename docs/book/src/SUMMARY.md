@@ -39,6 +39,5 @@
 
 # Appendices
 
-- [Migrating from Spring Boot](./90-appendix-spring.md)
 - [Module Index](./91-appendix-modules.md)
 - [Glossary](./92-glossary.md)

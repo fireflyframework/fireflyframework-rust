@@ -86,12 +86,14 @@ Three things to read here:
   here as "dispatch to the handler that knows how"; the bus, the commands, and
   the read model are the subjects of chapters 7 through 11.
 
-> **Spring parity.** `#[rest_controller(path = "/api/v1")]` is `@RestController`
-> + `@RequestMapping("/api/v1")`, and `#[get]` / `#[post]` are `@GetMapping` /
-> `@PostMapping` (pyfly's `@rest_controller` + `@get` / `@post`). The macro even
-> emits a route descriptor per endpoint for the actuator `/mappings` view and
-> the OpenAPI generator — the Rust equivalent of Spring's
-> `RequestMappingHandlerMapping`.
+> **Design note.** `#[rest_controller(path = "/api/v1")]` declares a controller
+> and its path prefix; `#[get]` / `#[post]` declare the verb mappings. Beyond
+> generating the router, the macro emits a route descriptor per endpoint that
+> feeds the actuator `/mappings` view and the OpenAPI generator — so the routing
+> table is derived from your code rather than maintained beside it, and the
+> documentation surfaces stay in sync with the handlers automatically. If you've
+> used a batteries-included framework before, this declarative-controller style
+> will feel familiar.
 
 ## The wire shape — `WalletView`
 
@@ -120,6 +122,170 @@ the `OpenWallet` message, with a `#[serde(rename)]` so the JSON field is
 ```json
 { "owner": "alice", "openingBalance": 1000 }
 ```
+
+## Content negotiation — one DTO, JSON or XML
+
+Lumen's handlers answer `application/json` because they return `Json<WalletView>`
+— a deliberate, format-pinned contract. But a controller can also hand the
+framework a DTO and let the *client* pick the wire format. Wrap the return value
+in `Negotiate(dto)` and the response is rendered with the converter the request's
+`Accept` header selects — `JsonMessageConverter` for `application/json`,
+`XmlMessageConverter` for `application/xml` / `text/xml` — while the request body
+is read by its `Content-Type` the same way:
+
+```rust,ignore
+// a format-agnostic variant of the wallet GET
+use firefly::web::Negotiate;
+
+#[get("/wallets/:id")]
+async fn get(
+    State(api): State<WalletApi>,
+    Path(id): Path<String>,
+) -> WebResult<Negotiate<WalletView>> {
+    let view: WalletView = api.bus.query(GetWallet { id }).await.map_err(cqrs_to_web)?;
+    Ok(Negotiate(view))
+}
+```
+
+The same handler now serves both wire shapes from the one `WalletView`:
+
+```text
+GET /api/v1/wallets/wlt_1  Accept: application/json
+→ { "id": "wlt_1", "owner": "alice", "balance": 1000, "version": 1 }
+
+GET /api/v1/wallets/wlt_1  Accept: application/xml
+→ <response><id>wlt_1</id><owner>alice</owner><balance>1000</balance>...</response>
+```
+
+You wire none of this. The `ContentNegotiationLayer` is installed by default in
+`WebStack::apply_middleware` — it sits closest to your routes, so a `Negotiate`
+response is re-rendered to the client's `Accept` before the outer middleware edge
+runs, and a plain `Json<T>` (or any other) response passes through untouched. An
+absent or empty `Accept` defaults to JSON, and an unmatched type falls back to the
+first registered converter (JSON), so the negotiation never fails the request.
+
+> **Design note.** `Negotiate(dto)` hands the framework a DTO and lets the
+> request's `Accept` header pick the wire format — `JsonMessageConverter` for
+> `application/json`, `XmlMessageConverter` for `application/xml` / `text/xml` —
+> with no controller code. The `JsonMessageConverter` / `XmlMessageConverter` pair
+> ships in the registry, and `apply_middleware` installs the
+> `ContentNegotiationLayer` by default, so negotiation is on out of the box. Add a
+> converter — say CBOR — by implementing `MessageConverter` and registering it;
+> user converters take priority over the built-ins.
+
+Firefly's field-level format contract is **serde**: the rules live in derives on
+the DTO and apply identically whichever converter renders the value —
+`#[serde(rename_all = "camelCase")]` to fix the on-the-wire naming,
+`#[serde(tag = "type")]` for polymorphic enums, `chrono` types for date/time, and
+`#[serde(deny_unknown_fields)]` to reject unexpected keys on read:
+
+```rust,ignore
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WalletView {
+    pub id: String,
+    pub owner: String,
+    pub balance: i64,
+    pub version: i64,
+}
+```
+
+## JSON serialization & content negotiation
+
+The serde derives above pin the wire shape *per type* — practical when a handful
+of DTOs each want their own contract. But a service usually wants **one** house
+style: every response in `camelCase`, nulls dropped, the same inclusion rules
+everywhere. Firefly gives you a single object to express that policy and a way to
+install it across the whole service: `firefly_web`'s `ObjectMapper`.
+
+`ObjectMapper` is a builder. You set a property-naming convention, an inclusion
+rule, and whether to pretty-print, and the resulting mapper translates between
+your Rust structs and JSON on the wire — applying the policy on the way out and
+its inverse on the way in:
+
+```rust,ignore
+use firefly::web::{ObjectMapper, PropertyNaming, Inclusion};
+
+// camelCase on the wire, drop nulls, compact output.
+let mapper = ObjectMapper::new()
+    .naming(PropertyNaming::CamelCase)
+    .inclusion(Inclusion::NonNull)
+    .pretty(false);
+```
+
+The naming and inclusion options are:
+
+| Option                                       | Effect                                              |
+|----------------------------------------------|-----------------------------------------------------|
+| `PropertyNaming::AsIs` *(default)*           | leave field names untouched                         |
+| `PropertyNaming::CamelCase`                  | `opening_balance` → `openingBalance`                |
+| `PropertyNaming::SnakeCase`                  | `openingBalance` → `opening_balance`                |
+| `PropertyNaming::KebabCase`                  | `opening_balance` → `opening-balance`               |
+| `PropertyNaming::PascalCase`                 | `opening_balance` → `OpeningBalance`                |
+| `PropertyNaming::ScreamingSnakeCase`         | `opening_balance` → `OPENING_BALANCE`               |
+| `Inclusion::Always` *(default)*              | serialize every field                               |
+| `Inclusion::NonNull`                         | omit `null` fields                                  |
+| `Inclusion::NonEmpty`                        | omit `null`, empty strings, and empty collections   |
+
+The mapper serializes and deserializes through the same methods you'd reach for
+on `serde_json`, but with the policy applied:
+
+```rust,ignore
+// Serialize: a snake_case Rust struct speaks camelCase on the wire.
+let json: String = mapper.to_string(&wallet)?;        // -> Result<String, FireflyError>
+let value: serde_json::Value = mapper.to_value(&wallet)?;
+
+// Deserialize: read camelCase back into the snake_case struct.
+let wallet: WalletView = mapper.from_str(&json)?;     // -> Result<T, FireflyError>
+let wallet: WalletView = mapper.from_value(value)?;
+```
+
+The naming transform is **reversible**: a `snake_case` Rust struct speaks
+`camelCase` on the wire and reads it back the same way, so the same `ObjectMapper`
+sits on both ends of a request/response without you tracking which direction a
+field is travelling. If you need the raw transform — for instance to post-process
+a `serde_json::Value` you built by hand — `apply_write(value) -> Value` renames
+toward the wire and `apply_read(value) -> Value` renames back toward your structs.
+
+> **Note.** A renaming mapper rewrites *every* object key in the document — it
+> works on the JSON tree, so it cannot tell a struct field from a key inside a
+> free-form `HashMap` you carry as data. Use a global naming policy on
+> **DTO-shaped** payloads; for a type whose body holds arbitrary string-keyed
+> data, leave the global policy at `AsIs` and name that one type with
+> `#[serde(rename_all = "camelCase")]` — that is type-aware and never touches
+> data keys. (Field names with a trailing number round-trip cleanly when
+> written `opening_balance_2` rather than `openingBalance2`.)
+
+### Installing a global policy with `MappingJsonConverter`
+
+A free-standing `ObjectMapper` is useful, but the point is to make the *whole
+service* observe one policy without decorating every DTO. `MappingJsonConverter`
+wraps a mapper and implements `firefly_web::MessageConverter` for
+`application/json`. Register it on a `MessageConverterRegistry` and every
+negotiated JSON request and response — the `Negotiate(dto)` responses from the
+previous section, and any JSON body the framework reads — flows through your
+naming and inclusion policy:
+
+```rust,ignore
+use firefly::web::{ObjectMapper, PropertyNaming, Inclusion, MappingJsonConverter};
+
+// One mapper expresses the service-wide JSON contract.
+let mapper = ObjectMapper::new()
+    .naming(PropertyNaming::CamelCase)
+    .inclusion(Inclusion::NonNull);
+
+// Wrap it as the JSON converter and register it so every negotiated
+// application/json exchange observes the policy.
+registry.register(MappingJsonConverter::new(mapper));
+```
+
+Because it registers as a user converter, `MappingJsonConverter` takes priority
+over the built-in `JsonMessageConverter` for `application/json` — so installing it
+once at the composition root is all it takes to apply a global JSON naming and
+inclusion policy to the entire HTTP surface, instead of repeating
+`#[serde(rename_all = ...)]` on every DTO. Per-type serde attributes still work
+and compose on top: reach for them when a specific type needs to deviate from the
+house style, and let `MappingJsonConverter` carry the default everywhere else.
 
 ## Typed errors → RFC 9457 problems
 
@@ -181,11 +347,11 @@ A rendered problem for an unknown wallet looks like this — note the dedicated
 }
 ```
 
-> **Spring parity.** `WebResult<T>` + `FireflyError` is the
-> `ResponseEntity` / `@ExceptionHandler` story, but the problem rendering is
-> built in: you never write an error-to-status mapping for the framework's own
-> errors. The same RFC 9457 contract holds across the Java, Go, .NET, and Python
-> ports — a 404 from Lumen looks like a 404 from pyfly's Lumen.
+> **Design note.** Returning `WebResult<T>` turns any `FireflyError` into the
+> right `application/problem+json` response via `?`, with the problem rendering
+> built in — you never write an error-to-status mapping for the framework's own
+> errors. The RFC 9457 contract is stable and language-neutral, so a Firefly 404
+> presents identically to every client regardless of which service produced it.
 
 ## Mounting the routes
 
@@ -301,10 +467,10 @@ async fn unknown_wallet_is_404_problem() {
 }
 ```
 
-> **Spring parity.** `oneshot` against `build_router()` is `MockMvc` /
-> `WebTestClient` (pyfly's `TestClient`): the whole controller stack runs in the
-> test process with no live server. [Testing](./18-testing.md) builds this into
-> a full strategy.
+> **Design note.** `oneshot` against `build_router()` runs the whole controller
+> stack in the test process with no live server and no socket bound, so the test
+> exercises the real request path at full speed and without port contention.
+> [Testing](./18-testing.md) builds this into a full strategy.
 
 ## Recap — what changed in Lumen
 

@@ -1,6 +1,6 @@
 # `firefly-starter-application`
 
-> **Tier:** Starter · **Status:** Full · **Java original:** `firefly-starter-application` · **Go module:** `starterapplication`
+> **Tier:** Starter · **Status:** Stable
 
 ## Overview
 
@@ -12,12 +12,12 @@ application-tier wiring used by services that load plugins
 
 ```rust,ignore
 pub struct Application {
-    pub core: Core,             // Go's embedded *startercore.Core
-    pub plugins: Arc<Registry>, // Go's Plugins *plugins.Registry
+    pub core: Core,
+    pub plugins: Arc<Registry>,
 }
 
 impl Application {
-    pub fn new(cfg: CoreConfig) -> Self; // Go's starterapplication.New(cfg)
+    pub fn new(cfg: CoreConfig) -> Self;
 }
 
 impl Deref for Application { type Target = Core; }
@@ -29,8 +29,7 @@ The starter name defaults to `"starter-application"` (overriding the
 startup banner correctly identify the tier; any other starter name set
 explicitly in the config is preserved.
 
-`Application` derefs to `Core` — the Rust spelling of Go's struct
-embedding — so every core field (`bus`, `cache`, `broker`, `health`,
+`Application` derefs to `Core` so every core field (`bus`, `cache`, `broker`, `health`,
 `metrics`, `scheduler`, …) and convenience method (`apply_middleware`,
 `actuator_router`, `new_application`, `print_banner`) is reachable
 directly on the application. `Core`, `CoreConfig`, and the plugin
@@ -63,10 +62,9 @@ app.plugins.stop_all().await?;
 cargo test -p firefly-starter-application
 ```
 
-Ports the Go suite (`TestApplicationWiring`: the wired plugin registry
-being non-nil, core dependencies wired, the `starter-application`
-name, and a roundtrip plugin start + stop) and adds Rust-specific
-coverage: default-name fallbacks, the explicit-starter-name guard, the
-banner identifying the tier, a stub plugin lifecycle through the wired
-registry, deref/deref-mut promotion to the embedded core, the version
-stamp, and `Send + Sync` bounds.
+The suite verifies application wiring (the wired plugin registry being
+present, core dependencies wired, the `starter-application` name, and a
+roundtrip plugin start + stop) plus default-name fallbacks, the
+explicit-starter-name guard, the banner identifying the tier, a stub
+plugin lifecycle through the wired registry, deref/deref-mut promotion
+to the embedded core, the version stamp, and `Send + Sync` bounds.

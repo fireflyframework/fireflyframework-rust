@@ -1,6 +1,6 @@
 # `firefly-actuator`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `spring-boot-starter-actuator` · **Go module:** `actuator`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -12,9 +12,9 @@ as an axum `Router`:
 | `GET /actuator/health`   | Per-indicator + overall status; 200 UP/DEGRADED, 503 DOWN                        |
 | `GET /actuator/info`     | Build info + app metadata + info contributors                                    |
 | `GET /actuator/metrics`  | Prometheus exposition format from the `MetricRegistry` Counter / Gauge primitives|
-| `GET /actuator/env`      | Spring `{activeProfiles, propertySources}` when an `EnvSource` is wired; else a flat redacted env view |
+| `GET /actuator/env`      | `{activeProfiles, propertySources}` when an `EnvSource` is wired; else a flat redacted env view |
 | `GET /actuator/tasks`    | `{"count": N}` alive tokio tasks; `?dump=true` returns a runtime report          |
-| `GET /actuator/threaddump`| Spring `{threads:[…]}` — the tokio runtime worker/task snapshot (Rust analog)   |
+| `GET /actuator/threaddump`| `{threads:[…]}` — the tokio runtime worker/task snapshot                         |
 | `GET /actuator/version`  | `{"firefly":"26.6.1","app":"orders","appVersion":"…","rust":"…"}`                |
 
 Bind these on a separate admin port (e.g. `:8081`) so they never leak
@@ -22,23 +22,22 @@ onto the public network.
 
 ## Why a separate crate?
 
-Spring Boot's `actuator` is the canonical management surface every
-operator expects — health probes for Kubernetes, metrics for
-Prometheus, info for service catalogues. Without a unified
-`actuator`, every Firefly service ends up handcrafting its own
-`/healthz` with subtly different shapes. The JSON and Prometheus wire
-formats here are identical to the Java, .NET, Go, and Python ports.
+A management surface is something every operator expects — health
+probes for Kubernetes, metrics for Prometheus, info for service
+catalogues. Without a unified `actuator`, every Firefly service ends up
+handcrafting its own `/healthz` with subtly different shapes. This crate
+gives the whole framework one stable JSON and Prometheus wire format.
 
-Two adaptations from the Go module:
+Two details worth calling out:
 
-- Go's `/actuator/goroutines` becomes `/actuator/tasks`: the same
-  operational question ("how much concurrent work is in flight?")
-  answered in the runtime's native unit — alive tokio tasks. Because
-  async Rust has no `runtime.Stack` equivalent, `?dump=true` returns a
-  plain-text tokio runtime report instead of per-task stack traces.
-- Health indicators are **async**: the `HealthIndicator` trait is an
-  `async_trait` port, and `IndicatorFn` adapts any async closure, just
-  as `observability.IndicatorFunc` adapts plain functions in Go.
+- `/actuator/tasks` answers the operational question "how much
+  concurrent work is in flight?" in the runtime's native unit — alive
+  tokio tasks. Because async Rust has no per-task stack-walking
+  equivalent, `?dump=true` returns a plain-text tokio runtime report
+  instead of per-task stack traces.
+- Health indicators are **async**: the `HealthIndicator` trait is built
+  on `async_trait`, and `IndicatorFn` adapts any async closure into an
+  indicator.
 
 ## Public surface
 
@@ -74,8 +73,8 @@ impl Gauge {
 ```
 
 `Counter` and `Gauge` use `AtomicU64` internally (gauges store
-`f64::to_bits`, the counterpart of Go's `math.Float64bits`) so
-high-cardinality services never contend on metric writes.
+`f64::to_bits`) so high-cardinality services never contend on metric
+writes.
 
 ## Quick start
 
@@ -120,10 +119,10 @@ orders_placed_total 3
 queue_depth 42.500000
 ```
 
-## pyfly parity
+## Full management model
 
-On top of the Go-parity surface above, the crate ports pyfly's
-`actuator` package — Spring Boot's full management model:
+Beyond the core endpoints above, the crate ships the complete
+management surface operators reach for in production:
 
 | Endpoint                              | What it adds                                                                       |
 |---------------------------------------|------------------------------------------------------------------------------------|
@@ -136,34 +135,34 @@ On top of the Go-parity surface above, the crate ports pyfly's
 | `GET /actuator/caches[/{name}]`       | Configured caches; `POST /caches/{name}/evict` clears one                          |
 | `POST /actuator/refresh`              | `{"refreshed": [keys…]}` from the wired `Refresher`                                |
 | `GET /actuator/httpexchanges`         | The last 100 exchanges recorded by the `HttpExchangesLayer` ring buffer            |
-| `GET /actuator/metrics/{name}?tag=k:v`| Micrometer JSON meter detail with `measurements` + `availableTags`                 |
+| `GET /actuator/metrics/{name}?tag=k:v`| Meter detail JSON with `measurements` + `availableTags`                            |
 | `GET /actuator/prometheus`            | Labeled Prometheus exposition (counters, gauges, histograms)                       |
-| `GET /actuator/env` + `/env/{toMatch}`| Spring `{activeProfiles, propertySources}` view + per-property drill-down (pyfly `EnvEndpoint`) when an `EnvSource` is wired |
-| `GET /actuator/threaddump`            | Spring `{threads:[…]}` — tokio worker/task snapshot (pyfly `ThreadDumpEndpoint` analog; async Rust has no per-task stacks) |
+| `GET /actuator/env` + `/env/{toMatch}`| `{activeProfiles, propertySources}` view + per-property drill-down when an `EnvSource` is wired |
+| `GET /actuator/threaddump`            | `{threads:[…]}` — tokio worker/task snapshot (async Rust has no per-task stacks)   |
 | `GET /actuator/{id}[/{selector}]`     | Any custom `Endpoint` registered on the `EndpointRegistry`                         |
 
 ### `/actuator/env` property-source bridge
 
-Spring's `/actuator/env` exposes the *ordered, masked property sources* that
+`/actuator/env` exposes the *ordered, masked property sources* that
 produced the effective configuration (`{activeProfiles, propertySources:
 [{name, properties: {key: {value, origin}}}]}`) plus a per-property
-`/actuator/env/{toMatch}` drill-down — pyfly's `EnvEndpoint`. To keep this
+`/actuator/env/{toMatch}` drill-down. To keep this
 crate decoupled from any concrete config crate, the capability is wired
 through a small local trait, `EnvSource`, that a starter implements over
 `firefly-config`'s `Layered::property_sources()` + `active_profiles()` and
 injects via `ActuatorConfig::env_source`. When no `EnvSource` is wired,
-`/actuator/env` keeps the legacy flat redacted process-environment map and the
+`/actuator/env` keeps the flat redacted process-environment map and the
 drill-down route is not mounted (backward compatible).
 
 ### Exposure model
 
-`ExposureConfig` is the Spring `management.endpoints.web` model:
+`ExposureConfig` controls which endpoints are reachable over the web:
 include/exclude id sets (CSV or `*` wildcard, exclude wins), a
 configurable `base_path` (default `/actuator`), and per-endpoint
 `endpoint_enabled` overrides. `mount()` honors it — an id is mounted
 only when exposed and not disabled. The crate default exposes
-everything (Go-parity backward compatibility);
-`ExposureConfig::spring_default()` restores Spring's `health,info`.
+everything; `ExposureConfig::spring_default()` restores a minimal
+`health,info` exposure.
 
 ```rust,ignore
 // Probe groups + named groups
@@ -205,7 +204,7 @@ classic `version=0.0.4` text exposition with labels.
 
 Custom endpoints implement the `Endpoint` trait (`id()` +
 `handle(selector, query)`), register on an `EndpointRegistry`, and are
-mounted at `{base_path}/{id}` — pyfly's `ActuatorRegistry`. The
+mounted at `{base_path}/{id}`. The
 `scheduledtasks`, `caches`, `refresh`, and `httpexchanges` surfaces are
 wired through local traits (`ScheduledTasksSource`, `CacheOps`,
 `Refresher`, `HttpExchangeRecorder`) so scheduling and caching stay
@@ -220,11 +219,11 @@ cargo test -p firefly-actuator
 Covers UP / DEGRADED / DOWN status mapping (200 vs 503), info
 contributor merging, env-prefix redaction, metrics formatting, the
 task count + dump variants, and the version payload. The
-`parity_test.rs` suite ports pyfly's `tests/actuator/` cases — probe
+`parity_test.rs` suite exercises the full management surface — probe
 groups + isolation, named-group + component drill-down,
 show-details/show-components switches, the exposure model
 (include/exclude/base-path/per-endpoint enabled), custom endpoints,
 loggers GET/POST over a real `EnvFilter` reload handle, scheduledtasks
 grouping, caches + evict, refresh, httpexchanges header masking, and
-the Micrometer JSON + labeled Prometheus views — all driven in-process
+the meter-detail JSON + labeled Prometheus views — all driven in-process
 through `tower::ServiceExt::oneshot`, no sockets.

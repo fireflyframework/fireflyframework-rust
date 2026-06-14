@@ -25,10 +25,14 @@
 //! [`Pageable`](firefly_data::Pageable) through it, and use a dialect-aware
 //! `UPSERT` for `save`.
 //!
-//! - **[`SqlxReactiveRepository`]** is the Spring Data R2DBC analogue: every
-//!   read **streams** rows lazily as a [`Flux`] off sqlx's
-//!   [`fetch`](sqlx::Executor) row stream — there is no collect-then-emit
-//!   buffering. It implements
+//! - **[`SqlxReactiveRepository`]** exposes every read as a [`Flux`]. Each read
+//!   **buffers-and-releases**: it acquires a pooled connection (or enlists in
+//!   the ambient transaction), fetches the rows, and releases the connection
+//!   *before* the `Flux` emits them — so a read never holds a pooled connection
+//!   across a consumer `await`, and therefore cannot deadlock a small pool or
+//!   starve a concurrent write. (Prefer a [`Pageable`](firefly_data::Pageable)
+//!   for large result sets, since an unbounded read materialises every matching
+//!   row.) It implements
 //!   [`ReactiveCrudRepository`](firefly_data::ReactiveCrudRepository) and
 //!   [`ReactiveSpecificationRepository`](firefly_data::ReactiveSpecificationRepository).
 //! - **[`SqlxRepository`]** is the blocking-style
@@ -82,6 +86,10 @@ struct Inner<T> {
     writer: Arc<dyn RowWriter<T>>,
     auditor: Option<Arc<Auditor>>,
     soft_delete: Option<SoftDeletePolicy>,
+    /// Optional optimistic-locking column (`@Version`). When set, an UPSERT
+    /// bumps it and guards the conflict-update on the prior value, so a stale
+    /// write yields [`DataError::OptimisticLock`] instead of silently winning.
+    version_column: Option<String>,
 }
 
 impl<T> Inner<T> {
@@ -198,6 +206,7 @@ where
                 writer: Arc::new(writer),
                 auditor: None,
                 soft_delete: None,
+                version_column: None,
             }),
             _id: std::marker::PhantomData,
         }
@@ -226,6 +235,23 @@ where
     pub fn with_soft_delete(self, policy: SoftDeletePolicy) -> Self {
         let mut inner = unwrap_or_clone(self.inner);
         inner.soft_delete = Some(policy);
+        SqlxReactiveRepository {
+            inner: Arc::new(inner),
+            _id: std::marker::PhantomData,
+        }
+    }
+
+    /// Returns a copy of this repository that enforces **optimistic locking**
+    /// on `column` (`@Version`): every `save` bumps the version and guards the
+    /// conflict-update on the loaded value, so a stale write fails with
+    /// [`DataError::OptimisticLock`](firefly_data::DataError::OptimisticLock)
+    /// instead of silently overwriting a concurrent change. The entity's
+    /// [`RowWriter`] must emit `column` carrying the loaded version.
+    /// (Conflict detection is enforced on Postgres and SQLite; on MySQL the
+    /// version is bumped but the guard is not applied.)
+    pub fn with_version_column(self, column: impl Into<String>) -> Self {
+        let mut inner = unwrap_or_clone(self.inner);
+        inner.version_column = Some(column.into());
         SqlxReactiveRepository {
             inner: Arc::new(inner),
             _id: std::marker::PhantomData,
@@ -292,6 +318,7 @@ fn unwrap_or_clone<T>(inner: Arc<Inner<T>>) -> Inner<T> {
         writer: Arc::clone(&inner.writer),
         auditor: inner.auditor.clone(),
         soft_delete: inner.soft_delete.clone(),
+        version_column: inner.version_column.clone(),
     }
 }
 
@@ -305,6 +332,20 @@ fn empty_sentinel() -> FireflyError {
     FireflyError::new(EMPTY_CODE, "Empty", 404, "no row")
 }
 
+/// Sentinel code carried by the optimistic-lock conflict error, recognised by
+/// the `Repository::save` paths and mapped to
+/// [`DataError::OptimisticLock`](firefly_data::DataError::OptimisticLock).
+const OPTIMISTIC_LOCK_CODE: &str = "FIREFLY_DATA_SQLX_OPTIMISTIC_LOCK";
+
+fn optimistic_lock_sentinel() -> FireflyError {
+    FireflyError::new(
+        OPTIMISTIC_LOCK_CODE,
+        "OptimisticLock",
+        409,
+        "optimistic lock conflict (stale version)",
+    )
+}
+
 fn no_backend_err() -> FireflyError {
     FireflyError::internal("firefly/data-sqlx: no backend feature enabled")
 }
@@ -315,7 +356,6 @@ fn map_sqlx_err(e: sqlx::Error) -> FireflyError {
 
 #[cfg(feature = "postgres")]
 fn stream_pg<T: Send + 'static>(inner: Arc<Inner<T>>, sql: String, args: Vec<Value>) -> Flux<T> {
-    use futures::StreamExt;
     let Db::Postgres(pool) = inner.db.clone() else {
         return Flux::error(no_backend_err());
     };
@@ -325,18 +365,21 @@ fn stream_pg<T: Send + 'static>(inner: Arc<Inner<T>>, sql: String, args: Vec<Val
         for a in &args {
             query = crate::binding::bind_pg(query, a);
         }
-        let mut rows = query.fetch(&pool);
-        while let Some(row) = rows.next().await {
-            let row = row.map_err(map_sqlx_err)?;
-            let any = AnyRow::Postgres(&row);
-            yield mapper.map_row(&any)?;
+        // Buffer-and-release: `pg_fetch_all` enlists in the ambient transaction
+        // when one is active, and otherwise acquires a pool connection, fetches
+        // all rows, and releases it. A repository read therefore never holds a
+        // pooled connection across a yield/await — so it cannot deadlock a
+        // small pool (or starve a concurrent write) the way a lazy
+        // `query.fetch(&pool)` stream can.
+        let rows = crate::tx::pg_fetch_all(&pool, query).await.map_err(map_sqlx_err)?;
+        for row in rows {
+            yield mapper.map_row(&AnyRow::Postgres(&row))?;
         }
     })
 }
 
 #[cfg(feature = "mysql")]
 fn stream_mysql<T: Send + 'static>(inner: Arc<Inner<T>>, sql: String, args: Vec<Value>) -> Flux<T> {
-    use futures::StreamExt;
     let Db::MySql(pool) = inner.db.clone() else {
         return Flux::error(no_backend_err());
     };
@@ -346,11 +389,11 @@ fn stream_mysql<T: Send + 'static>(inner: Arc<Inner<T>>, sql: String, args: Vec<
         for a in &args {
             query = crate::binding::bind_mysql(query, a);
         }
-        let mut rows = query.fetch(&pool);
-        while let Some(row) = rows.next().await {
-            let row = row.map_err(map_sqlx_err)?;
-            let any = AnyRow::MySql(&row);
-            yield mapper.map_row(&any)?;
+        // Buffer-and-release (tx-aware): never holds a pooled connection across
+        // a yield — see `stream_pg`.
+        let rows = crate::tx::mysql_fetch_all(&pool, query).await.map_err(map_sqlx_err)?;
+        for row in rows {
+            yield mapper.map_row(&AnyRow::MySql(&row))?;
         }
     })
 }
@@ -361,7 +404,6 @@ fn stream_sqlite<T: Send + 'static>(
     sql: String,
     args: Vec<Value>,
 ) -> Flux<T> {
-    use futures::StreamExt;
     let Db::Sqlite(pool) = inner.db.clone() else {
         return Flux::error(no_backend_err());
     };
@@ -371,11 +413,12 @@ fn stream_sqlite<T: Send + 'static>(
         for a in &args {
             query = crate::binding::bind_sqlite(query, a);
         }
-        let mut rows = query.fetch(&pool);
-        while let Some(row) = rows.next().await {
-            let row = row.map_err(map_sqlx_err)?;
-            let any = AnyRow::Sqlite(&row);
-            yield mapper.map_row(&any)?;
+        // Buffer-and-release (tx-aware): never holds a pooled connection across
+        // a yield — see `stream_pg`. This is what makes a single-connection
+        // SQLite pool safe under concurrent reads/writes.
+        let rows = crate::tx::sqlite_fetch_all(&pool, query).await.map_err(map_sqlx_err)?;
+        for row in rows {
+            yield mapper.map_row(&AnyRow::Sqlite(&row))?;
         }
     })
 }
@@ -393,7 +436,6 @@ fn stream_projected<T: Send + Sync + 'static>(
     match inner.backend() {
         #[cfg(feature = "postgres")]
         Backend::Postgres => {
-            use futures::StreamExt;
             let Db::Postgres(pool) = inner.db.clone() else {
                 return Flux::error(no_backend_err());
             };
@@ -402,16 +444,15 @@ fn stream_projected<T: Send + Sync + 'static>(
                 for a in &args {
                     query = crate::binding::bind_pg(query, a);
                 }
-                let mut rows = query.fetch(&pool);
-                while let Some(row) = rows.next().await {
-                    let row = row.map_err(map_sqlx_err)?;
+                // Buffer-and-release (tx-aware): no pooled connection held across a yield.
+                let rows = crate::tx::pg_fetch_all(&pool, query).await.map_err(map_sqlx_err)?;
+                for row in rows {
                     yield project_row(&AnyRow::Postgres(&row), &columns);
                 }
             })
         }
         #[cfg(feature = "mysql")]
         Backend::MySql => {
-            use futures::StreamExt;
             let Db::MySql(pool) = inner.db.clone() else {
                 return Flux::error(no_backend_err());
             };
@@ -420,16 +461,15 @@ fn stream_projected<T: Send + Sync + 'static>(
                 for a in &args {
                     query = crate::binding::bind_mysql(query, a);
                 }
-                let mut rows = query.fetch(&pool);
-                while let Some(row) = rows.next().await {
-                    let row = row.map_err(map_sqlx_err)?;
+                // Buffer-and-release (tx-aware): no pooled connection held across a yield.
+                let rows = crate::tx::mysql_fetch_all(&pool, query).await.map_err(map_sqlx_err)?;
+                for row in rows {
                     yield project_row(&AnyRow::MySql(&row), &columns);
                 }
             })
         }
         #[cfg(feature = "sqlite")]
         Backend::Sqlite => {
-            use futures::StreamExt;
             let Db::Sqlite(pool) = inner.db.clone() else {
                 return Flux::error(no_backend_err());
             };
@@ -438,9 +478,9 @@ fn stream_projected<T: Send + Sync + 'static>(
                 for a in &args {
                     query = crate::binding::bind_sqlite(query, a);
                 }
-                let mut rows = query.fetch(&pool);
-                while let Some(row) = rows.next().await {
-                    let row = row.map_err(map_sqlx_err)?;
+                // Buffer-and-release (tx-aware): no pooled connection held across a yield.
+                let rows = crate::tx::sqlite_fetch_all(&pool, query).await.map_err(map_sqlx_err)?;
+                for row in rows {
                     yield project_row(&AnyRow::Sqlite(&row), &columns);
                 }
             })
@@ -499,7 +539,9 @@ async fn fetch_one_pg<T: Send + 'static>(
     for a in &args {
         query = crate::binding::bind_pg(query, a);
     }
-    let row = query.fetch_optional(pool).await.map_err(map_sqlx_err)?;
+    let row = crate::tx::pg_fetch_optional(pool, query)
+        .await
+        .map_err(map_sqlx_err)?;
     match row {
         Some(r) => inner.mapper.map_row(&AnyRow::Postgres(&r)),
         None => Err(empty_sentinel()),
@@ -519,7 +561,9 @@ async fn fetch_one_mysql<T: Send + 'static>(
     for a in &args {
         query = crate::binding::bind_mysql(query, a);
     }
-    let row = query.fetch_optional(pool).await.map_err(map_sqlx_err)?;
+    let row = crate::tx::mysql_fetch_optional(pool, query)
+        .await
+        .map_err(map_sqlx_err)?;
     match row {
         Some(r) => inner.mapper.map_row(&AnyRow::MySql(&r)),
         None => Err(empty_sentinel()),
@@ -539,7 +583,9 @@ async fn fetch_one_sqlite<T: Send + 'static>(
     for a in &args {
         query = crate::binding::bind_sqlite(query, a);
     }
-    let row = query.fetch_optional(pool).await.map_err(map_sqlx_err)?;
+    let row = crate::tx::sqlite_fetch_optional(pool, query)
+        .await
+        .map_err(map_sqlx_err)?;
     match row {
         Some(r) => inner.mapper.map_row(&AnyRow::Sqlite(&r)),
         None => Err(empty_sentinel()),
@@ -563,7 +609,10 @@ async fn execute_write<T: Send + 'static>(
             for a in &args {
                 query = crate::binding::bind_pg(query, a);
             }
-            let r = query.execute(pool).await.map_err(map_sqlx_err)?;
+            // Enlist in the ambient transaction when one is active.
+            let r = crate::tx::pg_execute(pool, query)
+                .await
+                .map_err(map_sqlx_err)?;
             Ok(r.rows_affected())
         }
         #[cfg(feature = "mysql")]
@@ -575,7 +624,9 @@ async fn execute_write<T: Send + 'static>(
             for a in &args {
                 query = crate::binding::bind_mysql(query, a);
             }
-            let r = query.execute(pool).await.map_err(map_sqlx_err)?;
+            let r = crate::tx::mysql_execute(pool, query)
+                .await
+                .map_err(map_sqlx_err)?;
             Ok(r.rows_affected())
         }
         #[cfg(feature = "sqlite")]
@@ -587,7 +638,9 @@ async fn execute_write<T: Send + 'static>(
             for a in &args {
                 query = crate::binding::bind_sqlite(query, a);
             }
-            let r = query.execute(pool).await.map_err(map_sqlx_err)?;
+            let r = crate::tx::sqlite_execute(pool, query)
+                .await
+                .map_err(map_sqlx_err)?;
             Ok(r.rows_affected())
         }
         #[allow(unreachable_patterns)]
@@ -611,7 +664,9 @@ async fn scalar_i64<T: Send + 'static>(
             for a in &args {
                 query = crate::binding::bind_pg(query, a);
             }
-            let row = query.fetch_one(pool).await.map_err(map_sqlx_err)?;
+            let row = crate::tx::pg_fetch_one(pool, query)
+                .await
+                .map_err(map_sqlx_err)?;
             AnyRow::Postgres(&row).try_get_index_i64(0)
         }
         #[cfg(feature = "mysql")]
@@ -623,7 +678,9 @@ async fn scalar_i64<T: Send + 'static>(
             for a in &args {
                 query = crate::binding::bind_mysql(query, a);
             }
-            let row = query.fetch_one(pool).await.map_err(map_sqlx_err)?;
+            let row = crate::tx::mysql_fetch_one(pool, query)
+                .await
+                .map_err(map_sqlx_err)?;
             AnyRow::MySql(&row).try_get_index_i64(0)
         }
         #[cfg(feature = "sqlite")]
@@ -635,7 +692,9 @@ async fn scalar_i64<T: Send + 'static>(
             for a in &args {
                 query = crate::binding::bind_sqlite(query, a);
             }
-            let row = query.fetch_one(pool).await.map_err(map_sqlx_err)?;
+            let row = crate::tx::sqlite_fetch_one(pool, query)
+                .await
+                .map_err(map_sqlx_err)?;
             AnyRow::Sqlite(&row).try_get_index_i64(0)
         }
         #[allow(unreachable_patterns)]
@@ -727,8 +786,20 @@ async fn do_upsert<T: Send + 'static>(
         }
     }
     let dialect = inner.dialect();
-    let (sql, args) = sql::upsert_sql(&inner.config, dialect.as_ref(), inner.backend(), &cols);
-    execute_write(inner, sql, args).await?;
+    let (sql, args) = sql::upsert_sql(
+        &inner.config,
+        dialect.as_ref(),
+        inner.backend(),
+        &cols,
+        inner.version_column.as_deref(),
+    );
+    let rows = execute_write(inner, sql, args).await?;
+    // Optimistic locking: with a version column configured, a conflict-update
+    // that matched no rows means the stored version moved on since the entity
+    // was loaded (the `WHERE version = excluded.version` guard failed).
+    if inner.version_column.is_some() && rows == 0 {
+        return Err(optimistic_lock_sentinel());
+    }
     Ok(id_value)
 }
 
@@ -965,6 +1036,38 @@ where
         let dialect = self.inner.dialect();
         match parsed.to_sql(dialect.as_ref(), &self.inner.config.table, args) {
             Ok(DerivedSql { sql, args, .. }) => self.stream_query(sql, args),
+            Err(e) => Flux::error(map_query_err(e)),
+        }
+    }
+
+    /// Like [`find_by_derived`](Self::find_by_derived) but applies a
+    /// [`Pageable`]'s sort + window — the Rust analogue of Spring Data's
+    /// `findByStatus(String status, Pageable pageable)` derived method, where
+    /// the trailing `Pageable` contributes the `ORDER BY` / `LIMIT` / `OFFSET`
+    /// tail on top of the name-derived predicate. An unpaged `Pageable`
+    /// contributes only its sort, so this doubles as the `Sort`-only form.
+    pub fn find_by_derived_paged(
+        &self,
+        method_name: &str,
+        args: &[Value],
+        pageable: &Pageable,
+    ) -> Flux<T> {
+        let parsed = match QueryMethodParser::new().parse(method_name) {
+            Ok(p) => p,
+            Err(e) => return Flux::error(map_query_err(e)),
+        };
+        if parsed.prefix != QueryPrefix::Find {
+            return Flux::error(map_query_err(format!(
+                "method '{method_name}' is a {:?} query; a Pageable applies only to find_by_…",
+                parsed.prefix
+            )));
+        }
+        let dialect = self.inner.dialect();
+        match parsed.to_sql(dialect.as_ref(), &self.inner.config.table, args) {
+            Ok(DerivedSql { mut sql, args, .. }) => {
+                sql.push_str(&render_pageable_tail(dialect.as_ref(), pageable));
+                self.stream_query(sql, args)
+            }
             Err(e) => Flux::error(map_query_err(e)),
         }
     }
@@ -1312,6 +1415,7 @@ where
                 writer: Arc::new(writer),
                 auditor: None,
                 soft_delete: None,
+                version_column: None,
             }),
             _k: std::marker::PhantomData,
         }
@@ -1332,6 +1436,19 @@ where
     pub fn with_soft_delete(self, policy: SoftDeletePolicy) -> Self {
         let mut inner = unwrap_or_clone(self.inner);
         inner.soft_delete = Some(policy);
+        SqlxRepository {
+            inner: Arc::new(inner),
+            _k: std::marker::PhantomData,
+        }
+    }
+
+    /// Returns a copy that enforces **optimistic locking** on `column`
+    /// (`@Version`): a stale `save` fails with
+    /// [`DataError::OptimisticLock`](firefly_data::DataError::OptimisticLock).
+    /// See [`SqlxReactiveRepository::with_version_column`].
+    pub fn with_version_column(self, column: impl Into<String>) -> Self {
+        let mut inner = unwrap_or_clone(self.inner);
+        inner.version_column = Some(column.into());
         SqlxRepository {
             inner: Arc::new(inner),
             _k: std::marker::PhantomData,
@@ -1405,7 +1522,13 @@ where
         let inner = Arc::clone(&self.inner);
         let id_value = do_upsert(&inner, &entity)
             .await
-            .map_err(|e| DataError::Backend(e.to_string()))?;
+            .map_err(|e| {
+                if e.code == OPTIMISTIC_LOCK_CODE {
+                    DataError::OptimisticLock
+                } else {
+                    DataError::Backend(e.to_string())
+                }
+            })?;
         match fetch_one_by_id(inner, id_value).await {
             Ok(v) => Ok(v),
             Err(e) if e.code == EMPTY_CODE => Err(DataError::NotFound),

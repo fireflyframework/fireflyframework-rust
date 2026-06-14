@@ -9,12 +9,13 @@ macros**. By the end of this chapter you will be able to point at every
 collapsed into a declaration next to the code. That is the thesis the running
 crate proves: *one facade + macros = the framework, with the boilerplate gone.*
 
-> **Spring parity.** The declarative layer is the Rust answer to Spring's
-> annotation set and pyfly's decorators. What changes is *when* the wiring is
-> generated — at compile time by a `proc-macro`, not at runtime by reflection —
-> so there is no startup scanning cost and no reflective surprises. The
-> programming model is the same: a declaration sits next to the code it
-> describes, and the framework generates the glue.
+> **Compile-time, not reflective.** Firefly's declarative layer generates wiring
+> at compile time with `proc-macro`s — there is no startup scanning cost and no
+> reflective surprises. A declaration sits next to the code it describes, and the
+> macro emits the `impl`s, routers, and helper functions you would otherwise
+> hand-write. If you have used a batteries-included framework before, the shape
+> will feel familiar; the difference is that the glue is generated and checked by
+> the compiler rather than discovered at startup.
 
 ## One dependency, one prelude
 
@@ -76,11 +77,29 @@ the exact Lumen file it lands in:
 | `#[rest_controller]` + `#[get/post]` | `web.rs` | a `routes(state) -> axum::Router` |
 | `#[scheduled(fixed_rate = "…")]` | `housekeeping.rs` | a `schedule_<fn>(scheduler)` helper |
 
+Four more macros round out the declarative set. Lumen is event-sourced, so it
+does not exercise the relational ones in its own source — they are shown here as
+focused standalone examples and noted against Lumen's event-sourced choices:
+
+| Macro | Purpose | Generates |
+|-------|---------|-----------|
+| `#[derive(Builder)]` | a fluent constructor with required/defaulted fields | `T::builder()` → fluent setters → `build() -> Result<T, String>` |
+| `#[derive(Mapper)]` | compile-time struct-to-struct conversion | one compile-time `From<Source>` per `#[firefly(from = "…")]` |
+| `#[firefly::repository]` | derived-query and custom-query method bodies | method bodies on a `SqlxReactiveRepository` impl from method names or `#[query(…)]` |
+| `#[firefly::transactional]` | a declared transaction boundary | a commit-on-`Ok` / rollback-on-`Err` boundary around an `async fn` body |
+| `#[firefly::pre_authorize]` / `#[firefly::post_authorize]` | method-level access control | an access check before the body, or a returnObject check after it |
+
 The DI stereotype derives (`#[derive(Component/Service/Repository/Configuration/
-Controller)]`, `#[bean]`, `#[autowired]`, `register_all!`) and
-`#[derive(ConfigProperties)]` round out the set; Lumen wires its collaborators
-explicitly rather than through the container (chapter 4), so the
-[DI deep-dive](./04a-dependency-injection.md) is where you saw those at work.
+AutoConfiguration/Controller)]`, `#[bean]`, `#[autowired]`, `register_all!`) and
+`#[derive(ConfigProperties)]` round out the set. `#[derive(AutoConfiguration)]`
+is the auto-config holder whose `#[bean]`s back off behind a
+`condition_on_missing_bean`, so an application can override any default by
+declaring its own bean of the same type; `Container::scan()` auto-registers every
+`#[bean]` method, and `Container::scan_packages([..])` restricts discovery to the
+named module paths.
+Lumen wires its collaborators explicitly rather than through the container
+(chapter 4), so the [DI deep-dive](./04a-dependency-injection.md) is where you
+saw those at work.
 
 ### CQRS — messages and handlers (`commands.rs`)
 
@@ -123,9 +142,11 @@ cannot capture wiring state, the resolved `Ledger` + `ReadModel` are published
 once through a `bind` / `OnceLock` and reached from the handlers — the pattern
 chapter 9 introduced.
 
-> **Spring parity.** `#[derive(Command)]` + `#[command_handler]` is
-> `@CommandHandler` on a typed handler; `#[firefly(cache_ttl)]` is `@Cacheable`
-> on a query. The `Bus` is the command/query gateway.
+> **What it generates.** `#[derive(Command)]` / `#[derive(Query)]` emit the
+> `Message` impl; `#[command_handler]` / `#[query_handler]` emit a typed
+> `register_<fn>(bus)` helper that installs the handler. `#[firefly(cache_ttl)]`
+> exposes a TTL the query cache reads. The `Bus` is the command/query gateway
+> every dispatch flows through.
 
 ### Event sourcing — domain events and the aggregate (`domain.rs`)
 
@@ -155,9 +176,12 @@ pub struct Wallet {
 The only event-sourcing wiring Lumen writes by hand is the `apply` fold; the
 discriminators and the wire conversion are generated.
 
-> **Spring parity.** `#[derive(AggregateRoot)]` is the Axon-style event-sourced
-> aggregate; the `EVENT_TYPE` discriminator is the `@Revision`/`@EventType`
-> tagging that keeps the JSON wire-compatible across the ports.
+> **What it generates.** `#[derive(DomainEvent)]` emits a stable `EVENT_TYPE`
+> discriminator plus a `to_domain_event` conversion; `#[derive(AggregateRoot)]`
+> emits `AGGREGATE_TYPE` and the `aggregate()` / `aggregate_mut()` accessors over
+> the embedded root. The discriminator pins each event's identity in a stable,
+> versioned JSON wire format, so persisted streams stay readable as the schema
+> evolves.
 
 ### Messaging — the projection listener (`ledger.rs`)
 
@@ -177,9 +201,10 @@ pub async fn project_wallet_event(ev: Event) -> FireflyResult<()> {
 The composition root calls `ledger::subscribe_project_wallet_event(broker)` after
 binding, closing the CQRS loop.
 
-> **Spring parity.** `#[event_listener(topic = "…")]` is `@KafkaListener` /
-> `@RabbitListener` — the topic subscription is generated; you write only the
-> handler body.
+> **What it generates.** `#[event_listener(topic = "…")]` emits a
+> `subscribe_<fn>(broker)` helper that subscribes the function to the topic on
+> whatever broker transport is wired in. You write only the handler body; the
+> subscription wiring is generated.
 
 ### Web — the controller (`web.rs`)
 
@@ -207,9 +232,11 @@ The macro also submits each route into a link-time table, so the OpenAPI
 generator and the actuator `/mappings` endpoint can enumerate Lumen's routes
 without re-parsing the source.
 
-> **Spring parity.** `#[rest_controller]` + `#[get]`/`#[post]` is
-> `@RestController` + `@GetMapping`/`@PostMapping`; `WebResult<T>` rendering RFC
-> 9457 is `@ControllerAdvice` returning a `ProblemDetail`.
+> **What it generates.** `#[rest_controller]` + `#[get]`/`#[post]` emit a
+> `WalletApi::routes(state) -> axum::Router` plus a link-time mapping-table entry
+> per route. `WebResult<T>` renders any handler error as an
+> `application/problem+json` body (RFC 9457), so error shaping is uniform across
+> every endpoint without per-handler code.
 
 ### Scheduling — the heartbeat (`housekeeping.rs`)
 
@@ -222,8 +249,266 @@ pub async fn ledger_heartbeat() -> Result<(), std::io::Error> { /* … */ }
 // generated: schedule_ledger_heartbeat(&scheduler)
 ```
 
-> **Spring parity.** `#[scheduled(fixed_rate = "60s")]` is
-> `@Scheduled(fixedRate = 60000)`; `#[scheduled(cron = "…")]` is the cron form.
+> **What it generates.** `#[scheduled(...)]` emits a `schedule_<fn>(scheduler)`
+> helper that registers a zero-argument `async fn` on a `Scheduler`. Use
+> `fixed_rate = "60s"` for a fixed cadence (with an optional `initial_delay`), or
+> `cron = "…"` for a cron expression.
+
+### Construction — the fluent builder (`#[derive(Builder)]`)
+
+Rust's stdlib derives already cover value-object boilerplate — debug formatting,
+cloning, structural equality, defaults — with `#[derive(Debug, Clone, PartialEq,
+Default)]` over `pub` fields. The one ergonomic gap they leave is a *fluent
+builder* — and that is what `#[derive(Builder)]` fills. It generates `T::builder()` returning a
+`TBuilder` with one setter per field and a `build() -> Result<T, String>`. By
+default every field is **required**: `build` returns an `Err` naming the first
+unset field. `#[builder(default)]` falls back to `Default::default()`,
+`#[builder(default = "expr")]` to a custom expression, and `#[builder(into)]`
+makes the setter accept `impl Into<FieldTy>`:
+
+```rust,ignore
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Command, Builder)]
+#[serde(default)]
+pub struct OpenWallet {
+    #[firefly(validate)]
+    #[builder(into)]                                 // accept &str, String, …
+    pub owner: String,
+    #[serde(rename = "openingBalance")]
+    #[builder(default)]                              // unset → 0
+    pub opening_balance: i64,
+}
+
+// A build-style constructor, errors surfaced as a String:
+let cmd = OpenWallet::builder()
+    .owner("ada")            // impl Into<String>
+    .opening_balance(10_000)
+    .build()?;               // Result<OpenWallet, String>
+```
+
+A required field left unset surfaces as a `build()` error, not a compile error —
+the tradeoff a fluent builder makes against a hand-written typed constructor,
+where the compiler enforces arity. Reach for `#[derive(Builder)]` when a struct
+has many optional/defaulted fields; keep a plain literal when every field is
+required and present.
+
+> **What it generates.** `#[derive(Builder)]` emits `T::builder()` returning a
+> `TBuilder` with one setter per field and a `build() -> Result<T, String>` that
+> errors on the first unset required field. `#[builder(default)]` falls back to
+> `Default::default()`, `#[builder(default = "expr")]` to a custom expression, and
+> `#[builder(into)]` makes a setter accept `impl Into<FieldTy>`. Returning a
+> `Result` keeps missing-field handling on the normal `?` path rather than a panic.
+
+### Conversion — the compile-time mapper (`#[derive(Mapper)]`)
+
+`#[derive(Mapper)]` generates a compile-time, type-checked `From<Source>` that
+maps a source struct to a target struct field-by-field. One
+`#[firefly(from = "Source")]` produces one `From` impl, and the attribute is
+**repeatable** to map from several sources. Per-field attributes adjust the
+mapping: `#[firefly(rename = "src")]` reads a differently named source field,
+`#[firefly(into)]` applies `.into()` to the source value, `#[firefly(with = "fn")]`
+runs a conversion function, and `#[firefly(default)]` /
+`#[firefly(default_expr = "expr")]` fill a target field with no source read:
+
+```rust,ignore
+// A read-model view assembled from the domain aggregate.
+#[derive(Debug, Clone, Serialize, Deserialize, Mapper)]
+#[firefly(from = "Wallet")]
+pub struct WalletView {
+    #[firefly(rename = "root", with = "aggregate_id")]  // read src.root, run aggregate_id(..)
+    pub id: String,
+    pub owner: String,                        // same name on both ends: a plain move
+    #[firefly(with = "Money::cents_value")]   // src.balance: Money -> i64 via a conversion fn
+    pub balance: i64,
+    #[firefly(default)]                       // version is set by the projector, not the fold
+    pub version: i64,
+}
+// generates: impl From<Wallet> for WalletView { fn from(src: Wallet) -> Self { … } }
+
+let view: WalletView = wallet.into();
+```
+
+Because the generated code is a plain `From` impl, every field is checked by the
+compiler and there is no runtime cost — that compile-time guarantee is the whole
+point. Contrast this with the **runtime** `firefly_data::Mapper`, which converts
+via two serde passes and is checked at runtime: use the runtime mapper as a
+dynamic fallback when the source type is not known at compile time (e.g. mapping
+arbitrary JSON), and prefer `#[derive(Mapper)]` whenever both ends are concrete
+types — which, in Lumen's projection, they are.
+
+> **What it generates.** `#[derive(Mapper)]` emits one `impl From<Source> for
+> Target` per `#[firefly(from = "Source")]` (the attribute is repeatable).
+> Per-field attributes shape each move: `#[firefly(rename = "src")]` reads a
+> differently named source field, `#[firefly(into)]` applies `.into()`,
+> `#[firefly(with = "fn")]` runs a conversion function, and `#[firefly(default)]` /
+> `#[firefly(default_expr = "expr")]` fill a target field with no source read. The
+> runtime `firefly_data::Mapper` is the dynamic, serde-based fallback for when the
+> source type isn't known until runtime.
+
+### Persistence — derived queries and transactions (relational)
+
+These two macros sit on the relational persistence path. Lumen's read model is
+an in-memory projection over an event stream (chapter 7), so it uses neither — but
+in a relational service they are the everyday tools, so here is each in brief,
+with the [persistence chapter](./07-persistence.md) as the full reference.
+
+`#[firefly::repository]` turns a `find_by_…` / `count_by_…` / `exists_by_…` /
+`delete_by_…` method name into a working query body. Applied to an `impl` block, it
+parses each method name into a derived query, marshals the typed arguments, and
+delegates to the tested runtime engine — so you declare a typed method and get a
+working, compiler-checked implementation. The runtime method is chosen from the
+**return type** (`Vec<T>`/`Option<T>` → find, `i64` → count, `bool` → exists,
+`u64` → delete), and the type exposes its backing `SqlxReactiveRepository` through
+an accessor (default `self.repository()`, overridable with `#[repository(repo =
+"…")]`):
+
+```rust,ignore
+#[firefly::repository]
+impl AccountRepo {
+    async fn find_by_status(&self, status: &str) -> Result<Vec<Account>, DataError> { unimplemented!() }
+    async fn find_by_iban(&self, iban: &str)     -> Result<Option<Account>, DataError> { unimplemented!() }
+    async fn count_by_owner(&self, owner: &str)  -> Result<i64, DataError>          { unimplemented!() }
+    async fn exists_by_email(&self, email: &str) -> Result<bool, DataError>         { unimplemented!() }
+}
+```
+
+The placeholder `unimplemented!()` bodies are discarded and replaced by the
+generated delegations.
+
+**Paged derived queries.** Give a `find_by_…` method a trailing `Pageable`
+argument (and a `Result<Vec<T>, DataError>` return) and the generated body appends
+the page's sort and window to the query, delegating to the runtime
+`SqlxReactiveRepository::find_by_derived_paged`:
+
+```rust,ignore
+#[firefly::repository]
+impl AccountRepo {
+    async fn find_by_owner(&self, owner: &str, page: Pageable)
+        -> Result<Vec<Account>, DataError> { unimplemented!() }
+}
+
+// Build the page (1-based index) with sort + window:
+let page = Pageable::of(1, 20, RequestSort::of([Order::desc("id")]));
+let rows = repo.find_by_owner("ada", page).await?;
+```
+
+**Custom queries with `#[query(…)]`.** When a name-derived query isn't enough,
+annotate a stub method with `#[query(...)]` and write the statement directly.
+Native SQL binds each `:name` placeholder to the argument named `name`; the
+**return type** selects the operation exactly as for derived queries — `Vec<T>` /
+`Option<T>` is a list, `i64` a count, `bool` an existence check, and `u64` a
+modifying statement (INSERT/UPDATE/DELETE, returning affected rows):
+
+```rust,ignore
+#[firefly::repository]
+impl AccountRepo {
+    #[query("SELECT id, owner FROM accounts WHERE status = :status ORDER BY id DESC")]
+    async fn active_by_status(&self, status: &str) -> Result<Vec<Account>, DataError> { unimplemented!() }
+
+    #[query("UPDATE accounts SET status = :status WHERE id = :id")]
+    async fn set_status(&self, id: &str, status: &str) -> Result<u64, DataError> { unimplemented!() }
+}
+```
+
+`#[query(sql = "…")]` is the explicit spelling of the native form, and
+`#[query(jpql = "…", entity = "Account")]` writes the statement against entity
+names. Each lowers to the matching runtime call —
+`query_list` / `query_count` / `query_exists` / `query_execute`.
+
+`#[firefly::transactional]` wraps an `async fn`'s body in a transaction governed by
+the registered `TransactionManager` — commit on `Ok`, roll back on `Err` — so the
+boundary becomes a declaration. The function must be `async`, must return a
+`Result<T, E>`, and its error type must implement
+`From<firefly_transactional::TxError>` so begin/commit failures surface through the
+normal `?` path. Bare or with options (`propagation`, `isolation`, `read_only`,
+`timeout_ms`):
+
+```rust,ignore
+#[firefly::transactional]
+async fn open_account(repo: &AccountRepo, acct: Account) -> Result<(), DataError> {
+    repo.insert(&acct).await?;     // committed together on Ok,
+    repo.insert_audit(&acct).await?;  // rolled back together on Err
+    Ok(())
+}
+
+#[firefly::transactional(propagation = "requires_new", isolation = "serializable", read_only = false, timeout_ms = 5000)]
+async fn reconcile(repo: &LedgerRepo) -> Result<(), DataError> { /* … */ }
+```
+
+These two are the relational counterpart to how Lumen achieves consistency
+*without* a transaction manager: it appends events to the `EventStore` under
+optimistic concurrency and projects them, rather than mutating rows inside a
+`#[transactional]` boundary (chapter 11). Same goal — atomic, consistent writes —
+reached by two different architectures.
+
+> **What it generates.** `#[firefly::repository]` replaces each stub body with a
+> delegation to `SqlxReactiveRepository`: name-derived methods to
+> `find_by_derived` / `find_by_derived_paged`, and `#[query(…)]` methods to
+> `query_list` / `query_count` / `query_exists` / `query_execute`, picking the call
+> from the return type. `#[firefly::transactional]` wraps the body in a
+> begin/commit/rollback boundary on the registered `TransactionManager`;
+> `propagation` / `isolation` / `read_only` / `timeout_ms` tune that boundary.
+
+### Method security — `#[pre_authorize]` / `#[post_authorize]`
+
+Two macros enforce access control at the method boundary, reading the caller's
+identity from the ambient security context rather than from a `Request`. The full
+treatment is in the [security chapter](./14-security.md); here is the catalogue
+entry.
+
+`#[firefly::pre_authorize(...)]` runs an access check **before** the function body.
+Apply it to a `fn` returning `Result<T, E>` whose error type implements
+`From<firefly_security::SecurityError>`, so a denial surfaces through the normal
+`?` path. The rule forms are:
+
+```rust,ignore
+#[firefly::pre_authorize]                              // `authenticated` — any caller in scope
+async fn whoami() -> Result<Profile, AppError> { /* … */ }
+
+#[firefly::pre_authorize(role = "ADMIN")]              // a single role
+async fn close_books(&self) -> Result<(), AppError> { /* … */ }
+
+#[firefly::pre_authorize(any_role = ["TELLER", "ADMIN"])]
+async fn open_account(&self, req: OpenAccount) -> Result<Account, AppError> { /* … */ }
+
+#[firefly::pre_authorize(authority = "wallet:write")]  // a single fine-grained authority
+async fn deposit(&self, id: &str, cents: i64) -> Result<(), AppError> { /* … */ }
+
+#[firefly::pre_authorize(any_authority = ["wallet:write", "wallet:admin"])]
+async fn withdraw(&self, id: &str, cents: i64) -> Result<(), AppError> { /* … */ }
+```
+
+When no caller is in scope the body is skipped and the macro returns
+`Err(SecurityError::Unauthenticated.into())`; when a caller is present but lacks
+the required role/authority it returns `Err(SecurityError::Forbidden.into())`.
+
+`#[firefly::post_authorize(<bool expr>)]` runs **after** an `async fn` returns
+`Result<T, E>` and gates the value on a boolean expression. The expression sees
+`result` (a `&T` to the returned value — the returnObject) and `auth` (a
+`&Authentication`); if it evaluates to `false` the value is discarded and the call
+returns `Forbidden`:
+
+```rust,ignore
+// Only return the wallet if the caller owns it.
+#[firefly::post_authorize(result.owner == auth.subject())]
+async fn get_wallet(&self, id: &str) -> Result<WalletView, AppError> { /* … */ }
+```
+
+Both macros read the caller from the ambient context in `firefly_security`:
+`with_authentication_scope(auth, fut).await` runs a future with an
+`Authentication` in scope, `current_authentication() -> Option<Authentication>`
+reads it, and `check_access(&AccessRule) -> Result<Authentication, SecurityError>`
+is the runtime check the macros expand to, over
+`AccessRule::{Authenticated, Role, AnyRole, Authority, AnyAuthority}`. Because
+`BearerLayer` scopes the authentication for the whole downstream call (on both the
+anonymous and verified paths), these checks work on a service method that never
+sees the `Request` — the macro reads from scope, not from a handler argument.
+
+> **What it generates.** `#[pre_authorize]` emits a `check_access(&AccessRule)?`
+> against the ambient context before your body, with an empty attribute defaulting
+> to `AccessRule::Authenticated`. `#[post_authorize]` evaluates its boolean over
+> `result` and `auth` after the body and converts `false` into a `Forbidden`
+> error. Both rely on `SecurityError: From` for the function's error type, so
+> denials travel the normal `Result` path.
 
 ## How it works: the `__rt` contract
 
@@ -312,5 +597,5 @@ arrived through one dependency and one prelude glob.
    declarative layer wrote for you.
 
 That is Lumen, complete and declarative. The appendices that follow are
-reference: a [Spring-Boot → Firefly-Rust cheat sheet](./90-appendix-spring.md), a
-[module index](./91-appendix-modules.md), and a [glossary](./92-glossary.md).
+reference: a [module index](./91-appendix-modules.md) and a
+[glossary](./92-glossary.md).

@@ -23,10 +23,11 @@ understanding of how anything works.
 
 **Rust gives you infinite choice. What it does not give you is cohesion.**
 
-The stack-assembly problem is not a skills failure — it is a tooling gap. Java
-developers solved it with Spring Boot: one opinionated framework that makes
-sensible choices, lets you override what matters, and enforces a consistent
-idiom across every service. Firefly brings that same discipline to Rust.
+The stack-assembly problem is not a skills failure — it is a tooling gap. Mature
+ecosystems closed it with a single opinionated, batteries-included framework that
+makes sensible choices, lets you override what matters, and enforces a consistent
+idiom across every service. Firefly is that framework for Rust: it makes the
+cross-cutting decisions once, so every service shares one idiom.
 
 ## What is Firefly?
 
@@ -50,27 +51,27 @@ Firefly's defining principles:
   middleware chain, cache, CQRS bus, event broker, health composite, metrics,
   scheduler, lifecycle. You write commands, queries, handlers, and routes;
   nothing more. Lumen builds its core with `WebStack::new(CoreConfig { .. })`.
-- **Symmetric across runtimes.** The wire contract, the
+- **Contract-first and interoperable.** The wire contract — the
   `application/problem+json` shape, the `Idempotency-Key` semantics, the saga
-  step definitions, the event envelopes — all identical to the Java, .NET, Go,
-  and Python siblings. The Lumen you build here is the Lumen those books build.
+  step definitions, the event envelopes — is a stable, versioned, language-neutral
+  specification. Any service that honors it interoperates with a Firefly service
+  byte-for-byte, so Firefly slots into a polyglot fleet without bespoke glue.
 - **Pluggable at the adapter layer.** Each integration point (cache, broker,
   IDP, ECM, notification channel) is an object-safe port with multiple adapter
   implementations selected at wiring time as an `Arc<dyn Port>`.
 - **Observable by default.** `tracing` structured logging with correlation-id
   enrichment, actuator health/metrics endpoints, RFC 9457 error envelopes, and a
   startup banner are all on out of the box.
-- **Reactive to the core.** A first-class `Mono`/`Flux` reactive surface — the
-  Rust analog of Project Reactor — runs from reactive endpoints through reactive
-  repositories, the reactive HTTP client, and reactive EDA/CQRS.
+- **Reactive to the core.** A first-class `Mono`/`Flux` reactive surface runs
+  from reactive endpoints through reactive repositories, the reactive HTTP
+  client, and reactive EDA/CQRS — a lazy, composable, backpressure-aware
+  streaming model built natively on tokio.
 
-> **Spring parity.** If you come from Spring Boot, building the Firefly core is
-> your `@SpringBootApplication` auto-configuration: one call stands up the
-> middleware, the bus, the broker, health, and metrics. The configuration
-> hierarchy (defaults → profile → env vars) maps to `application.yaml` +
-> profiles, and returning a `Mono<T>` / `Flux<T>` from a handler is the WebFlux
-> `@RestController` model. A **Spring parity** callout appears wherever the
-> concepts align closely enough to save you the translation.
+> **Design note.** One `WebStack::new` call stands up the middleware, the bus,
+> the broker, health, and metrics — Firefly's composition root. Configuration
+> layers defaults → profile → environment, and any handler can return a
+> `Mono<T>` / `Flux<T>`. If you have used a batteries-included framework before,
+> this will feel familiar.
 
 ## The one-dependency facade
 
@@ -81,7 +82,7 @@ exactly one Firefly dependency. This is its real `Cargo.toml`:
 ```toml
 [dependencies]
 # The whole framework AND every `#[derive(...)]` / `#[...]` macro.
-firefly = { version = "26.6.3" }
+firefly = { version = "26.6.4" }
 
 # The two ecosystem crates a Firefly service still writes against directly:
 # axum (you author the controller handlers) and serde (your messages and
@@ -115,11 +116,10 @@ Lumen takes the discipline one step further: even its typed error enums —
 `std::error::Error` instead of reaching for `thiserror`. The one-dependency
 promise holds end to end, and the chapters point it out where it matters.
 
-> **Spring parity.** The `firefly` facade is the spirit of a Spring Boot
-> *starter*: one coordinate on your dependency list pulls in a curated, version-
-> aligned stack, and the macros are your annotations. `use firefly::prelude::*;`
-> is the equivalent of importing `org.springframework.*` and having the
-> annotations just be there.
+> **Design note.** The `firefly` facade is a single front-door crate: one
+> coordinate on your dependency list pulls in a curated, calendar-version-aligned
+> stack, and `use firefly::prelude::*;` brings the whole high-frequency surface
+> and every macro into scope at once. One dependency, no version skew to manage.
 
 ## The tiers behind the facade
 
@@ -147,15 +147,18 @@ shape tells you where each capability lives.
 - **Foundational** crates are the vocabulary: `firefly-kernel` (errors, clock,
   correlation scopes, DDD kit), `firefly-reactive` (`Mono`/`Flux`),
   `firefly-web` (middleware), `firefly-config`, `firefly-validators`,
-  `firefly-i18n`, `firefly-container` (DI).
+  `firefly-i18n`, and `firefly-container` — a full dependency-injection engine
+  with component scanning and stereotype derives, covered in depth in Chapter 4.
 - **Platform** crates are the capabilities: caching, CQRS, EDA, event sourcing,
   orchestration, scheduling, resilience, security, observability. Lumen reaches
   for `firefly::cqrs`, `firefly::eventsourcing`, `firefly::orchestration`,
   `firefly::scheduling`, and `firefly::security` here.
 - **Adapters** are the concrete integrations: the REST/reactive HTTP client, the
-  IDP vendors, ECM, notifications, and the event transports (Kafka, RabbitMQ,
-  Postgres outbox, Redis Streams). Lumen ships on the in-memory adapters and
-  points at the production swaps in callouts.
+  IDP vendors, ECM, notifications, the event transports (Kafka, RabbitMQ,
+  Postgres outbox, Redis Streams), and the persistence adapters (`firefly-data-sqlx`
+  for relational stores, `firefly-data-mongodb` for documents) — a pluggable
+  multi-database story that Chapter 7 builds on. Lumen ships on the in-memory
+  adapters and points at the production swaps in callouts.
 - **Starters** bundle a sensible default stack so a service depends on one crate.
   Lumen's web tier is `firefly::starter_web::WebStack`, which wires the core
   (`firefly::starter_core`) plus the web middleware in one constructor.
@@ -212,8 +215,8 @@ written every line of it.
 
 Nothing in code yet. This chapter framed the journey:
 
-- The **cohesion problem** Firefly exists to solve, and the Spring-Boot-style
-  answer it brings to Rust.
+- The **cohesion problem** Firefly exists to solve, and the opinionated,
+  one-framework answer it brings to Rust.
 - The **one-dependency facade** — Lumen depends on a single `firefly` crate, and
   `use firefly::prelude::*;` brings in the whole high-frequency surface and every
   macro. Even the typed errors avoid `thiserror`, so the promise holds end to

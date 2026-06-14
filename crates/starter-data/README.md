@@ -1,6 +1,6 @@
 # `firefly-starter-data`
 
-> **Tier:** Starter · **Status:** Full · **Java original:** `firefly-starter-data` · **Go module:** `starterdata`
+> **Tier:** Starter · **Status:** Stable
 
 ## Overview
 
@@ -20,14 +20,13 @@ impl Data {
 ```
 
 `starter_name` defaults to `"starter-data"` (an explicit
-`CoreConfig.starter_name` is preserved, exactly like the Go module).
-Where Go embeds `*startercore.Core`, the Rust `Data` holds the `Core` as
-a public field and implements `Deref`/`DerefMut` to it, so every core
-field and convenience method is available directly on the starter
-(`data.bus`, `data.apply_middleware(..)`, `data.actuator_router(..)`,
-`data.new_application()`, …). The full `firefly-starter-core` surface is
-re-exported, so this crate is the only starter dependency a data service
-needs.
+`CoreConfig.starter_name` is preserved). The `Data` struct holds the
+`Core` as a public field and implements `Deref`/`DerefMut` to it, so
+every core field and convenience method is available directly on the
+starter (`data.bus`, `data.apply_middleware(..)`,
+`data.actuator_router(..)`, `data.new_application()`, …). The full
+`firefly-starter-core` surface is re-exported, so this crate is the only
+starter dependency a data service needs.
 
 ## Quick start
 
@@ -79,7 +78,6 @@ cargo test -p firefly-starter-data
 ```
 
 Covers the wired `Core` being live (a CQRS round-trip through `data.bus`)
-and the `starter_name` override, plus Rust-specific cases: explicit
-starter names preserved, core defaults flowing through the wrapper,
-validation middleware pre-installed, `Deref` access to core methods, and
-`Send`/`Sync` bounds.
+and the `starter_name` override, plus: explicit starter names preserved,
+core defaults flowing through the wrapper, validation middleware
+pre-installed, `Deref` access to core methods, and `Send`/`Sync` bounds.

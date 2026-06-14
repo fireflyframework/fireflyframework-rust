@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Reusable Filter Toolbar Component.
+ * Firefly Admin — Reusable Filter Toolbar Component.
  *
  * Provides a consistent search + filter pill bar used across views
  * (metrics, loggers, config, environment).

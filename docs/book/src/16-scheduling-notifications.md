@@ -15,11 +15,11 @@ webhook, and an inbound payment-provider callback would hang off it. Lumen keeps
 the heartbeat deliberately tiny — it records that it ran — so the macro is shown
 wired end to end without dragging in a provider SDK.
 
-> **Spring parity.** `#[scheduled]` is `@Scheduled`: cron, fixed rate, fixed
-> delay. The `firefly-notifications` `Channel` + `Dispatcher` is the
-> notification-sender abstraction; `firefly-callbacks` is the outbound-webhook
-> subsystem; `firefly-webhooks` is the inbound receiver. Each swaps a provider
-> for a one-line registration, never a code change.
+> **The back-office concerns.** `#[scheduled]` runs code on a timer (cron,
+> fixed rate, fixed delay). `firefly-notifications` delivers messages through a
+> `Channel` + `Dispatcher` abstraction; `firefly-callbacks` pushes signed
+> outbound webhooks; `firefly-webhooks` validates and ingests inbound ones. Each
+> swaps a provider for a one-line registration, never a code change.
 
 ## The scheduled heartbeat
 
@@ -121,7 +121,7 @@ use firefly::prelude::Scheduler;
 
 let s = Arc::new(Scheduler::new());
 
-// Cron: a 5-field expression (or the Spring 6-field form with leading seconds).
+// Cron: a 5-field expression (or the 6-field form with leading seconds).
 s.cron("daily-statements", "0 2 * * *", || async { Ok(()) }).unwrap();
 
 // FixedRate: fire every period from a fixed anchor (slips on a slow run).
@@ -139,7 +139,7 @@ s.fixed_delay("sweep-abandoned", Duration::from_secs(300), || async { Ok(()) });
 | `FixedDelayTrigger` | fires the delay after the previous run finished             |
 
 The cron grammar is the canonical 5-field `minute hour day-of-month month
-day-of-week`, plus the Spring 6-field form with leading seconds, the Quartz `?`
+day-of-week`, plus an optional 6-field form with leading seconds, the `?`
 placeholder, and the `@daily` / `@hourly` / `@weekly` macros. For a time zone,
 build a `ZonedCronTrigger`:
 
@@ -151,11 +151,10 @@ let expr = parse_cron("0 9 * * MON-FRI").unwrap();
 let trigger = ZonedCronTrigger::in_zone(expr, "America/New_York").unwrap();
 ```
 
-> **Spring parity.** `Scheduler::cron` / `fixed_rate` / `fixed_delay` mirror
-> `@Scheduled(cron=…)` / `fixedRate` / `fixedDelay`, and the 6-field
-> leading-seconds form matches Spring's cron dialect. `#[scheduled]` is the
-> annotation; `schedule_<fn>` is the registration the Spring container would do
-> for you.
+> **Cron grammar.** Firefly's cron parser accepts the canonical 5-field
+> expression, an optional 6-field leading-seconds form, the `?` placeholder, and
+> the `@daily` / `@hourly` / `@weekly` macros. `#[scheduled]` generates the
+> registration helper (`schedule_<fn>`) so you write only the work function.
 
 ## Notifications — where the daily statement hangs
 
@@ -220,14 +219,13 @@ let store = Arc::new(MemoryStore::new());
 let dispatcher = HmacDispatcher::new(store, DispatcherConfig::default()); // 3 attempts, 200ms, doubling
 
 // On a large deposit, Lumen would publish a CallbackEvent; the dispatcher signs
-// and POSTs it to every registered Target, headers and `sha256=<hex>` signature
-// byte-identical to the Go/Java/.NET/Python ports.
+// and POSTs it to every registered Target with a stable HMAC-SHA256 signature.
 ```
 
 Each delivery carries `X-Firefly-Event`, `X-Firefly-Event-Id`,
 `X-Firefly-Timestamp`, and an `X-Firefly-Signature: sha256=<hmac-hex>` keyed on
-the target's secret — wire-compatible with every other Firefly port, so a
-receiver written against any of them verifies Lumen's deliveries unchanged.
+the target's secret, so any receiver that knows the shared secret verifies
+Lumen's deliveries with a standard HMAC check.
 
 ## Inbound webhooks — receiving a provider callback
 

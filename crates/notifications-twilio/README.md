@@ -1,6 +1,6 @@
 # `firefly-notifications-twilio`
 
-> **Tier:** Adapter · **Status:** Implemented · **Backing tech:** Twilio Programmable Messaging (SMS)
+> **Tier:** Adapter · **Status:** Stable · **Backing tech:** Twilio Programmable Messaging (SMS)
 
 ## Overview
 
@@ -12,14 +12,14 @@ over `reqwest`; there is no stub or not-implemented sentinel.
 The crate exposes two interchangeable surfaces, both backed by the same live
 API:
 
-* **`TwilioSmsProvider`** — the rich provider (pyfly parity). It implements the
+* **`TwilioSmsProvider`** — the rich provider. It implements the
   `SmsProvider` port, POSTs to Twilio's `Messages.json` endpoint with HTTP basic
   auth and a form-encoded body, parses the response `sid` into a
   `NotificationResult`, and folds non-2xx responses into a `FAILED` result. It
   also exposes `fetch_status`, a `GET` against the Message resource that returns
   the current delivery `MessageStatus`.
-* **`Channel` / `Config`** — the Go-parity envelope adapter. It keeps the Go
-  module's `Config` wiring surface, and `Channel::send` performs a **real**
+* **`Channel` / `Config`** — the envelope adapter. It exposes the
+  `Config` wiring surface, and `Channel::send` performs a **real**
   `Messages.json` POST by mapping the channel-agnostic `Notification` envelope to
   an `SmsMessage` and delegating to `TwilioSmsProvider`.
 
@@ -66,8 +66,9 @@ pub struct Config {
 }
 ```
 
-The shape is field-for-field identical to the Go `notificationstwilio.Config`
-struct.
+The `from_address`, `project_id`, and `server_key` fields are shared
+vendor-config slots carried by the common notifications wiring surface and are
+unused by the SMS channel.
 
 ## Public surface
 
@@ -77,16 +78,16 @@ struct.
 | `Channel` | `firefly_notifications::Channel` adapter; `Channel::new(cfg)` / `Channel::with_base_url(cfg, base)` construct it, `config()` exposes the wiring, `provider()` returns the underlying `TwilioSmsProvider`, `kind()` routes `Kind::SMS`, `name()` is `"notificationstwilio"`. |
 | `TwilioSmsProvider` | The rich provider. `new(account_sid, auth_token)` constructs it; `with_from_number(..)` sets a default sender; `with_base_url(..)` / `with_http_client(..)` are wiring seams (the base URL defaults to the real Twilio host). Adds `fetch_status(sid)`. |
 | `SmsProvider` | The async port (`name`, `send(SmsMessage) -> Result<NotificationResult, TwilioError>`), object-safe behind `Arc`/`Box`. |
-| `SmsMessage` | Port of pyfly's `SmsMessage` (`id` defaults to a UUID v4, optional `sender`). `new(to, body)` + `with_sender(..)`. |
+| `SmsMessage` | The outbound SMS message (`id` defaults to a UUID v4, optional `sender`). `new(to, body)` + `with_sender(..)`. |
 | `MessageStatus` | The delivery state returned by `fetch_status` (`sid`, raw `status`, `error_code?`, `error_message?`). |
-| `NotificationResult` | Port of pyfly's `NotificationResult` (`id`, `provider`, `status`, `provider_id`, `error`). |
-| `DeliveryStatus` | Port of pyfly's `EmailStatus` enum (`QUEUED`/`SENT`/`DELIVERED`/`BOUNCED`/`FAILED`/`SUPPRESSED`). |
+| `NotificationResult` | The send outcome (`id`, `provider`, `status`, `provider_id`, `error`). |
+| `DeliveryStatus` | The delivery-state enum (`QUEUED`/`SENT`/`DELIVERED`/`BOUNCED`/`FAILED`/`SUPPRESSED`). |
 | `TwilioError` | `MissingSender`, `Transport(..)`, and `StatusFetch { status, body }`. |
 | `VERSION` | Framework version stamp. |
 
 ## Behavior
 
-### Send (matches pyfly `TwilioSmsProvider`)
+### Send
 
 * **Basic auth + form post:** the request goes to
   `{base}/2010-04-01/Accounts/{sid}/Messages.json` with an

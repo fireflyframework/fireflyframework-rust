@@ -83,14 +83,20 @@ fn to_cqrs(e: DomainError) -> CqrsError {
 
 /// `POST /api/v1/wallets` command — open a new wallet. `#[firefly(validate)]`
 /// makes an empty `owner` fail validation before the handler runs.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Command)]
+///
+/// It also derives [`Builder`](firefly::Builder) (Lombok `@Builder`), so a
+/// caller can construct it fluently — `OpenWallet::builder().owner("ada").build()`
+/// — with `opening_balance` defaulting to zero.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Command, Builder)]
 #[serde(default)]
 pub struct OpenWallet {
     /// The wallet owner's display name — required.
     #[firefly(validate)]
+    #[builder(into)]
     pub owner: String,
     /// The opening balance, in minor units (cents); must be `>= 0`.
     #[serde(rename = "openingBalance")]
+    #[builder(default)]
     pub opening_balance: i64,
 }
 
@@ -282,5 +288,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(fetched.id, opened.id);
+    }
+
+    /// `#[derive(Builder)]` (Lombok `@Builder`) gives `OpenWallet` a fluent
+    /// constructor: `owner` is required (`into` setter), `opening_balance`
+    /// defaults to zero.
+    #[test]
+    fn open_wallet_builder_constructs_with_defaults() {
+        let cmd = OpenWallet::builder().owner("ada").build().unwrap();
+        assert_eq!(cmd.owner, "ada");
+        assert_eq!(cmd.opening_balance, 0);
+
+        let funded = OpenWallet::builder()
+            .owner("bob")
+            .opening_balance(5_000)
+            .build()
+            .unwrap();
+        assert_eq!(funded.opening_balance, 5_000);
+
+        // The required `owner` errors when omitted.
+        assert!(OpenWallet::builder().build().is_err());
     }
 }

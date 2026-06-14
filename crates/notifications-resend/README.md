@@ -1,6 +1,6 @@
 # `firefly-notifications-resend`
 
-> **Tier:** Adapter · **Status:** Implemented · **Backing tech:** Resend `POST /emails` (email)
+> **Tier:** Adapter · **Status:** Stable · **Backing tech:** Resend `POST /emails` (email)
 
 ## Overview
 
@@ -12,15 +12,14 @@ endpoint over `reqwest`; there is no stub or not-implemented sentinel.
 The crate exposes two interchangeable surfaces, both backed by the same live
 API:
 
-* **`ResendEmailProvider`** — the rich provider (pyfly `ResendEmailProvider`).
-  It POSTs an `EmailMessage` to `/emails`, supporting cc/bcc, separate text/HTML
-  bodies, base64 attachments, and an optional `default_from` fallback, and
-  parses the `id` field of the JSON response.
-* **`Channel` / `Config`** — the Go-parity envelope adapter. It keeps the Go
-  module's `Config` wiring surface, and `Channel::send` performs a **real**
-  `/emails` call by mapping the channel-agnostic `Notification` envelope to an
-  `EmailMessage` (using `from_address` as the sender) and delegating to
-  `ResendEmailProvider`.
+* **`ResendEmailProvider`** — the rich provider. It POSTs an `EmailMessage` to
+  `/emails`, supporting cc/bcc, separate text/HTML bodies, base64 attachments,
+  and an optional `default_from` fallback, and parses the `id` field of the JSON
+  response.
+* **`Channel` / `Config`** — the envelope adapter. It exposes a simple `Config`
+  wiring surface, and `Channel::send` performs a **real** `/emails` call by
+  mapping the channel-agnostic `Notification` envelope to an `EmailMessage`
+  (using `from_address` as the sender) and delegating to `ResendEmailProvider`.
 
 ```rust
 use firefly_notifications::{Channel as _, Kind, Notification};
@@ -56,8 +55,9 @@ pub struct Config {
 }
 ```
 
-The shape is field-for-field identical to the Go `notificationsresend.Config`
-struct.
+`from_address` is the only field this adapter consumes beyond `api_key`; the
+remaining fields are shared vendor-config slots reused across notification
+adapters and are ignored here.
 
 ## Public surface
 
@@ -71,7 +71,7 @@ struct.
 | `NotificationResult` | `{ id, provider, status, provider_id?, error? }`. |
 | `EmailProvider` | The async delivery port. |
 
-## Behavior (matches pyfly `ResendEmailProvider`)
+## Behavior
 
 * POSTs `{api_base}/emails` (default `https://api.resend.com`) with
   `Authorization: Bearer <key>` and `Content-Type: application/json`.
@@ -95,8 +95,7 @@ cargo test -p firefly-notifications-resend
 `tests/mock_send.rs` runs both surfaces against an **in-process axum mock** on
 `127.0.0.1:0` (no network, no Docker) that captures the outbound request and
 asserts the exact method, path, auth header, and JSON payload, then parses a
-realistic response — the Rust port of
-`tests/notifications/test_resend_behavior.py`.
+realistic response.
 
 > **Live round trip:** A real Resend round trip requires a valid `re_…` API key
 > and a verified sending domain, which are deployment secrets. The test suite

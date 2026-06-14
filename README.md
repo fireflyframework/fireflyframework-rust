@@ -14,7 +14,7 @@ _/ ____\__|______   _____/ ____\  | ___.__.
 Rust 1.85+ (tokio + axum).**
 
 [![Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version 26.6.3](https://img.shields.io/badge/version-26.6.3-orange.svg)](CHANGELOG.md)
+[![Version 26.6.4](https://img.shields.io/badge/version-26.6.4-orange.svg)](CHANGELOG.md)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-93450a.svg)](https://www.rust-lang.org)
 [![Reactive: Mono / Flux](https://img.shields.io/badge/reactive-Mono%20%2F%20Flux-success.svg)](docs/book/src/05-reactive-model.md)
 [![One dependency: firefly](https://img.shields.io/badge/one%20dep-firefly%20%2B%20macros-success.svg)](crates/firefly/README.md)
@@ -32,7 +32,7 @@ Rust 1.85+ (tokio + axum).**
 > [`docs/book/dist/firefly-rust-by-example.pdf`](docs/book/dist/firefly-rust-by-example.pdf)
 > and [`.epub`](docs/book/dist/firefly-rust-by-example.epub).
 
-> 🚀 **New in 26.6.3 — two headline wins.** (1) A **Spring-Boot-for-Rust
+> 🚀 **New in 26.6.4 — two headline wins.** (1) A **Spring-Boot-for-Rust
 > developer experience**: add the one [`firefly`](crates/firefly/README.md)
 > dependency, `use firefly::prelude::*;`, and declare your service with
 > [`firefly-macros`](crates/macros/README.md) —
@@ -42,11 +42,11 @@ Rust 1.85+ (tokio + axum).**
 > **Postgres, MySQL, SQLite** ([`firefly-data-sqlx`](crates/data-sqlx/README.md))
 > and **MongoDB** ([`firefly-data-mongodb`](crates/data-mongodb/README.md)) — a
 > *new database is a new adapter, not a rewrite*. See
-> [The two 26.6.3 headlines](#the-two-2663-headlines) below.
+> [The two 26.6.4 headlines](#the-two-2663-headlines) below.
 
 At its heart is a **WebFlux-style reactive core** — [`firefly-reactive`](crates/reactive/README.md)
 gives you `Mono<T>` (0-or-1) and `Flux<T>` (0..N) over `tokio`
-futures/streams, the faithful Rust analog of Project Reactor. That core
+futures/streams, a Reactor-style reactive model built for Rust. That core
 threads through the whole framework: reactive HTTP responders that stream
 NDJSON/SSE with real backpressure, a `ReactiveCrudRepository` (in-memory
 or real Postgres), a reactive `WebClient`, reactive EDA subscriptions,
@@ -59,38 +59,31 @@ envelopes, idempotency, correlation propagation, CQRS, event-driven
 messaging, event sourcing, sagas, configuration servers, identity
 adapters, document management, notifications, callbacks, webhooks —
 behind a single, opinionated composition pattern. On top of that core it
-ships a **full PyFly-parity layer**: a domain-driven kernel, an opt-in
+ships a **full application layer**: a domain-driven kernel, an opt-in
 DI container, aspect-oriented advice, server-side HTTP sessions, a
-Spring-Shell-style CLI framework, WebSocket server support, a
-Spring-Boot-Admin-style dashboard, a `firefly` developer CLI, and
+shell-style CLI framework, WebSocket server support, an admin
+dashboard, a `firefly` developer CLI, and
 **real, fully-wired** vendor adapters — Keycloak/Azure/Cognito IDP,
 S3/Blob/e-sign ECM, SMTP/SendGrid/Resend/Twilio/Firebase notifications,
 Redis/Postgres cache, and Kafka/RabbitMQ/Postgres/Redis-Streams event
 transports. **No stubs remain** — every adapter drives its real
 provider.
 
-This repository is the official Rust port of the Java/Spring Boot
-[`org.fireflyframework`](https://fireflyframework.org) platform — the
-fourth sibling port, joining the
-[.NET](../fireflyframework-dotnet),
-[Go](https://github.com/fireflyframework/fireflyframework-go), and
-[Python (PyFly)](https://github.com/fireflyframework/fireflyframework-pyfly)
-ports. It preserves every public contract, configuration key and wire
-format from the Java release line, re-implemented with idiomatic Rust
-tooling (`tokio`, `axum`, `tower`, `serde`, `thiserror`, `async-trait`,
-RustCrypto, `tracing`). A service running version *X* on Java, .NET,
-Go, Python, or Rust consumes the same contracts and emits the same
-wire format.
+Firefly Framework is built natively in idiomatic Rust with `tokio`,
+`axum`, `tower`, `serde`, `thiserror`, `async-trait`, RustCrypto, and
+`tracing`. Its public contracts — the `application/problem+json` error
+shape, `Idempotency-Key` semantics, event envelopes, HMAC webhook
+signatures, saga step definitions — are defined as stable, versioned wire
+formats so any service that speaks them interoperates cleanly.
 
-The compiled-language core (foundational + platform + starter tiers)
-holds module-for-module parity with the Go port and is kept
-wire-stable; the **PyFly-parity layer is purely additive** — every
-extension layers onto the existing crates without changing a single
-Go-parity wire format.
+The compiled-language core (foundational + platform + starter tiers) is
+kept wire-stable across releases; the application layer is purely
+additive — every extension layers onto the existing crates without
+changing a single core wire format.
 
 ---
 
-## The two 26.6.3 headlines
+## The two 26.6.4 headlines
 
 ### 1 · Spring-Boot-for-Rust ergonomics — one dependency, declarative macros
 
@@ -103,7 +96,7 @@ orchestration — is in scope, alongside every macro from
 
 ```toml
 [dependencies]
-firefly = "26.6.3"            # the whole framework + every macro
+firefly = "26.6.4"            # the whole framework + every macro
 axum    = "0.7"               # you author axum handlers
 serde   = { version = "1", features = ["derive"] }
 tokio   = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -154,7 +147,7 @@ chapter.
 [`firefly-data`](crates/data/README.md) defines the storage-agnostic ports —
 the `Filter` DSL, the composable `Specification`, the `Repository` /
 `ReactiveCrudRepository` / `ReactiveSpecificationRepository` traits, plus
-auditing and soft-delete. 26.6.3 makes the data layer *truly hexagonal*: a
+auditing and soft-delete. 26.6.4 makes the data layer *truly hexagonal*: a
 `SqlDialect` abstraction (`PostgresDialect` / `MySqlDialect` / `SqliteDialect`)
 renders the same query tree for any relational backend, and
 `Specification::to_mongo()` lowers it to a MongoDB `$`-operator filter. Two new
@@ -185,8 +178,8 @@ different conventions and the platform fragments.
 
 Firefly Framework treats those concerns as solved problems on Rust too:
 
-- **Reactive by design.** `firefly-reactive` brings Reactor's `Mono` /
-  `Flux` to Rust: lazy, composable, `FireflyError`-typed publishers that
+- **Reactive by design.** `firefly-reactive` provides a Reactor-style
+  `Mono` / `Flux` model for Rust: lazy, composable, `FireflyError`-typed publishers that
   drop straight into an axum handler. A handler can return a `Mono<T>`
   (rendered as JSON, with `Ok(None)` → 404) or a `Flux<T>` (streamed as
   `application/x-ndjson` or SSE with **true backpressure** — a million
@@ -197,10 +190,10 @@ Firefly Framework treats those concerns as solved problems on Rust too:
   CQRS bus, event broker, health composite, metrics, scheduler,
   lifecycle. Authors write commands, queries, handlers, and routes —
   nothing more.
-- **Symmetric across runtimes.** The wire contract, the
+- **Stable wire contracts.** The wire contract, the
   `application/problem+json` shape, the `Idempotency-Key` semantics, the
   saga step definitions, the event envelopes, the HMAC webhook
-  signatures — all identical to the Java, .NET, Go, and Python sides.
+  signatures — all versioned, standards-based, and stable across releases.
 - **Pluggable at the adapter layer.** Each integration point (IDP, ECM,
   storage, e-signature, notification channel, message broker) is an
   `async_trait` object-safe port with multiple adapter implementations
@@ -227,7 +220,7 @@ Firefly Framework treats those concerns as solved problems on Rust too:
 | Capability | Crate(s) | Spring / Reactor analog | Status |
 |------------|----------|-------------------------|:------:|
 | **One-dependency facade + prelude** | `firefly` | `spring-boot-starter` | ✅ Full |
-| **Declarative macros** (`#[derive(Command)]`, `#[rest_controller]`, `#[command_handler]`, `#[scheduled]`, …) | `firefly-macros` | Spring annotations / pyfly decorators | ✅ Full |
+| **Declarative macros** (`#[derive(Command)]`, `#[rest_controller]`, `#[command_handler]`, `#[scheduled]`, …) | `firefly-macros` | Spring annotations | ✅ Full |
 | **Reactive core (`Mono` / `Flux`)** | `firefly-reactive` | Project Reactor | ✅ Full |
 | **Reactive HTTP responders** (NDJSON / SSE streaming, backpressure) | `firefly-web` | WebFlux `@RestController` returning `Mono`/`Flux` | ✅ Full |
 | **Pluggable hexagonal databases** (Postgres / MySQL / SQLite / MongoDB) | `firefly-data`, `-data-sqlx`, `-data-mongodb` | Spring Data ports + adapters | ✅ Full |
@@ -322,9 +315,9 @@ See [`MODULES.md`](MODULES.md) for the full per-crate catalogue and
 ## Workspace layout
 
 One Cargo workspace, **76 members** — 72 framework crates plus the
-integration suite and three reference samples — spanning the Go-parity
+integration suite and three reference samples — spanning the
 core (foundational, platform, adapter, starter tiers) and the
-PyFly-parity layer:
+application layer:
 
 ```
 fireflyframework-rust/
@@ -333,12 +326,12 @@ fireflyframework-rust/
 │   ├── macros/                   #   firefly-macros — derive/attribute declarative layer
 │   ├── reactive/                 #   the Mono/Flux reactive core (keystone)
 │   ├── kernel/                   #   each with its own README.md + test suite
-│   ├── web/  cqrs/  eda/  …       #   Go-parity core (+ reactive surfaces)
+│   ├── web/  cqrs/  eda/  …       #   platform core (+ reactive surfaces)
 │   │
-│   ├── container/  aop/           #   PyFly: DI container + aspect advice
-│   ├── session/  shell/  websocket/  #   PyFly: sessions, CLI framework, WS server
-│   ├── cli/                       #   PyFly: the `firefly` developer CLI binary
-│   ├── admin/                     #   PyFly: Spring-Boot-Admin-style dashboard
+│   ├── container/  aop/           #   DI container + aspect advice
+│   ├── session/  shell/  websocket/  #   sessions, CLI framework, WS server
+│   ├── cli/                       #   the `firefly` developer CLI binary
+│   ├── admin/                     #   admin dashboard
 │   │
 │   ├── data-sqlx/  data-mongodb/ #   adapters: relational (pg/mysql/sqlite) + document
 │   ├── session-redis/  session-postgres/  #   adapters: distributed session registries
@@ -353,15 +346,15 @@ fireflyframework-rust/
 ├── samples/orders/               # reference service (firefly-sample-orders)
 ├── samples/reactive-banking/     # end-to-end reactive service (firefly-sample-reactive-banking)
 ├── samples/macro-quickstart/     # the declarative one-dependency DX (firefly-sample-macro-quickstart)
-├── docs/                         # ARCHITECTURE, CONFIGURATION, MIGRATION-GUIDE, DESIGN
+├── docs/                         # ARCHITECTURE, CONFIGURATION, DESIGN
 ├── docs/book/                    # the mdBook guide (mdbook build docs/book) + dist/*.pdf,*.epub
 ├── docker-compose.yml            # real backing services for integration tests
-└── Cargo.toml                    # workspace root — version 26.6.3, edition 2021, MSRV 1.85
+└── Cargo.toml                    # workspace root — version 26.6.4, edition 2021, MSRV 1.85
 ```
 
 ### Choosing your tier / optional adapters
 
-The fastest path is the **one-dependency facade** — `firefly = "26.6.3"`
+The fastest path is the **one-dependency facade** — `firefly = "26.6.4"`
 brings the whole framework and every macro in via `use firefly::prelude::*;`,
 with heavy adapters as opt-in cargo features
 (`features = ["data-sqlx", "eda-kafka", …]`). Prefer the individual crates when
@@ -406,16 +399,16 @@ Add the starter and the reactive core to a binary crate:
 
 ```toml
 [dependencies]
-firefly-starter-core = "26.6.3"
-firefly-reactive = "26.6.3"
-firefly-web = "26.6.3"
+firefly-starter-core = "26.6.4"
+firefly-reactive = "26.6.4"
+firefly-web = "26.6.4"
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 serde_json = "1"
 ```
 
 > Prefer the new **one-dependency** front door? Replace the three `firefly-*`
-> lines with a single `firefly = "26.6.3"` and `use firefly::prelude::*;` — see
+> lines with a single `firefly = "26.6.4"` and `use firefly::prelude::*;` — see
 > [the macro-quickstart sample](samples/macro-quickstart) and the
 > [Declarative Services with Macros](docs/book/src/21-declarative-macros.md)
 > chapter.
@@ -553,7 +546,7 @@ samples (`samples/orders`, `samples/reactive-banking`,
 reactive repositories incl. real Postgres / `sqlx` / MongoDB, the reactive
 `WebClient`, reactive EDA and CQRS), the foundational/platform/starter tiers,
 the ergonomic front door (`firefly` facade + `firefly-macros`), and the
-PyFly-parity layer (`firefly-container`, `firefly-aop`,
+application layer (`firefly-container`, `firefly-aop`,
 `firefly-session` + the distributed `firefly-session-redis`/`-postgres`
 registries, `firefly-shell`, `firefly-websocket`, `firefly-cli`,
 `firefly-admin`) are all complete.
@@ -590,9 +583,9 @@ See [`MODULES.md`](MODULES.md) for the per-crate catalogue.
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — tiering, the EDA
   transport-adapter pattern, the reactive translation, build waves.
 - **[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)** — the typed config
-  loader and the full Java-key → Rust-wiring mapping.
-- **[`docs/MIGRATION-GUIDE.md`](docs/MIGRATION-GUIDE.md)** — porting a
-  Java/Spring (or .NET/Go/Python) service to the Rust port.
+  loader and the full configuration-key → wiring mapping.
+- **[`docs/DESIGN.md`](docs/DESIGN.md)** — the architectural decisions and
+  the reactive design rationale.
 - Every crate ships its own `README.md` with its public surface and a
   runnable quick-start.
 
@@ -606,4 +599,4 @@ Apache 2.0 header (Firefly Software Foundation, 2026).
 Contributions are welcome. Before opening a PR, run `make ci` (format,
 clippy with `-D warnings`, build, and test must all pass). New public
 surface should ship with crate-level docs and tests, and keep the
-Go-parity wire contract byte-stable.
+framework's wire contract byte-stable.

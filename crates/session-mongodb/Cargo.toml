@@ -1,0 +1,22 @@
+[package]
+name = "firefly-session-mongodb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Firefly Framework for Rust — MongoDB-backed distributed SessionRegistry adapter"
+
+[dependencies]
+firefly-session = { workspace = true }
+mongodb = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+firefly-session = { workspace = true }
+tokio = { workspace = true }

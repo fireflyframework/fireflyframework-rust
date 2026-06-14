@@ -1,14 +1,14 @@
 # `firefly-eventsourcing`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `firefly-event-sourcing-spring-boot-starter` · **Go module:** `eventsourcing`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
 `firefly-eventsourcing` provides the framework's **event-sourced aggregate**
 primitives:
 
-* `AggregateRoot` — composed into domain aggregates (the Rust analog of
-  Go's struct embedding); tracks uncommitted events and the loaded version.
+* `AggregateRoot` — composed into domain aggregates; tracks uncommitted
+  events and the loaded version.
 * `EventStore` port — `append` (with optimistic concurrency), `load`,
   `load_after`, and `stream_all` (the global, cross-aggregate ordered
   stream). Default `MemoryEventStore`.
@@ -17,12 +17,11 @@ primitives:
 * `Projection` + `ProjectionRunner` — read-side handlers with per-aggregate
   replay and global-stream consumption (`drive_once` / `replay_all`).
 
-The `DomainEvent` JSON wire format — camelCase field names, base64-encoded
-`payload` (matching Go's `[]byte` encoding), `metadata` omitted when empty —
-is byte-compatible with the Java, .NET, Go and Python ports.
+The `DomainEvent` JSON wire format uses camelCase field names, a base64-encoded
+`payload`, and omits `metadata` when empty, giving a compact, stable
+serialisation that is easy to interoperate with.
 
-At **pyfly parity** the crate additionally ships (see the
-[pyfly parity](#pyfly-parity) section):
+The crate also ships the following higher-level building blocks:
 
 * `EventUpcaster` — schema migration applied on the read paths.
 * `TransactionalOutbox` + `OutboxRecord` — at-least-once delivery of stored
@@ -175,9 +174,7 @@ async fn main() {
 }
 ```
 
-## pyfly parity
-
-Surfaces ported from pyfly's `eventsourcing` module:
+## Advanced building blocks
 
 ### `EventUpcaster` — schema migration on read
 
@@ -227,8 +224,7 @@ forwards each pending record to the `OutboxSink`, retrying failures up to
 `max_attempts`. Exhausted records become dead letters (excluded from the
 publish loop, surfaced for inspection / manual retry). The default
 `EdaSink` wraps each event in a `firefly_eda::Event` tagged with
-`aggregate_id` / `aggregate_type` / `version` headers — the Rust analog of
-pyfly's `EventSourcingPublisher`.
+`aggregate_id` / `aggregate_type` / `version` headers.
 
 ### `SqlEventStore` — SQL-backed `EventStore`
 
@@ -247,8 +243,8 @@ Events persist to a single `firefly_event_store` table with a
 `UNIQUE(aggregate_id, version)` constraint. `append` reads the head version
 *inside* the write transaction (no check-then-write TOCTOU race) and
 translates a concurrent unique-constraint collision into
-`EventSourcingError::Concurrency` rather than leaking a raw driver error —
-matching pyfly's TOCTOU fix. Read paths apply the configured upcaster chain.
+`EventSourcingError::Concurrency` rather than leaking a raw driver error.
+Read paths apply the configured upcaster chain.
 The store works over any backend implementing the `firefly-transactional`
 `Database` port; it is exercised in-crate against `rusqlite`.
 
@@ -262,7 +258,7 @@ let next = store.stream_all(Some(&page.last().unwrap().event_id), 100, None).awa
 ```
 
 `stream_all` returns the entire event log in global append order across **all**
-aggregates — pyfly's `EventStore.stream_all`. Each `StreamedEvent` carries a
+aggregates. Each `StreamedEvent` carries a
 stable `event_id` cursor key (a monotonic store sequence; the `DomainEvent`
 wire format is unchanged). `MemoryEventStore` keeps a global log; `SqlEventStore`
 adds a `global_seq` column for a deterministic, gapless total order. The trait
@@ -279,10 +275,9 @@ spans many aggregates. `FunctionProjection` wraps a single async closure as a
 
 ### Event-store multi-tenancy
 
-`DomainEvent::tenant_id` is an optional, persisted, filterable field mirroring
-pyfly's `StoredEventEnvelope.tenant_id`. It is omitted from the JSON wire form
-when `None`, so a non-tenant event serialises byte-for-byte identically to the
-Go/Java/.NET ports. Set it per-aggregate via
+`DomainEvent::tenant_id` is an optional, persisted, filterable field. It is
+omitted from the JSON wire form when `None`, so a non-tenant event serialises
+to the same compact form as before tenancy was added. Set it per-aggregate via
 `AggregateRoot::with_tenant(...)`; it threads through `append` (stored as a
 column by `SqlEventStore`), and both `load` and `stream_all` can filter by it.
 
@@ -300,9 +295,8 @@ Implement `EventSourcedAggregate` on a type that composes an `AggregateRoot`
 hydration). `load` restores the latest snapshot then replays only events after
 its version; `save` appends uncommitted events with optimistic concurrency and
 writes a fresh snapshot when the batch **crossed** a multiple of
-`snapshot_interval` (a straddling batch is caught — pyfly audit #151), and
-checks every replayed event belongs to the loaded aggregate id/type (pyfly
-audit #150).
+`snapshot_interval` (a straddling batch is caught), and checks every replayed
+event belongs to the loaded aggregate id/type.
 
 ## Testing
 
@@ -314,8 +308,8 @@ Covers the raise → uncommitted → clear lifecycle, optimistic-concurrency
 rejection (stale `expected_version`), `load` returning
 `EventSourcingError::AggregateNotFound`, projection replay and
 short-circuiting, snapshot soft-miss semantics, concurrent-append races,
-and Go-compatible JSON wire formats (base64 payloads, sorted metadata
-keys, RFC 3339 timestamps). The pyfly-parity suite additionally covers
+and the JSON wire format (base64 payloads, sorted metadata
+keys, RFC 3339 timestamps). The suite additionally covers
 `stream_all` (global order, cursor resume + paging, unknown-cursor empty
 page, tenant filtering), projection consumption of the global stream
 (`replay_all` drain + idempotent resume, `drive_once` not advancing past a

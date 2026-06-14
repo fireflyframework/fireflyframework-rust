@@ -1,11 +1,11 @@
 # `firefly-orchestration`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `firefly-common-domain` orchestration · **Go module:** `orchestration`
+> **Tier:** Platform · **Status:** Full
 
 ## Overview
 
-`firefly-orchestration` ships the three classic **distributed-transaction
-engines** every Firefly platform agrees on:
+`firefly-orchestration` ships three classic **distributed-transaction
+engines**:
 
 | Engine     | Topology                      | Compensation                       |
 |------------|-------------------------------|------------------------------------|
@@ -19,8 +19,7 @@ exponential backoff, jitter, per-attempt timeout) and thread a typed
 
 Each engine accepts a typed step / node / participant built from async
 closures, runs as a plain future on the caller's task, and respects
-cooperative cancellation through a `CancellationToken` — the Rust analogue
-of the Go port's `context.Context` cancellation. The engines are
+cooperative cancellation through a `CancellationToken`. The engines are
 runtime-agnostic: they depend only on `futures`, so any executor (tokio
 included) can drive them.
 
@@ -55,8 +54,7 @@ assert_eq!(outcome.steps_executed, ["reserve", "charge", "ship"]);
 ```
 
 On failure, `run` returns a `SagaFailure` carrying both the error and the
-fully-populated `Outcome` — the Rust shape of Go's `(Outcome, error)`
-return pair.
+fully-populated `Outcome`.
 
 `CompensationPolicy`:
 * `BestEffort` (default) — log + continue compensating remaining steps
@@ -88,15 +86,13 @@ assert!(result.is_ok());
 
 Duplicate node names and unknown dependencies are rejected up-front; an
 unreachable node aborts the run with `"no progress (dependency cycle?)"`.
-Failures within the same wave are aggregated one message per line,
-mirroring Go's `errors.Join`.
+Failures within the same wave are aggregated one message per line.
 
 Nodes built with `Node::with_compensation` are rolled back in reverse
-completion order on any failure (pyfly's `WorkflowExecutor._compensate`),
-under the configurable `CompensationPolicy` — the same shape as `Saga`.
-`Node::with_context` lets a node read prior step results, `Node::when`
-skips it on a false predicate, and `Node::fire_and_forget` schedules it
-without blocking the wave.
+completion order on any failure, under the configurable
+`CompensationPolicy` — the same shape as `Saga`. `Node::with_context` lets
+a node read prior step results, `Node::when` skips it on a false predicate,
+and `Node::fire_and_forget` schedules it without blocking the wave.
 
 ## `Tcc`
 
@@ -160,7 +156,7 @@ pub struct ConfirmError { participant, source }
 pub struct CancellationToken;          // new() / cancel() / is_cancelled()
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-// Advanced layer (pyfly transactional.workflow parity).
+// Advanced durable-workflow layer.
 pub struct StepContext;                // typed inter-step blackboard
 pub async fn invoke_with_policy(step, &RetryPolicy, &StepContext, action) -> Result<(), StepInvokeError>;
 pub enum StepInvokeError { Failed, TimedOut }
@@ -171,13 +167,12 @@ pub struct WorkflowQueryService; pub struct DurableWorkflowState;
 pub struct ConditionError;
 ```
 
-## pyfly parity — durable orchestration layer
+## Durable orchestration layer
 
-On top of the three in-process engines, the crate ports pyfly's
-`pyfly.transactional` durability layer: persistent execution state, stuck-run
-recovery, a dead-letter queue, signal/timer workflow nodes, broker-driven
-saga starts, scheduled starts, definition validation, and a REST admin
-surface.
+On top of the three in-process engines, the crate adds a durability layer:
+persistent execution state, stuck-run recovery, a dead-letter queue,
+signal/timer workflow nodes, broker-driven saga starts, scheduled starts,
+definition validation, and a REST admin surface.
 
 ### Execution model
 
@@ -243,33 +238,31 @@ Node::timer(name, Duration)    // sleeps, then completes
 
 ### Per-step retry, inter-step data & advanced workflow primitives
 
-Ports pyfly's `pyfly.transactional.workflow` advanced layer (audit highs).
-
 ```rust,ignore
-// Per-step retry / backoff / jitter / timeout (pyfly StepInvoker).
+// Per-step retry / backoff / jitter / timeout.
 pub async fn invoke_with_policy(step, &RetryPolicy, &StepContext, action)
     -> Result<(), StepInvokeError>;
 Step::new(..).with_retry(RetryPolicy { max_attempts, backoff_ms, timeout_ms, .. })
 TccParticipant::new(..).with_retry(RetryPolicy { .. })
 
-// Inter-step data passing — typed blackboard threaded through the run
-// (pyfly @FromStep / @Input / @Variable / @Header argument injection).
+// Inter-step data passing — typed blackboard threaded through the run,
+// with from-step / input / variable / header argument injection.
 pub struct StepContext;        // set_result / result / result_field / input /
                               // input_field / set_variable / variable / header /
                               // to_snapshot / from_snapshot (durable)
 Step::with_context(name, |ctx| async move { .. })   // reads prior step results
 Saga::run_with_context(&ctx)                          // threads ctx through steps
 
-// Workflow step compensation (pyfly WorkflowExecutor._compensate).
+// Workflow step compensation.
 Node::with_context(name, |ctx| async move { .. })
     .with_compensation(|ctx| async move { .. })       // reverse-order rollback
 Workflow::policy(CompensationPolicy::StopOnError)     // reuses the saga policy
 
-// Conditional + async fire-and-forget steps (pyfly condition= / async_=True).
+// Conditional + async fire-and-forget steps.
 Node::with_context(..).when("results['always'] == 'ran'")   // skip when false
 Node::new(..).fire_and_forget()                              // scheduled, not awaited
 
-// Wait/compose gates (pyfly WaitForAll / WaitForAny).
+// Wait/compose gates (wait-for-all / wait-for-any).
 pub async fn wait_all(&signals, &timers, &[WaitTarget], Option<Duration>) -> Result<(), WaitError>;
 pub async fn wait_any(&signals, &timers, &[WaitTarget], Option<Duration>) -> Result<WaitOutcome, WaitError>;
 pub enum WaitTarget { Signal { correlation_id, signal }, Timer { delay } }
@@ -278,7 +271,7 @@ pub enum WaitTarget { Signal { correlation_id, signal }, Timer { delay } }
 pub struct ChildWorkflowService;  // register(id, factory) / start / start_with_timeout /
                                  // start_async (fire-and-forget)
 pub struct ContinueAsNew;         // restart(id, input) — fresh correlation id
-pub struct WorkflowQueryService;  // register / register_query / query / active (pyfly @workflow_query)
+pub struct WorkflowQueryService;  // register / register_query / query / active
 pub struct DurableWorkflowState;  // suspend(&ctx) / resume(cid) over PersistenceProvider
 ```
 
@@ -299,8 +292,8 @@ pub struct OrchestrationRegistry;    // register_{saga,workflow,tcc}; {saga,work
                                     // definitions() -> Vec<DefinitionInfo>  (admin listing)
 ```
 
-Cron triggers are inert without a cron evaluator, exactly as pyfly behaves
-without `croniter`; fixed-rate / fixed-delay are the always-active forms.
+Cron triggers are inert without a cron evaluator; fixed-rate / fixed-delay
+are the always-active forms.
 
 ### Definition validation & reports
 
@@ -324,8 +317,7 @@ pub struct OrchestrationTracer;           // tracing-span facade; .span(name) / 
 pub struct OrchestrationHealthIndicator;  // firefly_observability::Indicator over PersistenceProvider
 ```
 
-Ports pyfly's `pyfly.transactional.core.{events,metrics,tracer}`. The
-`OrchestrationEvents` trait carries the full lifecycle hook set (`on_start`,
+The `OrchestrationEvents` trait carries the full lifecycle hook set (`on_start`,
 `on_step_*`, `on_compensation_started` / `on_step_compensated`, TCC
 `on_phase_*` / `on_participant_*`, `on_workflow_suspended` / `_resumed`,
 `on_signal_delivered`, `on_timer_fired`, `on_child_workflow_*`,
@@ -343,9 +335,8 @@ let snap = metrics.snapshot();   // { executions: {..}, steps: {..}, tcc_phases:
 ```
 
 `TccParticipant::with_context` threads the try phase's `StepContext` result
-into confirm / cancel — pyfly's `@FromTry`. `OrchestrationHealthIndicator`
-reports persistence liveness (`UP`/`DOWN` with a `persistence` detail) on
-`/actuator/health`.
+into confirm / cancel. `OrchestrationHealthIndicator` reports persistence
+liveness (`UP`/`DOWN` with a `persistence` detail) on `/actuator/health`.
 
 ### Saga composition (DAG of sagas)
 
@@ -356,12 +347,11 @@ pub struct SagaCompositor;          // .register(name, saga) / .register_with_un
 pub struct CompositionContext;      // saga_results / completed / compensated / error
 ```
 
-Ports pyfly's `pyfly.transactional.saga.composition`: run several registered
-sagas as a DAG (same-layer sagas concurrently), wire each saga's step output
-into downstream sagas' input via `SagaDataFlow`, and compensate all completed
-sagas in reverse on a failure (via per-saga `register_with_undo` closures).
-`CompositionValidator` rejects unknown dependencies, dangling data-flow
-sources, and dependency cycles.
+Run several registered sagas as a DAG (same-layer sagas concurrently), wire
+each saga's step output into downstream sagas' input via `SagaDataFlow`, and
+compensate all completed sagas in reverse on a failure (via per-saga
+`register_with_undo` closures). `CompositionValidator` rejects unknown
+dependencies, dangling data-flow sources, and dependency cycles.
 
 ### REST router
 
@@ -391,14 +381,14 @@ Covers happy-path completion, reverse-order compensation, the two
 compensation policies, concurrent DAG wave execution, fail-fast on
 upstream error, cycle / duplicate / unknown-dependency validation, TCC
 try / confirm / cancel orderings, joined confirm errors, cooperative
-cancellation, and `Outcome` serde round-trips — plus the ported pyfly
+cancellation, and `Outcome` serde round-trips — plus the durable
 transactional-engine suites: persistence (memory + sqlite), recovery,
 dead-letter capture/retry, signal delivery, timer nodes, event-gateway
 dispatch and broker-driven saga starts, scheduled fixed-rate/delay starts,
 DAG validation, execution reports, and the `axum` REST router exercised via
 `tower::ServiceExt::oneshot`.
 
-The advanced layer adds the ported pyfly `workflow` suites: workflow step
+The advanced layer adds the workflow suites: workflow step
 compensation (reverse order, non-compensatable skip, compensation reading
 the prior step's result, StopOnError policy), `wait_all` / `wait_any`
 gather/race with timeout, child workflows (sync / timeout / fire-and-forget),

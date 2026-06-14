@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Mappings View.
+ * Firefly Admin — Mappings View.
  *
  * Displays HTTP request mappings with color-coded method badges,
  * searchable by path or controller name. Clicking a row opens a

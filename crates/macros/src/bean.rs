@@ -14,20 +14,31 @@
 
 //! The `#[bean]` factory-method attribute (Spring/pyfly `@Bean`).
 //!
-//! Applied to an `impl` block of a `#[derive(Configuration)]` type. Every
-//! method inside the block carrying a `#[bean(...)]` marker becomes a bean
-//! factory keyed by its return type — the Rust analog of pyfly's
-//! `_process_configurations`, which resolves the configuration bean, calls each
-//! `@bean` method, and registers the result by its concrete return type.
+//! Applied to an `impl` block of a `#[derive(Configuration)]` /
+//! `#[derive(AutoConfiguration)]` type. Every method inside the block carrying a
+//! `#[bean(...)]` marker becomes a bean factory keyed by its return type — the
+//! Rust analog of pyfly's `_process_configurations`, which resolves the
+//! configuration bean, calls each `@bean` method, and registers the result by
+//! its concrete return type.
 //!
-//! The macro generates a `firefly_register_beans(&Container)` associated
-//! function that resolves the configuration bean and registers each factory.
-//! Each factory's body calls the original method; method *arguments* are
-//! resolved from the container (constructor injection), so a `@bean` method can
-//! depend on other beans.
+//! Each `#[bean]` method generates two things:
+//!
+//! 1. a per-method `firefly_register_bean__<name>(&Container)` associated
+//!    function that resolves the configuration holder and registers the factory;
+//! 2. an [`inventory::submit!`] of a `ComponentRegistration` (stereotype
+//!    `Bean`) carrying the method's conditions, so [`Container::scan`] discovers
+//!    and registers the bean **automatically** — no manual call needed — and
+//!    honours `#[bean(profile / condition_on_* )]` through the same two-pass
+//!    evaluation used for stereotypes. This is what makes `@Bean` +
+//!    `@ConditionalOnMissingBean` auto-configuration work.
+//!
+//! A `firefly_register_beans(&Container)` aggregate function is also generated
+//! (it calls every per-method registrar, honouring `profile`) for the explicit
+//! `register_all!`-style path and for generic holders that cannot be
+//! inventoried.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{FnArg, ImplItem, ItemImpl, ReturnType};
 
 use crate::common::facade_from_override;
@@ -38,20 +49,22 @@ struct BeanMethod {
     return_ty: syn::Type,
     /// Resolve expressions for each method argument (constructor injection).
     arg_resolvers: Vec<TokenStream>,
-    name: String,
-    scope: Option<String>,
-    primary: bool,
-    profile: Option<String>,
+    args: BeanArgs,
 }
 
-/// Per-method `#[bean(name = "...", scope = "...", primary, profile = "...")]`
-/// options.
+/// Per-method `#[bean(...)]` options.
 #[derive(Default)]
 struct BeanArgs {
     name: Option<String>,
     scope: Option<String>,
     primary: bool,
+    order: Option<i32>,
     profile: Option<String>,
+    condition_on_property: Option<String>,
+    condition_on_class: Option<String>,
+    condition_on_bean: Option<String>,
+    condition_on_missing_bean: Option<String>,
+    condition_on_single_candidate: Option<String>,
 }
 
 /// Expands `#[bean]` on an `impl` block. The optional `crate = "..."` argument
@@ -64,6 +77,10 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
 
     let mut item = item;
     let self_ty = (*item.self_ty).clone();
+    // Generic holders cannot be inventoried (the monomorphization is chosen at
+    // the use site), so they fall back to the explicit `firefly_register_beans`
+    // path only — no `inventory::submit!`.
+    let is_generic = !item.generics.params.is_empty();
 
     let mut methods: Vec<BeanMethod> = Vec::new();
     for impl_item in &mut item.items {
@@ -122,17 +139,11 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
             }
         }
 
-        let name = bean_args
-            .name
-            .unwrap_or_else(|| method.sig.ident.to_string());
         methods.push(BeanMethod {
             ident: method.sig.ident.clone(),
             return_ty,
             arg_resolvers,
-            name,
-            scope: bean_args.scope,
-            primary: bean_args.primary,
-            profile: bean_args.profile,
+            args: bean_args,
         });
     }
 
@@ -143,52 +154,83 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
         ));
     }
 
-    // Each factory resolves the configuration holder, then calls the method.
-    let registrations = methods.iter().map(|m| {
+    // Per-method registrar functions, inventory submissions, and the aggregate
+    // `firefly_register_beans` call list.
+    let mut registrar_fns: Vec<TokenStream> = Vec::new();
+    let mut submissions: Vec<TokenStream> = Vec::new();
+    let mut aggregate_calls: Vec<TokenStream> = Vec::new();
+
+    for m in &methods {
         let mident = &m.ident;
         let return_ty = &m.return_ty;
         let resolvers = &m.arg_resolvers;
-        let name = &m.name;
-        let primary = m.primary;
-        let scope_tokens = match m.scope.as_deref() {
-            None | Some("singleton") | Some("Singleton") => quote!(#container::Scope::Singleton),
-            Some("transient") | Some("Transient") | Some("prototype") | Some("Prototype") => {
-                quote!(#container::Scope::Transient)
+        let name = m.args.name.clone().unwrap_or_else(|| mident.to_string());
+        let primary = m.args.primary;
+        let order: i32 = m.args.order.unwrap_or(0);
+        let scope_tokens = bean_scope_tokens(&container, m.args.scope.as_deref());
+        let registrar_ident = format_ident!("__firefly_register_bean_{}", mident);
+
+        // The raw registration body (no condition checks — those are evaluated
+        // by `Container::scan()` via the inventory thunk's `conditions`).
+        let registrar_fn = quote! {
+            #[doc(hidden)]
+            #[allow(non_snake_case)]
+            pub fn #registrar_ident(__container: &#container::Container) {
+                __container.register_factory_with::<#return_ty, _>(
+                    #scope_tokens,
+                    #name,
+                    #primary,
+                    #order,
+                    |__c: &#container::Container| {
+                        let __cfg = #container::Container::resolve::<#self_ty>(__c)?;
+                        ::core::result::Result::Ok(<#self_ty>::#mident(&__cfg, #(#resolvers),*))
+                    },
+                );
+                __container.set_stereotype::<#return_ty>("bean");
             }
-            Some("request") | Some("Request") => quote!(#container::Scope::Request),
-            Some("session") | Some("Session") => quote!(#container::Scope::Session),
-            Some(_) => quote!(#container::Scope::Singleton),
         };
-        // `#[bean(profile = "expr")]`: register the bean only when the active
-        // profiles match (Spring `@Bean @Profile`). Evaluated against the
-        // container's installed condition context at register time.
-        let registration = quote! {
-            __container.register_factory_with::<#return_ty, _>(
-                #scope_tokens,
-                #name,
-                #primary,
-                0,
-                |__c: &#container::Container| {
-                    let __cfg = #container::Container::resolve::<#self_ty>(__c)?;
-                    ::core::result::Result::Ok(<#self_ty>::#mident(&__cfg, #(#resolvers),*))
-                },
-            );
-            __container.set_stereotype::<#return_ty>("bean");
-        };
-        match m.profile.as_deref().filter(|s| !s.is_empty()) {
+        registrar_fns.push(registrar_fn);
+
+        // The aggregate `firefly_register_beans` path keeps the legacy profile
+        // guard so a manual call (without `scan`) still honours `#[bean(profile)]`.
+        let aggregate_call = match m.args.profile.as_deref().filter(|s| !s.is_empty()) {
             Some(expr) => quote! {
                 if __container.condition_context().accepts_profiles(#expr) {
-                    #registration
+                    <#self_ty>::#registrar_ident(__container);
                 }
             },
-            None => registration,
+            None => quote! { <#self_ty>::#registrar_ident(__container); },
+        };
+        aggregate_calls.push(aggregate_call);
+
+        // The inventory thunk: `scan()` discovers it and evaluates every
+        // condition (profile + conditional_on_*) in its two-pass system.
+        if !is_generic {
+            let conditions = build_bean_conditions(&container, &m.args);
+            let type_name_lit = type_name_string(return_ty);
+            submissions.push(quote! {
+                #container::inventory::submit! {
+                    #container::ComponentRegistration {
+                        type_name: #type_name_lit,
+                        module_path: ::core::module_path!(),
+                        bean_name: #name,
+                        stereotype: #container::BeanStereotype::Bean,
+                        scope: #scope_tokens,
+                        primary: #primary,
+                        order: #order,
+                        register: <#self_ty>::#registrar_ident,
+                        conditions: || #conditions,
+                    }
+                }
+            });
         }
-    });
+    }
 
     let register_doc = format!(
-        "Registers every `#[bean]` factory method on `{}` with the container. \
-         Call this from `Container::scan()`/`register_all!` after the \
-         configuration holder is registered. Generated by `#[bean]`.",
+        "Registers every `#[bean]` factory method on `{}` with the container, \
+         honouring `#[bean(profile = ...)]`. `Container::scan()` registers these \
+         automatically; call this only for the explicit `register_all!` path or \
+         for a generic holder that cannot be inventoried. Generated by `#[bean]`.",
         quote!(#self_ty)
     );
 
@@ -196,15 +238,69 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
         #item
 
         impl #self_ty {
+            #(#registrar_fns)*
+
             #[doc = #register_doc]
             pub fn firefly_register_beans(__container: &#container::Container) {
-                #(#registrations)*
+                #(#aggregate_calls)*
             }
         }
+
+        #(#submissions)*
     })
 }
 
-/// Parse `#[bean(name = "...", scope = "...", primary, profile = "...")]`.
+/// Resolve the `Scope` token from the `#[bean(scope = "...")]` option.
+fn bean_scope_tokens(container: &TokenStream, scope: Option<&str>) -> TokenStream {
+    match scope {
+        None | Some("singleton") | Some("Singleton") => quote!(#container::Scope::Singleton),
+        Some("transient") | Some("Transient") | Some("prototype") | Some("Prototype") => {
+            quote!(#container::Scope::Transient)
+        }
+        Some("request") | Some("Request") => quote!(#container::Scope::Request),
+        Some("session") | Some("Session") => quote!(#container::Scope::Session),
+        Some(_) => quote!(#container::Scope::Singleton),
+    }
+}
+
+/// Build the `Vec<Condition>` literal for a bean method's inventory thunk.
+fn build_bean_conditions(container: &TokenStream, args: &BeanArgs) -> TokenStream {
+    let mut entries: Vec<TokenStream> = Vec::new();
+    if let Some(p) = args.profile.as_deref().filter(|s| !s.is_empty()) {
+        entries.push(quote!(#container::Condition::Profile(#p.to_string())));
+    }
+    if let Some(p) = args.condition_on_property.as_deref().filter(|s| !s.is_empty()) {
+        entries.push(quote!(#container::Condition::on_property(#p)));
+    }
+    if let Some(c) = args.condition_on_class.as_deref().filter(|s| !s.is_empty()) {
+        entries.push(quote!(#container::Condition::OnClass(#c.to_string())));
+    }
+    if let Some(b) = args.condition_on_bean.as_deref().filter(|s| !s.is_empty()) {
+        entries.push(quote!(#container::Condition::OnBean(#b.to_string())));
+    }
+    if let Some(b) = args
+        .condition_on_missing_bean
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
+        entries.push(quote!(#container::Condition::OnMissingBean(#b.to_string())));
+    }
+    if let Some(b) = args
+        .condition_on_single_candidate
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
+        entries.push(quote!(#container::Condition::OnSingleCandidate(#b.to_string())));
+    }
+    quote!(::std::vec![#(#entries),*])
+}
+
+/// A readable type-name string for a bean's return type (diagnostics + `/beans`).
+fn type_name_string(ty: &syn::Type) -> String {
+    quote!(#ty).to_string().replace(' ', "")
+}
+
+/// Parse `#[bean(name, scope, primary, order, profile, condition_on_*)]`.
 fn parse_bean_args(attr: &syn::Attribute) -> syn::Result<BeanArgs> {
     let mut args = BeanArgs::default();
     // A bare `#[bean]` has no list.
@@ -213,20 +309,31 @@ fn parse_bean_args(attr: &syn::Attribute) -> syn::Result<BeanArgs> {
     }
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("name") {
-            let v: syn::LitStr = meta.value()?.parse()?;
-            args.name = Some(v.value());
+            args.name = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("scope") {
-            let v: syn::LitStr = meta.value()?.parse()?;
-            args.scope = Some(v.value());
+            args.scope = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("primary") {
             args.primary = true;
+        } else if meta.path.is_ident("order") {
+            args.order = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);
         } else if meta.path.is_ident("profile") {
-            let v: syn::LitStr = meta.value()?.parse()?;
-            args.profile = Some(v.value());
+            args.profile = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("condition_on_property") {
+            args.condition_on_property = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("condition_on_class") {
+            args.condition_on_class = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("condition_on_bean") {
+            args.condition_on_bean = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("condition_on_missing_bean") {
+            args.condition_on_missing_bean = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+        } else if meta.path.is_ident("condition_on_single_candidate") {
+            args.condition_on_single_candidate = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else {
-            return Err(
-                meta.error("unknown #[bean] argument; use name, scope, primary, or profile")
-            );
+            return Err(meta.error(
+                "unknown #[bean] argument; use name, scope, primary, order, profile, \
+                 condition_on_property, condition_on_class, condition_on_bean, \
+                 condition_on_missing_bean, or condition_on_single_candidate",
+            ));
         }
         Ok(())
     })?;

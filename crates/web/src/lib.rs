@@ -113,6 +113,7 @@ mod exception_handler;
 mod globs;
 mod headers;
 mod idempotency;
+mod json_mapper;
 mod metrics;
 mod pii;
 mod problem;
@@ -131,6 +132,7 @@ pub use correlation::{
     HEADER_TRACESTATE, HEADER_TRANSACTION_ID,
 };
 pub use cors::{CorsConfig, CorsLayer, CorsService, PERMIT_DEFAULT_METHODS};
+pub use json_mapper::{Inclusion, MappingJsonConverter, ObjectMapper, PropertyNaming};
 pub use csrf::{
     generate_csrf_token, validate_csrf_token, CsrfLayer, CsrfService, CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME, CSRF_SAFE_METHODS,

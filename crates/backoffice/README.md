@@ -1,6 +1,6 @@
 # `firefly-backoffice`
 
-> **Tier:** Starter · **Status:** Full · **Go module:** `backoffice` · **Java original:** `firefly-backoffice` · **.NET project:** `FireflyFramework.BackOffice`
+> **Tier:** Starter · **Status:** Stable
 
 ## Overview
 
@@ -18,8 +18,7 @@ Both must be present; the middleware emits a 400
 Successful requests have the values stored on the request — as a
 `BackOfficeContext` extension *and* a tokio task-local scope — and
 exposed via `firefly_backoffice::branch()` /
-`firefly_backoffice::operator()`, the Rust spelling of Go's
-`backoffice.Branch(ctx)` / `backoffice.Operator(ctx)`.
+`firefly_backoffice::operator()`.
 
 ## Public surface
 
@@ -27,20 +26,20 @@ exposed via `firefly_backoffice::branch()` /
 pub const HEADER_BRANCH: &str = "X-BackOffice-Branch";
 pub const HEADER_OPERATOR: &str = "X-BackOffice-Operator";
 
-pub fn branch() -> Option<String>;     // Go: Branch(ctx) (string, bool)
-pub fn operator() -> Option<String>;   // Go: Operator(ctx) (string, bool)
+pub fn branch() -> Option<String>;
+pub fn operator() -> Option<String>;
 pub async fn with_back_office<F: Future>(ctx: BackOfficeContext, fut: F) -> F::Output;
 pub fn with_back_office_sync<F: FnOnce() -> R, R>(ctx: BackOfficeContext, f: F) -> R;
 
 pub struct BackOfficeContext { pub branch: String, pub operator: String }
 
-pub struct BackOfficeLayer;            // Go: Middleware(next http.Handler)
+pub struct BackOfficeLayer;            // emits the back-office guard middleware
 pub struct BackOfficeService<S>;       // the tower service it produces
 
 pub struct BackOffice { pub app: Application }   // Deref → Application → Core
 impl BackOffice {
-    pub fn new(cfg: CoreConfig) -> Self;                          // Go: New(cfg)
-    pub fn apply_middleware_chain(&self, router: Router) -> Router; // Go: MiddlewareChain()
+    pub fn new(cfg: CoreConfig) -> Self;
+    pub fn apply_middleware_chain(&self, router: Router) -> Router;
 }
 ```
 
@@ -48,10 +47,10 @@ impl BackOffice {
 back-office middleware as the innermost layer — apply it once and
 every handler gets problem rendering, correlation, idempotency, AND
 the back-office guard. The execution order is `Problem → Correlation →
-Idempotency → BackOffice → router`, Go's `core(Middleware(next))`.
+Idempotency → BackOffice → router`.
 
 `BackOffice` dereferences to `Application` (which dereferences to
-`Core`) — the Rust analog of Go's two-level struct embedding — so
+`Core`) — a two-level deref chain — so
 `bo.plugins`, `bo.bus`, `bo.cache`, `bo.actuator_router(..)`, and the
 core-only `bo.apply_middleware(..)` are all reachable directly. The
 starter name defaults to `"starter-backoffice"`; an explicitly

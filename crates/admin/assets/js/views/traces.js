@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Traces View.
+ * Firefly Admin — Traces View.
  *
  * Real-time HTTP trace viewer with SSE live updates, pause/resume,
  * clear, status filter pills, click-to-detail panel — plus live

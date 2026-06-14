@@ -1,6 +1,6 @@
 # `firefly-openapi`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `springdoc-openapi` · **Go module:** `openapi`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -8,19 +8,18 @@
 `RouteDef` descriptors plus JSON sample values of the types they
 consume / return. The generator walks `serde_json::Value` samples
 (RFC 3339 strings mapping to `string format=date-time`, the wire shape
-of Go's `time.Time` and chrono's `DateTime<Utc>`), registers schemas
+of chrono's `DateTime<Utc>`), registers schemas
 under `#/components/schemas/{TypeName}`, and serves the result at
 `/openapi.json` with a Swagger-UI shim at `/openapi/ui` and a ReDoc page
 at `/redoc`.
 
 The generator is deliberately small — it has no annotation framework,
 no DI, no codegen step. You hand-register routes and the JSON samples
-do the rest. Where the Go port inspected struct types via reflection,
-this port inspects a serialized *sample* of the type (`Sample::of`
+do the rest. Because Rust has no runtime reflection, the generator
+inspects a serialized *sample* of the type (`Sample::of`
 accepts any `T: Serialize`; `Sample::named` accepts a
-`serde_json::json!` literal) — Rust has no runtime reflection, and the
-serialized shape carries the same field names the reflection walk
-produced.
+`serde_json::json!` literal) — the serialized shape carries the field
+names that drive schema generation.
 
 ## Automatic generation from `#[rest_controller]`
 
@@ -29,9 +28,7 @@ markers decorate your controllers, they emit a compile-time
 `firefly_container::RouteDescriptor` for every mapped method into an
 `inventory` registry. `Builder::from_routes` (alias of
 `Builder::add_route_descriptors`) consumes that registry to build a spec
-**without re-declaring a single route** — the Rust analog of pyfly's
-`ControllerRegistrar.collect_route_metadata` driving its
-`OpenAPIGenerator`:
+**without re-declaring a single route**:
 
 ```rust,ignore
 use firefly_openapi::{Builder, Info};
@@ -158,7 +155,7 @@ let app: axum::Router = builder.router(); // serves /openapi.json + /openapi/ui
 | JSON sample shape           | OpenAPI shape                                                    |
 |-----------------------------|------------------------------------------------------------------|
 | string                      | `{"type":"string"}`                                              |
-| RFC 3339 string             | `{"type":"string","format":"date-time"}` (Go's `time.Time`)      |
+| RFC 3339 string             | `{"type":"string","format":"date-time"}`                         |
 | bool                        | `{"type":"boolean"}`                                             |
 | integer                     | `{"type":"integer","format":"int64"}`                            |
 | float                       | `{"type":"number"}`                                              |
@@ -171,32 +168,29 @@ The default error response (`default`) uses
 `#/components/schemas/ProblemDetail` so every operation surfaces
 RFC 7807 errors uniformly.
 
-### Differences from the Go reflection walk
+### Sample-driven edge cases
 
-Sample values carry less information than Go's `reflect.Type`, so three
-edge cases adapt:
+Because schemas are derived from a serialized sample rather than a type
+definition, three edge cases are worth knowing:
 
-- **Empty arrays** fall back to `items: {"type":"object"}` (Go derived
-  the element type); prefer one-element samples.
+- **Empty arrays** fall back to `items: {"type":"object"}` (no element
+  is available to infer from); prefer one-element samples.
 - **Nested structs** inline instead of registering their own component
   (samples carry no nested type names); name the top-level type via
   `Sample::named` / `Sample::of`.
-- **Required fields** are every non-null key present in the sample
-  (Go used the absence of `omitempty`); model optional fields as `null`
-  or omit them from the sample.
+- **Required fields** are every non-null key present in the sample;
+  model optional fields as `null` or omit them from the sample.
 
-## Wire compatibility
+## Wire format
 
-`Builder::json()` (and the `/openapi.json` route) emits exactly what
-the Go handler emits: compact JSON, struct keys in Go declaration
-order, map keys sorted, empty optionals omitted (`omitempty`), plus
-the trailing newline of Go's `json.Encoder`. Routes registered by hand
-(no `operationId` / `parameters` / top-level `tags` / `deprecated`)
-therefore serialize byte-for-byte as before — the auto-generation fields
-are additive and `omitempty`-omitted when unset. The Swagger-UI page at
-`/openapi/ui` is byte-for-byte the Go page (`text/html; charset=utf-8`),
-and `/redoc` serves a ReDoc page pointing at `/openapi.json` (pyfly's
-`/redoc` parity).
+`Builder::json()` (and the `/openapi.json` route) emits a stable,
+canonical document: compact JSON, struct keys in declaration order,
+map keys sorted, empty optionals omitted, plus a trailing newline.
+The auto-generation fields (`operationId` / `parameters` / top-level
+`tags` / `deprecated`) are additive and omitted when unset, so routes
+registered by hand serialize cleanly without them. The Swagger-UI page
+is served at `/openapi/ui` (`text/html; charset=utf-8`), and `/redoc`
+serves a ReDoc page pointing at `/openapi.json`.
 
 ## Testing
 
@@ -210,5 +204,5 @@ operationId, auto+explicit field merge, deprecated flag), operation
 registration, schema generation for primitives / arrays / objects /
 timestamps, the `/openapi.json`, `/openapi/ui`, and `/redoc`
 handlers (in-process via `tower::ServiceExt::oneshot`), the canonical
-ProblemDetail error response, Go wire-format omission rules, and serde
+ProblemDetail error response, wire-format omission rules, and serde
 round-trips.

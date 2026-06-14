@@ -1,9 +1,8 @@
 # Orders sample
 
-The reference Firefly Framework Rust service — the port of the Go
-`samples/orders` module. Demonstrates:
+The reference Firefly Framework Rust service. Demonstrates:
 
-- The five-package layout, mirrored as five Rust modules
+- The five-module layout
   (`interfaces`, `models`, `core`, `web`, `sdk`)
 - `Core::new(...)` one-call composition (`firefly-starter-core`)
 - CQRS dispatch with validation + query caching (`firefly-cqrs`)
@@ -12,13 +11,13 @@ The reference Firefly Framework Rust service — the port of the Go
 - Correlation-id propagation
 - Startup banner
 
-| Go package                    | Rust module             | Contents                              |
-|-------------------------------|-------------------------|---------------------------------------|
-| `orders/interfaces`           | `interfaces`            | Wire shapes + CQRS messages           |
-| `orders/models`               | `models`                | `Order` entity + `Repository` port    |
-| `orders/core`                 | `core`                  | CQRS handler registration             |
-| `orders/web` (package `main`) | `web` + `src/main.rs`   | Router composition + HTTP entry point |
-| `orders/sdk`                  | `sdk`                   | Typed client over `/api/v1/orders`    |
+| Rust module             | Contents                              |
+|-------------------------|---------------------------------------|
+| `interfaces`            | Wire shapes + CQRS messages           |
+| `models`                | `Order` entity + `Repository` port    |
+| `core`                  | CQRS handler registration             |
+| `web` + `src/main.rs`   | Router composition + HTTP entry point |
+| `sdk`                   | Typed client over `/api/v1/orders`    |
 
 ## Run
 
@@ -54,7 +53,7 @@ curl http://localhost:8080/api/v1/orders/<id>
 
 The first hit goes to the handler; subsequent reads within 30 s are
 served from the CQRS query cache
-(`GetOrderQuery::cache_ttl()` — Go's `GetOrderQuery.CacheTTL()`).
+(`GetOrderQuery::cache_ttl()`).
 
 ## Errors
 
@@ -95,7 +94,7 @@ assert_eq!(fetched, placed);
 cargo test -p firefly-sample-orders
 ```
 
-Boots the full stack via `build_router()` (Go's `BuildHandler()`) and
+Boots the full stack via `build_router()` and
 asserts on the wire shape — in-process through
 `tower::ServiceExt::oneshot`, no sockets needed. A counting repository
 proves the idempotency replay never re-runs the handler and that the

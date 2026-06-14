@@ -127,6 +127,10 @@ pub async fn build_app() -> LumenApp {
     bus.use_middleware(query_cache.middleware());
     // Validation middleware enforces the `#[firefly(validate)]` checks.
     bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
+    // Correlation propagation: every command/query dispatch runs under a
+    // correlation id — reusing the one the HTTP layer set, or generating one —
+    // so a command and the saga / projection it triggers share a trace id.
+    bus.use_middleware(firefly::cqrs::CorrelationMiddleware::new());
 
     // Publish the handler + projection collaborators (free-fn macro handlers
     // and the `#[event_listener]` reach them through module-local statics).

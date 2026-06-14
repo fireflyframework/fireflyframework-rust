@@ -1,12 +1,15 @@
 # The Reactive Model — Mono & Flux
 
-This is the keystone chapter. `firefly-reactive` is a faithful,
-production-grade **Reactor / WebFlux-style reactive core** — the Rust analog of
-Project Reactor's `Mono` and `Flux`, the engine behind Spring WebFlux and the
-Java Firefly framework. Every reactive surface in the framework — reactive HTTP
-endpoints, reactive repositories, the reactive `WebClient`, reactive EDA and
-CQRS — is built on the two types you will learn here. Read this before the
+This is the keystone chapter. `firefly-reactive` is Firefly's
+production-grade **reactive core**: two lazy, composable, backpressure-aware
+publishers — `Mono` (0-or-1 value) and `Flux` (0..N values) — built natively on
+tokio. Every reactive surface in the framework — reactive HTTP endpoints,
+reactive repositories, the reactive `WebClient`, reactive EDA and CQRS — is
+built on the two types you will learn here. Read this before the
 service-building chapters.
+
+If you've used a reactive-streams library before, the `Mono` / `Flux` shapes
+will feel familiar; everything below is Firefly's own API.
 
 > **By the end of this chapter, Lumen will** have the vocabulary it leans on
 > twice over: the `Flux<WalletEvent>` that backs its NDJSON / SSE
@@ -18,7 +21,7 @@ service-building chapters.
 
 ## Mono and Flux
 
-Two publishers, mirroring Reactor exactly:
+Two publishers:
 
 - **`Mono<T>`** — a producer of *at most one* value (0-or-1, plus a terminal
   error). The reactive analog of "an async function that returns a `T`."
@@ -29,10 +32,9 @@ Both are **lazy**: building a pipeline does nothing; work runs only when you
 subscribe, block, or await. Both are `Send + 'static`, so a `Mono` or `Flux`
 drops directly into an axum handler.
 
-The error type is fixed to `firefly_kernel::FireflyError`, exactly as WebFlux
-models everything as a `Throwable`. Fixing the error keeps the operator surface
-ergonomic (no error type parameter) and wires straight into the framework's
-RFC 9457 problem responses.
+The error type is fixed to `firefly_kernel::FireflyError`. Fixing the error
+keeps the operator surface ergonomic (no error type parameter) and wires
+straight into the framework's RFC 9457 problem responses.
 
 ```rust
 use firefly_reactive::{Flux, Mono};
@@ -61,29 +63,32 @@ assert_eq!(xs, vec![10, 30, 50]);
 # }
 ```
 
-> **Reactor parity.** `Mono::block()` here is *not* the thread-parking
-> `Mono.block()` of the JVM. It is `async` and never parks a Tokio worker; it
-> resolves the publisher in place and returns `Result<Option<T>, FireflyError>`.
+> **Warning.** `Mono::block()` is `async`: it never parks a Tokio worker.
+> It resolves the publisher in place and returns `Result<Option<T>, FireflyError>`,
+> so `.block().await` is the idiomatic way to run a pipeline to completion.
+> Despite the name, it does *not* park a thread the way a blocking call would.
 
-## Reactor → firefly-reactive concept map
+## Core concepts at a glance
 
-| Project Reactor                       | firefly-reactive                                |
-|---------------------------------------|-------------------------------------------------|
-| `Mono<T>`                             | `Mono<T>`                                        |
-| `Flux<T>`                             | `Flux<T>`                                        |
-| `Throwable` (error signal)            | `firefly_kernel::FireflyError` (fixed)           |
-| `Mono.empty()` / `onComplete`         | `Ok(None)` from a `Mono`                          |
-| `onError(t)`                          | `Err(FireflyError)` (terminal)                    |
-| `Mono.block()`                        | `Mono::block` (async — never parks a thread)      |
-| `Mono.subscribe(..)` / `Flux.subscribe(..)` | `Mono::subscribe` / `Flux::subscribe`       |
-| `Schedulers.immediate()`              | `Scheduler::Immediate`                            |
-| `Schedulers.parallel()`               | `Scheduler::Parallel`                             |
-| `Schedulers.boundedElastic()`         | `Scheduler::BoundedElastic`                       |
-| `subscribeOn` / `publishOn`           | `subscribe_on` / `publish_on`                     |
-| `FluxSink` / `Flux.create`            | `FluxSink` / `Flux::create`                       |
-| `Retry.backoff(..)`                   | `Backoff` + `*::retry_backoff`                    |
-| `Mono.toFuture()` / `await`           | `Mono::into_future` / `.await`                    |
-| `Flux.toStream()` (escape hatch)      | `Flux::to_stream` / `Flux::into_stream`           |
+The terms you will meet throughout the chapter, in one place:
+
+| firefly-reactive                                | What it is                                          |
+|-------------------------------------------------|-----------------------------------------------------|
+| `Mono<T>`                                        | a producer of 0-or-1 value plus a terminal error    |
+| `Flux<T>`                                        | a producer of 0..N values plus a terminal signal    |
+| `firefly_kernel::FireflyError` (fixed)           | the single, fixed error signal                      |
+| `Ok(None)` from a `Mono`                         | the empty / complete-with-no-value outcome          |
+| `Err(FireflyError)` (terminal)                   | an error signal — short-circuits the pipeline       |
+| `Mono::block` (async — never parks a thread)     | resolve a publisher in place, then `.await` it      |
+| `Mono::subscribe` / `Flux::subscribe`            | drive a pipeline with explicit callbacks            |
+| `Scheduler::Immediate`                           | run work inline on the current task                 |
+| `Scheduler::Parallel`                            | run work on the Tokio worker pool (CPU-bound)       |
+| `Scheduler::BoundedElastic`                      | run blocking work without starving the worker pool  |
+| `subscribe_on` / `publish_on`                    | choose *where* the source / downstream runs         |
+| `FluxSink` / `Flux::create`                      | push values imperatively into a `Flux`              |
+| `Backoff` + `*::retry_backoff`                   | re-subscribe on error with a backoff schedule       |
+| `Mono::into_future` / `.await`                   | bridge a `Mono` out to a plain `Future`             |
+| `Flux::to_stream` / `Flux::into_stream`          | bridge a `Flux` out to a plain `Stream`             |
 
 ## Creating publishers
 
@@ -117,8 +122,8 @@ assert_eq!(xs, vec![10, 30, 50]);
 
 ## Operator quick reference
 
-The operator surface mirrors Reactor. `Mono` and `Flux` share most names; the
-differences reflect cardinality.
+`Mono` and `Flux` share most operator names; the differences reflect
+cardinality.
 
 | Category    | Mono                                                                 | Flux                                                                                       |
 |-------------|----------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
@@ -262,23 +267,43 @@ assert_eq!(out, Some(vec![2, 4, 6]));
 # }
 ```
 
+Where `subscribe_on` chooses where the *source* runs, `publish_on` switches the
+scheduler for everything *downstream* of it — the offload point can sit anywhere
+in the chain, so a cheap source can hop onto a worker thread right before an
+expensive map:
+
+```rust
+use firefly_reactive::{Flux, Scheduler};
+
+# async fn ex() {
+let out = Flux::range(1, 3)
+    .map(|x| x + 1)                   // runs wherever the subscribe happens
+    .publish_on(Scheduler::Parallel)  // everything below hops to the worker pool
+    .map(|x| x * 10)                  // runs on the Tokio worker pool
+    .collect_list()
+    .block()
+    .await
+    .unwrap();
+assert_eq!(out, Some(vec![20, 30, 40]));
+# }
+```
+
 `Scheduler::Immediate` runs inline, `Scheduler::Parallel` uses the Tokio worker
 pool for CPU-bound work, and `Scheduler::BoundedElastic` is for blocking calls.
 
 ## Reactive HTTP endpoints
 
-`firefly-web` ships responders that turn a `Mono`/`Flux` into an axum response —
-the Rust analog of returning `Mono<T>` / `Flux<T>` from a WebFlux
-`@RestController`. They reuse `firefly-sse`'s wire format, so every reactive
-response is byte-compatible across the ports.
+`firefly-web` ships responders that turn a `Mono`/`Flux` into an axum response.
+A reactive handler simply returns one of them; the responder drives the
+publisher and writes the response. They use the stable `firefly-sse` wire
+format, so any client that speaks NDJSON or SSE consumes them directly.
 
-| Spring WebFlux                         | firefly-web                  |
-|----------------------------------------|------------------------------|
-| `Mono<T>` handler return               | `MonoJson(Mono<T>)`          |
-| `Mono<T>` empty → `404`                | `Ok(None)` → 404 problem+json |
-| `Mono<T>` error → problem              | `Err(FireflyError)` → that error's RFC 9457 response |
-| `Flux<T>` + `APPLICATION_NDJSON_VALUE` | `NdJson(Flux<T>)`            |
-| `Flux<ServerSentEvent<T>>`             | `Sse(Flux<T>)` / `SseEvents(Flux<Event>)` |
+| Responder                | Behaviour                                                  |
+|--------------------------|-----------------------------------------------------------|
+| `MonoJson(Mono<T>)`      | `Ok(Some)` → 200 JSON; `Ok(None)` → 404 problem+json; `Err` → that error's RFC 9457 response |
+| `NdJson(Flux<T>)`        | `application/x-ndjson`, one element per line, backpressured |
+| `Sse(Flux<T>)`           | `text/event-stream`, one `data:` frame per element        |
+| `SseEvents(Flux<Event>)` | `text/event-stream` with full `id` / `event` / `retry` control |
 
 ```rust,no_run
 use axum::{routing::get, response::IntoResponse, Router};
@@ -368,11 +393,10 @@ types through the one-dependency facade — `firefly::reactive::Flux` and
 
 ## The reactive `WebClient`
 
-The reactive HTTP client — the Rust analog of WebFlux's `WebClient` — hands its
-terminal operators back as `Mono` / `Flux`, so an outbound call drops straight
-into a reactive pipeline and composes end-to-end with the `NdJson` / `Sse`
-responders above. Full treatment in [HTTP Clients](./13-http-clients.md); the
-shape:
+Firefly's reactive HTTP client hands its terminal operators back as
+`Mono` / `Flux`, so an outbound call drops straight into a reactive pipeline and
+composes end-to-end with the `NdJson` / `Sse` responders above. Full treatment
+in [HTTP Clients](./13-http-clients.md); the shape:
 
 ```rust,no_run
 use firefly_client::WebClientBuilder;
@@ -402,9 +426,9 @@ let _ticks: firefly_reactive::Flux<Tick> = client
 # }
 ```
 
-> **Reactor parity.** Like WebFlux, the `WebClient` has **no baked-in retry**.
-> Compose `Mono::retry` / `Mono::retry_backoff` on the returned publisher, just
-> as WebFlux composes `retryWhen(..)` rather than baking retry into the client.
+> **Note.** The client has **no baked-in retry**. Compose `Mono::retry` /
+> `Mono::retry_backoff` on the returned publisher, so retry policy lives at the
+> call site where it belongs rather than hidden inside the client.
 
 ## Reactive repositories, EDA, and CQRS
 
@@ -437,12 +461,11 @@ let balance = bus
     .await?;            // Ok(Some(<cents>))
 ```
 
-> **Reactor parity.** Because `firefly-reactive` fixes its error channel to
+> **Note.** Because `firefly-reactive` fixes its error channel to
 > `FireflyError`, a failed dispatch is mapped from the bus's `CqrsError` into a
 > status-faithful `FireflyError` (validation → 422, authorization → 403, missing
 > handler → 500) with the original error preserved as `source()` — so a reactive
-> command flows straight into the RFC 9457 problem stack, exactly as a WebFlux
-> `Mono` flows into Spring's problem handler.
+> command flows straight into the RFC 9457 problem stack.
 
 ## Interop with raw `Stream` / `Future`
 

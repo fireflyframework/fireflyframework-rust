@@ -81,6 +81,21 @@ impl Facade {
         quote!(#rt::firefly_eventsourcing)
     }
 
+    /// `#facade::__rt::firefly_transactional` — the declarative transaction
+    /// runtime the `#[transactional]` macro expands against.
+    pub(crate) fn transactional(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::firefly_transactional)
+    }
+
+    /// `#facade::__rt::firefly_security` — the security runtime the
+    /// `#[pre_authorize]` / `#[post_authorize]` method-security macros expand
+    /// against (the ambient `Authentication` context and `AccessRule`).
+    pub(crate) fn security(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::firefly_security)
+    }
+
     /// `#facade::__rt::serde_json` — the facade-re-exported `serde_json`, so
     /// generated code (e.g. `#[derive(DomainEvent)]`'s payload encoder) never
     /// forces the user crate to depend on `serde_json` directly.

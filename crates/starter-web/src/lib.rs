@@ -221,9 +221,14 @@ impl WebStack {
     ///   the security headers and a correlation id, and
     /// * the access-log / metrics layers observe the rejected response.
     pub fn apply_middleware(&self, router: Router) -> Router {
-        // Layer the security filter chain first so it sits closest to the
-        // routes; `Core::apply_middleware` then wraps the whole thing in
-        // the canonical correlation / headers / CORS edge.
+        // Content negotiation sits closest to the routes so a `Negotiate(dto)`
+        // response is re-rendered to the client's `Accept` (JSON/XML) before the
+        // outer edge runs; plain responses pass through untouched. Installed by
+        // default — Spring Boot's HttpMessageConverters, on out of the box.
+        let router = router.layer(firefly_starter_core::ContentNegotiationLayer::default());
+        // Layer the security filter chain next so it sits just above the
+        // routes; `Core::apply_middleware` then wraps the whole thing in the
+        // canonical correlation / headers / CORS edge.
         let router = match &self.security {
             Some(chain) => router.layer(chain.clone().layer()),
             None => router,

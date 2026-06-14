@@ -1,6 +1,6 @@
 # `firefly-cache`
 
-> **Tier:** Platform · **Status:** Full · **Java original:** `firefly-common-cache` · **Go module:** `cache`
+> **Tier:** Platform · **Status:** Full
 
 ## Overview
 
@@ -54,7 +54,7 @@ pub trait Adapter: Send + Sync {
     fn name(&self) -> String;
     async fn health_check(&self) -> Result<(), CacheError>;
 
-    // pyfly-parity additions (default-implemented; backends override natively):
+    // extended ops (default-implemented; backends override natively):
     async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<bool, CacheError>;
     async fn exists(&self, key: &str) -> Result<bool, CacheError>;
     async fn delete_prefix(&self, prefix: &str) -> Result<u64, CacheError>;
@@ -62,10 +62,9 @@ pub trait Adapter: Send + Sync {
 }
 ```
 
-A miss is signalled by `CacheError::NotFound` — the Rust analogue of the
-Go port's `ErrNotFound` sentinel, rendering the same
+A miss is signalled by `CacheError::NotFound`, rendering the
 `firefly/cache: not found` message. `ttl: None` (or a zero duration)
-means no expiry, matching Go's `ttl <= 0`.
+means no expiry.
 
 ### Implementations
 
@@ -85,7 +84,7 @@ impl<T: Serialize + DeserializeOwned> Typed<T> {
     pub async fn set(&self, key: &str, value: &T, ttl: Option<Duration>) -> Result<(), CacheError>;
     pub async fn get_or_set(&self, key, ttl, loader) -> Result<T, CacheError>;
 
-    // declarative-cache conveniences (pyfly @cache_put / @cache_evict):
+    // declarative-cache conveniences (cache-put / cache-evict):
     pub async fn put(&self, key: &str, value: T, ttl: Option<Duration>) -> Result<T, CacheError>;
     pub async fn delete(&self, key: &str) -> Result<(), CacheError>;
     pub async fn delete_prefix(&self, prefix: &str) -> Result<u64, CacheError>;
@@ -95,14 +94,13 @@ impl<T: Serialize + DeserializeOwned> Typed<T> {
 `get_or_set` is the memoisation primitive — it consults the cache, calls
 the loader on miss, persists, and returns the loaded value. Caching
 errors do **not** mask successful loader results. Values are stored as
-`serde_json` bytes, wire-compatible with the Go port's `encoding/json`
-output for equivalently-tagged types.
+`serde_json` bytes.
 
-The remaining methods mirror pyfly's declarative caching decorators:
-`get_or_set` = `@cacheable`, `put` = `@cache_put` (always store, then
-return), and `delete` / `delete_prefix` = `@cache_evict` (single-key /
-prefix). `condition` / `unless` predicates stay caller-side, the idiomatic
-Rust form.
+The remaining methods provide declarative-caching conveniences:
+`get_or_set` is read-through caching, `put` always stores then returns,
+and `delete` / `delete_prefix` evict by single key / prefix.
+`condition` / `unless` predicates stay caller-side, the idiomatic Rust
+form.
 
 ## Quick start
 
@@ -137,46 +135,41 @@ crate) + Memory:
 let cache = FallbackAdapter::new(redis_adapter, Arc::new(MemoryAdapter::new()));
 ```
 
-## pyfly parity
+## Extended cache operations
 
-The pyfly `cache` package's `CacheAdapter` protocol carries
-`put_if_absent` / `exists` / `evict_by_prefix` / `get_stats`, and its
-`InMemoryCache(max_size)` is an LRU-bounded cache with hit/miss/eviction
-counters. The Rust port adds the equivalents as **default-implemented**
-trait methods (so every adapter shipped at Go-parity keeps compiling)
-plus native overrides on `MemoryAdapter`:
+Beyond the core get/set/delete contract, the `Adapter` trait carries
+`set_if_absent` / `exists` / `delete_prefix` / `stats` as
+**default-implemented** trait methods, so any adapter keeps compiling
+while backends override them natively. The defaults are:
 
-| `Adapter` method                              | pyfly equivalent     | Default impl                              |
-|-----------------------------------------------|----------------------|-------------------------------------------|
-| `set_if_absent(key, value, ttl) -> bool`      | `put_if_absent`      | non-atomic `exists` + `set`               |
-| `exists(key) -> bool`                         | `exists`             | `get` mapping `NotFound` -> `false`       |
-| `delete_prefix(prefix) -> u64`                | `evict_by_prefix`    | `Err(Backend("unsupported"))`             |
-| `stats() -> Option<CacheStats>`               | `get_stats`          | `None`                                    |
+| `Adapter` method                              | Default impl                              |
+|-----------------------------------------------|-------------------------------------------|
+| `set_if_absent(key, value, ttl) -> bool`      | non-atomic `exists` + `set`               |
+| `exists(key) -> bool`                         | `get` mapping `NotFound` -> `false`       |
+| `delete_prefix(prefix) -> u64`                | `Err(Backend("unsupported"))`             |
+| `stats() -> Option<CacheStats>`               | `None`                                    |
 
-`CacheStats { size, hits, misses, evictions, hit_rate }` mirrors pyfly's
-`get_stats()` dict; `hit_rate` is `hits / (hits + misses)` (`0.0` when no
-read has happened, exactly like pyfly's `requests else 0.0`).
+`CacheStats { size, hits, misses, evictions, hit_rate }` carries
+`hit_rate` as `hits / (hits + misses)` (`0.0` when no read has happened).
 
 `MemoryAdapter` overrides all four natively and gains:
 
-- `MemoryAdapter::with_max_entries(n)` — the LRU bound (pyfly's
-  `InMemoryCache(max_size=n)`); every `get` and `set` marks its key
-  most-recently-used, and an overflowing `set` evicts the LRU victim.
-  `MemoryAdapter::new()` stays unbounded.
-- `MemoryAdapter::keys()` — non-expired keys (pyfly's `get_keys()`).
+- `MemoryAdapter::with_max_entries(n)` — an LRU bound; every `get` and
+  `set` marks its key most-recently-used, and an overflowing `set` evicts
+  the LRU victim. `MemoryAdapter::new()` stays unbounded.
+- `MemoryAdapter::keys()` — non-expired keys.
 - atomic hit/miss/eviction counters surfaced through `stats()`.
 
-`FallbackAdapter` propagates the new ops with pyfly's `CacheManager`
-semantics: `set_if_absent` mirrors to both halves and returns
-`primary || secondary`; `exists` is the union; `delete_prefix` returns
-the **summed** count; `stats` prefers the primary's, falling back to the
-secondary's.
+`FallbackAdapter` propagates the new ops across both halves:
+`set_if_absent` mirrors to both halves and returns `primary || secondary`;
+`exists` is the union; `delete_prefix` returns the **summed** count;
+`stats` prefers the primary's, falling back to the secondary's.
 
 ### `CacheHealthIndicator`
 
 A `firefly_observability::Indicator` that probes the cache with an
-**active** put/get/evict round-trip (pyfly's `CacheHealthIndicator`),
-rather than a bare reachability ping:
+**active** put/get/evict round-trip, rather than a bare reachability
+ping:
 
 ```rust,ignore
 use firefly_cache::{CacheHealthIndicator, MemoryAdapter};
@@ -196,10 +189,9 @@ the round-trip latency under a `latencyMs` detail:
 | read-back value mismatch             | `DOWN`       |
 | adapter error                        | `DOWN`       |
 
-pyfly returns `OUT_OF_SERVICE` for the slow-but-working case; the Rust
-`Status` enum has no such variant, so it maps to `DEGRADED` — the
-semantically equivalent "works with reduced capability" state. The
-threshold is configurable with `with_threshold(Duration)`.
+The slow-but-working case maps to `DEGRADED` — the "works with reduced
+capability" state. The threshold is configurable with
+`with_threshold(Duration)`.
 
 ## Testing
 
@@ -208,7 +200,7 @@ cargo test -p firefly-cache
 ```
 
 Covers TTL eviction, fallback union/sum semantics, copy-on-read
-isolation, the `get_or_set` loader-runs-once invariant, Go-compatible
-JSON bytes, `Send + Sync` object safety, and the pyfly-parity surface
+isolation, the `get_or_set` loader-runs-once invariant, JSON byte
+encoding, `Send + Sync` object safety, and the extended-ops surface
 (LRU bounding, `set_if_absent` NX, `delete_prefix`, hit-rate stats, and
 the default-impl fallbacks on a bare adapter).

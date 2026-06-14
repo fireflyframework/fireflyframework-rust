@@ -1,12 +1,11 @@
 # `firefly-cache-redis`
 
-> **Tier:** Platform · **Status:** Full · **pyfly original:** `pyfly.cache.adapters.redis.RedisCacheAdapter`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
 `firefly-cache-redis` is the Redis implementation of the
-[`firefly_cache::Adapter`](../cache) port — the Rust port of pyfly's
-`RedisCacheAdapter`. It speaks the native Redis verbs over the
+[`firefly_cache::Adapter`](../cache) port. It speaks the native Redis verbs over the
 [`redis`](https://crates.io/crates/redis) crate's multiplexed async
 connection, so a `RedisAdapter` drops in wherever an `Arc<dyn Adapter>`
 is expected (CQRS query cache, idempotency guards, `FallbackAdapter`
@@ -33,18 +32,16 @@ firefly_cache::Adapter  (port)
 | `stats`          | `DBSIZE` + in-process hit/miss/eviction counters |
 | `health_check`   | `PING`                                    |
 
-Plus two pyfly-parity helpers beyond the port:
+Plus two helpers beyond the port:
 
 - `keys(pattern, limit) -> Vec<String>` — `SCAN MATCH` collecting up to
-  `limit` keys (pyfly's `get_keys(pattern, limit)`).
-- `is_available() -> bool` — a fail-soft `PING` (pyfly's
-  `is_available()`); `health_check` is the erroring variant.
+  `limit` keys.
+- `is_available() -> bool` — a fail-soft `PING`; `health_check` is the
+  erroring variant.
 
 ## Construction
 
-Unlike pyfly — whose adapter is handed an already-connected
-`redis.asyncio.Redis` client and has `start()`/`stop()` lifecycle hooks —
-`RedisAdapter` follows the Rust port's adapter-crate convention:
+`RedisAdapter` follows the framework's adapter-crate convention:
 
 ```rust,no_run
 use std::sync::Arc;
@@ -64,12 +61,11 @@ assert_eq!(adapter.delete_prefix("user:").await?, 1);
 ```
 
 Or inject a pre-built connection with `RedisAdapter::from_connection`
-(the DI entry point matching pyfly's `RedisCacheAdapter(client)`).
+(the DI entry point for an already-connected client).
 
 Values cross the port as raw bytes; layer `firefly_cache::Typed<T>` on
 top for JSON encoding — the stored bytes are byte-identical to the
-in-process `MemoryAdapter`, keeping cache entries portable across the
-sibling framework ports.
+in-process `MemoryAdapter`, so cache entries are portable across adapters.
 
 ## Notes
 
@@ -81,8 +77,7 @@ sibling framework ports.
   is forwarded as whole-millisecond `PX`; sub-millisecond TTLs round up
   to `1ms` so they never silently become persistent.
 - **Stats:** `size` comes from `DBSIZE`; hits/misses/evictions are
-  in-process counters (Redis exposes no per-adapter hit counters), as in
-  pyfly.
+  in-process counters (Redis exposes no per-adapter hit counters).
 
 ## Testing
 
@@ -92,11 +87,9 @@ cargo test -p firefly-cache-redis
 
 Every unit test runs against an **in-process fake RESP server** (a
 `TcpListener` speaking just enough RESP2) — there is no external Redis
-dependency, mirroring pyfly's `FakeRedis` stub in
-`tests/cache/test_redis_adapter.py`.
+dependency.
 
-Live round-trip tests against a real Redis (mirroring pyfly's
-`tests/integration/test_cache_redis_integration.py`) live in
+Live round-trip tests against a real Redis live in
 `tests/redis_integration_test.rs`. They are **env-gated, not `#[ignore]`d**:
 set `FIREFLY_TEST_REDIS_URL` (the older `REDIS_URL` is accepted as a
 fallback) and they exercise the genuine wire protocol; leave it unset and

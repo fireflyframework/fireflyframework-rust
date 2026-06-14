@@ -24,8 +24,15 @@
 //! awaited values the Rust adapter returns
 //! [`Mono`](firefly_reactive::Mono) / [`Flux`](firefly_reactive::Flux) so
 //! the document store plugs into the same reactive composition as Postgres
-//! and sqlx. Reads stream lazily off the driver's cursor; nothing is
-//! buffered before the first row.
+//! and sqlx. Reads stream lazily off the driver's cursor (with a bounded
+//! per-round-trip `batch_size`); nothing is buffered before the first row.
+//! Streaming lazily does **not** bound the *total* result set, though: a
+//! non-paged read still walks every matching document, so collecting one into
+//! memory (e.g. `collect_list`) over a large collection can exhaust memory.
+//! Use a [`Pageable`](firefly_data::Pageable)-driven read
+//! ([`find_page`](MongoRepository::find_page) /
+//! [`find_by_spec_paged`](MongoRepository::find_by_spec_paged)) for large
+//! collections.
 
 use std::marker::PhantomData;
 
@@ -50,6 +57,15 @@ use crate::error::{map_de_err, map_mongo_err, map_ser_err};
 
 /// The MongoDB `_id` field name — the document primary-key key.
 const ID_FIELD: &str = "_id";
+
+/// The default cursor `batch_size` applied to **non-paged** reads
+/// (`find_all`, `find_by_spec`, `find_by_derived`, `query_find`,
+/// `project_by_spec`). It bounds how many documents the driver buffers per
+/// network round-trip while the cursor is streamed lazily — it does **not**
+/// cap the total number of rows returned. A non-paged read still yields every
+/// matching document; for large collections prefer a `Pageable`-driven read so
+/// the result set itself stays bounded.
+const DEFAULT_BATCH_SIZE: u32 = 1_000;
 
 /// A generic **document** repository over the official `mongodb` crate —
 /// the document-store analogue of the relational
@@ -213,14 +229,27 @@ where
     /// Streams every document matching `filter` (guarded), applying
     /// `options`, decoding each as it arrives off the cursor. The
     /// streaming primitive every read is built on.
+    ///
+    /// When `options` is `None` (the **non-paged** read paths) a default
+    /// [`DEFAULT_BATCH_SIZE`] is set on the cursor so the driver buffers a
+    /// bounded number of documents per network round-trip. This caps
+    /// per-round-trip buffering only; the cursor still streams every matching
+    /// document. A non-paged read that materialises its whole result set (e.g.
+    /// `collect_list`) over a large collection can still exhaust memory — use a
+    /// [`Pageable`]-driven read in that case.
     fn stream_find(&self, filter: Document, options: Option<FindOptions>) -> Flux<T> {
         let collection = self.collection.clone();
+        let options = options.unwrap_or_else(|| {
+            let mut opts = FindOptions::default();
+            opts.batch_size = Some(DEFAULT_BATCH_SIZE);
+            opts
+        });
         Flux::from_stream(async_stream::try_stream! {
-            let mut find = collection.find(filter);
-            if let Some(opts) = options {
-                find = find.with_options(opts);
-            }
-            let mut cursor = find.await.map_err(map_mongo_err)?;
+            let mut cursor = collection
+                .find(filter)
+                .with_options(options)
+                .await
+                .map_err(map_mongo_err)?;
             while let Some(next) = futures::StreamExt::next(&mut cursor).await {
                 let raw = next.map_err(map_mongo_err)?;
                 yield Self::decode(raw)?;
@@ -353,6 +382,11 @@ where
     /// result is dispatched by prefix: `find_by_…` streams matching documents
     /// (sorted by any `order_by` clause), and the other prefixes are served
     /// by the count / exists / delete variants below.
+    ///
+    /// This is a **non-paged** read: it streams every matching document with a
+    /// bounded per-round-trip [`DEFAULT_BATCH_SIZE`], but the total result set
+    /// is unbounded. Materialising it (e.g. `collect_list`) over a large
+    /// collection can exhaust memory — page large collections instead.
     pub fn find_by_derived(&self, method_name: &str, args: &[Value]) -> Flux<T> {
         let parsed = match self.parse_find(method_name, QueryPrefix::Find) {
             Ok(p) => p,
@@ -465,6 +499,11 @@ where
     /// for an exact `":param"`, stringified for an embedded one), the
     /// soft-delete guard is AND-ed in, and the matching documents stream
     /// through the decoder.
+    ///
+    /// This is a **non-paged** read: it streams every matching document with a
+    /// bounded per-round-trip [`DEFAULT_BATCH_SIZE`], but the total result set
+    /// is unbounded. Collecting it over a large collection can exhaust memory —
+    /// page large collections instead.
     pub fn query_find(&self, filter_json: &str, params: &BTreeMap<String, Value>) -> Flux<T> {
         let template: Value = match serde_json::from_str(filter_json) {
             Ok(v) => v,
@@ -521,6 +560,11 @@ where
     ///
     /// `spec` restricts the documents (guarded by soft-delete when wired);
     /// each emitted value carries only the projection's columns.
+    ///
+    /// This is a **non-paged** read: it streams every matching document with a
+    /// bounded per-round-trip [`DEFAULT_BATCH_SIZE`], but the total result set
+    /// is unbounded. Collecting it over a large collection can exhaust memory —
+    /// pre-filter narrowly or page large collections.
     pub fn project_by_spec(
         &self,
         projection: &ColumnProjection,
@@ -542,6 +586,7 @@ where
         Flux::from_stream(async_stream::try_stream! {
             let mut options = FindOptions::default();
             options.projection = Some(proj_doc);
+            options.batch_size = Some(DEFAULT_BATCH_SIZE);
             let mut cursor = collection
                 .find(filter)
                 .with_options(options)
@@ -557,7 +602,11 @@ where
 }
 
 /// Builds [`FindOptions`] for a derived `find` — only the order-by sort
-/// (asc = `1`, desc = `-1`); derived queries carry no skip/limit.
+/// (asc = `1`, desc = `-1`); derived queries carry no skip/limit. A derived
+/// find is non-paged, so when it carries a sort the bounded
+/// [`DEFAULT_BATCH_SIZE`] is set too; when it has no sort it returns `None` and
+/// the default is applied by [`MongoRepository::stream_find`]. The batch size
+/// bounds per-round-trip buffering only, not the total rows returned.
 fn derived_find_options(parsed: &ParsedQuery) -> Option<FindOptions> {
     let sort = parsed.mongo_sort();
     let map = sort.as_object()?;
@@ -570,6 +619,7 @@ fn derived_find_options(parsed: &ParsedQuery) -> Option<FindOptions> {
     }
     let mut options = FindOptions::default();
     options.sort = Some(sort_doc);
+    options.batch_size = Some(DEFAULT_BATCH_SIZE);
     Some(options)
 }
 
@@ -664,6 +714,11 @@ where
     T: Serialize + DeserializeOwned + Send + Sync + Unpin + 'static,
     ID: Serialize + Send + Sync + Clone + 'static,
 {
+    /// Streams every live (non soft-deleted) document. A **non-paged** read:
+    /// it streams with a bounded per-round-trip [`DEFAULT_BATCH_SIZE`], but the
+    /// total result set is unbounded — collecting it over a large collection
+    /// can exhaust memory, so page large collections via
+    /// [`find_page`](MongoRepository::find_page) instead.
     fn find_all(&self) -> Flux<T> {
         let filter = self.guarded(Document::new());
         self.stream_find(filter, None)
@@ -782,6 +837,11 @@ where
     T: Serialize + DeserializeOwned + Send + Sync + Unpin + 'static,
     ID: Serialize + Send + Sync + Clone + 'static,
 {
+    /// Streams every document matching `spec` (guarded). A **non-paged** read:
+    /// it streams with a bounded per-round-trip [`DEFAULT_BATCH_SIZE`], but the
+    /// total result set is unbounded — collecting it over a large collection
+    /// can exhaust memory, so use
+    /// [`find_by_spec_paged`](Self::find_by_spec_paged) for large collections.
     fn find_by_spec(&self, spec: Specification) -> Flux<T> {
         self.find_spec(spec, None)
     }

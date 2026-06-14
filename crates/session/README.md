@@ -1,6 +1,6 @@
 # `firefly-session`
 
-> **Tier:** Foundational · **Status:** Full · **Python original:** `pyfly.session`
+> **Tier:** Foundational · **Status:** Stable
 
 ## Overview
 
@@ -8,9 +8,9 @@
 a session handle with typed attributes, a pluggable async session store,
 and a [`tower::Layer`] that loads-or-creates a session from a cookie on
 each request and saves-if-modified (with `Set-Cookie`, id-rotation
-migration, and invalidation) on the response. It is the Rust port of
-pyfly's `session` package (itself modelled on Spring Session + Spring
-Security's `maximumSessions`).
+migration, and invalidation) on the response. Its design is inspired by
+mature server-side session frameworks, including Spring Session-style
+stores and `maximumSessions`-style concurrency control.
 
 Every middleware is a [`tower::Layer`], so it composes with axum and any
 tower-compatible router.
@@ -47,33 +47,46 @@ let app: Router = Router::new()
     .layer(SessionLayer::new(store));
 ```
 
-## pyfly parity
+## Capabilities
 
-| pyfly | firefly-session |
-|---|---|
-| `HttpSession` (untyped `get/set_attribute`) | [`Session`] / [`SessionInner`] with **typed** `attribute::<T>` / `set_attribute::<T>` (serde) |
-| `rotate_id`, `invalidate`, `modified`, `previous_id` | same, preserved |
-| `SessionStore` protocol | [`SessionStore`] async trait (`get`/`save`/`delete`/`exists`, TTL `Duration`) |
-| `InMemorySessionStore` | [`MemorySessionStore`] (lazy TTL eviction + eager `sweep`) |
-| `RedisSessionStore` (+ `allow_session_type` allowlist) | [`CacheSessionStore`] bridging any `firefly_cache::Adapter`; serde typing subsumes the importlib allowlist (no gadget to guard) |
-| `SessionFilter(store, cookie_name, ttl, secure)` | [`SessionLayer`] / [`SessionService`] (`new` / `from_config` / `with_signer`) |
-| cookie: `PYFLY_SESSION`, `HttpOnly`, `SameSite=Lax`, sliding `Max-Age`, auto-`Secure` via `X-Forwarded-Proto`/scheme | [`SessionConfig`] / [`SameSite`], identical defaults & wire format |
-| `SessionRegistry` / `InMemorySessionRegistry` | [`SessionRegistry`] / [`MemorySessionRegistry`] (oldest-first) |
-| `ConcurrencyControlPolicy(max_sessions, strategy)` | [`ConcurrencyPolicy`] + [`Strategy::EvictOldest`] / [`Strategy::RejectNew`] |
-| `SessionConcurrencyController(on_login → bool, on_logout)` | [`SessionConcurrencyController`] (+ `with_session_store` ≈ `session_deleter`) |
-| `@auto_configuration` / `@conditional_on_property` beans | explicit `SessionLayer::from_config(cfg, store)` (the workspace DI pattern) |
+The session handle ([`Session`] / [`SessionInner`]) exposes **typed**
+attributes via `attribute::<T>` / `set_attribute::<T>` (serde-backed), plus
+`rotate_id`, `invalidate`, `modified`, and `previous_id` for id rotation and
+teardown. The pluggable [`SessionStore`] async trait (`get`/`save`/`delete`/
+`exists`, TTL as `Duration`) has two built-in implementations:
 
-### Rust-only additions
+* [`MemorySessionStore`] — in-process, with lazy TTL eviction plus an eager
+  `sweep`.
+* [`CacheSessionStore`] — bridges any `firefly_cache::Adapter` (including
+  `firefly-cache-redis`) without a hard `redis` dependency; serde typing
+  gates which session types deserialize, so there is no deserialization
+  gadget to guard.
+
+The HTTP integration is wired through [`SessionLayer`] / [`SessionService`]
+(`new` / `from_config` / `with_signer`). Cookie defaults are `HttpOnly`,
+`SameSite=Lax`, a sliding `Max-Age`, and auto-`Secure` detection via
+`X-Forwarded-Proto` or the request scheme; the cookie name and other knobs
+live in [`SessionConfig`] / [`SameSite`]. Configuration is explicit —
+`SessionLayer::from_config(cfg, store)` — following the workspace's
+constructor-injection pattern rather than implicit auto-configuration.
+
+Concurrency control combines [`SessionRegistry`] / [`MemorySessionRegistry`]
+(oldest-first ordering), a [`ConcurrencyPolicy`] with
+[`Strategy::EvictOldest`] / [`Strategy::RejectNew`], and a
+[`SessionConcurrencyController`] (`on_login → bool`, `on_logout`, plus
+`with_session_store` to delete evicted sessions).
+
+### Notable features
 
 * **Typed attributes** — `attribute::<T>` deserializes; wrong-type reads
   yield `None` rather than panicking.
 * **HMAC-signed cookies** — [`SessionSigner`] (`with_signer`) signs the
   session-id cookie value (`<id>.<base64url(hmac)>`); a tampered cookie
   fails constant-time verification and starts a fresh session. Off by
-  default for pyfly cookie-wire parity.
+  default to keep the plain cookie wire format.
 * **Absolute timeout** — [`SessionConfig::absolute_timeout_seconds`] caps
-  total session lifetime from `_created_at`, beyond pyfly's sliding-only
-  TTL. Off by default.
+  total session lifetime from `_created_at`, complementing the sliding TTL.
+  Off by default.
 * **`SessionExt` extractor** — an axum [`SessionExt`] newtype yielding a
   clear `500` when the layer is not installed.
 
@@ -81,8 +94,7 @@ let app: Router = Router::new()
 
 The in-process [`MemorySessionRegistry`] bounds session concurrency within one
 process. For cluster-wide caps, two leaf adapter crates implement the same
-[`SessionRegistry`] port over shared storage (pyfly's `RedisSessionRegistry` /
-`PostgresSessionRegistry`):
+[`SessionRegistry`] port over shared storage:
 
 * [`firefly-session-redis`](../session-redis) — `RedisSessionRegistry` over a
   Redis sorted set (score = `created_at`, oldest-first via `ZRANGE`, sliding
@@ -90,7 +102,7 @@ process. For cluster-wide caps, two leaf adapter crates implement the same
 * [`firefly-session-postgres`](../session-postgres) — `PostgresSessionRegistry`
   over a Postgres table (idempotent `ON CONFLICT` upsert, `ORDER BY created_at`).
 
-For the session *store* (not the registry), pyfly's `RedisSessionStore` is
+For the session *store* (not the registry), Redis-backed persistence is
 covered by [`CacheSessionStore`], which bridges any `firefly_cache::Adapter`
 (including `firefly-cache-redis`) without a hard `redis` dependency.
 

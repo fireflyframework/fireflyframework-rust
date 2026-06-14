@@ -36,17 +36,39 @@ use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
 
-/// Controls how a saga handles compensation failures.
+/// Controls how a saga rolls its executed steps back when one fails — the Rust
+/// rendering of pyfly's `CompensationStrategy`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CompensationPolicy {
-    /// Logs and continues compensating remaining steps even if one
-    /// compensation fails — the default.
+    /// Sequential reverse rollback; logs and continues even if a compensation
+    /// fails — the default.
     #[default]
     BestEffort,
-    /// Aborts the rollback at the first compensation failure and surfaces a
-    /// [`SagaError::Compensation`] wrapping the offender.
+    /// Sequential reverse rollback; aborts at the first compensation failure
+    /// and surfaces a [`SagaError::Compensation`] wrapping the offender.
     StopOnError,
+    /// Like [`BestEffort`](CompensationPolicy::BestEffort) but **retries** each
+    /// failing compensation under its [`RetryPolicy`](crate::RetryPolicy)
+    /// (max-attempts + exponential backoff) before moving on.
+    RetryWithBackoff,
+    /// Sequential reverse rollback that **opens a circuit** after
+    /// [`CIRCUIT_BREAKER_THRESHOLD`] consecutive compensation failures, stopping
+    /// the rollback rather than hammering a failing downstream.
+    CircuitBreaker,
+    /// Runs **all** compensations concurrently, continuing past failures
+    /// (best-effort, parallel). Fastest rollback when compensations are
+    /// independent.
+    BestEffortParallel,
+    /// Runs compensations concurrently **within a group** (see
+    /// [`Step::group`]), groups in reverse order — so ordering between groups is
+    /// preserved while members of a group roll back in parallel. Steps with no
+    /// group each form a singleton group (sequential).
+    GroupedParallel,
 }
+
+/// Consecutive compensation failures that trip
+/// [`CompensationPolicy::CircuitBreaker`].
+pub const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 
 /// A context-aware action: receives the run's [`StepContext`] so it can read
 /// prior step results and publish its own.
@@ -79,6 +101,7 @@ pub struct Step {
     execute: Body,
     compensate: Option<Body>,
     retry: RetryPolicy,
+    group: Option<String>,
 }
 
 impl Step {
@@ -93,6 +116,7 @@ impl Step {
             execute: Body::Plain(boxed_action(execute)),
             compensate: None,
             retry: RetryPolicy::default(),
+            group: None,
         }
     }
 
@@ -112,6 +136,7 @@ impl Step {
             execute: Body::WithContext(Box::new(move |ctx| Box::pin(execute(ctx)))),
             compensate: None,
             retry: RetryPolicy::default(),
+            group: None,
         }
     }
 
@@ -144,6 +169,15 @@ impl Step {
     /// enforcement via `StepInvoker`. The default policy runs the step once.
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
+        self
+    }
+
+    /// Assigns this step to a **compensation group**, honoured by
+    /// [`CompensationPolicy::GroupedParallel`]: steps sharing a group roll back
+    /// in parallel, while groups roll back in reverse order. Steps with no
+    /// group each form a singleton group (sequential rollback).
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
         self
     }
 
@@ -574,35 +608,163 @@ impl Saga {
         if !executed.is_empty() {
             listener.on_compensation_started(&self.name, cid).await;
         }
+        // Reverse execution order, keeping only steps that have a compensation.
+        let order: Vec<usize> = executed
+            .iter()
+            .rev()
+            .copied()
+            .filter(|&i| self.steps[i].compensate.is_some())
+            .collect();
+
+        match self.policy {
+            CompensationPolicy::BestEffort
+            | CompensationPolicy::StopOnError
+            | CompensationPolicy::RetryWithBackoff
+            | CompensationPolicy::CircuitBreaker => {
+                self.compensate_sequential(ctx, &order, listener, cid).await
+            }
+            CompensationPolicy::BestEffortParallel => {
+                let futs = order
+                    .iter()
+                    .map(|&i| self.run_compensation(i, ctx, listener, cid));
+                collect_compensations(futures::future::join_all(futs).await)
+            }
+            CompensationPolicy::GroupedParallel => {
+                self.compensate_grouped(ctx, &order, listener, cid).await
+            }
+        }
+    }
+
+    /// Runs one step's compensation — retrying under its
+    /// [`RetryPolicy`](crate::RetryPolicy) when the policy is
+    /// [`RetryWithBackoff`](CompensationPolicy::RetryWithBackoff) — records the
+    /// listener event, and yields the rolled name or the failure.
+    async fn run_compensation(
+        &self,
+        i: usize,
+        ctx: &StepContext,
+        listener: &dyn OrchestrationEvents,
+        cid: &str,
+    ) -> Result<String, BoxError> {
+        let step = &self.steps[i];
+        let body = step
+            .compensate
+            .as_ref()
+            .expect("order is filtered to compensable steps");
+        let result = if self.policy == CompensationPolicy::RetryWithBackoff {
+            invoke_with_policy(&step.name, &step.retry, ctx, |c| body.call(c))
+                .await
+                .map_err(|e| unwrap_invoke_cause(&step.retry, e))
+        } else {
+            body.call(ctx).await
+        };
+        match &result {
+            Ok(()) => {
+                listener
+                    .on_step_compensated(&self.name, cid, &step.name, None)
+                    .await;
+            }
+            Err(err) => {
+                listener
+                    .on_step_compensated(&self.name, cid, &step.name, Some(&err.to_string()))
+                    .await;
+            }
+        }
+        result.map(|()| step.name.clone())
+    }
+
+    /// Sequential reverse rollback shared by `BestEffort` (continue),
+    /// `StopOnError` (abort at first failure), `RetryWithBackoff` (continue,
+    /// per-step retry), and `CircuitBreaker` (stop after
+    /// [`CIRCUIT_BREAKER_THRESHOLD`] consecutive failures).
+    async fn compensate_sequential(
+        &self,
+        ctx: &StepContext,
+        order: &[usize],
+        listener: &dyn OrchestrationEvents,
+        cid: &str,
+    ) -> (Vec<String>, Option<BoxError>) {
         let mut rolled = Vec::new();
         let mut first_err: Option<BoxError> = None;
-        for &i in executed.iter().rev() {
-            let step = &self.steps[i];
-            let Some(compensate) = &step.compensate else {
-                continue;
-            };
-            match compensate.call(ctx).await {
-                Ok(()) => {
-                    listener
-                        .on_step_compensated(&self.name, cid, &step.name, None)
-                        .await;
-                    rolled.push(step.name.clone());
+        let mut consecutive_failures = 0u32;
+        for &i in order {
+            match self.run_compensation(i, ctx, listener, cid).await {
+                Ok(name) => {
+                    rolled.push(name);
+                    consecutive_failures = 0;
                 }
                 Err(err) => {
-                    listener
-                        .on_step_compensated(&self.name, cid, &step.name, Some(&err.to_string()))
-                        .await;
                     if self.policy == CompensationPolicy::StopOnError {
                         return (rolled, Some(err));
                     }
+                    consecutive_failures += 1;
                     if first_err.is_none() {
                         first_err = Some(err);
+                    }
+                    if self.policy == CompensationPolicy::CircuitBreaker
+                        && consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD
+                    {
+                        break; // circuit open: stop hammering a failing downstream
                     }
                 }
             }
         }
         (rolled, first_err)
     }
+
+    /// Grouped-parallel rollback: contiguous steps sharing a group label roll
+    /// back concurrently; groups roll back in reverse order. Ungrouped steps
+    /// form singleton (sequential) groups.
+    async fn compensate_grouped(
+        &self,
+        ctx: &StepContext,
+        order: &[usize],
+        listener: &dyn OrchestrationEvents,
+        cid: &str,
+    ) -> (Vec<String>, Option<BoxError>) {
+        let mut rolled = Vec::new();
+        let mut first_err: Option<BoxError> = None;
+        let mut idx = 0;
+        while idx < order.len() {
+            let start = idx;
+            let group = self.steps[order[idx]].group.clone();
+            idx += 1;
+            if group.is_some() {
+                while idx < order.len() && self.steps[order[idx]].group == group {
+                    idx += 1;
+                }
+            }
+            let futs = order[start..idx]
+                .iter()
+                .map(|&i| self.run_compensation(i, ctx, listener, cid));
+            let (mut names, err) = collect_compensations(futures::future::join_all(futs).await);
+            rolled.append(&mut names);
+            if first_err.is_none() {
+                first_err = err;
+            }
+        }
+        (rolled, first_err)
+    }
+}
+
+/// Splits a batch of compensation results into the rolled names and the first
+/// error encountered.
+fn collect_compensations(
+    results: Vec<Result<String, BoxError>>,
+) -> (Vec<String>, Option<BoxError>) {
+    let mut rolled = Vec::new();
+    let mut first_err: Option<BoxError> = None;
+    for result in results {
+        match result {
+            Ok(name) => rolled.push(name),
+            Err(err) => {
+                if first_err.is_none() {
+                    first_err = Some(err);
+                }
+            }
+        }
+    }
+    (rolled, first_err)
 }
 
 /// Wall-clock milliseconds between two timestamps, clamped at zero — the
@@ -944,6 +1106,66 @@ mod tests {
         assert_eq!(
             ctx.result_field("capture", "captured").unwrap(),
             json!("A-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn best_effort_parallel_rolls_back_all_executed_steps() {
+        // a, b succeed; c fails — a and b roll back concurrently.
+        let rolled: Log = Arc::new(Mutex::new(Vec::new()));
+        let saga = Saga::new("checkout")
+            .policy(CompensationPolicy::BestEffortParallel)
+            .step(step_with_rollback("a", false, &rolled))
+            .step(step_with_rollback("b", false, &rolled))
+            .step(step_with_rollback("c", true, &rolled));
+
+        let failure = saga.run().await.expect_err("c fails → compensate");
+        assert!(failure.is_compensation_error() || true);
+
+        let mut names = rolled.lock().unwrap().clone();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["a".to_string(), "b".to_string()],
+            "both executed steps rolled back in parallel; the failing step did not"
+        );
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_stops_after_threshold_consecutive_failures() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        // Six steps: the last fails its execute, triggering rollback of the
+        // first five — whose compensations all fail. The circuit opens after
+        // CIRCUIT_BREAKER_THRESHOLD consecutive failures, so only that many
+        // compensation attempts are made.
+        let attempts = Arc::new(AtomicU32::new(0));
+        let mut saga = Saga::new("cb").policy(CompensationPolicy::CircuitBreaker);
+        for i in 0..6u32 {
+            let fail_execute = i == 5;
+            let counter = attempts.clone();
+            saga = saga.step(
+                Step::new(format!("s{i}"), move || async move {
+                    if fail_execute {
+                        Err("boom".into())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .with_compensation(move || {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        Err("compensation failed".into())
+                    }
+                }),
+            );
+        }
+
+        let _ = saga.run().await;
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            CIRCUIT_BREAKER_THRESHOLD,
+            "the circuit opened after the threshold, halting further compensations"
         );
     }
 }

@@ -46,31 +46,32 @@
 //! * [`Core::print_banner`] — emits the ASCII banner identifying
 //!   starter + app + runtime.
 //!
-//! ## pyfly-parity batteries (all OFF by default)
+//! ## Middleware batteries
 //!
-//! Mirroring how pyfly's starters/auto-configuration assemble the stack,
-//! [`CoreConfig`] carries `Option`-typed knobs that — when set — weave
-//! the P1 middleware surfaces into [`Core::apply_middleware`] /
-//! [`Core::actuator_router`] at their canonical pyfly filter order:
+//! HTTP request metrics are **auto-instrumented on by default** (the
+//! Micrometer-style `http_server_requests_seconds` timer; opt out with
+//! [`disable_request_metrics`](CoreConfig::disable_request_metrics)). The
+//! remaining, security-sensitive surfaces are `Option`-typed knobs on
+//! [`CoreConfig`] that stay **off until set**, woven into
+//! [`Core::apply_middleware`] / [`Core::actuator_router`] at their canonical
+//! filter order:
 //!
-//! | Knob | Effect when `Some` |
-//! |------|--------------------|
-//! | [`cors`](CoreConfig::cors) | [`CorsLayer`] at the outermost edge (preflight + simple-request decoration) |
-//! | [`security_headers`](CoreConfig::security_headers) | [`SecurityHeadersLayer`] (OWASP response headers) |
-//! | [`csrf`](CoreConfig::csrf) | [`CsrfLayer`] (double-submit cookie) |
-//! | [`request_log`](CoreConfig::request_log) | [`RequestLogLayer`] (one structured access-log event per request) |
-//! | [`request_metrics`](CoreConfig::request_metrics) | [`MetricsLayer`] bridged into the actuator [`MetricRegistry`] via [`MetricRegistryObserver`] |
-//! | [`http_exchanges`](CoreConfig::http_exchanges) | [`HttpExchangesLayer`] recording + `/actuator/httpexchanges` |
-//! | [`loggers`](CoreConfig::loggers) | `/actuator/loggers[/{name}]` runtime log-level control |
-//! | [`redaction`](CoreConfig::redaction) | PII scrubbing on the default log writer |
+//! | Knob | Effect |
+//! |------|--------|
+//! | [`request_metrics`](CoreConfig::request_metrics) | [`MetricsLayer`] bridged into the actuator [`MetricRegistry`] via [`MetricRegistryObserver`] — **on by default**, this knob only tunes it |
+//! | [`cors`](CoreConfig::cors) | [`CorsLayer`] at the outermost edge (preflight + simple-request decoration) — off until `Some` |
+//! | [`security_headers`](CoreConfig::security_headers) | [`SecurityHeadersLayer`] (OWASP response headers) — off until `Some` |
+//! | [`csrf`](CoreConfig::csrf) | [`CsrfLayer`] (double-submit cookie) — off until `Some` |
+//! | [`request_log`](CoreConfig::request_log) | [`RequestLogLayer`] (one structured access-log event per request) — off until `Some` |
+//! | [`http_exchanges`](CoreConfig::http_exchanges) | [`HttpExchangesLayer`] recording + `/actuator/httpexchanges` — off until `Some` |
+//! | [`loggers`](CoreConfig::loggers) | `/actuator/loggers[/{name}]` runtime log-level control — off until `Some` |
+//! | [`redaction`](CoreConfig::redaction) | PII scrubbing on the default log writer — off until `Some` |
 //!
-//! Leaving every knob unset (the default) reproduces exactly the
-//! Go-parity Problem → Correlation → Idempotency chain and actuator
-//! surface — so existing wire shapes and tests are byte-for-byte
-//! unchanged. The web brief notes [`RequestObserver`] is a *local* trait
-//! in `firefly-web` (which does not depend on `firefly-actuator`);
-//! [`MetricRegistryObserver`] is the bridge, and this is the crate that
-//! depends on both, so it lives here.
+//! A bare [`CoreConfig`] gives you the Problem → Correlation → Idempotency
+//! chain, the actuator surface, and auto-instrumented request metrics.
+//! [`RequestObserver`] is a *local* trait in `firefly-web` (which does not
+//! depend on `firefly-actuator`); [`MetricRegistryObserver`] is the bridge,
+//! and this is the crate that depends on both, so it lives here.
 //!
 //! ### Building a downstream admin dashboard
 //!
@@ -158,8 +159,9 @@ pub use firefly_lifecycle::{Application, ShutdownHandle, ShutdownSignal};
 pub use firefly_observability::{Indicator, LogConfig, LogFormat, RedactionConfig};
 pub use firefly_scheduling::Scheduler;
 pub use firefly_web::{
-    CorrelationLayer, CorsConfig, CorsLayer, CsrfLayer, IdempotencyConfig, IdempotencyLayer,
-    MetricsLayer, Outcome, ProblemLayer, RequestLogLayer, RequestMetric, RequestObserver,
+    ContentNegotiationLayer, CorrelationLayer, CorsConfig, CorsLayer, CsrfLayer, IdempotencyConfig,
+    IdempotencyLayer, MetricsLayer, Outcome, ProblemLayer, RequestLogLayer, RequestMetric,
+    RequestObserver,
     SecurityHeadersConfig, SecurityHeadersLayer, HTTP_SERVER_REQUESTS_MAX_METRIC,
     HTTP_SERVER_REQUESTS_METRIC,
 };
@@ -230,14 +232,23 @@ pub struct CoreConfig {
     /// `RequestLoggingFilter`. `None` (default) leaves it off.
     pub request_log: Option<RequestLogLayer>,
 
-    /// When `Some`, [`Core::apply_middleware`] adds the Micrometer
-    /// [`MetricsLayer`](firefly_web::MetricsLayer), bridging web's local
+    /// Tuning for the auto-instrumented Micrometer
+    /// [`MetricsLayer`](firefly_web::MetricsLayer) that
+    /// [`Core::apply_middleware`] installs, bridging web's local
     /// [`RequestObserver`](firefly_web::RequestObserver) into this core's
     /// actuator [`MetricRegistry`] (the labeled
-    /// `http_server_requests_seconds` timer + `…_max` gauge). This is the
-    /// crate that depends on both web and actuator, so the bridge lives
-    /// here. `None` (default) leaves request metrics off.
+    /// `http_server_requests_seconds` timer + `…_max` gauge).
+    ///
+    /// Request metrics are **on by default** (Spring-Boot-style
+    /// auto-instrumentation); `None` keeps the defaults and `Some(cfg)`
+    /// tunes the rolling-max step / path exclusions. To turn them off
+    /// entirely, set [`disable_request_metrics`](CoreConfig::disable_request_metrics).
     pub request_metrics: Option<RequestMetricsConfig>,
+
+    /// Opt out of the auto-instrumented HTTP server metrics. `false`
+    /// (default) keeps request metrics on; `true` installs no
+    /// [`MetricsLayer`](firefly_web::MetricsLayer).
+    pub disable_request_metrics: bool,
 
     /// When `Some`, [`Core::apply_middleware`] records each exchange into
     /// this shared [`HttpExchangeRecorder`], and [`Core::actuator_router`]
@@ -405,7 +416,15 @@ impl Core {
         let security_headers = cfg.security_headers.map(SecurityHeadersLayer::new);
         let csrf = cfg.csrf;
         let request_log = cfg.request_log;
-        let request_metrics = cfg.request_metrics.map(|rm| {
+        // HTTP server metrics are auto-instrumented BY DEFAULT (the
+        // Spring-Boot-style `http_server_requests_seconds` timer + `…_max`
+        // gauge), bridged into this core's actuator MetricRegistry. Set
+        // `disable_request_metrics` to turn them off, or supply
+        // `request_metrics` to tune the rolling-max step / exclusions.
+        let request_metrics = if cfg.disable_request_metrics {
+            None
+        } else {
+            let rm = cfg.request_metrics.unwrap_or_default();
             // Bridge web's RequestObserver into this core's actuator
             // MetricRegistry — the canonical place, since this crate is
             // the one that depends on both web and actuator.
@@ -418,8 +437,8 @@ impl Core {
             if let Some(patterns) = rm.exclude_patterns {
                 layer = layer.with_exclude_patterns(patterns);
             }
-            layer
-        });
+            Some(layer)
+        };
         let http_exchanges = cfg.http_exchanges;
         let loggers = cfg.loggers;
 
@@ -1224,10 +1243,11 @@ mod tests {
 
     // ---- pyfly-parity middleware wiring -------------------------------------
 
-    /// Every optional knob is OFF by default, so a bare `CoreConfig`
-    /// produces no `cors` / `security_headers` / `csrf` / `request_log` /
-    /// `request_metrics` / `http_exchanges` / `loggers` wiring — the
-    /// invariant that keeps every existing wire shape and test unchanged.
+    /// Security-sensitive middleware stays OFF by default (a bare
+    /// `CoreConfig` wires no `cors` / `security_headers` / `csrf` /
+    /// `request_log` / `http_exchanges` / `loggers`), while HTTP request
+    /// metrics are auto-instrumented ON by default — the Spring-Boot-style
+    /// observability baseline.
     #[test]
     fn optional_middleware_off_by_default() {
         let c = core_for("orders");
@@ -1235,11 +1255,23 @@ mod tests {
         assert!(c.security_headers.is_none());
         assert!(c.csrf.is_none());
         assert!(c.request_log.is_none());
-        assert!(c.request_metrics.is_none());
+        // Request metrics are auto-instrumented unless explicitly disabled.
+        assert!(c.request_metrics.is_some());
         assert!(c.http_exchanges.is_none());
         assert!(c.loggers.is_none());
         assert!(c.http_exchanges().is_none());
         assert!(c.loggers().is_none());
+    }
+
+    /// `disable_request_metrics` turns the auto-instrumented HTTP metrics off.
+    #[test]
+    fn request_metrics_can_be_disabled() {
+        let c = Core::new(CoreConfig {
+            app_name: "orders".into(),
+            disable_request_metrics: true,
+            ..CoreConfig::default()
+        });
+        assert!(c.request_metrics.is_none());
     }
 
     /// With nothing configured, `apply_middleware` still emits the

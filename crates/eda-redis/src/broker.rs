@@ -156,11 +156,18 @@ impl RedisStreamsBroker {
             )))
         })?;
 
-        let mut guard = self.publish_conn.lock().await;
-        if guard.is_none() {
-            *guard = Some(self.new_connection().await?);
-        }
-        let conn = guard.as_mut().expect("connection just established");
+        // Clone the cloneable multiplexed connection out of the guard and
+        // drop the lock *before* awaiting XADD, so concurrent producers
+        // are not serialized behind a connection held across the await.
+        // `MultiplexedConnection` is `Arc`-backed and pipelines commands
+        // safely across clones.
+        let mut conn = {
+            let mut guard = self.publish_conn.lock().await;
+            if guard.is_none() {
+                *guard = Some(self.new_connection().await?);
+            }
+            guard.as_ref().expect("connection just established").clone()
+        };
         let _: String = conn
             .xadd(&ev.topic, "*", &[(ENVELOPE_FIELD, body.as_slice())])
             .await

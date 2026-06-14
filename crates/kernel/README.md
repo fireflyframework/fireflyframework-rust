@@ -1,6 +1,6 @@
 # `firefly-kernel`
 
-> **Tier:** Foundational · **Status:** Full · **Java original:** `firefly-common` · **Go module:** `kernel`
+> **Tier:** Foundational · **Status:** Stable
 
 ## Overview
 
@@ -12,20 +12,17 @@ exposes the four primitives every Firefly crate agrees on:
 3. The [`Clock`](#clock) abstraction for testable time.
 4. The [`FireflyError`](#fireflyerror--helpers) typed error family.
 
-Every method in every other crate returns one of these types. The
-wire shape is identical to the Java firefly-common module, the .NET
-`FireflyFramework.Kernel` project, the Go `kernel` module, and the
-Python `pyfly` kernel — a service running version `X` on any of the
-runtimes emits the same JSON.
+Every method in every other crate returns one of these types, giving
+the whole platform a single, stable wire shape: any Firefly service
+running a given version emits the same JSON.
 
 ## Why a separate crate?
 
-Java's `Throwable` hierarchy and .NET's `Exception` family are stable
-language fixtures. Rust's `std::error::Error` trait is intentionally
-minimal — which means every framework that wants typed error codes /
-structured fields / HTTP status mapping has to invent its own.
-`firefly-kernel` provides the canonical type so the whole platform
-agrees, and so the wire is identical across runtimes.
+Rust's `std::error::Error` trait is intentionally minimal — which means
+any framework that wants typed error codes / structured fields / HTTP
+status mapping has to define its own. `firefly-kernel` provides the
+canonical type so the whole platform agrees on one typed error shape
+and one wire format.
 
 ## Public surface
 
@@ -43,11 +40,10 @@ The canonical `application/problem+json` envelope.
 | `extensions`   | RFC 7807 §3.2 extension members; flattened on `Serialize`      |
 
 Empty standard members are omitted on the wire and standard members win
-on key collision with extensions, exactly as in the Go port. Serialized
-bytes match Go's `json.Marshal` exactly: keys are lexicographically
-ordered and strings carry Go's default HTML escaping — `<`, `>`, `&`
-and U+2028/U+2029 are written as the u003c, u003e, u0026, u2028 and
-u2029 Unicode escapes.
+on key collision with extensions. Serialization is deterministic: keys
+are lexicographically ordered and strings carry HTML-safe escaping —
+`<`, `>`, `&` and U+2028/U+2029 are written as the u003c, u003e, u0026,
+u2028 and u2029 Unicode escapes.
 Constructors emit the canonical type URIs
 (`https://fireflyframework.org/problems/<kind>`):
 `ProblemDetail::bad_request`, `unauthorized`, `forbidden`, `not_found`,
@@ -55,15 +51,15 @@ Constructors emit the canonical type URIs
 
 ### `FireflyResult<T>`
 
-Where the Go port carries a generic `Result[T]` envelope (Go has no
-native result type), Rust already has one:
+The framework's success-or-failure alias builds directly on Rust's
+native result type:
 
 ```rust,ignore
 pub type FireflyResult<T> = Result<T, FireflyError>;
 ```
 
-`map`, `and_then`, and the `?` operator replace Go's `MapResult`,
-`FlatMapResult`, and `Value()` helpers.
+`map`, `and_then`, and the `?` operator are the idiomatic combinators —
+no bespoke envelope or accessor helpers are needed.
 
 ### `Clock`
 
@@ -92,8 +88,9 @@ pub struct FireflyError {
 Constructors `FireflyError::bad_request(...)`, `unauthorized(...)`,
 `forbidden(...)`, `not_found(...)`, `conflict(...)`, `validation(...)`,
 `rate_limited(...)`, `internal(...)`, `idempotency_conflict(...)` return
-values whose `source()` chain behaves like Go's `errors.Is` /
-`errors.As`. Helpers: `is_firefly(&err)`, `status_of(&err)`,
+values whose `source()` chain integrates with the standard
+`std::error::Error` machinery for downcasting and inspection. Helpers:
+`is_firefly(&err)`, `status_of(&err)`,
 `as_problem(&err)` (renders any `std::error::Error` as a
 `ProblemDetail`) — each walks the full source chain.
 
@@ -106,37 +103,40 @@ let out = with_correlation_id("abc-123", async {
 let fresh = new_correlation_id(); // 32-char hex
 ```
 
-Go's `context.Context` value becomes a tokio task-local scope; nested
-scopes shadow like child contexts. `HEADER_CORRELATION_ID`
+Correlation ids propagate through a tokio task-local scope; nested
+scopes shadow the enclosing value. `HEADER_CORRELATION_ID`
 (`X-Correlation-Id`) and `HEADER_IDEMPOTENCY_KEY` (`Idempotency-Key`)
 are exported for cross-crate agreement.
 
 ### Version
 
 `firefly_kernel::VERSION` is the released framework version
-(`"26.6.1"` at the time of writing — the Go port's CalVer `26.05.01`
-expressed as valid semver) — embedded in the actuator `/version`
-payload and the startup banner.
+(`"26.6.1"` at the time of writing — CalVer expressed as valid semver)
+— embedded in the actuator `/version` payload and the startup banner.
 
-## pyfly parity
+## Domain building blocks and structured context
 
-The pyfly-parity layer adds four surfaces, all additive.
+The kernel layers four additional surfaces on top of its four core
+primitives, all additive.
 
-### `ddd` module — the `pyfly.domain` kit
+### `ddd` module — domain building blocks
 
 `firefly_kernel::ddd` (every item also re-exported at the crate root)
 is the zero-dependency DDD building-block kit:
 
-| Item                            | pyfly original                                       |
-|---------------------------------|------------------------------------------------------|
-| `Specification<T>`              | `Specification[T]` (`is_satisfied_by`)               |
-| `.and()` / `.or()` / `.not()`   | the `&` / `\|` / `~` combinators (`AndSpec`/`OrSpec`/`NotSpec`) |
-| blanket impl for `Fn(&T) -> bool` | `Specification.of(callable)`                       |
-| `Entity` trait                  | `Entity[TID]` — `id()`, `is_transient()`, `same_identity()` |
-| `PendingEvents<E>`              | `AggregateRoot` — `raise` / `pending` / `drain`      |
-| `EventMeta`                     | `DomainEvent.event_id` (UUID v4) + `occurred_at` (UTC) |
-| `TransientDomainEvent`          | `DomainEvent` — `event_type()` defaults to the short type name |
-| `BoxedDomainEvent`              | the untyped `list[DomainEvent]` heterogeneous buffer |
+- `Specification<T>` — the predicate object with an `is_satisfied_by`
+  method, plus `.and()` / `.or()` / `.not()` combinators
+  (`AndSpec` / `OrSpec` / `NotSpec`); a blanket impl lets any
+  `Fn(&T) -> bool` act as a `Specification`.
+- `Entity` trait — identity-based equality via `id()`,
+  `is_transient()`, and `same_identity()`.
+- `PendingEvents<E>` — the aggregate event buffer with
+  `raise` / `pending` / `drain`.
+- `EventMeta` — per-event metadata: an `event_id` (UUID v4) and an
+  `occurred_at` UTC timestamp.
+- `TransientDomainEvent` — a domain event whose `event_type()` defaults
+  to the short type name.
+- `BoxedDomainEvent` — an untyped, heterogeneous event buffer.
 
 ```rust,ignore
 use firefly_kernel::ddd::{PendingEvents, Specification};
@@ -151,26 +151,25 @@ let premium_adult = IsAdult.and(|c: &Customer| c.premium);
 This is the **non-event-sourced** aggregate primitive — state persists
 through repositories and events are merely collected for post-commit
 publication. The event-sourced variant (versioned, wire-formatted,
-`EventStore`-coupled) lives in `firefly-eventsourcing`. pyfly's
-`ValueObject` maps to native `Clone` + struct-update syntax;
-`DomainRepository` maps to `firefly_data::Repository<T, K>` (`save` ~
-`add`, `find_by_id` ~ `find`, `delete` ~ `remove`, `next_id` ~
+`EventStore`-coupled) lives in `firefly-eventsourcing`. Value objects
+are expressed idiomatically with native `Clone` + struct-update syntax,
+and the repository abstraction lives in `firefly_data::Repository<T, K>`
+(`save`, `find_by_id`, `delete`, and `next_id`, which mints a fresh
 `Uuid::new_v4()`).
 
 ### Domain error constructors
 
-`FireflyError::business_rule(rule, detail)` — pyfly's
-`BusinessRuleViolation`: code `DOMAIN_RULE_VIOLATION`, status 422, the
-rule name in the `rule` field, defaulting the detail to
-`Business rule violated: <rule>`. `FireflyError::aggregate_not_found(
-aggregate_type, id)` — pyfly's `AggregateNotFound`: code
-`DOMAIN_AGGREGATE_NOT_FOUND`, status 404, structured `aggregate_type` /
-`id` fields.
+`FireflyError::business_rule(rule, detail)` signals a violated business
+rule: code `DOMAIN_RULE_VIOLATION`, status 422, the rule name in the
+`rule` field, defaulting the detail to `Business rule violated: <rule>`.
+`FireflyError::aggregate_not_found(aggregate_type, id)` signals a
+missing aggregate: code `DOMAIN_AGGREGATE_NOT_FOUND`, status 404, with
+structured `aggregate_type` / `id` fields.
 
 ### Request-id and tenant-id scopes
 
-Two new task-local scopes mirror the correlation id, porting pyfly's
-`pyfly.observability.correlation` context vars:
+Two further task-local scopes complement the correlation id, carrying
+per-request observability context:
 
 ```rust,ignore
 let out = with_request_id("req-1", async {
@@ -188,12 +187,11 @@ server-side — `None` means "unscoped").
 
 ### Typed structured-error model (`ErrorResponse`)
 
-`ErrorResponse` ports pyfly's `kernel/types.py` `ErrorResponse` — a
-classification-rich error model **additive over** `ProblemDetail` (it
-does not touch the Go-parity `application/problem+json` bytes). It adds
-first-class `ErrorCategory` / `ErrorSeverity` enums, `retryable` /
-`retry_after`, tracing ids (`trace_id` / `span_id` / `transaction_id`),
-and per-field `FieldError`s.
+`ErrorResponse` is a classification-rich error model **additive over**
+`ProblemDetail` (it does not touch the `application/problem+json`
+bytes). It adds first-class `ErrorCategory` / `ErrorSeverity` enums,
+`retryable` / `retry_after`, tracing ids (`trace_id` / `span_id` /
+`transaction_id`), and per-field `FieldError`s.
 
 ```rust,ignore
 use firefly_kernel::{ErrorCategory, ErrorResponse, ErrorSeverity, FieldError};
@@ -204,20 +202,20 @@ let resp = ErrorResponse::new("2026-06-12T00:00:00Z", 422, "Validation Error",
     .with_severity(ErrorSeverity::Low)
     .with_field_error(FieldError::new("email", "Invalid").with_rejected_value("nope"));
 
-let v = resp.to_value();           // pyfly's `to_dict()` shape
+let v = resp.to_value();           // canonical structured-error shape
 assert_eq!(v["category"], "VALIDATION");
 assert_eq!(v["retryable"], false); // category/severity/retryable always present
 assert!(v.get("trace_id").is_none()); // unset optionals omitted
 ```
 
-`to_value()` / `Serialize` match pyfly's `to_dict()` exactly: the six
-core members plus `category`/`severity`/`retryable` are always present;
-every other optional is omitted when unset or empty; keys use pyfly's
+`to_value()` and `Serialize` produce a stable shape: the six core
+members plus `category`/`severity`/`retryable` are always present;
+every other optional is omitted when unset or empty; keys use
 `snake_case` names (`field_errors`, `retry_after`, …) — **not** the
-`ProblemDetail` wire keys. `ErrorCategory` defaults to `Technical`,
-`ErrorSeverity` to `Medium` (pyfly defaults). Pick the model whose wire
-contract you need: cross-runtime `problem+json` clients consume
-`ProblemDetail`; pyfly-shaped structured-error consumers consume
+`ProblemDetail` wire keys. `ErrorCategory` defaults to `Technical` and
+`ErrorSeverity` to `Medium`. Pick the model whose wire contract you
+need: `problem+json` clients consume `ProblemDetail`; consumers that
+want classification-rich, field-level diagnostics consume
 `ErrorResponse`.
 
 ## Quick start
@@ -250,12 +248,11 @@ cargo test -p firefly-kernel
 ```
 
 Suite covers JSON round-trip on `ProblemDetail` (with extension
-flattening and exact Go wire bytes), `FireflyResult` map / and-then,
+flattening and exact, byte-for-byte wire output), `FireflyResult` map / and-then,
 every `FireflyError` constructor, display formatting, source-chain
 traversal, the clock variants, correlation-id scoping (async, sync,
-nested), and Send + Sync bounds. The pyfly-parity suites port
-`tests/domain/` (specification combinators, entity identity,
+nested), and Send + Sync bounds. The domain suites exercise the `ddd`
+building blocks (specification combinators, entity identity,
 pending-events raise/snapshot/drain, event auto-id/timestamp, domain
-error codes and fields) and the kernel-scoped slice of
-`tests/context/` (request-id / tenant-id scoping, nesting, task
-isolation, header names).
+error codes and fields) and the context suites cover request-id /
+tenant-id scoping, nesting, task isolation, and header names.

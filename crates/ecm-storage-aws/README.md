@@ -32,20 +32,16 @@ Each method maps to one real S3 REST API call:
 as inherent methods on `S3Store` on top of the four-method `ContentStore`
 contract.
 
-## pyfly parity
+## Behaviour and testing approach
 
-This crate is the Rust analog of pyfly's `pyfly.ecm.adapters.aws_s3`
-(`AwsS3StorageAdapter`), adapted to the Rust `ContentStore` port:
+`S3Store` deliberately avoids any cloud SDK and exercises the **real** reqwest +
+SigV4 code path against an in-process axum mock server (`tests/s3_mock_test.rs`),
+asserting the HTTP method, the bucket-and-key path, the request body, and the
+SigV4 `Authorization` / `x-amz-*` headers.
 
-* pyfly wraps boto3 and injects a fake client in tests; Rust avoids any cloud
-  SDK and instead exercises the **real** reqwest + SigV4 code path against an
-  in-process axum mock server (`tests/s3_mock_test.rs`), asserting the HTTP
-  method, the bucket-and-key path, the request body, and the SigV4
-  `Authorization` / `x-amz-*` headers.
-* The version-aware `<doc-id>/v<n>` key scheme pyfly uses for storage URIs maps
-  straight onto S3 object keys — `S3Store` is keyed by the opaque object key the
-  `ContentStore` port already exposes.
-* `S3Store::name()` returns `aws-s3`, matching `AwsS3StorageAdapter.name`.
+A version-aware `<doc-id>/v<n>` key scheme for storage URIs maps straight onto S3
+object keys — `S3Store` is keyed by the opaque object key the `ContentStore` port
+already exposes. `S3Store::name()` returns `aws-s3`.
 
 ### The SigV4 signer (`sigv4` module)
 

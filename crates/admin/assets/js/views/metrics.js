@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Metrics View.
+ * Firefly Admin — Metrics View.
  *
  * Metric browser with a searchable list and a live drill-down panel.
  * Split layout: metric names on the left, live trend + measurements on

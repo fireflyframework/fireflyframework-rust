@@ -1,6 +1,6 @@
 # `firefly-starter-experience`
 
-> **Tier:** Starter · **Status:** Full · **Service tier:** Experience (BFF) · **Java original:** `firefly-starter-application` (driving signal-driven `@Workflow`s) · **Skill contract:** `generate-execution-plan-experience`
+> **Tier:** Starter · **Status:** Stable · **Service tier:** Experience (BFF) · **Skill contract:** `generate-execution-plan-experience`
 
 ## The three service tiers
 
@@ -27,7 +27,7 @@ CORS, security headers, request metrics, access-log, correlation, idempotency,
 and the actuator surface) with the four experience-tier building blocks:
 
 * `clients` — `DomainClients`: the **domain-SDK composition** surface, a
-  registry of named `RestClient`s (the `ClientFactory` equivalent over
+  registry of named `RestClient`s (a `ClientFactory` over
   [`firefly-client`](../client/)) for calling downstream domain services.
 * `signals` — `Arc<SignalService>`: `@WaitForSignal`-style gates. A workflow
   step parks until an atomic endpoint delivers the named signal
@@ -43,8 +43,8 @@ and the actuator surface) with the four experience-tier building blocks:
 * `children` — `Arc<ChildWorkflowService>`: child-workflow composition for
   nested journeys.
 
-`ExperienceStack` dereferences to `WebStack` (which derefs to `Core`), the
-Rust analog of Go's embedded `*starterweb.WebStack`, so every web + core field
+`ExperienceStack` dereferences to `WebStack` (which derefs to `Core`), so
+every web + core field
 and method — `apply_middleware`, `actuator_router`, `new_application`,
 `with_security`, `cache`, `bus`, `scheduler`, … — is available directly on the
 experience value. `starter_name` defaults to `"starter-experience"`. `Bff` is
@@ -55,7 +55,7 @@ a type alias for `ExperienceStack`.
 ```rust,ignore
 pub struct ExperienceStack {     // alias: pub type Bff = ExperienceStack;
     pub web: WebStack,           // Deref/DerefMut target (→ Core)
-    pub clients: DomainClients,  // ClientFactory equivalent
+    pub clients: DomainClients,  // ClientFactory
     pub signals: Arc<SignalService>,
     pub state: WorkflowState,    // Redis-capable persisted workflow state
     pub query: Arc<WorkflowQueryService>,
@@ -67,7 +67,7 @@ impl ExperienceStack {
     pub fn with_security(self, chain: FilterChain) -> Self;
 }
 
-// pyfly-parity bootstrap pair (mirrors register_*_stack / @enable_*_stack):
+// Bootstrap pair:
 pub fn register_experience_stack(cfg: CoreConfig) -> ExperienceStack;
 pub fn enable_experience_stack(cfg: CoreConfig) -> CoreConfig;
 
@@ -150,9 +150,9 @@ cargo test -p firefly-starter-experience
 ```
 
 Covers: the BFF building blocks are wired and named `"starter-experience"`;
-starter-name rules match the sibling starters (custom names survive, an
+starter-name rules (custom names survive, an
 explicit `"starter-core"`/`"starter-web"` is renamed); the
-`register_experience_stack` / `enable_experience_stack` pyfly-parity pair;
+`register_experience_stack` / `enable_experience_stack` bootstrap pair;
 the `DomainClients` register/resolve/replace contract; `WorkflowState`
 round-trips a `StepContext` snapshot through the cache (miss → `Ok(None)`);
 `Deref`/`DerefMut` promotion of the web + core surface; `Send + Sync` bounds;

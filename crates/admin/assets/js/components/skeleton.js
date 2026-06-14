@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Skeleton Loaders.
+ * Firefly Admin — Skeleton Loaders.
  *
  * Lightweight shimmer placeholders shown while a view fetches its data.
  * They mirror the eventual layout (stat cards + table, etc.) so the page

@@ -32,23 +32,18 @@ contract. For container-scoped requests the query parameters fold into the
 Shared Key canonical resource as sorted `\nname:value` lines, so the signature
 covers them.
 
-## pyfly parity
+## Verification and design notes
 
-This crate is the Rust analog of pyfly's `pyfly.ecm.adapters.azure_blob`
-(`AzureBlobStorageAdapter`), adapted to the Rust `ContentStore` port:
+The adapter links no cloud SDK and exercises the **real** reqwest + Shared Key
+code path against an in-process axum mock (`tests/blob_mock_test.rs`). The mock
+asserts the HTTP method, container/blob path, body, and `x-ms-*` headers, and —
+crucially — **recomputes the Shared Key signature server-side** to prove the
+adapter signed exactly the request it sent (including the query-bearing List
+Blobs canonical resource and the Copy Blob `x-ms-copy-source` header).
 
-* pyfly wraps `azure-storage-blob` and injects a fake `BlobServiceClient` in
-  tests; Rust avoids any cloud SDK and exercises the **real** reqwest + Shared
-  Key code path against an in-process axum mock (`tests/blob_mock_test.rs`). The
-  mock asserts the HTTP method, container/blob path, body, and `x-ms-*` headers,
-  and — crucially — **recomputes the Shared Key signature server-side** to prove
-  the adapter signed exactly the request it sent (including the query-bearing
-  List Blobs canonical resource and the Copy Blob `x-ms-copy-source` header).
-* The version-aware `<doc-id>/v<n>` key scheme pyfly uses maps straight onto
-  blob names — `BlobStore` is keyed by the opaque key the `ContentStore` port
-  already exposes.
-* `BlobStore::name()` returns `azure-blob`, matching
-  `AzureBlobStorageAdapter.name`.
+`BlobStore` is keyed by the opaque key the `ContentStore` port already exposes,
+so a version-aware `<doc-id>/v<n>` key scheme maps straight onto blob names.
+`BlobStore::name()` returns `azure-blob`.
 
 ### The Shared Key signer (`sharedkey` module)
 

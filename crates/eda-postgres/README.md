@@ -1,6 +1,6 @@
 # firefly-eda-postgres
 
-A Postgres-backed [`Broker`](../eda) for the Firefly EDA port: a durable
+A Postgres-backed [`Broker`](../eda) for Firefly EDA: a durable
 **transactional outbox** plus `LISTEN`/`NOTIFY` wake-ups, with per-group
 offset cursors and a single advisory-lock-gated drain loop. It implements
 the `firefly-eda` `Publisher` / `Subscriber` / `Broker` ports over
@@ -51,31 +51,37 @@ broker
     .await?;
 ```
 
-## pyfly parity
+## API and behavior
 
-This crate ports `pyfly.eda.adapters.postgres.PostgresEventBus`.
+- **Builder configuration.** `PostgresBroker::new(PostgresConfig::new(dsn)
+  .listen_dsn(…).channel(…).destinations(…).group(…).poll_interval(…))`
+  drives all setup. `new` panics on an invalid channel identifier; the
+  fallible `PostgresBroker::try_new` returns an `IdentError` instead, backed
+  by `quote_ident` channel validation.
+- **Subscriptions.** `subscribe_pattern(pattern, handler)` (and the
+  `Subscriber::subscribe` trait method, which treats its `topic` argument as
+  the glob) match a `globset` glob against the event's `event_type`.
+- **Advisory key.** `group_lock_key` folds the consumer-group name with
+  SHA-256 and reads `i64::from_be_bytes` of the first 8 digest bytes, giving
+  a stable signed-`i64` advisory-lock key per group.
+- **DSN normalisation.** `normalise_dsn` strips
+  `postgresql+asyncpg://` / `postgresql+psycopg://` / `postgres+asyncpg://`
+  scheme prefixes before connecting.
+- **Lifecycle.** `start` runs DDL, seeds offsets, opens the listener, and
+  spawns the drain loop; `close` aborts the loop and releases the advisory
+  lock.
 
-| pyfly | firefly-eda-postgres | Notes |
-|-------|----------------------|-------|
-| `PostgresEventBus(dsn=…, listen_dsn=…, channel=…, destinations=…, group=…, poll_interval_s=…)` | `PostgresBroker::new(PostgresConfig::new(dsn).listen_dsn(…).channel(…).destinations(…).group(…).poll_interval(…))` | builder replaces keyword args |
-| `_quote_ident` (channel validation) | `quote_ident` / `PostgresBroker::try_new` returning `IdentError` | `new` panics on an invalid channel; `try_new` returns the error |
-| `_group_lock_key` (SHA-256 fold) | `group_lock_key` | identical value; `i64::from_be_bytes` of the first 8 digest bytes is the two's-complement equal of pyfly's unsigned-then-subtract fold |
-| `_normalise_dsn` | `normalise_dsn` | strips `postgresql+asyncpg://` / `postgresql+psycopg://` / `postgres+asyncpg://` |
-| `subscribe(event_type_pattern, handler)` | `subscribe_pattern(pattern, handler)` (and the `Subscriber::subscribe` trait method, which treats `topic` as the glob) | `fnmatch` → `globset` glob over the event's `event_type` |
-| `publish` (INSERT + NOTIFY) | `PostgresBroker::publish` | same SQL shape, `$n::jsonb` casts |
-| `start` / `stop` | `start` / `close` | DDL + offset seed + listener + drain loop / abort + release |
+### Implementation notes
 
-### Deliberate divergences
-
-- **Table prefix.** Tables are `firefly_eda_outbox` / `firefly_eda_offsets`
-  (vs pyfly's `pyfly_eda_*`), matching this framework's naming. The column
-  layout is byte-identical, so a pyfly producer and a Rust consumer
+- **Table naming.** Tables are `firefly_eda_outbox` / `firefly_eda_offsets`.
+  The column layout is stable JSONB, so any producer and consumer
   interoperate when both target the same table name.
-- **Hash.** SHA-256 (in the workspace dependency catalog) rather than
-  pyfly's `hashlib.sha256` — same algorithm, same bytes, same key.
+- **Hashing.** The advisory key uses SHA-256 from the workspace dependency
+  catalog.
 - **No connection pool.** A single pipelined `tokio-postgres::Client`
-  stands in for pyfly's asyncpg pool; tokio-postgres pipelines concurrent
-  queries on one connection. A dedicated session connection runs `LISTEN`.
+  handles publishing and draining — tokio-postgres pipelines concurrent
+  queries on one connection — while a dedicated session connection runs
+  `LISTEN`.
 - **JSONB as text.** Payload/headers are bound and read as JSON text
   (`$n::jsonb` / `::text`) so the adapter needs no optional tokio-postgres
   type features.
@@ -83,7 +89,7 @@ This crate ports `pyfly.eda.adapters.postgres.PostgresEventBus`.
 ## Testing
 
 SQL/DDL strings, identifier validation, DSN normalisation, the advisory-key
-fold (cross-checked against pyfly's exact arithmetic), and payload/header
+fold, and payload/header
 round-trips are unit-tested with no database. The end-to-end publish →
 NOTIFY-driven drain → cursor-advance round trip is **env-gated**: it reads
 `FIREFLY_TEST_POSTGRES_URL` (falling back to `DATABASE_URL` / `POSTGRES_URL`),

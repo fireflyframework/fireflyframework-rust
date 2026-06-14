@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Status & Method Badge Components.
+ * Firefly Admin — Status & Method Badge Components.
  *
  * Safe DOM construction — no innerHTML with untrusted data.
  */

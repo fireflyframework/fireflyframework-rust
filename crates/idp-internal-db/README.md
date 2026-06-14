@@ -1,6 +1,6 @@
 # `firefly-idp-internal-db`
 
-> **Tier:** Adapter · **Status:** Full · **Java original:** `firefly-idp-internal-db` · **Go module:** `idpinternaldb`
+> **Tier:** Adapter · **Status:** Stable
 
 ## Overview
 
@@ -30,8 +30,8 @@ impl Default for Config { /* 1 h TTL, issuer "firefly-internal-db" */ }
 
 ## Token shape
 
-JWT header carries `alg: HS256`, `typ: JWT`. Claims (serialized in this
-exact order — byte-identical to the Go port's sorted-map encoding):
+JWT header carries `alg: HS256`, `typ: JWT`. Claims are serialized in this
+exact order (keys sorted lexicographically):
 
 ```json
 {
@@ -46,10 +46,9 @@ exact order — byte-identical to the Go port's sorted-map encoding):
 
 `roles` is omitted when the user has none. Signatures are HMAC-SHA256
 over `base64url(header) + "." + base64url(claims)` with unpadded
-URL-safe base64 — tokens minted by the Go port verify here and vice
-versa (verification is independent of header key order). Verification
-matches Go: only the signature and — when present — `exp` are checked;
-every other claim (`aud`, `iss`, `nbf`, …) is ignored.
+URL-safe base64, and verification is independent of header key order.
+Verification deliberately checks only the signature and — when present —
+`exp`; every other claim (`aud`, `iss`, `nbf`, …) is ignored.
 
 The refresh token is currently the same value as the access token —
 adequate for in-process testing; production deployments should use
@@ -76,7 +75,7 @@ fn name(&self) -> &str; // "internal-db"
 `login` returns `Error::InvalidCredentials` on bad password / unknown
 user. `validate` returns `Error::UserNotFound` if the token verifies
 but the user has since been deleted. Verification failures surface as
-`Error::Provider` with the Go port's exact messages
+`Error::Provider` with these exact messages
 (`idp/internal-db: malformed jwt`, `idp/internal-db: bad signature`,
 `idp/internal-db: token expired`); a duplicate id on `create_user`
 renders as `idp/internal-db: id "<id>" already exists`.
@@ -116,22 +115,21 @@ cargo test -p firefly-idp-internal-db
 
 Covers create + login + validate + refresh + delete lifecycle, bad
 credentials, deleted-user post-validation, a port assertion
-(`Arc<dyn firefly_idp::Adapter>`), plus Rust-specific guards: TTL
-clamping, duplicate-id rejection, exact Go error strings for
+(`Arc<dyn firefly_idp::Adapter>`), plus additional guards: TTL
+clamping, duplicate-id rejection, exact error strings for
 malformed / forged / expired tokens, byte-for-byte claim-shape pinning,
-acceptance of Go-minted tokens, and concurrent logins through a shared
-`Arc<dyn Adapter>`.
+and concurrent logins through a shared `Arc<dyn Adapter>`.
 
-## pyfly parity
+## Extended capabilities
 
-This adapter implements the full extended `firefly_idp::Adapter` surface
-(ported from pyfly's `InternalDbIdpAdapter`):
+Beyond the core login / validate / user-CRUD surface, the adapter implements
+the full extended `firefly_idp::Adapter` API:
 
 * **Opaque-token registry** — every `login` / `refresh` / `mfa_verify`
   records the minted access and refresh tokens in an in-process registry
   (`token → user_id`) *in addition to* returning the stateless JWT. This is
   what makes server-side `logout` (revoke) and `introspect` (RFC 7662)
-  possible without changing the Go-parity JWT wire shape. `introspect`
+  possible without changing the JWT wire shape. `introspect`
   reports an inactive session for a revoked token or a since-deleted user.
 * **Role catalogue** — `assign_role` / `revoke_role` mutate the user's roles
   and register the role name in a catalogue; `create_roles`,
@@ -141,22 +139,19 @@ This adapter implements the full extended `firefly_idp::Adapter` surface
 * **TOTP MFA (RFC 6238)** — hand-rolled over the workspace `hmac` + `sha2` +
   `base64` crates (no external TOTP dependency). `enable_mfa` enrolls a
   base32 secret; an MFA-enrolled `login` returns
-  `Err(Error::MfaRequired(challenge))` (the analogue of pyfly's
-  `mfa_required=True`); `mfa_verify` consumes the single-use challenge,
-  checks the code, and mints tokens. `current_totp` is a test/automation
-  helper that generates the live code.
+  `Err(Error::MfaRequired(challenge))`; `mfa_verify` consumes the single-use
+  challenge, checks the code, and mints tokens. `current_totp` is a
+  test/automation helper that generates the live code.
 
-> **TOTP hash divergence:** pyfly uses `pyotp`, which defaults to
-> HMAC-**SHA1**. The Rust workspace ships only `sha2`, so this port uses
-> HMAC-**SHA256** per the parity brief. The implementation is self-consistent
-> (it both mints and verifies codes) so the behavioral MFA flow matches pyfly
-> exactly; codes are *not* interchangeable with a SHA1 authenticator app. The
+> **TOTP hash choice:** this adapter uses HMAC-**SHA256** for TOTP code
+> generation and verification. The implementation is self-consistent (it both
+> mints and verifies codes), so the behavioral MFA flow is correct end to end;
+> codes are *not* interchangeable with a SHA1-based authenticator app. The
 > `totp` module is cross-checked against the **RFC 6238 Appendix B** SHA-256
 > known-answer vectors.
 
-The pyfly test cases (`test_idp.py`, `test_idp_mfa_and_extensions.py`) are
-ported as unit tests: create/login/introspect/logout, login failure,
-change/reset password, role assign/revoke, the full MFA enable → challenge →
-verify flow (incl. wrong-code and consumed-challenge rejection),
-`get_user_info`, `register_user` defaults, and catalogue-enriched
-`get_roles`.
+The extended surface is covered by unit tests:
+create/login/introspect/logout, login failure, change/reset password, role
+assign/revoke, the full MFA enable → challenge → verify flow (incl.
+wrong-code and consumed-challenge rejection), `get_user_info`,
+`register_user` defaults, and catalogue-enriched `get_roles`.

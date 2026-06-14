@@ -1,4 +1,4 @@
-/* PyFly Admin Dashboard — Main Stylesheet */
+/* Firefly Admin Dashboard — Main Stylesheet */
 
 /* ── Google Fonts ───────────────────────────────────────────────── */
 @import url('https://fonts.googleapis.com/css2?family=Maven+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -93,12 +93,24 @@ a:hover {
     flex-shrink: 0;
     border-bottom: 1px solid var(--admin-border-subtle);
     overflow: hidden;
+    /* The inline wordmark draws its letters in `currentColor`; anchor that to
+       the sidebar's active text colour so it reads on every theme. */
+    color: var(--admin-sidebar-text-active);
 }
 
 .admin-sidebar-brand img {
     height: 30px;
     width: auto;
     object-fit: contain;
+    flex-shrink: 0;
+}
+
+/* Inlined Firefly lockup (SVG): wordmark + tagline, viewBox ~1.73:1. A fixed
+   height keeps it crisp while width tracks the aspect ratio. */
+.admin-brand-logo {
+    height: 34px;
+    width: auto;
+    display: block;
     flex-shrink: 0;
 }
 
@@ -289,12 +301,12 @@ a:hover {
     position: relative;
     background:
         linear-gradient(
-            rgba(95, 191, 46, 0.018) 1px,
+            rgba(245, 146, 30, 0.018) 1px,
             transparent 1px
         ),
         linear-gradient(
             90deg,
-            rgba(95, 191, 46, 0.018) 1px,
+            rgba(245, 146, 30, 0.018) 1px,
             transparent 1px
         );
     background-size: 40px 40px;

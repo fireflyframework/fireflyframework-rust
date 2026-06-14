@@ -41,12 +41,12 @@ use firefly_observability::{Counter, Histogram, MetricsRegistry};
 
 use crate::db::{Backend, Db};
 
-/// The metric name for the per-query duration histogram (pyfly parity).
-pub const DB_QUERY_DURATION: &str = "pyfly_db_query_duration_seconds";
-/// The metric name for the per-query counter (pyfly parity).
-pub const DB_QUERIES_TOTAL: &str = "pyfly_db_queries_total";
-/// The metric name for the per-query error counter (pyfly parity).
-pub const DB_QUERY_ERRORS_TOTAL: &str = "pyfly_db_query_errors_total";
+/// The metric name for the per-query duration histogram.
+pub const DB_QUERY_DURATION: &str = "firefly_db_query_duration_seconds";
+/// The metric name for the per-query counter.
+pub const DB_QUERIES_TOTAL: &str = "firefly_db_queries_total";
+/// The metric name for the per-query error counter.
+pub const DB_QUERY_ERRORS_TOTAL: &str = "firefly_db_query_errors_total";
 
 /// The lower-cased backend label reported in the health `details.database`
 /// field — `postgres` / `mysql` / `sqlite`.
@@ -274,14 +274,18 @@ mod tests {
 
     #[tokio::test]
     async fn timed_records_and_returns_result() {
+        // The MetricsRegistry is process-global and idempotent, so this test
+        // uses INSERT/DELETE labels — disjoint from the SELECT/UPDATE labels in
+        // `metrics_record_increments_bounded_labels` — to stay independent of
+        // test execution order.
         let registry = MetricsRegistry::new();
         let metrics = SqlxQueryMetrics::new(&registry);
         let r: Result<i32, &str> = metrics
-            .timed("SELECT 1", || async { Ok::<i32, &str>(7) })
+            .timed("INSERT INTO t VALUES (1)", || async { Ok::<i32, &str>(7) })
             .await;
         assert_eq!(r, Ok(7));
-        assert_eq!(metrics.count.value_with(&["SELECT"]), 1.0);
-        assert_eq!(metrics.errors.value_with(&["SELECT"]), 0.0);
+        assert_eq!(metrics.count.value_with(&["INSERT"]), 1.0);
+        assert_eq!(metrics.errors.value_with(&["INSERT"]), 0.0);
 
         let e: Result<i32, &str> = metrics
             .timed("DELETE FROM t", || async { Err::<i32, &str>("boom") })

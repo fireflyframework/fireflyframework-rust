@@ -1,5 +1,5 @@
 /**
- * PyFly Admin — Transactions View.
+ * Firefly Admin — Transactions View.
  *
  * Displays registered saga definitions and TCC transactions
  * with step/participant detail, dependency visualization,
@@ -427,7 +427,7 @@ export async function render(container, api) {
     headerLeft.appendChild(h1);
     const sub = document.createElement('div');
     sub.className = 'page-subtitle';
-    sub.textContent = 'pyfly.transactional';
+    sub.textContent = 'firefly.transactional';
     headerLeft.appendChild(sub);
     header.appendChild(headerLeft);
     wrapper.appendChild(header);

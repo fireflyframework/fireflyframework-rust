@@ -1,6 +1,6 @@
 # `firefly`
 
-> **Tier:** Front door · **Status:** Full · **Role:** the one-dependency facade — prelude + re-exports of the whole framework + macros · **pyfly analog:** `import pyfly` / `from pyfly import …`
+> **Tier:** Front door · **Status:** Stable · **Role:** the one-dependency facade — prelude + re-exports of the whole framework + macros
 
 ## Overview
 
@@ -59,7 +59,7 @@ let _ok: FireflyResult<()> = Ok(());
 ### Dependency injection + `ApplicationContext`
 
 The facade is the front door to the framework's **best-in-class
-dependency-injection** experience (Spring/pyfly parity). Annotate beans with the
+dependency-injection** experience. Annotate beans with the
 stereotype derives, then let the `ApplicationContext` scan, gate, wire, and
 warm them:
 

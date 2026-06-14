@@ -1,6 +1,6 @@
 # `firefly-starter-core`
 
-> **Tier:** Starter · **Status:** Full · **Java original:** `firefly-starter-core` · **Go module:** `startercore`
+> **Tier:** Starter · **Status:** Stable
 
 ## Overview
 
@@ -22,24 +22,20 @@ a `Core` struct holding every component a typical service needs:
 Plus four convenience methods:
 
 * `apply_middleware(router)` — the canonical outermost HTTP middleware
-  chain (problem renderer, correlation, idempotency) — Go's
-  `Middleware()`.
+  chain (problem renderer, correlation, idempotency).
 * `actuator_router(info_contributors)` — pre-wired
-  `/actuator/{health,info,metrics,env,tasks,version}` router — Go's
-  `ActuatorHandler(infoContributors...)`.
+  `/actuator/{health,info,metrics,env,tasks,version}` router.
 * `new_application()` — `lifecycle::Application` named after the app.
 * `print_banner()` — emits the ASCII banner identifying starter + app +
   runtime (`banner()` returns it as a `String` for tests).
 
-### pyfly-parity batteries (all OFF by default)
+### Optional middleware batteries (all OFF by default)
 
-Mirroring how pyfly's starters/auto-configuration assemble the stack,
-`CoreConfig` carries `Option`-typed knobs that — when set — weave the P1
-middleware surfaces into `apply_middleware` / `actuator_router` at their
-canonical pyfly filter order. Leaving every knob unset (the default)
-reproduces exactly the Go-parity Problem → Correlation → Idempotency
-chain and actuator surface, so existing wire shapes and tests are
-unchanged.
+`CoreConfig` carries `Option`-typed knobs that — when set — weave
+additional middleware surfaces into `apply_middleware` / `actuator_router`
+at their canonical filter order. Leaving every knob unset (the default)
+yields a Problem → Correlation → Idempotency chain and a minimal actuator
+surface, so the simplest service stays lean.
 
 | Knob | Effect when `Some` |
 |------|--------------------|
@@ -52,11 +48,10 @@ unchanged.
 | `loggers` | `/actuator/loggers[/{name}]` runtime log-level control |
 | `redaction` | PII scrubbing on the default log writer |
 
-The effective `apply_middleware` chain (outermost → innermost, matching
-pyfly's filter order) is:
+The effective `apply_middleware` chain (outermost → innermost) is:
 
 ```text
-CorsLayer            (cors)              — Starlette CORSMiddleware edge
+CorsLayer            (cors)              — CORS edge (preflight + simple)
 ProblemLayer         (always)           — panic → 500 RFC7807
 SecurityHeadersLayer (security_headers) — decorate every response
 CorrelationLayer     (always)           — X-Correlation-Id
@@ -76,7 +71,7 @@ actuator `MetricRegistry`, and `firefly-starter-core` — the crate that
 depends on both — is where that bridge lives. Each observation records the
 labeled `http_server_requests_seconds` timer and the companion
 `…_max` gauge, tagged `method`/`uri`/`status`/`outcome`/`exception`
-(a clean request carries `exception="None"`, pyfly's sentinel).
+(a clean request carries the `exception="None"` sentinel).
 
 ### Wiring a downstream admin dashboard
 
@@ -92,15 +87,13 @@ accessors instead.
 
 ### Health glue
 
-The Go module hands an `observability.Composite` to `actuator.Mount`;
-the Rust actuator crate carries its own health primitives
+The actuator crate carries its own health primitives
 (`HealthComposite` / `HealthIndicator`), so `Core` wires that type
 directly. The `ObservabilityIndicator` bridge (and the
 `core.add_observability_indicator(..)` convenience) adapts any
 `firefly_observability::Indicator` onto the actuator composite, so
-observability probes feed `/actuator/health` exactly as in Go — both
-sides emit the identical JSON wire shape (`status`, `message`,
-`details`, `duration` in nanoseconds, `time`).
+observability probes feed `/actuator/health` with the JSON wire shape
+`status`, `message`, `details`, `duration` (in nanoseconds), and `time`.
 
 ## Public surface
 
@@ -118,7 +111,7 @@ pub struct CoreConfig {
     pub metrics: Option<Arc<MetricRegistry>>,   // default empty registry
     pub scheduler: Option<Arc<Scheduler>>,      // default Scheduler::new()
 
-    // pyfly-parity optional middleware — all OFF (None) by default:
+    // optional middleware — all OFF (None) by default:
     pub cors: Option<CorsConfig>,                       // CorsLayer at the edge
     pub security_headers: Option<SecurityHeadersConfig>,// OWASP headers
     pub csrf: Option<CsrfLayer>,                        // double-submit cookie
@@ -212,16 +205,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 cargo test -p firefly-starter-core
 ```
 
-Ports every Go test (defaults are wired, the panic→500
-`application/problem+json` middleware chain, the banner content) and
-adds Rust-specific coverage: the full boot sequence (mount routers,
+Coverage spans defaults wiring, the panic→500
+`application/problem+json` middleware chain, the banner content, and
+the full boot sequence (mount routers,
 oneshot `/actuator/health`, dispatch a command, publish an event,
 shut down through the lifecycle handle), validation middleware wired
 by default, the cache DOWN → 503 path, the observability → actuator
 health bridge, idempotency replay and correlation echo through the
 middleware chain, and `/actuator/{version,info}` reflection.
 
-The pyfly-parity wiring adds: every optional knob OFF by default (the
+The optional middleware wiring adds: every optional knob OFF by default (the
 default chain unchanged), a headline boot test proving **CORS preflight +
 security headers + a request-metrics counter incrementing** all flow
 through `apply_middleware`, the metrics bridge tagging a panic as a 500

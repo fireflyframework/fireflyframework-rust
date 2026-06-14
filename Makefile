@@ -2,7 +2,7 @@
         infra-up infra-down infra-status test-integration book book-serve \
         book-pdf book-epub book-dist
 
-VERSION := 26.6.3
+VERSION := 26.6.4
 
 # cargo may live outside the default make PATH (e.g. Homebrew installs).
 export PATH := $(PATH):/opt/homebrew/bin:$(HOME)/.cargo/bin

@@ -1,6 +1,6 @@
 # `firefly-eda-rabbitmq`
 
-> **Tier:** Platform · **Status:** Full (pyfly parity) · **Python original:** `pyfly.eda.adapters.rabbitmq.RabbitMqEventBus`
+> **Tier:** Platform · **Status:** Stable
 
 ## Overview
 
@@ -11,15 +11,15 @@ adapter the EDA starter calls in place of `firefly_eda::new_rabbitmq_broker`'s
 `EdaError::RabbitMqUnavailable` sentinel when the configuration selects
 RabbitMQ.
 
-It is a faithful port of pyfly's `RabbitMqEventBus`: same topology, same
-at-least-once delivery contract, same `fnmatch`-style subscription
-matching, same wire format (the JSON-encoded `Event` envelope).
+It provides a durable topology, an at-least-once delivery contract,
+`fnmatch`-style subscription matching, and a JSON-encoded `Event`
+envelope wire format.
 
 ## Topology
 
 On `RabbitMqBroker::start` the broker declares:
 
-- one **durable `direct` exchange** (default `pyfly`), and
+- one **durable `direct` exchange** (default `firefly`), and
 - one **durable queue `<group>.<destination>`** per configured
   destination, bound to the exchange with `<destination>` as the routing
   key and consumed with **manual ack**.
@@ -33,13 +33,13 @@ declaration set is assertable in a unit test without a live broker.
 
 ## Delivery semantics (at-least-once)
 
-`dispatch` / `decide` reproduce pyfly's `on_message` outcomes exactly:
+`dispatch` / `decide` map each delivery to one AMQP action:
 
-| Outcome                       | pyfly call                      | AMQP action               |
-|-------------------------------|---------------------------------|---------------------------|
-| handled, or no matching pattern | `message.ack()`               | `basic_ack`               |
-| a matching handler returns `Err` | `message.reject(requeue=True)` | `basic_nack(requeue=true)` |
-| body could not deserialize    | `message.reject(requeue=False)` | `basic_reject(requeue=false)` |
+| Outcome                       | AMQP action               |
+|-------------------------------|---------------------------|
+| handled, or no matching pattern | `basic_ack`               |
+| a matching handler returns `Err` | `basic_nack(requeue=true)` |
+| body could not deserialize    | `basic_reject(requeue=false)` |
 
 A non-match is not a failure (the message is consumed). All matching
 handlers run even when an earlier one fails — only the aggregate outcome
@@ -49,8 +49,7 @@ flips to nack-with-requeue.
 
 `Subscriber::subscribe(topic, handler)` registers `topic` as an
 `fnmatch`-style pattern (`*`, `?`, `[...]`, with `!`-negated classes)
-tested against the event's `type` — pyfly's
-`subscribe(event_type_pattern, handler)`. `*` spans any character
+tested against the event's `type`. `*` spans any character
 including `.`, so `order.*` matches `order.created.v2`. Patterns added
 after `start` take effect on the next delivery; every consumer reads the
 shared subscription list per message. Use `pattern_matches` to test the
@@ -87,28 +86,28 @@ broker.publish(ev).await?;
 # }
 ```
 
-## pyfly parity
+## Configuration and behavior
 
-Ported surface and behavior, mapped from `pyfly.eda.adapters.rabbitmq`:
+`RabbitMqBroker::new(RabbitMqBrokerConfig)` is configured with the
+`with_url` / `with_exchange` / `with_destinations` / `with_group`
+builders (defaults `amqp://guest:guest@localhost/`, `firefly`,
+`["firefly.events"]`, `firefly-default`). Notable behaviors:
 
-- `RabbitMqEventBus(url, exchange_name, destinations, group)` →
-  `RabbitMqBroker::new(RabbitMqBrokerConfig)` with `with_url` /
-  `with_exchange` / `with_destinations` / `with_group` builders
-  (defaults `amqp://guest:guest@localhost/`, `pyfly`, `["pyfly.events"]`,
-  `pyfly-default`).
 - `start` is idempotent and closes a half-open connection on a declare
   failure; `stop` is safe to call when never started.
 - `publish` auto-starts the broker, routes on `destination`
   (= `Event.topic`), and awaits the publisher confirm.
-- Python decorators / DI map to explicit `subscribe` and `publish`
-  calls, the Rust idiom.
+- `subscribe` and `publish` are explicit calls — the Rust idiom — rather
+  than decorator- or DI-driven registration.
 
-Tests port pyfly's `tests/eda/test_rabbitmq_event_bus.py`: the
-declaration plan (exchange + one bound queue per destination,
-`<group>.<destination>` names), routing-key/envelope mapping, matching
-vs non-matching dispatch, the undeserializable-body drop, and the
-handler-failure nack-with-requeue. A live declare → publish → consume → ack
-round-trip lives in `tests/roundtrip.rs` as an **env-gated** integration test
+## Testing
+
+Unit tests cover the declaration plan (exchange + one bound queue per
+destination, `<group>.<destination>` names), routing-key/envelope
+mapping, matching vs non-matching dispatch, the undeserializable-body
+drop, and the handler-failure nack-with-requeue. A live
+declare → publish → consume → ack round-trip lives in
+`tests/roundtrip.rs` as an **env-gated** integration test
 (no `#[ignore]`): it reads `FIREFLY_TEST_RABBITMQ_URL` (falling back to the
 legacy `RABBITMQ_URL` then `AMQP_URL`) and skips with a one-line notice when
 unset, so a bare `cargo test` stays green.

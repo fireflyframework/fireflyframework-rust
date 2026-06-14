@@ -11,17 +11,17 @@ In the last chapter Lumen named itself with two `pub const` strings and pulled
 its ports straight off the environment with `std::env::var`. That is the right
 starting point — but a real wallet service runs in dev, in CI, and in prod, and
 each environment wants different ports, log levels, and (eventually) database
-URLs. `firefly-config` brings Spring Boot–style **typed, layered configuration
-binding** to Rust: you declare a `serde`-deserializable struct, call
-`load`/`load_from_profile`, and the loader merges sources in precedence order,
-resolves the active profile, resolves `${...}` placeholders, and binds the flat
-dot-keyed map onto your struct.
+URLs. `firefly-config` provides **typed, layered configuration binding**: you
+declare a `serde`-deserializable struct, call `load`/`load_from_profile`, and the
+loader merges sources in precedence order, resolves the active profile, resolves
+`${...}` placeholders, and binds the flat dot-keyed map onto your struct. If
+you've used a batteries-included framework before, the shape will feel familiar.
 
-> **Spring parity.** This is `@ConfigurationProperties` plus the
-> `application.yaml` → profile → environment hierarchy, re-expressed for Rust —
-> and the Rust analog of pyfly's `pyfly.yaml` + `Settings`. The binding rules
-> below are deliberately identical across the Java, Go, .NET, and Python ports,
-> so one `application.yaml` flattens to the same keys everywhere.
+> **Design note.** Firefly binds a profile-aware `application.yaml` → profile →
+> environment hierarchy onto typed structs. The flattening and binding rules are
+> specified precisely (see below) so the same `application.yaml` produces the
+> same keys deterministically — Firefly treats this determinism as a guarantee,
+> not an accident.
 
 ## Where Lumen is today: app identity
 
@@ -130,8 +130,8 @@ let cfg: LumenConfig = load(&sources)?;
 ## YAML subset and value rules
 
 Files are parsed by a line-by-line YAML-subset scanner (no general-purpose YAML
-dependency), so the flattened output is identical across the Java/Go/.NET/Rust
-ports for any given `application.yaml`:
+dependency), so the flattened output is deterministic and stable for any given
+`application.yaml`:
 
 ```yaml
 name: lumen
@@ -148,7 +148,8 @@ tags: wallet, ledger, demo   # sequences of scalars are comma-joined
 - aliases, anchors, multi-doc, tags, and flow sequences are deliberately not
   interpreted.
 
-Supported leaf kinds: `String`, `bool` (Go `ParseBool` syntax), every integer
+Supported leaf kinds: `String`, `bool` (accepts `1`/`0`, `t`/`f`, and
+`true`/`false` in any case), every integer
 width, `f32`/`f64`, `char`, unit enums (by variant name), `Option<T>`, sequences
 of scalars, and `HashMap<String, _>` subtrees. For durations, use an `i64` field
 plus a conversion: `Duration::from_millis(cfg.cache.ttl as u64)`.
@@ -204,19 +205,144 @@ Any `#[derive(Service)]` bean can then `#[autowired] props: Arc<WebProperties>`
 and receive the bound values — no manual `load`, no global. You will wire one in
 [Dependency Wiring](./04-dependency-wiring.md). For one-off scalars there is an
 even lighter touch: a `#[firefly(value = "${lumen.web.addr:127.0.0.1:8080}")]`
-field injects a single resolved value with a default, the Rust spelling of
-Spring's `@Value`.
+field injects a single resolved value with a default.
 
-> **Spring parity.** `#[derive(ConfigProperties)]` with `#[firefly(prefix =
-> "...")]` is `@ConfigurationProperties(prefix = "...")`, and the
-> `#[firefly(value = "${...}")]` field is `@Value("${...}")`. Both bind against
-> the same merged, profile-resolved, placeholder-expanded map described above.
+> **Design note.** Firefly offers two binding styles. A prefix-bound bean
+> (`#[derive(ConfigProperties)]` + `#[firefly(prefix = "...")]`) pulls a whole
+> config subtree into one injectable struct, while single-value injection
+> (`#[firefly(value = "${...}")]`) wires one resolved scalar onto a field. Both
+> bind against the same merged, profile-resolved, placeholder-expanded map
+> described above.
+
+## Config-driven auto-configuration — datasource and security from `application.yaml`
+
+The properties-binding machinery so far hands you a typed struct. Firefly's
+infrastructure crates take the next step: a handful of subsystems are
+**config-driven and DI-free** — you bind a plain `serde` struct from
+`application.yaml`/env, then `await` a single auto-configure call at boot, and
+the subsystem stands itself up. No container, no manual builder chains, no
+`if scheme == "postgres"` branching in your wiring. Two subsystems Lumen leans
+on this way are its datasource and its security layer.
+
+Both feed off one YAML tree. `firefly.datasource.*` binds onto
+`DataSourceProperties` and `firefly.security.*` onto `SecurityProperties`:
+
+```yaml
+firefly:
+  datasource:
+    url: ${DATABASE_URL:postgres://localhost/lumen}  # scheme picks the backend
+    max-connections: 16
+    min-connections: 2
+    acquire-timeout-ms: 5000
+    idle-timeout-ms: 600000
+    max-lifetime-ms: 1800000
+  security:
+    jwt:
+      jwk-set-uri: https://idp.example.com/.well-known/jwks.json
+      issuer-uri: https://idp.example.com/
+      audience: lumen-api
+    bearer:
+      header-name: Authorization
+      allow-anonymous: false
+```
+
+### Datasource — `DataSourceProperties` → pool → transaction manager
+
+`DataSourceProperties` is a plain `serde` struct — `{ url, max_connections,
+min_connections, acquire_timeout_ms, idle_timeout_ms, max_lifetime_ms }`. The
+**URL scheme selects the backend**, each behind its own cargo feature:
+`postgres://` / `postgresql://` → PostgreSQL, `mysql://` → MySQL, `sqlite:` →
+SQLite. A `0` for any pool setting leaves the `sqlx` default in place.
+
+`firefly_data_sqlx::auto_configure(&props)` does the one thing you want at boot:
+it builds the connection pool **and** registers a `SqlxTransactionManager` over
+it, so `#[transactional]` resolves with no manual wiring. The returned `Db` is
+the same pool, ready to build typed repositories. (For finer control,
+`Db::connect(url)` and `Db::connect_with(&props)` build just the pool.)
+
+```rust,ignore
+use firefly_data_sqlx::{auto_configure, DataSourceProperties};
+
+// `Db` carries the pool; auto_configure also registers the tx manager.
+let db = auto_configure(&props).await?;     // Result<Db, FireflyError>
+```
+
+### Security — `SecurityProperties` → verifier → bearer layer
+
+`SecurityProperties` nests `{ jwt: JwtProperties, bearer: BearerProperties }`.
+`JwtProperties` holds `{ jwk_set_uri, issuer_uri, audience, secret, algorithm,
+expiration_seconds }`; `BearerProperties` holds `{ header_name, allow_anonymous }`.
+Two functions turn that into running middleware:
+
+- `verifier_from_config(&JwtProperties)` returns
+  `Result<Option<Arc<dyn Verifier>>, SecurityError>`. A non-empty `jwk_set_uri`
+  builds a JWKS (RS256) resource-server verifier; otherwise a non-empty `secret`
+  builds an HMAC verifier (`HS256`/`HS384`/`HS512`); otherwise `None`.
+- `bearer_layer_from_config(&SecurityProperties)` returns
+  `Result<Option<BearerLayer>, SecurityError>` — the ready-to-mount layer with
+  the configured header name and anonymous policy already applied, or `None`
+  when no verifier is configured.
+
+### The one-call startup wiring
+
+Bind one config struct, then drive both subsystems from it. The whole wiring is
+a load plus two awaited calls:
+
+```rust,ignore
+use firefly_config::{load_from_profile, ConfigError};
+use firefly_data_sqlx::{auto_configure, DataSourceProperties};
+use firefly_security::{bearer_layer_from_config, SecurityProperties};
+use serde::Deserialize;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Firefly {
+    datasource: DataSourceProperties,
+    security: SecurityProperties,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct LumenConfig {
+    firefly: Firefly,   // binds the `firefly.datasource.*` / `firefly.security.*` subtree
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // 1. Load + merge + profile-resolve + placeholder-expand, then bind.
+    let cfg: LumenConfig = load_from_profile("/etc/lumen", "application", "dev")?;
+
+    // 2. Build the pool AND register the transaction manager in one await.
+    let db = auto_configure(&cfg.firefly.datasource).await?;
+
+    // 3. Build the ready-to-mount bearer layer (None if no JWT settings).
+    let bearer = bearer_layer_from_config(&cfg.firefly.security)?;
+
+    // `db` builds typed repositories; mount `bearer` on the web stack.
+    // ...
+    Ok(())
+}
+```
+
+This is the same precedence chain from earlier in the chapter doing real work:
+`DATABASE_URL` in the environment overrides the YAML default for the pool, and
+the JWKS endpoint can be re-pointed per profile without touching code. The
+`#[transactional]` machinery and the bearer middleware both pick up what
+`auto_configure` and `bearer_layer_from_config` registered — no globals threaded
+through your constructors.
+
+> **Design note.** Firefly deliberately keeps this path DI-free: the config
+> structs are ordinary `serde` types and the auto-configure calls are ordinary
+> `async fn`s you `await` at boot. You can adopt the full
+> `#[derive(ConfigProperties)]` container later without rewriting any of it —
+> the same bound values flow either way.
 
 ## Profile expressions
 
-`accepts_profiles(&active, &exprs)` evaluates the Spring Boot 2.4+
-profile-expression grammar against an active-profile list — useful for gating a
-bean that should exist only in some environments:
+`accepts_profiles(&active, &exprs)` evaluates a profile-expression grammar — AND
+(`&`), OR (`|`), negation (`!`), and grouping with parentheses — against an
+active-profile list, useful for gating a bean that should exist only in some
+environments:
 
 ```rust,ignore
 use firefly_config::{accepts_profiles, active_profiles};
@@ -255,8 +381,8 @@ trait the actuator refresh endpoint depends on.
 ## Property-source introspection and masking
 
 `Layered::property_sources()` returns ordered, origin-attributed
-`PropertySourceView`s (highest precedence first, Spring `/actuator/env` style),
-with secrets masked: keys naming secrets (`password`, `secret`, `token`,
+`PropertySourceView`s (highest precedence first) — the data Firefly's
+`/actuator/env` view renders, with secrets masked: keys naming secrets (`password`, `secret`, `token`,
 `credential`, `*key`) mask as `******`, and URI userinfo passwords are redacted
 (`postgresql://user:******@host`). The `mask` module exposes `mask_value`,
 `is_sensitive_key`, and `sanitize_uri` directly. This matters for Lumen the
@@ -265,8 +391,8 @@ should ever appear in plaintext on `/actuator/env`.
 
 ## In-process application events
 
-`ApplicationEventBus` is a **synchronous, in-process, `TypeId`-dispatched,
-`@order`-sorted** pub/sub — Spring's `ApplicationEventPublisher` model. This is
+`ApplicationEventBus` is an **in-process, `TypeId`-dispatched, order-sorted,
+synchronous** pub/sub for lifecycle and local notification events. This is
 distinct from the asynchronous `firefly-eda` broker Lumen uses for domain events
 (no transport, no topics; listeners run on the publishing thread):
 
@@ -288,8 +414,9 @@ Lifecycle events ship: `ContextRefreshedEvent`, `ApplicationReadyEvent`,
 
 ## Pulling config from a config server
 
-`ConfigClient` fetches a Spring-Cloud-Config document and flattens it into a
-`StaticSource` you slot into your chain above the defaults:
+`ConfigClient` fetches a remote configuration document (compatible with the
+Spring Cloud Config server wire format) and flattens it into a `StaticSource`
+you slot into your chain above the defaults:
 
 ```rust,ignore
 use firefly_config::ConfigClient;

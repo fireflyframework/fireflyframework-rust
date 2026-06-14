@@ -1,47 +1,43 @@
 # Architecture
 
-The Rust port of Firefly Framework mirrors the layering enforced by the
-Java reactor, the .NET solution, and the Go workspace: four tiers,
-left-to-right dependency direction, each tier strictly above the one to
-its right.
+Firefly Framework is organized into four tiers with a strict
+left-to-right dependency direction: each tier sits strictly above the
+one to its right.
 
-> **Spring / Go parity.** The Rust port matches the conceptual surface
-> of the Spring Boot stack — and module-for-module the Go port, which
-> is the canonical compiled-language reference — where it makes sense
-> in idiomatic Rust: typed configuration binding (`firefly-config`),
-> application orchestration (`firefly-lifecycle`), management endpoints
+> **Design note.** Firefly is a batteries-included framework: it ships
+> typed configuration binding (`firefly-config`), application
+> orchestration (`firefly-lifecycle`), management endpoints
 > (`firefly-actuator`), task scheduling (`firefly-scheduling`),
 > resilience patterns (`firefly-resilience`), HTTP-layer authn/authz
 > (`firefly-security`), SQL migrations (`firefly-migrations`), OpenAPI
 > generation (`firefly-openapi`), internationalization
-> (`firefly-i18n`), Server-Sent Events (`firefly-sse`), transactional
-> helpers (`firefly-transactional`), and a shared testing toolkit
-> (`firefly-testkit`). Rust's lack of a JVM container means we express
-> dependency injection as explicit construction (`Arc<dyn Trait>`
-> handles passed to constructors) and `tower` middleware composition
-> rather than a runtime bean factory — but the public contract on the
-> wire is identical to Java, .NET, Go, and Python.
+> (`firefly-i18n`), Server-Sent Events (`firefly-sse`), declarative
+> transactions (`firefly-transactional`), and a shared testing toolkit
+> (`firefly-testkit`) as first-class features. Dependency injection is
+> expressed as explicit construction (`Arc<dyn Trait>` handles passed to
+> constructors) and `tower` middleware composition rather than a runtime
+> bean factory — the type system, not a reflective container, wires the
+> graph.
 
-> **Parity philosophy: byte-stable core + additive PyFly layer.** The
-> Go-parity core (foundational, platform, starter tiers) is the
-> framework's wire contract, and it is kept **byte-stable** — every JSON
-> shape, header name, and signature stays identical across the sibling
-> ports. On top of that, the Rust port carries a **PyFly-parity layer**
-> that is *purely additive*: new crates (`firefly-container`,
-> `firefly-aop`, `firefly-session`, `firefly-shell`, `firefly-websocket`,
-> `firefly-cli`, `firefly-admin`), the ergonomic front door (`firefly`
-> facade + `firefly-macros`), the real infrastructure adapters
+> **Design note: stable core + additive capability crates.** Firefly's
+> core (foundational, platform, starter tiers) defines the **wire
+> contract** — stable JSON shapes, header names, and signatures that
+> services and clients can rely on across releases. Around that core sit
+> *additive* capability crates: `firefly-container`, `firefly-aop`,
+> `firefly-session`, `firefly-shell`, `firefly-websocket`,
+> `firefly-cli`, `firefly-admin`; the ergonomic front door (`firefly`
+> facade + `firefly-macros`); the real infrastructure adapters
 > (`firefly-data-sqlx`, `firefly-data-mongodb`, `firefly-cache-redis`,
 > `firefly-eda-{kafka,rabbitmq,postgres,redis}`, `firefly-notifications-smtp`,
-> `firefly-session-{redis,postgres}`), and extensions to existing crates
+> `firefly-session-{redis,postgres}`); and extensions to existing crates
 > (`firefly-web`, `firefly-security`, `firefly-observability`,
 > `firefly-actuator`, `firefly-config`, `firefly-orchestration`,
 > `firefly-eda`). None of these change an established wire format; each
-> existing crate's README has a "pyfly parity" section delimiting the
-> additive surface from the Go-parity surface. Where pyfly relies on
-> Python runtime reflection (decorators, autowiring, monkey-patching),
-> the Rust port substitutes an explicit, type-safe equivalent
-> (builders, factory closures, call-site weaving) documented per crate.
+> crate's README carries an additive-capabilities section delimiting that
+> surface from the stable core. Where other ecosystems lean on runtime
+> reflection (autowiring, live method rewriting), Firefly substitutes an
+> explicit, type-safe equivalent — builders, factory closures, call-site
+> weaving — documented per crate.
 
 ```
 FOUNDATIONAL → PLATFORM → ADAPTERS → STARTERS
@@ -55,18 +51,20 @@ that bypasses the layering.
 
 ## Workspace of crates
 
-The Rust port is a single Cargo workspace of **76 members**: **72
-crates** under `crates/` (named `firefly-<dir>`, hyphenation following
-the Java repo names), plus `tests/integration`, `samples/orders`,
-`samples/reactive-banking`, and `samples/macro-quickstart`. The Go-parity
-core matches the Go port's module set one-for-one; the remaining crates
-are the reactive core (`firefly-reactive`), the ergonomic front door (the
-`firefly` facade + `firefly-macros`), and the PyFly-parity layer (DI / AOP /
-sessions / shell / websockets / CLI / admin and the real infrastructure
-adapters — including the hexagonal database adapters `firefly-data-sqlx` /
-`firefly-data-mongodb` and the distributed session registries
-`firefly-session-redis` / `firefly-session-postgres`). One version
-(`26.6.3`), one edition (2021), one MSRV (1.85) — set once in
+Firefly is a single Cargo workspace of **78 members**: **73
+crates** under `crates/` (named `firefly-<dir>`), plus `tests/integration`
+and the four samples — `samples/lumen` (the canonical end-to-end service the
+book builds), `samples/orders`, `samples/reactive-banking`, and
+`samples/macro-quickstart`.
+The crates divide into the core (foundational / platform / starter tiers),
+the reactive core (`firefly-reactive`), the ergonomic front door (the
+`firefly` facade + `firefly-macros`), and the capability/adapter crates
+(DI / AOP / sessions / shell / websockets / CLI / admin and the real
+infrastructure adapters — including the hexagonal database adapters
+`firefly-data-sqlx` / `firefly-data-mongodb` and the distributed session
+registries `firefly-session-redis` / `firefly-session-postgres` /
+`firefly-session-mongodb`). One
+version (`26.6.4`), one edition (2021), one MSRV (1.85) — set once in
 `[workspace.package]` and inherited by every member.
 
 The runtime stack is deliberate and small:
@@ -81,7 +79,7 @@ The runtime stack is deliberate and small:
 | Async ports    | `async-trait` (object-safe `dyn` traits)          |
 | Crypto / TLS   | RustCrypto (`sha2`, `hmac`, `aes-gcm`), `bcrypt`, `jsonwebtoken`, `rustls` |
 | Logging        | `tracing` / `tracing-subscriber` (JSON)           |
-| SQL (dev/test) | `rusqlite` (bundled) — the role Go gave `modernc.org/sqlite` |
+| SQL (dev/test) | `rusqlite` (bundled) — the embedded SQLite engine used by dev/test migrations and the transactional/migrations test suites |
 | Declarative macros | `syn`, `quote`, `proc-macro2`, `darling` (in `firefly-macros`) |
 | CLI / templates| `clap`, `minijinja`, `include_dir`                |
 | Infra adapters (optional) | `sqlx` (pg/mysql/sqlite), `mongodb`, `redis`, `rdkafka`, `lapin`, `tokio-postgres`, `lettre` — pulled in only by the adapter crate that uses them |
@@ -92,7 +90,7 @@ Primitives every service uses, no transitive infrastructure dependencies.
 
 | Crate                | Purpose                                                                               |
 |----------------------|----------------------------------------------------------------------------------------|
-| `firefly-reactive`   | The `Mono<T>` / `Flux<T>` reactive core — the Project Reactor / WebFlux analog: lazy `FireflyError`-typed publishers, `Scheduler`, `FluxSink`, `Backoff`, the full operator surface. Every reactive surface above is built on it |
+| `firefly-reactive`   | The `Mono<T>` / `Flux<T>` reactive core: lazy `FireflyError`-typed publishers, `Scheduler`, `FluxSink`, `Backoff`, the full operator surface. Every reactive surface above is built on it |
 | `firefly-kernel`     | RFC 7807 `ProblemDetail`, `FireflyResult<T>`, `Clock`, `FireflyError` hierarchy, task-local correlation |
 | `firefly-utils`      | Try helpers, retry with exponential backoff + jitter, slug, AES-256-GCM crypto, template rendering |
 | `firefly-validators` | IBAN (mod-97), BIC, Luhn, credit card, E.164 phone, currency (ISO 4217), email, password strength, sort code, VAT, Spanish DNI/NIE/NIF |
@@ -125,11 +123,11 @@ The infrastructure layer.
 | `firefly-openapi`      | OAS 3.1 spec generator from route descriptors, Swagger-UI shim                |
 | `firefly-sse`          | Server-Sent Events writer with heartbeat + Last-Event-Id resumption           |
 | `firefly-websocket`    | WebSocket server over axum: `WsSession`, `WebSocketHandler`, `ws_route`, topic `BroadcastHub` |
-| `firefly-transactional`| `with_tx` over pluggable `Database` / `Transaction` / `Executor` ports, nested-tx participation |
+| `firefly-transactional`| Async, declarative transactions: the object-safe `TransactionManager` port + `Propagation`/`Isolation`/`TxOptions` + the `transactional(...)` orchestrator (commit on `Ok`, rollback on `Err`); `with_tx` over pluggable `Database` / `Transaction` / `Executor` ports, nested-tx participation |
 | `firefly-testkit`      | HMAC signers (Stripe / GitHub / HMAC / Twilio), `SpyBroker`, JSON test helpers |
 | `firefly-container`    | Opt-in `TypeId`-keyed DI container (service locator): factory closures, scopes, trait-object bindings, providers |
 | `firefly-aop`          | Aspect-oriented advice: `Pointcut` matcher, `JoinPoint`, `Aspect`, `intercept` chain with explicit call-site weaving |
-| `firefly-shell`        | Spring-Shell-style CLI framework: `CommandSpec`, `StdShell` parser + REPL, `CommandLineRunner` / `ApplicationRunner` |
+| `firefly-shell`        | Interactive CLI framework: `CommandSpec`, `StdShell` parser + REPL, `CommandLineRunner` / `ApplicationRunner` |
 
 ## Adapter tier
 
@@ -141,9 +139,9 @@ traits, injected as `Arc<dyn Trait>` at wiring time.
 | Parent / port            | Default impl in crate                                | Provider adapters                                        |
 |--------------------------|------------------------------------------------------|---------------------------------------------------------|
 | `firefly-data`           | in-memory `Repository` / `ReactiveMemoryRepository` + real `PostgresReactiveRepository` | **real:** `data-sqlx` (Postgres / MySQL / SQLite over `sqlx`), `data-mongodb` (MongoDB) — same ports |
-| `firefly-session`        | `MemorySessionRegistry` (in-process)                 | **real:** `session-redis` (`RedisSessionRegistry`), `session-postgres` (`PostgresSessionRegistry`) — distributed |
+| `firefly-session`        | `MemorySessionRegistry` (in-process)                 | **real:** `session-redis` (`RedisSessionRegistry`), `session-postgres` (`PostgresSessionRegistry`), `session-mongodb` (`MongoSessionRegistry`) — distributed |
 | `firefly-client`         | REST builder (reqwest, retry, problem decode) + reactive `WebClient` (`body_to_mono`/`body_to_flux`) | SOAP, gRPC, WebSocket scaffolds                          |
-| `firefly-config-server`  | Spring-Cloud-Config-compatible handler + memory store| —                                                       |
+| `firefly-config-server`  | Centralized config-server handler (HTTP) + memory store| —                                                       |
 | `firefly-idp`            | `firefly-idp-internal-db` (bcrypt + HS256 JWT)       | **real:** `idp-keycloak`, `idp-azure-ad`, `idp-aws-cognito` |
 | `firefly-ecm`            | local-fs `ContentStore` + in-memory document service | **real:** `ecm-storage-aws` (S3), `ecm-storage-azure` (Blob), `ecm-esignature-docusign`, `ecm-esignature-adobe-sign`, `ecm-esignature-logalty` |
 | `firefly-notifications`  | Memory channel + dispatcher                          | **real (all):** `notifications-smtp`, `-sendgrid`, `-resend`, `-twilio`, `-firebase` |
@@ -172,9 +170,9 @@ wiring time. The `firefly-eda` `new_kafka_broker` / `new_rabbitmq_broker`
 factories return typed `EdaError::{KafkaUnavailable, RabbitMqUnavailable}`
 sentinels when no transport crate is linked, so a misconfigured
 deployment fails loud rather than silently using in-memory. The
-`Event` JSON envelope is byte-identical across every transport (and
-across the sibling ports), so producers and consumers interoperate
-regardless of broker. The same pattern backs `firefly-cache` →
+`Event` JSON envelope is byte-identical across every transport, so
+producers and consumers interoperate regardless of broker. The same
+pattern backs `firefly-cache` →
 `firefly-cache-redis` and the `firefly-notifications` `Channel` →
 `firefly-notifications-smtp`. Because each adapter is a leaf crate, its
 heavy SDK dependency stays out of services that don't select it.
@@ -187,8 +185,13 @@ and implies no SQL engine. It defines:
 
 - the storage-agnostic query model: the `Filter` DSL and the composable
   `Specification` (`Pred` / `And` / `Or` / `Not`);
-- the repository traits: `Repository<T, K>`, `ReactiveCrudRepository<T, ID>`,
-  and `ReactiveSpecificationRepository`;
+- the repository traits, laid out as a layered hierarchy:
+  the awaited `Repository<T, K>`, and the reactive tier —
+  `ReactiveCrudRepository<T, ID>` (find/save/delete returning `Mono`/`Flux`),
+  `ReactiveSpecificationRepository<T>` (spec + page streaming), and
+  `ReactiveSortingRepository<T, ID>` (`find_all(Sort)` / `find_all(Pageable)`)
+  — the last of which is a **blanket impl** over any store that is both Crud
+  and Specification, so every adapter gains sorting/paging for free;
 - the lowering surface: a `SqlDialect` trait with three shipped impls
   (`PostgresDialect` / `MySqlDialect` / `SqliteDialect`) that render the *same*
   query tree per backend (`Filter::to_sql_with` / `Specification::to_sql_with`,
@@ -224,15 +227,50 @@ out of services that don't select it.
 
 The `firefly-session` `SessionRegistry` port follows the same shape: the
 in-process `MemorySessionRegistry` is the default, and `firefly-session-redis`
-/ `firefly-session-postgres` are distributed adapters that make the
-per-principal concurrency cap hold cluster-wide.
+/ `firefly-session-postgres` / `firefly-session-mongodb` are distributed
+adapters that make the per-principal concurrency cap hold cluster-wide.
+
+### The declarative transaction layer
+
+Transactions follow the same port/adapter split. `firefly-transactional` is
+**driver-agnostic**: it owns the policy types (`Propagation`, `Isolation`,
+`TxOptions`) and the object-safe `TransactionManager` port. Its single
+`async fn execute` establishes the ambient transaction context (a task-local
+transaction stack), applies the requested propagation/isolation, runs the
+operation, and **commits on `Ok` / rolls back on `Err`**. A concrete adapter
+implements that port once — the
+relational adapter is `firefly-data-sqlx`'s `SqlxTransactionManager`, wired over
+the same `Db` pool the repositories use — and is registered process-wide with
+`register_transaction_manager(...)` at startup (typically by a data starter or
+auto-configuration). The same abstraction backs relational, document, and
+saga-step boundaries; "build the boundary once" is enforced by the one port.
+
+```
+                firefly_transactional::TransactionManager  (port)
+                            ▲
+        ┌───────────────────┴──────────────────┐
+   SqlxTransactionManager              (other adapters: Mongo session, …)
+   (in firefly-data-sqlx, over Db)
+```
+
+The programmatic entry point is `firefly_transactional::transactional(opts, f)`
+(and its `*_with` / `*_on` variants for explicit rollback rules and explicit
+managers). The `#[transactional]` attribute macro is the declarative front: it
+wraps an `async fn`'s body in that call under
+the attribute's `propagation`/`isolation`/`read_only`/`timeout`, so a method
+body of `repo.save(a).await?; repo.save(b).await?;` is atomic with no explicit
+boundary code. If no manager is registered (e.g. a unit test with no
+datasource), `transactional` degrades gracefully to a plain call, so the same
+code runs in and out of an infrastructure context. Propagation/isolation are
+*wired at the adapter*: the manager translates the policy to the backend's
+`BEGIN` / `SAVEPOINT` / `SET TRANSACTION ISOLATION LEVEL` semantics, keeping the
+call sites portable across databases.
 
 ## Operations: the admin dashboard
 
-`firefly-admin` is the Spring-Boot-Admin-style embedded dashboard — the
-Rust rendering of pyfly's `admin` package. Architecturally it is a thin
-**read-mostly aggregation layer** over the management primitives already
-in the framework, plus a static single-page app:
+`firefly-admin` is an embedded operations dashboard. Architecturally it
+is a thin **read-mostly aggregation layer** over the management
+primitives already in the framework, plus a static single-page app:
 
 - **No new data plane.** The dashboard's JSON API reads from
   `firefly-actuator` (health composites, the `MetricRegistry`, loggers,
@@ -268,17 +306,26 @@ One-call composition.
 | `firefly-starter-domain`     | starter-core + in-memory event-sourcing stores                     |
 | `firefly-starter-data`       | starter-core (consumer supplies its own DB)                        |
 | `firefly-starter-web`        | `WebStack` — `Core` + CORS + security headers + request metrics + access log (web batteries on by default), optional `FilterChain` security |
+| `firefly-starter-experience` | `ExperienceStack` — `WebStack` plus the Backend-for-Frontend (BFF) building blocks: a `DomainClients` registry of named `RestClient`s, `@WaitForSignal`-style `SignalService` gates, Redis-capable `WorkflowState`, the `WorkflowQueryService` journey-status surface, and `ChildWorkflowService` |
 | `firefly-backoffice`         | starter-application + back-office context middleware               |
+
+Beyond the crate-graph tiers above, services themselves are layered into
+**three service tiers** with a strict `channel → experience → domain → core`
+dependency direction: a **core** service owns the database; a **domain**
+service owns sagas, CQRS, event sourcing, and third-party adapters over core
+SDKs; and an **experience (BFF)** service composes several domain SDKs into
+journey-specific, atomic REST endpoints, owning no database of its own.
+`firefly-starter-experience` is the starter for that experience tier;
+`firefly-starter-core` / `-data` and `firefly-starter-domain` back the others.
 
 Each starter ships an embedded banner printed at startup (via
 `Core::print_banner`) naming the active starter, the application name
-and the resolved Rust runtime — mirroring the Spring Boot
-`banner-on-start` behavior and the Go port's `observability.PrintBanner`.
+and the resolved Rust runtime.
 
 ## The front door: facade + declarative macros
 
 On top of the tiers above sits the **ergonomics layer** — the
-Spring-Boot-starter developer experience. It is two crates that add no
+one-dependency developer experience. It is two crates that add no
 runtime types of their own; they make the existing crates pleasant to consume.
 
 **`firefly` — the one-dependency facade.** Rather than list ten-to-fifteen
@@ -316,22 +363,45 @@ describe:
 | `#[rest_controller]` + `#[get/post/put/delete/patch]` | an `impl` block | a `routes(state) -> axum::Router` |
 | `#[derive(DomainEvent)]` / `#[derive(AggregateRoot)]` | a struct | event-type / aggregate ergonomics |
 | `#[event_listener]` | `async fn(Event) -> FireflyResult<()>` | a `subscribe_<fn>(broker)` helper |
+| `#[transactional]` | an `async fn -> Result<T, E>` (`E: From<TxError>`) | a body wrapped in `firefly_transactional::transactional` under the requested `propagation`/`isolation`/`read_only`/`timeout` |
+| `#[derive(Builder)]` | a struct | a fluent `T::builder()…build()` |
+| `#[derive(Mapper)]` | a struct with `#[firefly(from = "Source")]` | compile-time `From<Source>` conversions |
+| `#[repository]` | an `impl` block of `find_by_…`/`count_by_…`/`exists_by_…`/`delete_by_…` stubs | derived-query method bodies over `firefly-data`'s query engine |
 
 Because generated code addresses runtime types through `::firefly::__rt::…`
 (overridable per macro with `#[firefly(crate = "…")]`), a service that depends
 only on `firefly` — plus the `axum`/`serde` it writes against anyway — compiles
-whatever a macro expands to. Rust has no package scanning or reflective
-autowiring, so DI registration is still explicit (`register_all!` lists the
+whatever a macro expands to. There is no package scanning or reflective
+autowiring, so DI registration is explicit (`register_all!` lists the
 components) and free-fn handlers publish their wiring state explicitly; the
 macros remove the *mechanical* boilerplate, not the explicitness. The
 `samples/macro-quickstart` service is the reference: the orders behaviour in
 376 source lines vs the builder-style `orders` sample's 1022.
 
+## The developer CLI (`firefly-cli`)
+
+`firefly-cli` ships the `firefly` binary — the project scaffolding and
+introspection tool. It is build-time/dev tooling, not a runtime tier crate, so
+it depends on `firefly-openapi` and `firefly-migrations` for the artifacts it
+emits but is never linked into a service. Its commands:
+
+- `firefly new <name>` scaffolds a project that compiles out of the box;
+  `firefly generate <kind> <name>` (alias `g`) emits code artifacts into the
+  current project (templates rendered with `minijinja`);
+- `firefly run` launches the app via Cargo, mapping `--profile` / `-D` /
+  `--env` / `--debug` onto `FIREFLY_*` environment variables;
+- `firefly build info|image` stamps `build-info.json` for `/actuator/info` or
+  builds an OCI image;
+- `firefly db init|migrate|upgrade|downgrade|status` drives SQLite migrations
+  through `firefly-migrations`; `firefly openapi` exports an OpenAPI document;
+- `firefly info` / `firefly doctor` report framework, environment, and project
+  health, with shell-completion generation alongside.
+
 ## Context propagation
 
-Go threads correlation ids, tenants and transactions through
-`context.Context`. Rust has no ambient context, so the port uses two
-explicit mechanisms:
+Rust has no ambient request context, so Firefly uses two explicit
+mechanisms to thread correlation ids, tenants and transactions through a
+call graph:
 
 - **Task-local scopes** for ambient request metadata:
   `firefly_kernel::with_correlation_id(id, fut)` scopes a correlation
@@ -341,62 +411,56 @@ explicit mechanisms:
 - **Explicit handle types** where the value is load-bearing:
   `firefly_transactional::TxContext` carries the active transaction,
   `firefly_orchestration::CancellationToken` carries cooperative
-  cancellation — the Rust shape of `ctx.Done()`.
+  cancellation through the orchestration engines.
 
 ## Dependency injection (`firefly-container`)
 
 The framework's default composition idiom is **explicit construction** —
 `Arc<dyn Trait>` handles threaded through constructors, the same shape
 the rest of this document describes. `firefly-container` is an
-**opt-in** addition for teams that prefer a service-locator surface
-(porting a pyfly/Spring service that leans on a DI container), never a
-requirement: nothing in the Go-parity core or the starters depends on
-it.
+**opt-in** service-locator surface for teams that prefer that style,
+never a requirement: nothing in the core or the starters depends on it.
 
 It is a `TypeId`-keyed registry behind `RwLock`s (so a `Container` is
-`Send + Sync` and shares as `Arc<Container>`). The half of pyfly's
-container that has a faithful Rust analog — the service locator — is
-ported directly: `register_factory::<T>(scope, f)`, `resolve::<T>()`,
+`Send + Sync` and shares as `Arc<Container>`). It provides
+`register_factory::<T>(scope, f)`, `resolve::<T>()`,
 `resolve_all::<T>()`, named beans, `Provider<T>` deferred handles,
 primary/order, and `Scope` (Singleton / Prototype / Request / Session /
-custom via the `ScopeHandler` SPI). The half that depends on Python
-runtime reflection is *adapted, not faked*:
+custom via the `ScopeHandler` SPI). Everything is explicit and
+type-safe:
 
-- **Reflective autowiring → explicit factory closures.** A
-  `register_factory` closure resolves its own dependencies by calling
-  `resolve` — Rust has no constructor type-hint introspection.
-- **Package scanning + stereotype decorators → dropped.** Registration
-  is explicit; there is no `importlib`-style auto-discovery.
+- **Autowiring is explicit.** A `register_factory` closure resolves its
+  own dependencies by calling `resolve` — there is no constructor
+  type-hint introspection.
+- **Registration is explicit.** There is no package scanning or
+  auto-discovery; components register themselves directly.
 - **Trait-object bindings** work because `TypeId::of::<dyn Trait>()` is a
   valid key: `bind::<dyn Trait, Impl>(coerce)` registers an impl under
   the trait's id with a caster, so `resolve::<dyn Trait>()` and
-  `resolve_all::<dyn Trait>()` behave as in pyfly.
+  `resolve_all::<dyn Trait>()` return the bound implementation.
 - **Circular dependencies** are caught by a thread-local resolution
-  stack (mirroring pyfly's `_resolving`).
+  stack.
 
 This is deliberately the *explicit* end of the DI spectrum: no runtime
 magic, every wiring visible in source.
 
 ## Aspect-oriented programming (`firefly-aop`)
 
-`firefly-aop` ports pyfly's `aop` package — Spring-style advice
+`firefly-aop` provides aspect-oriented advice
 (`before` / `around` / `after_returning` / `after_throwing` / `after`)
 over a `Pointcut` glob matcher on dot-segmented qualified names
 (`service.OrderService.create`). An `AspectRegistry` holds ordered
 `AdviceBinding`s; `intercept(&registry, type, method, args, invocation)`
 runs the advice chain around the captured original call.
 
-The key architectural decision is **explicit weaving at the call site**.
-pyfly's weaver monkey-patches live bean methods via `setattr`, driven by
-an `AspectBeanPostProcessor` over the DI container — none of which has a
-Rust analog (no runtime method mutation, no descriptor protocol, no bean
-container to post-process). Instead the call site wraps the original
-call in an `Invocation` and routes it through `intercept`. Non-matching
-methods cost nothing: if no binding matches the qualified name,
-`intercept` runs the invocation with zero advice overhead. Args and
-results are type-erased to `Arc<dyn Any + Send + Sync>` (advice
-downcasts when it needs the concrete type) — the Rust equivalent of
-pyfly's dynamic typing. For HTTP-edge and bus-dispatch cross-cutting
+The key design decision is **explicit weaving at the call site**. The
+call site wraps the original call in an `Invocation` and routes it
+through `intercept`, rather than rewriting live methods at runtime.
+Non-matching methods cost nothing: if no binding matches the qualified
+name, `intercept` runs the invocation with zero advice overhead. Args
+and results are type-erased to `Arc<dyn Any + Send + Sync>` and advice
+downcasts when it needs the concrete type. For HTTP-edge and
+bus-dispatch cross-cutting
 concerns, the framework still prefers `firefly-web`'s tower layers and
 `firefly-cqrs`'s `Middleware`; `firefly-aop` targets pattern-matched
 advice over arbitrary service methods.
@@ -405,49 +469,53 @@ advice over arbitrary service methods.
 
 `firefly-kernel` defines a `thiserror`-derived `FireflyError` with code,
 title, HTTP status, detail, structured fields, and an optional source
-chain — the Rust analog of Go's `FireflyError` + `errors.Is/As`
-traversal. Each crate layers its own `thiserror` enum on top
-(`CqrsError`, `EdaError`, `CallbackError`, …) with `Display` strings
-kept bytes-equal to the Go sentinels where wire or log parity matters.
+chain traversable with `std::error::Error::source`. Each crate layers
+its own `thiserror` enum on top (`CqrsError`, `EdaError`,
+`CallbackError`, …) with `Display` strings kept stable across releases
+where wire or log consumers depend on them.
 `firefly_kernel::as_problem` renders any `std::error::Error` as an RFC
 7807 `ProblemDetail`; `firefly-web`'s `WebResult<T>` lets handlers `?`
 their way to a correct `application/problem+json` response.
 
-## Reactive ↔ Rust translation
+## The reactive core and plain async
 
-The Java framework is built on Project Reactor (`Mono`, `Flux`); the
-.NET port uses `Task`/`IAsyncEnumerable`; the Go port uses
-`(T, error)` + channels. The Rust port ships a **first-class reactive
-core** — `firefly-reactive`'s `Mono<T>` / `Flux<T>` — that is the
-faithful Reactor analog, *and* it interoperates with plain async Rust,
-so authors pick the level that fits.
+Firefly ships a **first-class reactive core** — `firefly-reactive`'s
+`Mono<T>` / `Flux<T>` — *and* it interoperates with plain async Rust, so
+authors pick the level that fits. The reactive types will feel familiar
+if you have used a reactive-streams library: lazy, composable publishers
+with a full operator surface and backpressure-aware streaming.
 
-The **reactive translation** (first-class types):
+> **Design note.** The reactive core is not a requirement. Most internal
+> code can be written in ordinary `async`/`await`, and the reactive types
+> convert to and from raw `Stream` / `Future` at the edges, so the two
+> styles compose freely within a single service.
 
-| Java (Reactor)               | firefly-reactive                                              |
+The **reactive surface** (`firefly-reactive`'s first-class types):
+
+| Reactive operation           | firefly-reactive                                              |
 |------------------------------|---------------------------------------------------------------|
-| `Mono<T>`                    | `Mono<T>` (lazy, `FireflyError`-typed)                        |
-| `Flux<T>`                    | `Flux<T>` (lazy, terminal error)                             |
-| `Mono.empty()` / `onComplete`| `Ok(None)` from a `Mono`                                      |
-| `Mono.error(...)`            | `Mono::error(FireflyError::...)` / a terminal `Err`           |
-| `Mono.block()`               | `Mono::block` — `async`, never parks a Tokio worker          |
-| `Schedulers.{immediate,parallel,boundedElastic}` | `Scheduler::{Immediate,Parallel,BoundedElastic}` |
-| `Retry.backoff(..)`          | `Backoff` + `*::retry_backoff`                               |
-| `Mono.timeout(...)`          | `Mono::timeout` / `Flux::timeout` (→ 504 `FireflyError`)      |
-| `Flux.onBackpressureBuffer`  | `Flux::on_backpressure_buffer` (bounded channels underneath)  |
-| `FluxSink` / `Flux.create`   | `FluxSink` / `Flux::create`                                   |
-| `Mono.toFuture()` / `Flux.toStream()` | `Mono::into_future` / `Flux::into_stream` (escape hatches) |
+| single deferred value        | `Mono<T>` (lazy, `FireflyError`-typed)                        |
+| stream of values             | `Flux<T>` (lazy, terminal error)                             |
+| empty / completion           | `Ok(None)` from a `Mono`                                      |
+| error signal                 | `Mono::error(FireflyError::...)` / a terminal `Err`           |
+| block for a value            | `Mono::block` — `async`, never parks a Tokio worker          |
+| schedulers                   | `Scheduler::{Immediate,Parallel,BoundedElastic}`             |
+| retry with backoff           | `Backoff` + `*::retry_backoff`                               |
+| timeout                      | `Mono::timeout` / `Flux::timeout` (→ 504 `FireflyError`)      |
+| bounded backpressure buffer  | `Flux::on_backpressure_buffer` (bounded channels underneath)  |
+| programmatic emission        | `FluxSink` / `Flux::create`                                   |
+| convert to future / stream   | `Mono::into_future` / `Flux::into_stream` (escape hatches)   |
 
-The **plain-async translation** still applies wherever a service prefers
-ordinary `async`/`await` over the reactive types (most internal code):
+When a service prefers ordinary `async`/`await` over the reactive types,
+the **plain-async equivalents** apply (most internal code):
 
-| Java (Reactor)               | Rust idiom                                                     |
+| Concept                      | Plain-async Rust idiom                                         |
 |------------------------------|----------------------------------------------------------------|
-| `Mono<T>`                    | `async fn(..) -> FireflyResult<T>`                             |
-| `Flux<T>`                    | `impl Stream<Item = T>` (`futures` / `tokio-stream`)           |
-| `Mono.deferContextual(...)`  | Task-local read (`correlation_id()`) or explicit handle        |
-| Subscribers                  | Spawned tasks (`tokio::spawn`)                                 |
-| Cancellation                 | Future drop + `CancellationToken` for cooperative engines      |
+| single deferred value        | `async fn(..) -> FireflyResult<T>`                             |
+| stream of values             | `impl Stream<Item = T>` (`futures` / `tokio-stream`)           |
+| ambient context read         | Task-local read (`correlation_id()`) or explicit handle        |
+| subscribers                  | Spawned tasks (`tokio::spawn`)                                 |
+| cancellation                 | Future drop + `CancellationToken` for cooperative engines      |
 
 The reactive types convert to and from raw `Stream` / `Future` at the
 edges (`Flux::from_stream` / `Mono::from_future` in, `into_stream` /
@@ -464,7 +532,7 @@ Wave 1 ── zero internal deps:
   eventsourcing, orchestration, rule-engine, plugins, lifecycle,
   actuator, scheduling, resilience, security, migrations, openapi,
   sse, transactional, testkit, config-server, idp, ecm, notifications,
-  container, aop, shell, macros                 (PyFly: stand-alone)
+  container, aop, shell, macros                 (stand-alone)
         │
 Wave 2 ── kernel-dependent:
   web, observability, eda, client, session, websocket
@@ -480,22 +548,23 @@ Wave 3 ── adapters + aggregate:
   eda-kafka, eda-rabbitmq,
   eda-postgres, eda-redis        (→ eda)
   data-sqlx, data-mongodb        (→ data + reactive)
-  session-redis, session-postgres (→ session)
+  session-redis, session-postgres, session-mongodb (→ session)
   cli                            (→ openapi/templates)
   starter-core                   (→ wave-2 set)
         │
 Wave 4 ── composition + front door:
   starter-application, starter-domain, starter-data, starter-web,
+  starter-experience             (→ starter-web + client + orchestration),
   backoffice,
   admin                          (→ actuator + cqrs + orchestration + sse + security),
   firefly                        (facade → every runtime crate + macros + feature-gated adapters),
-  tests/integration, samples/orders, samples/reactive-banking,
+  tests/integration, samples/lumen, samples/orders,
+  samples/reactive-banking,
   samples/macro-quickstart       (→ firefly)
 ```
 
 ## Versioning
 
-Calendar-versioned, expressed as valid semver (`YY.M.PATCH`) — kept in
-lock-step with the Java, .NET, Go, and Python releases. The current
-version is exposed as `firefly_kernel::VERSION = "26.6.3"` and set once
-in the workspace `Cargo.toml`.
+Calendar-versioned, expressed as valid semver (`YY.M.PATCH`). The
+current version is exposed as `firefly_kernel::VERSION = "26.6.4"` and
+set once in the workspace `Cargo.toml`.

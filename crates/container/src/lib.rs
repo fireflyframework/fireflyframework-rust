@@ -109,7 +109,7 @@ pub use value::resolve_value;
 pub use inventory;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.3";
+pub const VERSION: &str = "26.6.4";
 
 /// Type-erased boxed `Arc<T>` — a sized fat pointer wrapped in `Box<dyn Any>`
 /// so resolution can return `Arc<T>` for both sized and `?Sized` (trait-object)
@@ -1054,6 +1054,42 @@ impl Container {
     pub fn scan_with(&self, ctx: &ConditionContext) -> usize {
         self.set_condition_context(ctx.clone());
         let all: Vec<&'static ComponentRegistration> = scan::discovered().collect();
+        self.register_scanned(all)
+    }
+
+    /// Register only the components whose defining module path falls under one
+    /// of `base_packages` — the Rust analog of Spring's
+    /// `@ComponentScan(basePackages = …)`. A registration matches when its
+    /// `module_path` equals a base package or is a submodule of it. Conditions
+    /// and profiles are honoured exactly as in [`scan`](Container::scan).
+    ///
+    /// Returns the number of beans registered.
+    pub fn scan_packages(&self, base_packages: &[&str]) -> usize {
+        let ctx = self.condition_context();
+        self.scan_packages_with(&ctx, base_packages)
+    }
+
+    /// Like [`scan_packages`](Container::scan_packages) but against an explicit
+    /// [`ConditionContext`].
+    pub fn scan_packages_with(&self, ctx: &ConditionContext, base_packages: &[&str]) -> usize {
+        self.set_condition_context(ctx.clone());
+        let selected: Vec<&'static ComponentRegistration> = scan::discovered()
+            .filter(|r| in_base_packages(r.module_path, base_packages))
+            .collect();
+        self.register_scanned(selected)
+    }
+
+    /// The shared two-pass registration core behind [`scan`](Container::scan) /
+    /// [`scan_packages`](Container::scan_packages): filter by registry-
+    /// independent conditions, register the unconditional survivors in `order`,
+    /// then evaluate bean-dependent conditions against the now-populated
+    /// registry. This is exactly how pyfly registers then prunes — and it is
+    /// what makes `@ConditionalOnMissingBean` auto-configuration beans yield to
+    /// any user bean of the same type (the user bean, being unconditional,
+    /// registers in the first pass; the auto-config bean is deferred and only
+    /// fills the gap).
+    fn register_scanned(&self, all: Vec<&'static ComponentRegistration>) -> usize {
+        let ctx = self.condition_context();
 
         // Pass 1: keep only beans whose registry-independent conditions pass.
         let pass1: Vec<&'static ComponentRegistration> = all
@@ -1061,11 +1097,6 @@ impl Container {
             .filter(|r| ctx.pass1(&(r.conditions)()))
             .collect();
 
-        // Two-stage registration so pass-2 (bean-dependent) conditions see the
-        // beans registered by pass-1 survivors with no bean conditions, exactly
-        // like pyfly registers, then prunes. We register every pass-1 survivor
-        // ordered by `order`, but defer those carrying bean-dependent
-        // conditions until the unconditional ones are in place.
         let mut ordered = pass1;
         ordered.sort_by_key(|r| r.order);
 
@@ -1261,6 +1292,19 @@ fn downcast_arc<T: ?Sized + Send + Sync + 'static>(
 fn short_name(name: &str) -> &str {
     let no_generics = name.split('<').next().unwrap_or(name);
     no_generics.rsplit("::").next().unwrap_or(no_generics)
+}
+
+/// Whether a component's defining `module_path` falls under any of the given
+/// base packages — used by [`Container::scan_packages`]. A module matches a
+/// base package when it equals it exactly or is a descendant module (the base
+/// package followed by `::`). The empty base-package list matches nothing.
+fn in_base_packages(module_path: &str, base_packages: &[&str]) -> bool {
+    base_packages.iter().any(|pkg| {
+        module_path == *pkg
+            || module_path
+                .strip_prefix(pkg)
+                .is_some_and(|rest| rest.starts_with("::"))
+    })
 }
 
 /// Normalized similarity in `[0, 1]` between two strings, based on the length

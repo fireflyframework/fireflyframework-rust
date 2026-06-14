@@ -1,6 +1,79 @@
 # Changelog
 
-All notable changes to the Rust port of Firefly Framework.
+All notable changes to the Firefly Framework for Rust.
+
+## v26.6.4 — 2026-06-14
+
+The **standalone-framework milestone**. New first-class capabilities —
+config-driven auto-configuration, method security, richer declarative data
+queries, and a configurable JSON mapper — land alongside a full documentation
+pass that presents Firefly as the brand-new framework it is.
+
+### Added
+
+- **Method security** — `#[pre_authorize(...)]` (rules: `authenticated`,
+  `role`, `any_role`, `authority`, `any_authority`) and
+  `#[post_authorize(<expr over result/auth>)]`, backed by an ambient
+  `SecurityContextHolder` (`with_authentication_scope`, `current_authentication`,
+  `check_access`, `AccessRule`) that `BearerLayer` scopes automatically per
+  request — so the macros work on a service method that never sees the request.
+- **`@query` + `Pageable` on `#[repository]`** — `#[query("…")]` native SQL and
+  `#[query(jpql = "…", entity = "…")]` custom queries (list / count / exists /
+  modifying), plus a trailing `Pageable` argument for paged derived queries
+  (runtime `SqlxReactiveRepository::find_by_derived_paged`).
+- **`ObjectMapper`** (`firefly-web`) — a runtime JSON facade with a
+  `PropertyNaming` strategy, an `Inclusion` policy, and pretty-printing, plus
+  `MappingJsonConverter` to install the policy into content negotiation.
+- **Config-driven auto-configuration** (DI-free, awaited at startup):
+  `DataSourceProperties` + `Db::connect` / `Db::connect_with` /
+  `auto_configure` (builds the pool and registers a `SqlxTransactionManager`),
+  and `SecurityProperties` + `verifier_from_config` / `bearer_layer_from_config`.
+- **`firefly-session-mongodb`** — a MongoDB-backed `SessionRegistry`
+  (`MongoSessionRegistry`), joining the in-memory, cache-bridge, Postgres, and
+  Redis session backends.
+- **Application-config logging** — `log_config_from_properties` binds
+  `firefly.logging.*` (root + per-logger levels, format, service, and the
+  rolling file appender) straight from the main config, completing the
+  configure-logging-from-application.yaml story alongside runtime
+  `/actuator/loggers` control.
+
+### Changed
+
+- **Documentation presents Firefly as a standalone, brand-new framework.** The
+  book (26 chapters plus the preface and conventions), the `docs/` set, and 74
+  crate / sample / root READMEs are written in Firefly's own voice; the recurring
+  "Spring parity" / "Reactor parity" callouts are now a single **Design note**.
+- The default broker topology and the data-layer query metrics now live in the
+  Firefly namespace — RabbitMQ defaults `firefly` / `["firefly.events"]` /
+  `firefly-default`, and metrics `firefly_db_query_duration_seconds` /
+  `firefly_db_queries_total` / `firefly_db_query_errors_total`.
+- **Observability is auto-instrumented by default.** `Core` now installs the
+  Micrometer-style HTTP server-metrics middleware (`http_server_requests_seconds`
+  timer + `…_max` gauge) out of the box; opt out with
+  `CoreConfig::disable_request_metrics`. The actuator already ships the
+  Kubernetes liveness/readiness probes (`/actuator/health/{liveness,readiness}`),
+  a Prometheus scrape target (`/actuator/prometheus`), and configurable endpoint
+  exposure.
+
+### Fixed
+
+- **Repository reads can no longer deadlock a small connection pool.** Every
+  `firefly-data-sqlx` read (derived, `@query`, and projection paths) now
+  **buffers-and-releases** its pooled connection via the transaction-aware
+  `*_fetch_all` helpers instead of holding it across the result stream — so a
+  read never pins a connection across an `await` (the failure mode that wedged a
+  one-connection SQLite pool under load).
+- **Adapter connection hardening:** `cache-redis` stores a cloneable
+  `MultiplexedConnection` directly (no per-call mutex serialising every command,
+  and the `SCAN` loop no longer holds a lock); `eda-redis` / `session-redis`
+  publish/register without holding the connection across awaits; `eda-postgres`
+  / `eda-rabbitmq` claim start atomically (no auto-start connection leak) and the
+  Postgres `LISTEN` channel now reconnects; `eda-kafka` moves the blocking
+  `flush()` off the async executor.
+
+### Removed
+
+- The "Migrating from Spring Boot" appendix and the standalone migration guide.
 
 ## v26.6.3 — 2026-06-13
 
