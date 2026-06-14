@@ -704,12 +704,15 @@ async fn scalar_i64<T: Send + 'static>(
 
 impl AnyRow<'_> {
     /// Reads column 0 as an `i64`, used for `COUNT(*)` (`INT8` / `BIGINT`)
-    /// and the `EXISTS` `CASE` (`INT4` on Postgres, integer elsewhere).
+    /// and `EXISTS` shapes.
     ///
-    /// Because the integer SQL type differs across these statements and
-    /// backends, the decode tries `i64` first and falls back to `i32` (the
-    /// width Postgres gives a bare integer literal) so a single accessor
-    /// serves both `COUNT` and `EXISTS`.
+    /// Because the result type differs across these statements and backends,
+    /// the decode tries `i64` first, then `i32` (the width Postgres gives a
+    /// bare integer literal and the `EXISTS` `CASE`), then `bool` mapped to
+    /// `0`/`1` — the last covers a **custom** `SELECT EXISTS(…)` query, which
+    /// Postgres types as `BOOL` (MySQL/SQLite yield an integer). A single
+    /// accessor therefore serves `COUNT`, the framework's `CASE`-wrapped
+    /// derived `EXISTS`, and a user's bare `EXISTS` on every backend.
     fn try_get_index_i64(&self, index: usize) -> Result<i64, FireflyError> {
         match self {
             #[cfg(feature = "postgres")]
@@ -717,6 +720,7 @@ impl AnyRow<'_> {
                 use sqlx::Row;
                 r.try_get::<i64, _>(index)
                     .or_else(|_| r.try_get::<i32, _>(index).map(i64::from))
+                    .or_else(|_| r.try_get::<bool, _>(index).map(i64::from))
                     .map_err(map_sqlx_err)
             }
             #[cfg(feature = "mysql")]
@@ -724,6 +728,7 @@ impl AnyRow<'_> {
                 use sqlx::Row;
                 r.try_get::<i64, _>(index)
                     .or_else(|_| r.try_get::<i32, _>(index).map(i64::from))
+                    .or_else(|_| r.try_get::<bool, _>(index).map(i64::from))
                     .map_err(map_sqlx_err)
             }
             #[cfg(feature = "sqlite")]
@@ -731,6 +736,7 @@ impl AnyRow<'_> {
                 use sqlx::Row;
                 r.try_get::<i64, _>(index)
                     .or_else(|_| r.try_get::<i32, _>(index).map(i64::from))
+                    .or_else(|_| r.try_get::<bool, _>(index).map(i64::from))
                     .map_err(map_sqlx_err)
             }
             AnyRow::_Phantom(_) => Err(no_backend_err()),

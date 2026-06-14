@@ -1120,7 +1120,10 @@ mod tests {
             .step(step_with_rollback("c", true, &rolled));
 
         let failure = saga.run().await.expect_err("c fails → compensate");
-        assert!(failure.is_compensation_error() || true);
+        // c's *execute* failed and a/b compensated cleanly under best-effort,
+        // so the surfaced error is the execution failure, not a compensation
+        // error (mirrors the StopOnError contrast above).
+        assert!(!failure.is_compensation_error());
 
         let mut names = rolled.lock().unwrap().clone();
         names.sort();

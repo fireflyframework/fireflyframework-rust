@@ -231,23 +231,26 @@ impl ObjectMapper {
 }
 
 /// Splits an identifier into lowercase word tokens, recognising `_`, `-`,
-/// spaces, lower→upper camel-case boundaries, and **letter↔digit boundaries**
-/// (so `accountId`, `account_id`, and `account-id` all tokenise to
-/// `["account", "id"]`, and `line_2`, `line2`, and `oauth2Token` tokenise to
-/// `["line", "2"]` / `["oauth", "2", "token"]`).
+/// spaces, and lower→upper camel-case boundaries (so `accountId`,
+/// `account_id`, and `account-id` all tokenise to `["account", "id"]`).
 ///
-/// Treating a digit run as its own token is what makes the snake↔camel
-/// transform **reversible** for the common digit-suffixed field (`line_2`
-/// ⇄ `line2`): both sides tokenise to `["line", "2"]`. The one residual
-/// ambiguity is a field spelled `line2` *without* an underscore, which a
-/// round trip normalises to `line_2`; prefer the underscored form in structs
-/// that travel through a renaming [`ObjectMapper`].
+/// Digits join the run they sit in rather than forming their own token, so
+/// `oauth2Token` and `oauth2_token` both tokenise to `["oauth2", "token"]`.
+/// This is what keeps the snake↔camel transform **reversible** for the
+/// idiomatic digit-suffixed field — `oauth2_token` ⇄ `oauth2Token`,
+/// `sha256_hash` ⇄ `sha256Hash`, `base64` ⇄ `base64` — matching how `serde`
+/// and Jackson rename these. The one residual ambiguity is a *bare* digit
+/// after an underscore (`line_2`), which camelCase renders identically to a
+/// glued `line2`; a round trip therefore normalises it to `line2`. Prefer the
+/// glued spelling (`line2`, `oauth2`) in structs that travel through a
+/// renaming [`ObjectMapper`].
 fn split_words(s: &str) -> Vec<String> {
     #[derive(PartialEq, Clone, Copy)]
     enum Class {
+        // Digits join the lowercase run, so `oauth2`, `sha256`, and `base64`
+        // stay intact and a new word starts only at an uppercase hump.
         Lower,
         Upper,
-        Digit,
         None,
     }
     let mut words = Vec::new();
@@ -261,23 +264,14 @@ fn split_words(s: &str) -> Vec<String> {
             prev = Class::None;
             continue;
         }
-        let class = if ch.is_ascii_digit() {
-            Class::Digit
-        } else if ch.is_uppercase() {
+        let class = if ch.is_uppercase() {
             Class::Upper
         } else {
             Class::Lower
         };
-        // Start a new word at a camel-case hump (aB) or any letter↔digit edge.
-        let boundary = matches!(
-            (prev, class),
-            (Class::Lower, Class::Upper)
-                | (Class::Lower, Class::Digit)
-                | (Class::Upper, Class::Digit)
-                | (Class::Digit, Class::Lower)
-                | (Class::Digit, Class::Upper)
-        );
-        if boundary && !current.is_empty() {
+        // Start a new word only at a camel-case hump: a lowercase/digit run
+        // followed by an uppercase letter (`oauth2Token` → `oauth2` + `token`).
+        if prev == Class::Lower && class == Class::Upper && !current.is_empty() {
             words.push(std::mem::take(&mut current));
         }
         current.push(ch.to_ascii_lowercase());
@@ -435,26 +429,30 @@ mod tests {
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     struct WithDigits {
-        line_2: String,
         oauth2_token: String,
+        sha256_hash: String,
     }
 
     #[test]
     fn digit_suffixed_fields_round_trip_reversibly() {
-        // Letter↔digit boundaries tokenise so the transform is reversible —
+        // Digits glue to the run they sit in, so the transform is reversible —
         // the server can deserialize its own renamed output (the bug this
         // guards against was a 400 on a round-tripped digit-suffixed field).
+        assert_eq!(split_words("oauth2_token"), vec!["oauth2", "token"]);
+        assert_eq!(split_words("oauth2Token"), vec!["oauth2", "token"]);
+        assert_eq!(split_words("sha256_hash"), vec!["sha256", "hash"]);
+        // A bare digit after an underscore is the documented one-way case:
+        // `line_2` renders to `line2` (indistinguishable from a glued spelling).
         assert_eq!(split_words("line_2"), vec!["line", "2"]);
-        assert_eq!(split_words("line2"), vec!["line", "2"]);
-        assert_eq!(split_words("oauth2Token"), vec!["oauth", "2", "token"]);
+        assert_eq!(split_words("line2"), vec!["line2"]);
 
         let mapper = ObjectMapper::new().naming(PropertyNaming::CamelCase);
         let value = WithDigits {
-            line_2: "a".into(),
-            oauth2_token: "b".into(),
+            oauth2_token: "a".into(),
+            sha256_hash: "b".into(),
         };
         let json = mapper.to_string(&value).unwrap();
-        assert_eq!(json, r#"{"line2":"a","oauth2Token":"b"}"#);
+        assert_eq!(json, r#"{"oauth2Token":"a","sha256Hash":"b"}"#);
         // The renamed output deserializes back into the snake_case struct.
         let back: WithDigits = mapper.from_str(&json).unwrap();
         assert_eq!(back, value);
