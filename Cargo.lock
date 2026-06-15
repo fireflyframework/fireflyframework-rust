@@ -2596,6 +2596,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "firefly-spike-linkspike-core"
+version = "26.6.7"
+dependencies = [
+ "axum",
+ "firefly",
+]
+
+[[package]]
+name = "firefly-spike-linkspike-web"
+version = "26.6.7"
+dependencies = [
+ "axum",
+ "firefly",
+ "firefly-spike-linkspike-core",
+ "http-body-util",
+ "tokio",
+ "tower 0.5.3",
+]
+
+[[package]]
 name = "firefly-sse"
 version = "26.6.7"
 dependencies = [

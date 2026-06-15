@@ -1,0 +1,13 @@
+[package]
+name = "firefly-spike-linkspike-core"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+name = "linkspike_core"
+path = "src/lib.rs"
+
+[dependencies]
+firefly = { workspace = true }
+axum = { workspace = true }
