@@ -314,16 +314,16 @@ pub mod prelude {
     };
 
     // ---- Transactional / in-process events ------------------------------
+    /// The bridge from in-process events to the EDA broker: register the
+    /// process broker, forward an in-process event type to it after commit
+    /// (Spring-Modulith-style externalization), or publish a payload directly.
+    pub use firefly_eda::{externalize_after_commit, publish_to_broker, register_broker};
     /// Publish an in-process domain event, and bind listeners to a
     /// transaction's commit phase — the runtime behind `#[event_listener]` and
     /// `#[transactional_event_listener]`.
     pub use firefly_transactional::{
         publish_event, register_event_listener, LocalTransactionManager, TransactionPhase,
     };
-    /// The bridge from in-process events to the EDA broker: register the
-    /// process broker, forward an in-process event type to it after commit
-    /// (Spring-Modulith-style externalization), or publish a payload directly.
-    pub use firefly_eda::{externalize_after_commit, publish_to_broker, register_broker};
 
     // ---- Lifecycle ------------------------------------------------------
     /// The application runner and its programmatic shutdown handle.

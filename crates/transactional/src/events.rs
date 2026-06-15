@@ -58,7 +58,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock, Once, RwLock};
+use std::sync::{Arc, Mutex, Once, OnceLock, RwLock};
 
 /// The phase of a surrounding transaction at which a transaction-bound listener
 /// runs — Spring's `TransactionPhase`.
@@ -79,8 +79,9 @@ pub enum TransactionPhase {
 
 /// The erased async dispatcher the macros build per listener: it downcasts the
 /// shared event to the listener's concrete type and awaits the handler.
-pub type EventDispatcher =
-    Arc<dyn Fn(Arc<dyn Any + Send + Sync>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+pub type EventDispatcher = Arc<
+    dyn Fn(Arc<dyn Any + Send + Sync>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;
 
 /// A registered listener: the optional transaction phase (`None` = immediate)
 /// plus its erased dispatcher.
@@ -136,8 +137,13 @@ pub fn register_discovered_listeners() {
 /// immediate (`@EventListener`) listener; `phase = Some(..)` is a
 /// transaction-bound (`@TransactionalEventListener`) listener. The macros call
 /// this from their `inventory` thunks; tests call it directly.
-pub fn register_event_listener<E: 'static>(phase: Option<TransactionPhase>, dispatcher: EventDispatcher) {
-    let mut reg = registry().write().expect("event listener registry poisoned");
+pub fn register_event_listener<E: 'static>(
+    phase: Option<TransactionPhase>,
+    dispatcher: EventDispatcher,
+) {
+    let mut reg = registry()
+        .write()
+        .expect("event listener registry poisoned");
     reg.entry(TypeId::of::<E>())
         .or_default()
         .push(Listener { phase, dispatcher });
@@ -184,7 +190,10 @@ pub async fn publish_event<E: Any + Send + Sync + 'static>(event: E) {
         .try_with(|buf| {
             buf.lock()
                 .expect("tx event buffer poisoned")
-                .push(BufferedEvent { type_id, event: shared.clone() });
+                .push(BufferedEvent {
+                    type_id,
+                    event: shared.clone(),
+                });
         })
         .is_ok();
 
@@ -286,7 +295,10 @@ mod tests {
 
     // A dispatcher that records `tag` regardless of the event payload (each test
     // uses a distinct event type so the global registry never crosses tests).
-    fn dispatcher_pushing(log: Arc<Mutex<Vec<&'static str>>>, tag: &'static str) -> EventDispatcher {
+    fn dispatcher_pushing(
+        log: Arc<Mutex<Vec<&'static str>>>,
+        tag: &'static str,
+    ) -> EventDispatcher {
         Arc::new(move |_ev| {
             let log = log.clone();
             Box::pin(async move {
@@ -327,7 +339,10 @@ mod tests {
         let out: Result<(), TxError> = transactional(TxOptions::required(), || async {
             // Published mid-transaction: must NOT have fired yet.
             publish_event(CommitEvt).await;
-            assert!(log.lock().unwrap().is_empty(), "after_commit fired too early");
+            assert!(
+                log.lock().unwrap().is_empty(),
+                "after_commit fired too early"
+            );
             Ok(())
         })
         .await;

@@ -53,9 +53,9 @@ use firefly::web::{WebError, WebResult};
 use serde::Deserialize;
 
 use crate::commands::{Deposit, GetWallet, OpenWallet, Withdraw};
+use crate::compliance::{run_compliance, ComplianceError};
 use crate::domain::{DomainError, WalletView};
 use crate::ledger::{self, Ledger, ReadModel};
-use crate::compliance::{run_compliance, ComplianceError};
 use crate::tcc_transfer::{run_tcc_transfer, TccTransferResult};
 use crate::transfer::{run_transfer, TransferError, TransferRequest, TransferResult};
 
@@ -283,12 +283,18 @@ impl WalletApi {
         State(api): State<WalletApi>,
         Json(body): Json<TransferRequest>,
     ) -> WebResult<Json<serde_json::Value>> {
-        run_compliance(&api.ledger, &body).await.map_err(|e| match e {
-            // An unknown source wallet is a 404 (like GET /wallets/:id); a
-            // failed check is a 422.
-            ComplianceError::NotFound(detail) => WebError::from(FireflyError::not_found(detail)),
-            ComplianceError::Rejected(detail) => WebError::from(FireflyError::validation(detail)),
-        })?;
+        run_compliance(&api.ledger, &body)
+            .await
+            .map_err(|e| match e {
+                // An unknown source wallet is a 404 (like GET /wallets/:id); a
+                // failed check is a 422.
+                ComplianceError::NotFound(detail) => {
+                    WebError::from(FireflyError::not_found(detail))
+                }
+                ComplianceError::Rejected(detail) => {
+                    WebError::from(FireflyError::validation(detail))
+                }
+            })?;
         Ok(Json(serde_json::json!({
             "decision": "approved",
             "from": body.from,

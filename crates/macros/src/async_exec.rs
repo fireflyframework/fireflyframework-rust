@@ -74,7 +74,9 @@ pub(crate) fn async_method_impl(args: TokenStream, mut func: ItemFn) -> syn::Res
             let expr: syn::Expr = syn::parse_str(raw).map_err(|e| {
                 syn::Error::new_spanned(
                     &func.sig,
-                    format!("#[async_method(executor = \"…\")] is not a valid Rust expression: {e}"),
+                    format!(
+                        "#[async_method(executor = \"…\")] is not a valid Rust expression: {e}"
+                    ),
                 )
             })?;
             quote!(#expr)

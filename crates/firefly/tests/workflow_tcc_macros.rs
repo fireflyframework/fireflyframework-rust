@@ -41,8 +41,14 @@ impl Compliance {
     }
 
     #[workflow_step(id = "approve", depends_on = ["balance-check", "fraud-scan"])]
-    async fn approve(&self, #[from_step("balance-check")] within_limit: bool) -> Result<(), DemoError> {
-        self.log.lock().unwrap().push(format!("approve {within_limit}"));
+    async fn approve(
+        &self,
+        #[from_step("balance-check")] within_limit: bool,
+    ) -> Result<(), DemoError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("approve {within_limit}"));
         if within_limit {
             Ok(())
         } else {
@@ -61,7 +67,11 @@ async fn workflow_macro_runs_dag_with_parallel_layer() {
     assert!(trace.iter().any(|x| x == "fraud"), "{trace:?}");
     // approve depends on both checks, so it must come last.
     let approve_at = trace.iter().position(|x| x.starts_with("approve")).unwrap();
-    assert_eq!(approve_at, trace.len() - 1, "approve runs after both checks: {trace:?}");
+    assert_eq!(
+        approve_at,
+        trace.len() - 1,
+        "approve runs after both checks: {trace:?}"
+    );
 }
 
 // ---- #[tcc] ---------------------------------------------------------------
@@ -79,11 +89,17 @@ impl Transfer2pc {
         Ok(amt.0)
     }
     async fn capture_source(&self, #[from_step("source")] held: i64) -> Result<(), DemoError> {
-        self.log.lock().unwrap().push(format!("confirm-source {held}"));
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("confirm-source {held}"));
         Ok(())
     }
     async fn release_source(&self, #[from_step("source")] held: i64) -> Result<(), DemoError> {
-        self.log.lock().unwrap().push(format!("cancel-source {held}"));
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("cancel-source {held}"));
         Ok(())
     }
 
@@ -110,7 +126,10 @@ async fn tcc_macro_confirms_all_on_success() {
     });
     tcc.run(Amount(100)).await.expect("tcc confirms");
     let trace = log.lock().unwrap().clone();
-    assert!(trace.contains(&"confirm-source 100".to_string()), "{trace:?}");
+    assert!(
+        trace.contains(&"confirm-source 100".to_string()),
+        "{trace:?}"
+    );
     assert!(trace.contains(&"confirm-dest".to_string()), "{trace:?}");
 }
 
@@ -124,6 +143,12 @@ async fn tcc_macro_cancels_tried_on_try_failure() {
     tcc.run(Amount(100)).await.expect_err("dest try fails");
     let trace = log.lock().unwrap().clone();
     // source was tried first, so it must be cancelled when dest's try fails.
-    assert!(trace.contains(&"cancel-source 100".to_string()), "{trace:?}");
-    assert!(!trace.iter().any(|x| x.starts_with("confirm")), "nothing confirmed: {trace:?}");
+    assert!(
+        trace.contains(&"cancel-source 100".to_string()),
+        "{trace:?}"
+    );
+    assert!(
+        !trace.iter().any(|x| x.starts_with("confirm")),
+        "nothing confirmed: {trace:?}"
+    );
 }

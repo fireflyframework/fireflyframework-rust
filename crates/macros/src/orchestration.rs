@@ -97,13 +97,27 @@ fn param_inject(pt: &syn::PatType) -> syn::Result<Inject> {
                 _ => Inject::Input(Some(attr.parse_args::<LitStr>()?.value())),
             }
         } else if p.is_ident("from_step") {
-            Inject::FromStep(attr.parse_args::<LitStr>().map_err(|_| {
-                syn::Error::new_spanned(attr, "#[from_step(\"step-id\")] requires a step id")
-            })?.value())
+            Inject::FromStep(
+                attr.parse_args::<LitStr>()
+                    .map_err(|_| {
+                        syn::Error::new_spanned(
+                            attr,
+                            "#[from_step(\"step-id\")] requires a step id",
+                        )
+                    })?
+                    .value(),
+            )
         } else if p.is_ident("variable") {
-            Inject::Variable(attr.parse_args::<LitStr>().map_err(|_| {
-                syn::Error::new_spanned(attr, "#[variable(\"key\")] requires a variable key")
-            })?.value())
+            Inject::Variable(
+                attr.parse_args::<LitStr>()
+                    .map_err(|_| {
+                        syn::Error::new_spanned(
+                            attr,
+                            "#[variable(\"key\")] requires a variable key",
+                        )
+                    })?
+                    .value(),
+            )
         } else {
             continue;
         };
@@ -194,7 +208,9 @@ fn parse_step_meta(attr: &syn::Attribute) -> syn::Result<StepMeta> {
                 {
                     meta.depends_on.push(s.value());
                 } else {
-                    return Err(m.error("depends_on takes string literals, e.g. depends_on = [\"a\", \"b\"]"));
+                    return Err(m.error(
+                        "depends_on takes string literals, e.g. depends_on = [\"a\", \"b\"]",
+                    ));
                 }
             }
         } else if m.path.is_ident("retry") {
@@ -605,7 +621,10 @@ pub(crate) fn workflow_impl(args: TokenStream, mut item: ItemImpl) -> syn::Resul
     let orch = facade.orchestration();
     let sj = facade.serde_json();
     let self_ty = (*item.self_ty).clone();
-    let wf_name = args.name.clone().unwrap_or_else(|| type_ident_name(&self_ty));
+    let wf_name = args
+        .name
+        .clone()
+        .unwrap_or_else(|| type_ident_name(&self_ty));
 
     let mut nodes: Vec<(NodeMeta, syn::Ident)> = Vec::new();
     for impl_item in &mut item.items {
@@ -812,7 +831,10 @@ pub(crate) fn tcc_impl(args: TokenStream, mut item: ItemImpl) -> syn::Result<Tok
     let orch = facade.orchestration();
     let sj = facade.serde_json();
     let self_ty = (*item.self_ty).clone();
-    let tcc_name = args.name.clone().unwrap_or_else(|| type_ident_name(&self_ty));
+    let tcc_name = args
+        .name
+        .clone()
+        .unwrap_or_else(|| type_ident_name(&self_ty));
 
     // The #[participant(...)] marker sits on the *try* method.
     let mut participants: Vec<(ParticipantMeta, syn::Ident)> = Vec::new();
@@ -871,7 +893,9 @@ pub(crate) fn tcc_impl(args: TokenStream, mut item: ItemImpl) -> syn::Result<Tok
     let mut participant_exprs = Vec::new();
     for (meta, try_ident) in &participants {
         let pname = &meta.name;
-        let try_plan = plans.get(&try_ident.to_string()).expect("try method planned");
+        let try_plan = plans
+            .get(&try_ident.to_string())
+            .expect("try method planned");
         // Try publishes its result under the participant name; confirm/cancel
         // read it back via #[from_step("<name>")].
         let try_body = invocation_body(try_ident, try_plan, &orch, &sj, Some(pname));

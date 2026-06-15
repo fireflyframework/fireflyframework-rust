@@ -74,7 +74,11 @@ pub(crate) fn transactional_event_listener_attr(
     expand(args, func, Some("after_commit"))
 }
 
-fn expand(args: TokenStream, func: ItemFn, default_phase: Option<&str>) -> syn::Result<TokenStream> {
+fn expand(
+    args: TokenStream,
+    func: ItemFn,
+    default_phase: Option<&str>,
+) -> syn::Result<TokenStream> {
     let attr_args = NestedMeta::parse_meta_list(args)?;
     let parsed = ListenerArgs::from_list(&attr_args).map_err(syn::Error::from)?;
     let facade = facade_from_override(&parsed.krate)?;

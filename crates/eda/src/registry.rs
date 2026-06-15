@@ -113,8 +113,7 @@ where
         Arc::new(move |event: Arc<dyn Any + Send + Sync>| {
             Box::pin(async move {
                 if let Some(typed) = event.downcast_ref::<E>() {
-                    let _ =
-                        publish_to_broker(topic, event_type, EXTERNALIZED_SOURCE, typed).await;
+                    let _ = publish_to_broker(topic, event_type, EXTERNALIZED_SOURCE, typed).await;
                 }
             })
         }),

@@ -92,7 +92,9 @@ impl TwoPhaseTransfer {
     }
     /// Destination **confirm**: capture by crediting the destination.
     async fn capture_dest(&self, #[input] req: TransferRequest) -> Result<(), DomainError> {
-        self.ledger.deposit(&req.to, Money::cents(req.amount)).await?;
+        self.ledger
+            .deposit(&req.to, Money::cents(req.amount))
+            .await?;
         Ok(())
     }
 }

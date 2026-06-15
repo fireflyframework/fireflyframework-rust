@@ -38,10 +38,7 @@ enum Constraint {
     NotEmpty,
     /// `length(min = .., max = ..)` — UTF-8 char-count bounds (either bound
     /// optional).
-    Length {
-        min: Option<u64>,
-        max: Option<u64>,
-    },
+    Length { min: Option<u64>, max: Option<u64> },
     /// `range(min = .., max = ..)` — numeric bounds (either bound optional),
     /// compared with the field value's own type. The `Expr` bounds are boxed so
     /// this variant does not dominate the enum's size (clippy `large_enum_variant`).
@@ -99,12 +96,7 @@ pub(crate) fn derive_validate(input: DeriveInput) -> syn::Result<TokenStream> {
             }
             let constraints = parse_field_constraints(attr)?;
             for constraint in constraints {
-                checks.push(emit_check(
-                    &validators,
-                    fident,
-                    &fname,
-                    &constraint,
-                ));
+                checks.push(emit_check(&validators, fident, &fname, &constraint));
             }
         }
     }

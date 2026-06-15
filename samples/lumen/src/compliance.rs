@@ -120,10 +120,7 @@ impl ComplianceCheck {
 /// approved (both checks passed); `Err` carries the typed reason it was
 /// rejected — the parallel-DAG counterpart to the linear [transfer
 /// saga](crate::transfer::run_transfer).
-pub async fn run_compliance(
-    ledger: &Ledger,
-    req: &TransferRequest,
-) -> Result<(), ComplianceError> {
+pub async fn run_compliance(ledger: &Ledger, req: &TransferRequest) -> Result<(), ComplianceError> {
     let check = Arc::new(ComplianceCheck {
         ledger: ledger.clone(),
         max_cents: MAX_TRANSFER_CENTS,

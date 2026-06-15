@@ -134,7 +134,11 @@ mod tests {
         fn validate(&self) -> Result<(), ValidationErrors> {
             let mut errors = ValidationErrors::new();
             if self.name.trim().is_empty() {
-                errors.push(ValidationError::new("name", "not_empty", "must not be empty"));
+                errors.push(ValidationError::new(
+                    "name",
+                    "not_empty",
+                    "must not be empty",
+                ));
             }
             if !self.email.contains('@') {
                 errors.push(ValidationError::new("email", "email", "not a valid email"));
@@ -170,7 +174,11 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        (status, content_type, String::from_utf8(bytes.to_vec()).unwrap())
+        (
+            status,
+            content_type,
+            String::from_utf8(bytes.to_vec()).unwrap(),
+        )
     }
 
     #[tokio::test]

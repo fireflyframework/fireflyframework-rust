@@ -81,11 +81,7 @@ async fn aspect_macro_discovers_weaves_and_keeps_methods_callable() {
     assert_eq!(out.downcast_ref::<String>().unwrap(), "order-1");
     assert_eq!(
         *log.lock().unwrap(),
-        vec![
-            "before:svc.Audited.create",
-            "around:before",
-            "around:after"
-        ]
+        vec!["before:svc.Audited.create", "around:before", "around:after"]
     );
 
     // (2) A non-matching qualified name: the call runs with no advice.

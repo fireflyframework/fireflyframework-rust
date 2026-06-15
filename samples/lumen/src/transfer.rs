@@ -114,14 +114,18 @@ impl TransferSaga {
     /// [`refund_debit`](Self::refund_debit) when a later leg fails.
     #[saga_step(id = "debit", compensate = "refund_debit")]
     async fn debit(&self, #[input] req: TransferRequest) -> Result<(), DomainError> {
-        self.ledger.withdraw(&req.from, Money::cents(req.amount)).await?;
+        self.ledger
+            .withdraw(&req.from, Money::cents(req.amount))
+            .await?;
         Ok(())
     }
 
     /// Compensation for `debit`: a refund is a normal deposit, so it raises a
     /// real `MoneyDeposited` event on the source stream.
     async fn refund_debit(&self, #[input] req: TransferRequest) -> Result<(), DomainError> {
-        self.ledger.deposit(&req.from, Money::cents(req.amount)).await?;
+        self.ledger
+            .deposit(&req.from, Money::cents(req.amount))
+            .await?;
         Ok(())
     }
 
@@ -129,7 +133,9 @@ impl TransferSaga {
     /// a failure here rolls back only the debit.
     #[saga_step(id = "credit", depends_on = ["debit"])]
     async fn credit(&self, #[input] req: TransferRequest) -> Result<(), DomainError> {
-        self.ledger.deposit(&req.to, Money::cents(req.amount)).await?;
+        self.ledger
+            .deposit(&req.to, Money::cents(req.amount))
+            .await?;
         Ok(())
     }
 }

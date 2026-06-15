@@ -260,12 +260,7 @@ fn generated_hooks(marked: &Marked, aop: &TokenStream) -> TokenStream {
 /// `Default`) against the pointcut. The aspect type must be `Default` — Spring
 /// aspects are singletons, and the auto-registered aspect is a single instance
 /// constructed once via `Default`.
-fn registration(
-    self_ty: &syn::Type,
-    pointcut: &str,
-    order: i32,
-    aop: &TokenStream,
-) -> TokenStream {
+fn registration(self_ty: &syn::Type, pointcut: &str, order: i32, aop: &TokenStream) -> TokenStream {
     quote! {
         #aop::inventory::submit! {
             #aop::AspectRegistration {

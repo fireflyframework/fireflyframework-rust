@@ -264,7 +264,9 @@ mod tests {
             ValidationError::new("amount", "range", "must be between 1 and 100").into();
         let fe: FireflyError = errs.into();
         assert_eq!(fe.status, 422);
-        assert!(fe.detail.contains("amount: must be between 1 and 100 (range)"));
+        assert!(fe
+            .detail
+            .contains("amount: must be between 1 and 100 (range)"));
     }
 
     // A hand-written Validate impl, exercising the trait surface the derive
