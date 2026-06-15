@@ -15,18 +15,24 @@ does.
 
 > **By the end of this chapter, Lumen will** have `src/commands.rs`: the
 > `OpenWallet` / `Deposit` / `Withdraw` commands and the `GetWallet` query as
-> `#[derive(Command)]` / `#[derive(Query)]` structs, free-`fn` handlers marked
-> `#[command_handler]` / `#[query_handler]` that the framework drains from a
-> compile-time inventory registry onto a bus declared as a `#[bean]`, the
-> validation + query-cache middleware auto-installed, and the read-after-write
-> cache invalidation that keeps a balance from going stale after a deposit.
+> `#[derive(Command)]` / `#[derive(Query)]` structs, and a **handler bean** —
+> `WalletHandlers`, a `#[derive(Service)]` whose `#[handlers]` impl carries the
+> `#[command_handler]` / `#[query_handler]` methods and `#[autowired]`s the
+> `Ledger` + `ReadModel` — that the framework resolves from the container and
+> drains onto a bus declared as a `#[bean]`, the validation + query-cache
+> middleware auto-installed, and the read-after-write cache invalidation that
+> keeps a balance from going stale after a deposit.
 
 > **Design note.** The `Bus` is Firefly's command/query dispatcher: it matches
 > each message to its handler by `TypeId` and runs it through a middleware chain
-> that validates commands and caches queries. Handlers are free `async fn`s a
-> macro registers — `bus.send` / `bus.query` dispatch to them. The whole path is
-> ordinary Rust: no proxies, no reflection, just a typed registry and a function
-> call.
+> that validates commands and caches queries. A handler is an `async fn` a macro
+> registers — `bus.send` / `bus.query` dispatch to it. Lumen's handlers live on a
+> **DI bean** (`#[derive(Service)]` + `#[handlers]`), so each reaches its
+> collaborators through `self.<autowired field>` — Spring's `@Component`
+> command/query handler. (A simpler app can write the handler as a free
+> `async fn` instead; the [free-fn alternative](#the-free-fn-handler-alternative)
+> below covers that form.) The whole path is ordinary Rust: no proxies, no
+> reflection, just a typed registry and a method call.
 
 ## Commands, queries, and the `Message` trait
 
@@ -58,14 +64,16 @@ use firefly::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// `POST /api/v1/wallets` command — open a new wallet.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Command)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Command, Builder, Schema)]
 #[serde(default)]
 pub struct OpenWallet {
     /// The wallet owner's display name — required.
     #[firefly(validate)]
+    #[builder(into)]
     pub owner: String,
     /// The opening balance, in minor units (cents); must be `>= 0`.
     #[serde(rename = "openingBalance")]
+    #[builder(default)]
     pub opening_balance: i64,
 }
 
@@ -116,68 +124,87 @@ stay snake_case.
 > not reflected at runtime. `#[firefly(cache_ttl = "30s")]` sets the query's
 > cache TTL, which the `QueryCache` middleware picks up off the message.
 
-## The free-`fn` handlers
+## The handler bean — `#[derive(Service)]` + `#[handlers]`
 
-A handler is a free `async fn` marked `#[command_handler]` or `#[query_handler]`.
-The macro reads the argument type as the dispatch key, generates a
-`register_<fn>(bus)` helper that installs it, **and** submits a
-`HandlerRegistration` into a compile-time `inventory` registry so the framework
-can find and install the handler for you — Lumen never calls the generated
-helper by hand. The handler turns the bus's `CqrsError` channel into the precise
-outcome; the web layer (next) restores the HTTP status:
+Lumen's handlers live on a **DI bean**, the Rust analog of a Spring `@Component`
+that carries `@CommandHandler` / `@QueryHandler` methods. `WalletHandlers` is a
+`#[derive(Service)]` whose collaborators — the write-side `Ledger` and the
+read-side `ReadModel` — are `#[autowired]` from the container. The `#[handlers]`
+impl-level macro (the CQRS sibling of `#[rest_controller]`) marks the methods:
+each `#[command_handler]` / `#[query_handler]` is an `async fn(&self, msg) ->
+Result<.., CqrsError>`, so a handler reaches its collaborators through `self` —
+no process-global, no composition root:
 
 ```rust,ignore
+use std::sync::Arc;
+
+use firefly::prelude::*;
+
 use crate::domain::{DomainError, Wallet, WalletView};
 use crate::ledger::{Ledger, ReadModel};
 use crate::money::Money;
 
-/// Handles `OpenWallet`. `#[command_handler]` generates `register_open_wallet(bus)`.
-#[command_handler]
-pub async fn open_wallet(cmd: OpenWallet) -> Result<WalletView, CqrsError> {
-    if cmd.opening_balance < 0 {
-        return Err(CqrsError::validation("openingBalance must be >= 0"));
+/// The CQRS **handler bean** — Spring's `@Component` command/query handler. Its
+/// collaborators are `#[autowired]` from the DI container; `#[handlers]`
+/// registers each method on the bus.
+#[derive(Service)]
+struct WalletHandlers {
+    /// The write-side application service (autowired).
+    #[autowired]
+    ledger: Arc<Ledger>,
+    /// The read-side projection store the `GetWallet` query reads (autowired).
+    #[autowired]
+    read_model: Arc<ReadModel>,
+}
+
+#[handlers]
+impl WalletHandlers {
+    /// Handles `OpenWallet`.
+    #[command_handler]
+    async fn open_wallet(&self, cmd: OpenWallet) -> Result<WalletView, CqrsError> {
+        if cmd.opening_balance < 0 {
+            return Err(CqrsError::validation("openingBalance must be >= 0"));
+        }
+        self.ledger
+            .open(&cmd.owner, Money::cents(cmd.opening_balance))
+            .await
+            .map_err(to_cqrs)
     }
-    state()
-        .ledger
-        .open(&cmd.owner, Money::cents(cmd.opening_balance))
-        .await
-        .map_err(to_cqrs)
-}
 
-/// Handles `Deposit`. Generates `register_deposit(bus)`.
-#[command_handler]
-pub async fn deposit(cmd: Deposit) -> Result<WalletView, CqrsError> {
-    state()
-        .ledger
-        .deposit(&cmd.wallet_id, Money::cents(cmd.amount))
-        .await
-        .map_err(to_cqrs)
-}
-
-/// Handles `Withdraw`. Generates `register_withdraw(bus)`.
-#[command_handler]
-pub async fn withdraw(cmd: Withdraw) -> Result<WalletView, CqrsError> {
-    state()
-        .ledger
-        .withdraw(&cmd.wallet_id, Money::cents(cmd.amount))
-        .await
-        .map_err(to_cqrs)
-}
-
-/// Handles `GetWallet`. Generates `register_get_wallet(bus)`.
-#[query_handler]
-pub async fn get_wallet(q: GetWallet) -> Result<WalletView, CqrsError> {
-    if let Some(view) = state().read_model.find(&q.id) {
-        return Ok(view);
+    /// Handles `Deposit`.
+    #[command_handler]
+    async fn deposit(&self, cmd: Deposit) -> Result<WalletView, CqrsError> {
+        self.ledger
+            .deposit(&cmd.wallet_id, Money::cents(cmd.amount))
+            .await
+            .map_err(to_cqrs)
     }
-    let events = state().ledger.load_events(&q.id).await.map_err(to_cqrs)?;
-    Ok(Wallet::rehydrate(&q.id, &events).view())
+
+    /// Handles `Withdraw`.
+    #[command_handler]
+    async fn withdraw(&self, cmd: Withdraw) -> Result<WalletView, CqrsError> {
+        self.ledger
+            .withdraw(&cmd.wallet_id, Money::cents(cmd.amount))
+            .await
+            .map_err(to_cqrs)
+    }
+
+    /// Handles `GetWallet` — serve from the projected read model, falling back
+    /// to folding the event stream when the projection has not yet caught up.
+    #[query_handler]
+    async fn get_wallet(&self, q: GetWallet) -> Result<WalletView, CqrsError> {
+        if let Some(view) = self.read_model.find(&q.id) {
+            return Ok(view);
+        }
+        let events = self.ledger.load_events(&q.id).await.map_err(to_cqrs)?;
+        Ok(Wallet::rehydrate(&q.id, &events).view())
+    }
 }
 ```
 
 Each command handler constructs the `Money` value object from the command's
-`i64`, delegates to the `Ledger` application service (which rehydrates the
-aggregate, runs the domain command, and persists — see
+`i64`, delegates to the autowired `Ledger` application service (which rehydrates
+the aggregate, runs the domain command, and persists — see
 [Event Sourcing](./11-event-sourcing.md)), and maps a `DomainError` onto the
 bus's `CqrsError` channel:
 
@@ -193,55 +220,45 @@ caught up does it fall back to folding the event stream. That fallback is what
 keeps a read immediately after a write from returning a stale balance under the
 eventual consistency the projection introduces.
 
-> **Why free functions, not handler structs?** Rust free functions cannot
-> capture state, so the resolved collaborators live in a module-local static and
-> the handler reads them through `state()`. That is the next section — and it is
-> the one piece of CQRS wiring Lumen does by hand.
+Behind the macro, each `#[command_handler]` / `#[query_handler]` submits a
+`BeanHandlerRegistration` into a compile-time `inventory` registry. At boot
+`FireflyApplication` resolves `WalletHandlers` from the container — wiring its
+`#[autowired]` `Ledger` + `ReadModel` — and installs a bus closure that captures
+the resolved bean, so each dispatch calls `self.open_wallet(..)` and friends.
+Lumen writes **no** registration call: the framework drains the bean handlers
+for you (the wiring section, below).
 
-## Publishing collaborators: the `OnceLock` pattern
+> **Note.** A `#[handlers]` method takes `&self` plus exactly one message
+> argument and returns a `Result<.., CqrsError>`. Because the bean is a regular
+> container bean, its collaborators arrive by **constructor injection** through
+> `#[autowired]` fields — the same wiring every other Firefly bean uses, with no
+> process-global to seed. Adding a handler is adding a method; the framework
+> finds it.
 
-Because a `#[command_handler]` free function can't own a `Ledger` or a
-`ReadModel`, Lumen publishes the resolved collaborators once at startup into a
-process-global `OnceLock`, and the handlers reach them through `state()`:
+## The free-`fn` handler alternative
+
+A handler need not be a bean. The free-`fn` form is the simpler option for a
+collaborator-free handler (and the `macro-quickstart` sample uses it): mark a
+free `async fn(msg) -> Result<R, CqrsError>` with `#[command_handler]` /
+`#[query_handler]`. The macro reads the argument type as the dispatch key,
+generates a `register_<fn>(bus)` helper, **and** submits a `HandlerRegistration`
+into the `inventory` registry the framework drains
+(`register_discovered_handlers`) — so the free-fn handler is discovered and
+installed exactly like the bean form:
 
 ```rust,ignore
-use std::sync::{Arc, OnceLock};
-
-/// The collaborators the CQRS handlers need.
-struct HandlerState {
-    ledger: Ledger,
-    read_model: Arc<ReadModel>,
-}
-
-static STATE: OnceLock<HandlerState> = OnceLock::new();
-
-/// Publishes the handlers' collaborators and returns the *effective* state —
-/// the one actually held by the process-global `OnceLock`.
-pub fn bind(ledger: Ledger, read_model: Arc<ReadModel>) -> (Ledger, Arc<ReadModel>) {
-    let effective = STATE.get_or_init(|| HandlerState { ledger, read_model });
-    (effective.ledger.clone(), Arc::clone(&effective.read_model))
-}
-
-fn state() -> &'static HandlerState {
-    STATE.get().expect("commands::bind must run before a handler dispatches")
+// The simpler form — a free fn with no collaborators to inject.
+#[command_handler]
+pub async fn place_order(cmd: PlaceOrder) -> Result<OrderView, CqrsError> {
+    Ok(OrderView::from(cmd))
 }
 ```
 
-The subtle part is the return value. The global binds only **once**, so a second
-`FireflyApplication` boot in the same test binary keeps the *first* ledger and
-read model. `bind` returns the *effective* pair — whichever the `OnceLock`
-actually holds — so the `ledger` `#[bean]` factory wires the controller's saga,
-the event projection, and the free-fn handlers all against the **same**
-collaborators, no matter how many times the app is built. (This is why the HTTP
-test suite can call `build_router()` per test and still share one ledger.)
-
-> **Note.** Because a `#[command_handler]` free function can't capture state,
-> Lumen publishes its resolved collaborators once at startup with a one-line
-> `bind` and the handlers reach them through `state()` — the standard pattern for
-> free-fn handlers in Firefly. If you prefer constructor injection, declare the
-> handler as a `#[derive(Component)]` bean instead (see
-> [Dependency Wiring](./04-dependency-wiring.md)); Lumen keeps the explicit
-> `bind` for teachability.
+Because a free function can't own a `Ledger` or a `ReadModel`, this form fits
+handlers that compute purely from the message (or reach a process-global). The
+moment a handler needs injected collaborators — as all of Lumen's do — the bean
+form above is the natural fit: it gets constructor injection for free and keeps
+the handler a plain method on a `@Component`.
 
 ## Wiring the bus
 
@@ -250,22 +267,27 @@ as `#[bean]`s in `LumenBeans` (the `#[derive(Configuration)]` holder in
 `src/web.rs`), the `WalletApi` controller autowires the `Arc<Bus>`, and the
 framework — `FireflyApplication` — does the rest at boot:
 
-- it drains every `#[command_handler]` / `#[query_handler]` from the inventory
-  registry with `firefly::cqrs::register_discovered_handlers(&bus)`, so the four
-  handlers install themselves;
+- it drains the discovered **bean** handlers with
+  `firefly::cqrs::register_discovered_handler_beans(&bus, &container)`: it
+  resolves `WalletHandlers` from the container — autowiring its `Ledger` +
+  `ReadModel` — and installs each `#[command_handler]` / `#[query_handler]`
+  method onto the bus;
+- it also drains any free-`fn` handlers with
+  `firefly::cqrs::register_discovered_handlers(&bus)`, so the two forms coexist
+  (Lumen has only bean handlers, so this drains none of its own);
 - it auto-installs the bus middleware chain: a correlation propagator always, the
   `QueryCache` read-cache middleware whenever a `QueryCache` bean is present, and
-  validation (already installed by the core);
-- it seeds the event-sourcing projection inside the `ledger` `#[bean]` factory.
+  validation (already installed by the core).
 
-The generated per-handler `register_<fn>(bus)` helpers (and the one `register(&bus)`
-fn that gathers them) still exist — they are the explicit fallback for an app that
-wires its own bus — but Lumen calls none of them. The framework's drain is what
-installs the handlers:
+Lumen calls none of these drains. The bean handlers are resolved from the same
+container that builds the controller and the saga, so every collaborator —
+handler, controller, projection — shares the one `Ledger` and one `ReadModel` the
+container holds:
 
 ```rust,ignore
 // What FireflyApplication does for you, conceptually — no Lumen code calls this.
-let installed = firefly::cqrs::register_discovered_handlers(&bus);   // 4 handlers
+firefly::cqrs::register_discovered_handlers(&bus);                 // free-fn handlers
+firefly::cqrs::register_discovered_handler_beans(&bus, &container); // WalletHandlers' 4 methods
 ```
 
 The bus and query cache are plain `#[bean]` factories:
@@ -360,9 +382,10 @@ registration time and lets you ask about the two halves separately:
 use firefly::cqrs::{Bus, MessageKind};
 
 let bus = Bus::new();
-// In a unit test you populate a bus explicitly; the app boot drains the same
-// handlers from inventory with `register_discovered_handlers(&bus)`.
-crate::commands::register(&bus);   // installs the three commands + one query
+// In a unit test you populate a bus explicitly; the app boot resolves the
+// `WalletHandlers` bean and drains its methods with
+// `register_discovered_handler_beans(&bus, &container)`.
+bus.register(|cmd: OpenWallet| async move { /* ... */ });   // three commands + one query
 
 // Inspect the registry, split by CQRS kind.
 let commands = bus.command_handler_names();      // ["...::Deposit", "...::OpenWallet", "...::Withdraw"]
@@ -622,27 +645,41 @@ dispatch is mapped from `CqrsError` into a status-faithful `FireflyError`
 preserved as `source()`. So a reactive command flows straight into the RFC 9457
 problem stack while staying inspectable.
 
-## Proving the bus
+## Proving the handler bean
 
-Lumen's `src/commands.rs` exercises the full dispatch path with no HTTP — the
-test that ships in the crate:
+Lumen's `src/commands.rs` exercises the handler bean directly with no HTTP — the
+test that ships in the crate. The bean operates on its `#[autowired]`
+collaborators, so the test constructs it with the same `Ledger` + `ReadModel` the
+container would inject and calls its methods (the full bus wiring is covered
+end-to-end by the HTTP tests, which boot the whole `FireflyApplication`):
 
 ```rust,ignore
 #[tokio::test]
-async fn handlers_dispatch_through_the_bus() {
-    let ledger = Ledger::new(Arc::new(MemoryEventStore::new()), Arc::new(InMemoryBroker::new()));
-    bind(ledger, Arc::new(ReadModel::default()));
-    let bus = Bus::new();
-    bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
-    register(&bus);
+async fn handler_bean_operates_on_its_autowired_collaborators() {
+    let handlers = WalletHandlers {
+        ledger: Arc::new(Ledger::new(
+            Arc::new(MemoryEventStore::new()),
+            Arc::new(InMemoryBroker::new()),
+        )),
+        read_model: Arc::new(ReadModel::default()),
+    };
 
-    let opened: WalletView = bus.send(OpenWallet { owner: "alice".into(), opening_balance: 100 }).await.unwrap();
+    let opened = handlers
+        .open_wallet(OpenWallet { owner: "alice".into(), opening_balance: 100 })
+        .await
+        .unwrap();
     assert_eq!(opened.balance, 100);
 
-    let after: WalletView = bus.send(Deposit { wallet_id: opened.id.clone(), amount: 50 }).await.unwrap();
+    let after = handlers
+        .deposit(Deposit { wallet_id: opened.id.clone(), amount: 50 })
+        .await
+        .unwrap();
     assert_eq!(after.balance, 150);
 
-    let fetched: WalletView = bus.query(GetWallet { id: opened.id.clone() }).await.unwrap();
+    let fetched = handlers
+        .get_wallet(GetWallet { id: opened.id.clone() })
+        .await
+        .unwrap();
     assert_eq!(fetched.id, opened.id);
 }
 ```
@@ -676,18 +713,22 @@ Lumen's read and write paths are now separate, typed, and bus-dispatched:
   `GetWallet` carries `#[derive(Query)]` with `#[firefly(cache_ttl = "30s")]`.
   The derives generate the `Message` impl, the `validate()` checks, and the
   query's `cache_ttl`.
-- **Free-`fn` handlers** marked `#[command_handler]` / `#[query_handler]`
-  generate `register_open_wallet` / `register_deposit` / `register_withdraw` /
-  `register_get_wallet`. Command handlers build the `Money` value object and
-  delegate to the `Ledger`; the query serves the `ReadModel` and falls back to
-  folding the stream for read-after-write freshness.
-- **The `OnceLock` bind pattern** publishes the resolved `Ledger` + `ReadModel`
-  once and returns the *effective* pair, so every collaborator across repeated
-  builds shares one ledger and one read model. (The bind runs inside the `ledger`
-  `#[bean]` factory.)
+- **The `WalletHandlers` bean** (`#[derive(Service)]` + `#[handlers]`) carries the
+  `#[command_handler]` / `#[query_handler]` methods and `#[autowired]`s the
+  `Ledger` + `ReadModel` — a Spring `@Component` command/query handler. Command
+  handlers build the `Money` value object and delegate to `self.ledger`; the query
+  serves `self.read_model` and falls back to folding the stream for
+  read-after-write freshness. A simpler app can write a collaborator-free handler
+  as a free `async fn` instead (the same `#[command_handler]` macro applies to
+  free functions).
+- **Constructor injection, no process-global.** The handler bean reaches its
+  collaborators through `#[autowired]` fields the container fills, so there is no
+  `OnceLock` to seed and no `bind` step — the `ledger` `#[bean]` is now a pure
+  factory.
 - **The bus** is a framework-provided bean the `WalletApi` autowires; the
-  framework drains the discovered handlers onto it
-  (`register_discovered_handlers`) and auto-installs the correlation,
+  framework resolves the handler bean from the container and drains its methods
+  onto the bus (`register_discovered_handler_beans`, alongside the free-`fn`
+  `register_discovered_handlers`) and auto-installs the correlation,
   `QueryCache`, and validation middleware. The controller dispatches via
   `bus.send` / `bus.query`, with `cqrs_to_web` mapping a `CqrsError` (carrying the
   domain `Display` string) to the right RFC 9457 status — 422 for business rules,
@@ -698,7 +739,8 @@ Lumen's read and write paths are now separate, typed, and bus-dispatched:
 ## Exercises
 
 1. **Watch validation short-circuit.** In a test, build a `Bus`, add
-   `ValidationMiddleware::new()`, `register` the handlers, and `bus.send` a
+   `ValidationMiddleware::new()`, register a `Deposit` handler closure that drives
+   a `WalletHandlers` you constructed by hand, and `bus.send` a
    `Deposit { wallet_id: "wlt_1".into(), amount: 0 }`. Assert the result is a
    `CqrsError::Validation` and that the ledger was never touched (open a wallet
    first, then deposit zero, and confirm its balance is unchanged).
@@ -710,11 +752,12 @@ Lumen's read and write paths are now separate, typed, and bus-dispatched:
    comes back, proving `invalidate_type::<GetWallet>()` did its job.
 
 3. **Add a `CloseWallet` command.** Define `CloseWallet { #[firefly(validate)]
-   wallet_id: String }` with `#[derive(Command)]`, write a `#[command_handler]`
-   `close_wallet` that returns a `WalletView`, and dispatch it. The framework
-   drains the new handler from inventory automatically — you add no registration
-   call. (You do not need a domain `close` yet — returning the current view is
-   enough to exercise the wiring.)
+   wallet_id: String }` with `#[derive(Command)]`, then add a `#[command_handler]
+   async fn close_wallet(&self, cmd: CloseWallet) -> Result<WalletView, CqrsError>`
+   method to the `WalletHandlers` `#[handlers]` impl that returns a `WalletView`,
+   and dispatch it. The framework resolves the bean and drains the new method
+   automatically — you add no registration call. (You do not need a domain `close`
+   yet — returning the current view is enough to exercise the wiring.)
 
 4. **Reactive compose.** Rewrite the `get` controller handler to use
    `bus.query_mono::<_, WalletView>(GetWallet { id }).map(|v| v.balance)` and

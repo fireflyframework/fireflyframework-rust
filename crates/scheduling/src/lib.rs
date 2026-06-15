@@ -112,7 +112,8 @@ pub use inventory;
 
 pub use cron::{parse_cron, CronError, CronExpr};
 pub use discovery::{
-    discovered_scheduled_count, register_discovered_scheduled, ScheduledRegistration,
+    discovered_scheduled_bean_count, discovered_scheduled_count, register_discovered_scheduled,
+    register_discovered_scheduled_beans, BeanScheduledRegistration, ScheduledRegistration,
 };
 pub use executor::{
     register_task_executor, task_executor, TaskExecutor, TaskHandle, TaskJoinError,
@@ -127,4 +128,4 @@ pub use scheduler::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.6";
+pub const VERSION: &str = "26.6.7";

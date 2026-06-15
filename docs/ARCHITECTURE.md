@@ -64,7 +64,7 @@ infrastructure adapters — including the hexagonal database adapters
 `firefly-data-sqlx` / `firefly-data-mongodb` and the distributed session
 registries `firefly-session-redis` / `firefly-session-postgres` /
 `firefly-session-mongodb`). One
-version (`26.6.6`), one edition (2021), one MSRV (1.88) — set once in
+version (`26.6.7`), one edition (2021), one MSRV (1.88) — set once in
 `[workspace.package]` and inherited by every member.
 
 The runtime stack is deliberate and small:
@@ -743,5 +743,5 @@ Wave 4 ── composition + front door:
 ## Versioning
 
 Calendar-versioned, expressed as valid semver (`YY.M.PATCH`). The
-current version is exposed as `firefly_kernel::VERSION = "26.6.6"` and
+current version is exposed as `firefly_kernel::VERSION = "26.6.7"` and
 set once in the workspace `Cargo.toml`.

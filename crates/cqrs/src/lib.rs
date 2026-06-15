@@ -187,7 +187,6 @@ pub use authorization::{
     AuthorizationError, AuthorizationMiddleware, AuthorizationResult, AuthorizationSeverity,
     AUTHORIZATION_ERROR_CODE,
 };
-pub use discovery::{discovered_handler_count, register_discovered_handlers, HandlerRegistration};
 pub use bus::{
     AnyResult, Bus, DynHandler, Envelope, HandlerFuture, Message, MessageKind, Middleware,
     ValidationMiddleware,
@@ -195,6 +194,10 @@ pub use bus::{
 pub use cache::{QueryCache, QueryCacheMiddleware};
 pub use context::{ExecutionContext, ExecutionContextBuilder};
 pub use correlation::CorrelationMiddleware;
+pub use discovery::{
+    discovered_handler_bean_count, discovered_handler_count, register_discovered_handler_beans,
+    register_discovered_handlers, BeanHandlerRegistration, HandlerRegistration,
+};
 pub use eda_bridge::{
     resolve_pattern, CacheInvalidationEvent, EdaCacheInvalidationBridge, CACHE_INVALIDATION_TOPIC,
 };
@@ -214,5 +217,5 @@ pub use validation::{
 
 /// The released framework version. Calendar-versioned (`YY.M.PATCH`)
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to
-/// `26.6.6` in the June 2026 release window.
-pub const VERSION: &str = "26.6.6";
+/// `26.6.7` in the June 2026 release window.
+pub const VERSION: &str = "26.6.7";

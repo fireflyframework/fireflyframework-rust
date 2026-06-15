@@ -16,30 +16,34 @@
 //! `streaming` feature is on:
 //!
 //! ```sh
-//! cargo test -p firefly-sample-lumen --features streaming --test streaming
+//! cargo test -p firefly-sample-lumen --features streaming
 //! ```
 //!
 //! Without the feature this file compiles to nothing, so the default test run
-//! stays lean.
+//! stays lean. Each test boots one app context (Spring Boot's `@SpringBootTest`
+//! model) so the wallet a command opens is the wallet the stream replays.
 
 #![cfg(feature = "streaming")]
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::Router;
+use http_body_util::BodyExt;
+use tower::ServiceExt;
 
 use crate::build_router;
 use crate::domain::WalletView;
 use crate::security::{mint_token, CUSTOMER_ROLE};
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
-use tower::ServiceExt;
 
 fn bearer() -> String {
     format!("Bearer {}", mint_token("u-alice", &[CUSTOMER_ROLE]))
 }
 
-async fn open_with_deposit() -> String {
-    // Open a wallet and make a deposit so the stream has two events.
-    let res = build_router()
-        .await
+/// Opens a wallet and makes a deposit against the shared app so its event stream
+/// has two events; returns the wallet id.
+async fn open_with_deposit(app: &Router) -> String {
+    let res = app
+        .clone()
         .oneshot(
             Request::post("/api/v1/wallets")
                 .header("content-type", "application/json")
@@ -57,8 +61,7 @@ async fn open_with_deposit() -> String {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let view: WalletView = serde_json::from_slice(&bytes).unwrap();
 
-    build_router()
-        .await
+    app.clone()
         .oneshot(
             Request::post(format!("/api/v1/wallets/{}/deposit", view.id))
                 .header("content-type", "application/json")
@@ -75,9 +78,10 @@ async fn open_with_deposit() -> String {
 
 #[tokio::test]
 async fn events_stream_as_ndjson_by_default() {
-    let id = open_with_deposit().await;
-    let res = build_router()
-        .await
+    let app = build_router().await;
+    let id = open_with_deposit(&app).await;
+    let res = app
+        .clone()
         .oneshot(
             Request::get(format!("/api/v1/wallets/{id}/events"))
                 .body(Body::empty())
@@ -108,9 +112,10 @@ async fn events_stream_as_ndjson_by_default() {
 
 #[tokio::test]
 async fn events_stream_as_sse_when_requested() {
-    let id = open_with_deposit().await;
-    let res = build_router()
-        .await
+    let app = build_router().await;
+    let id = open_with_deposit(&app).await;
+    let res = app
+        .clone()
         .oneshot(
             Request::get(format!("/api/v1/wallets/{id}/events?format=sse"))
                 .body(Body::empty())
@@ -130,8 +135,9 @@ async fn events_stream_as_sse_when_requested() {
 
 #[tokio::test]
 async fn events_for_unknown_wallet_is_404_problem() {
-    let res = build_router()
-        .await
+    let app = build_router().await;
+    let res = app
+        .clone()
         .oneshot(
             Request::get("/api/v1/wallets/wlt_missing/events")
                 .body(Body::empty())

@@ -11,6 +11,9 @@ description = "Firefly Framework for Rust — Command + query bus with validatio
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
+# Bean-based handler discovery resolves the handler bean from the DI container,
+# so the registration thunk references `firefly_container::Container`.
+firefly-container = { workspace = true }
 firefly-eda = { workspace = true }
 firefly-kernel = { workspace = true }
 firefly-observability = { workspace = true }

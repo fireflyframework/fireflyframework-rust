@@ -84,7 +84,7 @@ pub use session::WsSession;
 
 /// Released framework version. Calendar-versioned (`YY.M.PATCH`), the Rust
 /// port's counterpart of the Go `kernel.Version` constant.
-pub const VERSION: &str = "26.6.6";
+pub const VERSION: &str = "26.6.7";
 
 #[cfg(test)]
 mod tests {

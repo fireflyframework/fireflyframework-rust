@@ -12,24 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The **CQRS** command/query split — declarative messages and their handlers
-//! (book chapter 7, "CQRS").
+//! The **CQRS** command/query split — declarative messages and their handler
+//! **bean** (book chapter 7, "CQRS").
 //!
 //! The write-side commands ([`OpenWallet`], [`Deposit`], [`Withdraw`]) and the
 //! read-side query ([`GetWallet`]) are plain structs carrying
 //! `#[derive(Command)]` / `#[derive(Query)]`, which generate their
 //! `firefly::cqrs::Message` impls (with the `#[firefly(validate)]` required-field
-//! checks and the query `cache_ttl`). Each handler is a free `async fn` marked
-//! `#[command_handler]` / `#[query_handler]`, which generates a
-//! `register_<fn>(bus)` helper.
+//! checks and the query `cache_ttl`).
 //!
-//! Free fns cannot capture wiring state, so the resolved [`Ledger`] +
-//! [`ReadModel`] are published once at startup through [`bind`] and the
-//! handlers reach them through [`state`] — the same pattern the
-//! `macro-quickstart` sample uses. The handlers turn the bus's `CqrsError`
-//! channel into the precise HTTP status at the web boundary.
+//! The handlers live on a **DI bean** — [`WalletHandlers`], a
+//! `#[derive(Service)]` whose collaborators (the write-side [`Ledger`] and the
+//! read-side [`ReadModel`]) are `#[autowired]` from the container. `#[handlers]`
+//! registers each `#[command_handler]` / `#[query_handler]` method on the bus, so
+//! a handler reaches its collaborators through `self` — Spring Boot's
+//! `@Component` command handler, with **no process-global** and no composition
+//! root. The handlers turn the bus's `CqrsError` channel into the precise HTTP
+//! status at the web boundary.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use firefly::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -37,48 +38,6 @@ use serde::{Deserialize, Serialize};
 use crate::domain::{DomainError, Wallet, WalletView};
 use crate::ledger::{Ledger, ReadModel};
 use crate::money::Money;
-
-// ---------------------------------------------------------------------------
-// Handler state — the resolved collaborators the free-fn handlers operate on.
-// ---------------------------------------------------------------------------
-
-/// The collaborators the CQRS handlers need: the write-side [`Ledger`] and the
-/// read-side [`ReadModel`] the projection feeds.
-struct HandlerState {
-    ledger: Ledger,
-    read_model: Arc<ReadModel>,
-}
-
-static STATE: OnceLock<HandlerState> = OnceLock::new();
-
-/// Publishes the handlers' collaborators and returns the **effective** state —
-/// the one actually held by the process-global `OnceLock`.
-///
-/// Because the global binds only once, a second call (a second
-/// [`build_app`](crate::web::build_app) in the same test binary) keeps the
-/// *first* ledger + read model. Returning the effective pair lets the
-/// composition root wire the rest of the app (the controller's saga, the
-/// projection) against the **same** collaborators the free-fn handlers use, so
-/// the whole app stays consistent no matter how many times it is built.
-pub fn bind(ledger: Ledger, read_model: Arc<ReadModel>) -> (Ledger, Arc<ReadModel>) {
-    let effective = STATE.get_or_init(|| HandlerState { ledger, read_model });
-    (effective.ledger.clone(), Arc::clone(&effective.read_model))
-}
-
-fn state() -> &'static HandlerState {
-    STATE
-        .get()
-        .expect("commands::bind must run before a handler dispatches")
-}
-
-/// The **effective** read model — the one the process-global `OnceLock` holds
-/// (the first build's). Call after [`bind`] has run (the DI container's `Ledger`
-/// `#[bean]` factory calls it on resolve). The projection writes this instance
-/// and `GetWallet` reads it, so the composition root seeds the projection
-/// against the same read model the free-fn handlers use.
-pub fn effective_read_model() -> Arc<ReadModel> {
-    state().read_model.clone()
-}
 
 /// Maps a [`DomainError`] onto the bus's [`CqrsError`] channel. The web layer
 /// restores the precise HTTP status from the detail message.
@@ -146,65 +105,70 @@ pub struct GetWallet {
 }
 
 // ---------------------------------------------------------------------------
-// CQRS handlers — `#[command_handler]` / `#[query_handler]`.
+// CQRS handler bean — a `#[derive(Service)]` whose methods are the command /
+// query handlers, autowiring the `Ledger` + `ReadModel` from the container.
 // ---------------------------------------------------------------------------
 
-/// Handles [`OpenWallet`]. `#[command_handler]` generates
-/// `register_open_wallet(bus)`.
-#[command_handler]
-pub async fn open_wallet(cmd: OpenWallet) -> Result<WalletView, CqrsError> {
-    if cmd.opening_balance < 0 {
-        return Err(CqrsError::validation("openingBalance must be >= 0"));
+/// The CQRS **handler bean** — Spring's `@Component` command/query handler. Its
+/// collaborators are `#[autowired]` from the DI container: the write-side
+/// [`Ledger`] every command drives, and the read-side [`ReadModel`] the
+/// projection feeds and `GetWallet` serves. `#[handlers]` registers each method
+/// on the bus, so the handler reaches its collaborators through `self` — no
+/// process-global, no composition root.
+#[derive(Service)]
+struct WalletHandlers {
+    /// The write-side application service (autowired).
+    #[autowired]
+    ledger: Arc<Ledger>,
+    /// The read-side projection store the `GetWallet` query reads (autowired).
+    #[autowired]
+    read_model: Arc<ReadModel>,
+}
+
+#[handlers]
+impl WalletHandlers {
+    /// Handles [`OpenWallet`].
+    #[command_handler]
+    async fn open_wallet(&self, cmd: OpenWallet) -> Result<WalletView, CqrsError> {
+        if cmd.opening_balance < 0 {
+            return Err(CqrsError::validation("openingBalance must be >= 0"));
+        }
+        self.ledger
+            .open(&cmd.owner, Money::cents(cmd.opening_balance))
+            .await
+            .map_err(to_cqrs)
     }
-    state()
-        .ledger
-        .open(&cmd.owner, Money::cents(cmd.opening_balance))
-        .await
-        .map_err(to_cqrs)
-}
 
-/// Handles [`Deposit`]. `#[command_handler]` generates `register_deposit(bus)`.
-#[command_handler]
-pub async fn deposit(cmd: Deposit) -> Result<WalletView, CqrsError> {
-    state()
-        .ledger
-        .deposit(&cmd.wallet_id, Money::cents(cmd.amount))
-        .await
-        .map_err(to_cqrs)
-}
-
-/// Handles [`Withdraw`]. `#[command_handler]` generates `register_withdraw(bus)`.
-#[command_handler]
-pub async fn withdraw(cmd: Withdraw) -> Result<WalletView, CqrsError> {
-    state()
-        .ledger
-        .withdraw(&cmd.wallet_id, Money::cents(cmd.amount))
-        .await
-        .map_err(to_cqrs)
-}
-
-/// Handles [`GetWallet`]. `#[query_handler]` generates `register_get_wallet(bus)`.
-///
-/// It serves from the projected read model, falling back to folding the event
-/// stream when the projection has not yet caught up — the canonical "query the
-/// read model, repair from the write model" pattern that keeps a read after a
-/// write from going stale under eventual consistency.
-#[query_handler]
-pub async fn get_wallet(q: GetWallet) -> Result<WalletView, CqrsError> {
-    if let Some(view) = state().read_model.find(&q.id) {
-        return Ok(view);
+    /// Handles [`Deposit`].
+    #[command_handler]
+    async fn deposit(&self, cmd: Deposit) -> Result<WalletView, CqrsError> {
+        self.ledger
+            .deposit(&cmd.wallet_id, Money::cents(cmd.amount))
+            .await
+            .map_err(to_cqrs)
     }
-    let events = state().ledger.load_events(&q.id).await.map_err(to_cqrs)?;
-    Ok(Wallet::rehydrate(&q.id, &events).view())
-}
 
-/// Installs every generated handler-registration helper on `bus`. The
-/// composition root calls this after [`bind`].
-pub fn register(bus: &Bus) {
-    register_open_wallet(bus);
-    register_deposit(bus);
-    register_withdraw(bus);
-    register_get_wallet(bus);
+    /// Handles [`Withdraw`].
+    #[command_handler]
+    async fn withdraw(&self, cmd: Withdraw) -> Result<WalletView, CqrsError> {
+        self.ledger
+            .withdraw(&cmd.wallet_id, Money::cents(cmd.amount))
+            .await
+            .map_err(to_cqrs)
+    }
+
+    /// Handles [`GetWallet`] — serve from the projected read model, falling back
+    /// to folding the event stream when the projection has not yet caught up
+    /// (the "query the read model, repair from the write model" pattern that
+    /// keeps a read after a write from going stale under eventual consistency).
+    #[query_handler]
+    async fn get_wallet(&self, q: GetWallet) -> Result<WalletView, CqrsError> {
+        if let Some(view) = self.read_model.find(&q.id) {
+            return Ok(view);
+        }
+        let events = self.ledger.load_events(&q.id).await.map_err(to_cqrs)?;
+        Ok(Wallet::rehydrate(&q.id, &events).view())
+    }
 }
 
 #[cfg(test)]
@@ -260,20 +224,22 @@ mod tests {
         assert_eq!(json, r#"{"owner":"alice","openingBalance":100}"#);
     }
 
+    /// The handler **bean** operates on its `#[autowired]` collaborators: each
+    /// method drives the same `Ledger` + `ReadModel` the container would inject,
+    /// with no process-global. (The bus wiring is covered end-to-end by the HTTP
+    /// tests, which boot the full `FireflyApplication`.)
     #[tokio::test]
-    async fn handlers_dispatch_through_the_bus() {
-        let ledger = Ledger::new(
-            Arc::new(MemoryEventStore::new()),
-            Arc::new(InMemoryBroker::new()),
-        );
-        bind(ledger, Arc::new(ReadModel::default()));
-        let bus = Bus::new();
-        // Validation middleware enforces the `#[firefly(validate)]` checks.
-        bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
-        register(&bus);
+    async fn handler_bean_operates_on_its_autowired_collaborators() {
+        let handlers = WalletHandlers {
+            ledger: Arc::new(Ledger::new(
+                Arc::new(MemoryEventStore::new()),
+                Arc::new(InMemoryBroker::new()),
+            )),
+            read_model: Arc::new(ReadModel::default()),
+        };
 
-        let opened: WalletView = bus
-            .send(OpenWallet {
+        let opened = handlers
+            .open_wallet(OpenWallet {
                 owner: "alice".into(),
                 opening_balance: 100,
             })
@@ -281,8 +247,8 @@ mod tests {
             .unwrap();
         assert_eq!(opened.balance, 100);
 
-        let after: WalletView = bus
-            .send(Deposit {
+        let after = handlers
+            .deposit(Deposit {
                 wallet_id: opened.id.clone(),
                 amount: 50,
             })
@@ -290,8 +256,8 @@ mod tests {
             .unwrap();
         assert_eq!(after.balance, 150);
 
-        let fetched: WalletView = bus
-            .query(GetWallet {
+        let fetched = handlers
+            .get_wallet(GetWallet {
                 id: opened.id.clone(),
             })
             .await

@@ -17,6 +17,7 @@
 use darling::{ast::NestedMeta, FromMeta};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+use syn::spanned::Spanned;
 use syn::ItemFn;
 
 use crate::common::{facade_from_override, parse_duration};
@@ -25,7 +26,7 @@ use crate::common::{facade_from_override, parse_duration};
 /// `@scheduled(cron=/fixed_rate=/fixed_delay=/initial_delay=/zone=)`.
 #[derive(FromMeta, Default)]
 #[darling(default)]
-struct ScheduledArgs {
+pub(crate) struct ScheduledArgs {
     #[darling(rename = "crate")]
     krate: Option<String>,
     /// A 5- or 6-field cron expression.
@@ -68,39 +69,6 @@ pub(crate) fn scheduled_attr(args: TokenStream, item: ItemFn) -> syn::Result<Tok
         ));
     }
 
-    // Enforce exactly-one-trigger at expansion time.
-    let triggers = [
-        args.cron.is_some(),
-        args.fixed_rate.is_some(),
-        args.fixed_delay.is_some(),
-    ]
-    .iter()
-    .filter(|p| **p)
-    .count();
-    if triggers != 1 {
-        return Err(syn::Error::new_spanned(
-            &item.sig,
-            "#[scheduled] needs exactly one trigger: cron, fixed_rate, or fixed_delay",
-        ));
-    }
-    if args.zone.is_some() && args.cron.is_none() {
-        return Err(syn::Error::new_spanned(
-            &item.sig,
-            "#[scheduled(zone = ...)] is only valid with `cron`",
-        ));
-    }
-    // `initial_delay` only has meaning for the interval triggers; the cron
-    // branch never consumes it. Reject it with `cron` at expansion time
-    // (mirroring the `zone` check) so a user who expects a delayed first cron
-    // firing gets a compile error rather than a silently ignored argument.
-    if args.initial_delay.is_some() && args.cron.is_some() {
-        return Err(syn::Error::new_spanned(
-            &item.sig,
-            "#[scheduled(initial_delay = ...)] is only valid with `fixed_rate` or \
-             `fixed_delay`, not `cron`",
-        ));
-    }
-
     let task_name = fn_ident.to_string();
     let register_ident = match &args.register {
         Some(name) => format_ident!("{}", name),
@@ -124,45 +92,11 @@ pub(crate) fn scheduled_attr(args: TokenStream, item: ItemFn) -> syn::Result<Tok
         }
     };
 
-    let initial_delay = match &args.initial_delay {
-        Some(spec) if !spec.is_empty() => Some(parse_duration(spec, fn_ident.span())?),
-        _ => None,
-    };
-
-    let register_body = if let Some(cron) = &args.cron {
-        match &args.zone {
-            Some(zone) => quote! {
-                __scheduler.cron_in_zone(#task_name, #cron, #zone, #body)
-                    .expect("firefly-macros: invalid #[scheduled(cron=..., zone=...)]");
-            },
-            None => quote! {
-                __scheduler.cron(#task_name, #cron, #body)
-                    .expect("firefly-macros: invalid #[scheduled(cron=...)] expression");
-            },
-        }
-    } else if let Some(rate) = &args.fixed_rate {
-        let dur = parse_duration(rate, fn_ident.span())?;
-        match &initial_delay {
-            Some(id) => quote! {
-                __scheduler.fixed_rate_with_initial_delay(#task_name, #dur, #id, #body);
-            },
-            None => quote! {
-                __scheduler.fixed_rate(#task_name, #dur, #body);
-            },
-        }
-    } else {
-        // fixed_delay
-        let spec = args.fixed_delay.as_ref().expect("trigger count checked");
-        let dur = parse_duration(spec, fn_ident.span())?;
-        match &initial_delay {
-            Some(id) => quote! {
-                __scheduler.fixed_delay_with_initial_delay(#task_name, #dur, #id, #body);
-            },
-            None => quote! {
-                __scheduler.fixed_delay(#task_name, #dur, #body);
-            },
-        }
-    };
+    // The `__scheduler.<trigger>(...)` call (validated + built from the trigger
+    // args) — shared with the `#[handlers]` bean-scheduled path.
+    // Span the whole signature for the trigger-validation diagnostics (matching
+    // the free-`fn` macro's original error spans).
+    let register_body = scheduled_register_call(&args, &task_name, &body, item.sig.span())?;
 
     let doc = format!(
         "Registers [`{fn}`] on the given scheduler under the task name \
@@ -193,4 +127,88 @@ pub(crate) fn scheduled_attr(args: TokenStream, item: ItemFn) -> syn::Result<Tok
 
         #inventory_submit
     })
+}
+
+/// Validates the `#[scheduled(...)]` trigger arguments and builds the
+/// `__scheduler.<trigger>(name, …, body)` registration statement, where `body`
+/// is the task closure (`Fn() -> impl Future<Output = Result<(), TaskError>>`).
+///
+/// Shared by `#[scheduled]` (free `fn`, the closure calls the fn) and
+/// `#[handlers]` (a bean method, the closure captures the resolved bean), so the
+/// cron / fixed-rate / fixed-delay / initial-delay / zone semantics stay in one
+/// place. `__scheduler` is the in-scope scheduler binding at the call site.
+pub(crate) fn scheduled_register_call(
+    args: &ScheduledArgs,
+    task_name: &str,
+    body: &TokenStream,
+    span: proc_macro2::Span,
+) -> syn::Result<TokenStream> {
+    // Exactly one trigger.
+    let triggers = [
+        args.cron.is_some(),
+        args.fixed_rate.is_some(),
+        args.fixed_delay.is_some(),
+    ]
+    .iter()
+    .filter(|p| **p)
+    .count();
+    if triggers != 1 {
+        return Err(syn::Error::new(
+            span,
+            "#[scheduled] needs exactly one trigger: cron, fixed_rate, or fixed_delay",
+        ));
+    }
+    if args.zone.is_some() && args.cron.is_none() {
+        return Err(syn::Error::new(
+            span,
+            "#[scheduled(zone = ...)] is only valid with `cron`",
+        ));
+    }
+    if args.initial_delay.is_some() && args.cron.is_some() {
+        return Err(syn::Error::new(
+            span,
+            "#[scheduled(initial_delay = ...)] is only valid with `fixed_rate` or \
+             `fixed_delay`, not `cron`",
+        ));
+    }
+
+    let initial_delay = match &args.initial_delay {
+        Some(spec) if !spec.is_empty() => Some(parse_duration(spec, span)?),
+        _ => None,
+    };
+
+    let call = if let Some(cron) = &args.cron {
+        match &args.zone {
+            Some(zone) => quote! {
+                __scheduler.cron_in_zone(#task_name, #cron, #zone, #body)
+                    .expect("firefly-macros: invalid #[scheduled(cron=..., zone=...)]");
+            },
+            None => quote! {
+                __scheduler.cron(#task_name, #cron, #body)
+                    .expect("firefly-macros: invalid #[scheduled(cron=...)] expression");
+            },
+        }
+    } else if let Some(rate) = &args.fixed_rate {
+        let dur = parse_duration(rate, span)?;
+        match &initial_delay {
+            Some(id) => quote! {
+                __scheduler.fixed_rate_with_initial_delay(#task_name, #dur, #id, #body);
+            },
+            None => quote! {
+                __scheduler.fixed_rate(#task_name, #dur, #body);
+            },
+        }
+    } else {
+        let spec = args.fixed_delay.as_ref().expect("trigger count checked");
+        let dur = parse_duration(spec, span)?;
+        match &initial_delay {
+            Some(id) => quote! {
+                __scheduler.fixed_delay_with_initial_delay(#task_name, #dur, #id, #body);
+            },
+            None => quote! {
+                __scheduler.fixed_delay(#task_name, #dur, #body);
+            },
+        }
+    };
+    Ok(call)
 }

@@ -34,8 +34,8 @@ samples/lumen/
 │   ├── main.rs           # ONE-LINE entry point: `FireflyApplication::new("lumen").run().await`
 │   ├── money.rs          # Money value object (immutable, cents, exact)
 │   ├── domain.rs         # Wallet aggregate + DomainEvent payloads + #[derive(Schema)] WalletView/WalletEvent
-│   ├── ledger.rs         # event-sourced Ledger service + ReadModel + #[event_listener] projection
-│   ├── commands.rs       # CQRS messages (#[derive(Command/Query/Schema)]) + #[command_handler]/#[query_handler]
+│   ├── ledger.rs         # event-sourced Ledger service + ReadModel + WalletProjection bean (#[derive(Service)] + #[handlers]/#[event_listener])
+│   ├── commands.rs       # CQRS messages (#[derive(Command/Query/Schema)]) + WalletHandlers bean (#[derive(Service)] + #[handlers]/#[command_handler]/#[query_handler])
 │   ├── transfer.rs       # Transfer saga (#[saga]) + #[derive(Schema)] TransferRequest/TransferResult
 │   ├── compliance.rs     # Compliance workflow (#[workflow] / #[workflow_step])
 │   ├── tcc_transfer.rs   # Two-phase transfer (#[tcc] / #[participant]) + #[derive(Schema)] TccTransferResult
@@ -210,35 +210,46 @@ crate.
 
 ### Ch 9 — CQRS (`09-cqrs.md`)
 - **Adds:** the **command/query split**. The `OpenWallet` / `Deposit` /
-  `Withdraw` commands and the `GetWallet` query, plus the free-fn handlers. The
-  handlers are **not** wired by a hand-written `register(&bus)` call — each
-  `#[command_handler]` / `#[query_handler]` submits to the inventory, and
-  `FireflyApplication` **drains the registry** (`register_discovered_handlers`)
-  at boot. Introduces the `OnceLock` "publish the resolved collaborators for
-  free-fn handlers" pattern and the read-after-write cache invalidation. The
-  `QueryCache` bean's read-cache middleware is auto-configured onto the bus
-  whenever the bean is present.
-- **Files:** `src/commands.rs` (whole file), `src/web.rs` (the controller
-  dispatches through the autowired `Bus`,
+  `Withdraw` commands and the `GetWallet` query, plus the **handler bean** —
+  `WalletHandlers`, a `#[derive(Service)]` whose `Ledger` + `ReadModel`
+  collaborators are `#[autowired]`. `#[handlers]` (an impl-level attribute on the
+  bean's `impl`) registers each `#[command_handler]` / `#[query_handler]` method
+  on the bus: the macro submits a `BeanHandlerRegistration` to the inventory that
+  resolves the bean from the container, and `FireflyApplication` **drains the
+  registry** (`register_discovered_handlers`) at boot. So the handler reaches its
+  collaborators through `self` — **no process-global, no `OnceLock`/`bind`, no
+  composition root** (the Rust analog of a Spring `@Component` command handler).
+  Adds the read-after-write cache invalidation. The `QueryCache` bean's read-cache
+  middleware is auto-configured onto the bus whenever the bean is present.
+- **Files:** `src/commands.rs` (whole file — messages + the `WalletHandlers`
+  bean), `src/web.rs` (the controller dispatches through the autowired `Bus`,
   `query_cache.invalidate_type::<GetWallet>()`).
 - **APIs/macros:** `#[derive(Command)]` / `#[derive(Query)]` (with
-  `#[firefly(validate)]` and `#[firefly(cache_ttl = "30s")]`),
-  `#[command_handler]` / `#[query_handler]` (drained from the inventory at boot),
+  `#[firefly(validate)]` and `#[firefly(cache_ttl = "30s")]`), `#[derive(Service)]`
+  + `#[autowired]` (the handler bean), `#[handlers]` + `#[command_handler]` /
+  `#[query_handler]` method markers (drained from the inventory at boot),
   `Bus::{send, query}`, `ValidationMiddleware`, `QueryCache`, `CqrsError`.
 
 ### Ch 10 — Event-Driven Architecture & Messaging (`10-eda-messaging.md`)
 - **Adds:** the **domain events on the wire** — the `Ledger` publishes each
   persisted event to the framework-provided `Broker`, and the **read-model
-  projection** consumes them to keep `ReadModel` current (the CQRS loop closes
-  here). The `#[event_listener]` is **not** subscribed by a hand-written
-  `subscribe(&broker)` call — it submits to the inventory, and
-  `FireflyApplication` **drains the registry**
-  (`subscribe_discovered_listeners`) at boot; the projection itself is seeded
-  inside the `ledger` `#[bean]`. Idempotent rebuild-from-stream projection.
-- **Files:** `src/ledger.rs` (`Ledger::commit` publish step, `to_envelope`,
-  `project_wallet_event`, `bind_projection`).
-- **APIs/macros:** `#[event_listener(topic = "wallets.events")]` (drained from
-  the inventory at boot), `firefly::eda::{Broker, Event, handler,
+  projection bean** consumes them to keep `ReadModel` current (the CQRS loop
+  closes here). The projection is `WalletProjection`, a `#[derive(Service)]` that
+  `#[autowired]`s the `Ledger` (for the event store it replays) and the
+  `ReadModel` it feeds; `#[handlers]` subscribes its `#[event_listener]` method to
+  the topic. It is **not** subscribed by a hand-written `subscribe(&broker)` call,
+  nor seeded inside the `ledger` `#[bean]` — `#[handlers]` submits a
+  `BeanListenerRegistration` to the inventory that resolves the bean from the
+  container, and `FireflyApplication` **drains the registry**
+  (`subscribe_discovered_listeners`) at boot. So the projection is autowired and
+  wired entirely through the DI container — **no `OnceLock`/`bind`, no
+  composition-root seeding**. Idempotent rebuild-from-stream projection.
+- **Files:** `src/ledger.rs` (`Ledger::commit` publish step, `to_envelope`, the
+  `WalletProjection` bean + its `#[handlers]`/`#[event_listener]` `project`
+  method).
+- **APIs/macros:** `#[derive(Service)]` + `#[autowired]` (the projection bean),
+  `#[handlers]` + `#[event_listener(topic = "wallets.events")]` method marker
+  (drained from the inventory at boot), `firefly::eda::{Broker, Event, handler,
   InMemoryBroker}`, `Event::{new, with_key, with_header}`, the Kafka/RabbitMQ
   adapter swap callout.
 
@@ -333,11 +344,17 @@ crate.
   ledger, saga, security, commands) and the end-to-end `tower::oneshot` HTTP
   suite covering the full flow (open → get → deposit/withdraw → transfer happy
   + compensation → projection convergence → auth/validation problems). Explains
-  the in-process, no-socket testing model and the shared-global handler caveat.
+  the in-process, no-socket testing model: each test boots **one** app context
+  with `build_router()` and drives every request against it (Spring Boot's
+  `@SpringBootTest` model). Because the handlers (`WalletHandlers`) and projection
+  (`WalletProjection`) are autowired beans, one container's singletons stay
+  consistent across a test's requests, so the wallet a command opens is the wallet
+  a later query reads — no `OnceLock`/shared-global caveat.
 - **Files:** `src/http_test.rs`, every `#[cfg(test)] mod tests` in `src/`. The
   HTTP suite drives the framework-assembled `build_router()`
   (`FireflyApplication::bootstrap().api_router`) in-process — the same app
-  `main` serves, no socket.
+  `main` serves, no socket. Helpers thread `&axum::Router` and `clone` it per
+  request (`app.clone().oneshot(req)`).
 - **APIs/macros:** `FireflyApplication::bootstrap` → `Bootstrapped::api_router`,
   `tower::ServiceExt::oneshot`, `http_body_util::BodyExt`, `firefly::testkit`
   helpers; `StepVerifier`/Testcontainers as production-grade callouts.
@@ -374,7 +391,8 @@ crate.
 - **Files:** all of `src/` (as a guided tour).
 - **APIs/macros:** the full set — `#[derive(Command/Query/Component/Service/
   Repository/Configuration/Controller/ConfigProperties/DomainEvent/
-  AggregateRoot)]`, `#[command_handler]`/`#[query_handler]`, `#[event_listener]`,
+  AggregateRoot)]`, `#[handlers]` (the handler-bean impl attribute) +
+  `#[command_handler]`/`#[query_handler]`/`#[event_listener]` method markers,
   `#[rest_controller]` + verbs, `#[scheduled]`, `#[bean]`, `#[autowired]`,
   `scan` / `register_all!`.
 

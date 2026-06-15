@@ -23,6 +23,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use firefly_container::Container;
+
 use crate::{Broker, EdaResult};
 
 /// The boxed future a generated subscribe-wrapper returns — a subscription that
@@ -38,6 +40,21 @@ pub struct ListenerRegistration {
 }
 
 inventory::collect!(ListenerRegistration);
+
+/// One link-time **bean** listener-subscription thunk, `inventory::submit!`-ted
+/// once per `#[event_listener]` method inside a `#[handlers]` bean impl — the
+/// Rust analog of Spring scanning a `@Component`'s `@EventListener` methods.
+///
+/// Unlike [`ListenerRegistration`], [`subscribe`](Self::subscribe) resolves the
+/// listener **bean** from the DI container and subscribes a closure that
+/// captures it, so the listener reaches its collaborators through ordinary
+/// `#[autowired]` fields instead of a process-global.
+pub struct BeanListenerRegistration {
+    /// Resolves the listener bean from `container` and subscribes it on `broker`.
+    pub subscribe: for<'a> fn(&'a dyn Broker, &'a Container) -> BoxSubscribeFuture<'a>,
+}
+
+inventory::collect!(BeanListenerRegistration);
 
 /// Subscribes every discovered (`inventory`-submitted) `#[event_listener]` on
 /// `broker` — the turnkey replacement for hand-`await`ing each generated
@@ -57,4 +74,29 @@ pub async fn subscribe_discovered_listeners(broker: &dyn Broker) -> EdaResult<us
 #[must_use]
 pub fn discovered_listener_count() -> usize {
     inventory::iter::<ListenerRegistration>.into_iter().count()
+}
+
+/// Subscribes every discovered **bean** listener on `broker`, resolving each
+/// listener bean from `container` — the turnkey wiring `FireflyApplication` runs
+/// for `#[handlers]` beans. Short-circuits on the first subscription error.
+/// Returns the number subscribed.
+pub async fn subscribe_discovered_listener_beans(
+    broker: &dyn Broker,
+    container: &Container,
+) -> EdaResult<usize> {
+    let mut count = 0;
+    for reg in inventory::iter::<BeanListenerRegistration> {
+        (reg.subscribe)(broker, container).await?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// The number of `#[handlers]`-bean event listeners discovered across the crate
+/// graph — for the startup report and tests.
+#[must_use]
+pub fn discovered_listener_bean_count() -> usize {
+    inventory::iter::<BeanListenerRegistration>
+        .into_iter()
+        .count()
 }

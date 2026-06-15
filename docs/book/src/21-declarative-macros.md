@@ -70,10 +70,11 @@ the exact Lumen file it lands in:
 | Macro | Lumen file | Generates |
 |-------|-----------|-----------|
 | `#[derive(Command)]` / `#[derive(Query)]` | `commands.rs` | the `Message` impl (`#[firefly(validate)]`, `#[firefly(cache_ttl = "…")]`) |
-| `#[command_handler]` / `#[query_handler]` | `commands.rs` | a `register_<fn>(bus)` helper |
+| `#[handlers]` (on the handler-bean `impl`) | `commands.rs`, `ledger.rs` | registers each `#[command_handler]` / `#[query_handler]` / `#[event_listener]` method of a DI bean on the bus / broker |
+| `#[command_handler]` / `#[query_handler]` (method markers) | `commands.rs` | mark a CQRS handler method inside a `#[handlers]` impl |
 | `#[derive(DomainEvent)]` | `domain.rs` | `EVENT_TYPE` + `to_domain_event` |
 | `#[derive(AggregateRoot)]` | `domain.rs` | `AGGREGATE_TYPE` + `aggregate()` / `aggregate_mut()` |
-| `#[event_listener(topic = "…")]` | `ledger.rs` | a `subscribe_<fn>(broker)` helper |
+| `#[event_listener(topic = "…")]` (method marker) | `ledger.rs` | mark an EDA listener method inside a `#[handlers]` impl (the projection bean) |
 | `#[rest_controller]` + `#[get/post]` | `web.rs` | a `routes(state) -> axum::Router` |
 | `#[scheduled(fixed_rate = "…")]` | `housekeeping.rs` | a `schedule_<fn>(scheduler)` helper |
 | `#[firefly::saga]` + `#[saga_step]` | `transfer.rs` | `TransferSaga::saga()` + a `run`-style step graph with compensation |
@@ -140,31 +141,57 @@ pub struct GetWallet {
 }
 ```
 
-`#[command_handler]` / `#[query_handler]` mark a free `async fn` and generate a
-`register_<fn>(bus)` helper that installs it on the bus:
+In Lumen the handlers live on a **DI bean** — `WalletHandlers`, a
+`#[derive(Service)]` whose collaborators are `#[autowired]` from the container —
+and `#[handlers]` registers each method on the bus. This is the Rust analog of
+Spring scanning a `@Component`'s `@CommandHandler` / `@QueryHandler` methods: the
+handler reaches its collaborators through `self`, so there is **no process-global
+and no composition root**. This is verbatim Lumen:
 
 ```rust,ignore
-#[command_handler]
-pub async fn open_wallet(cmd: OpenWallet) -> Result<WalletView, CqrsError> { /* … */ }
+#[derive(Service)]
+struct WalletHandlers {
+    #[autowired]
+    ledger: Arc<Ledger>,
+    #[autowired]
+    read_model: Arc<ReadModel>,
+}
 
-#[query_handler]
-pub async fn get_wallet(q: GetWallet) -> Result<WalletView, CqrsError> { /* … */ }
-// generated: register_open_wallet(&bus);  register_get_wallet(&bus);
+#[handlers]
+impl WalletHandlers {
+    #[command_handler]
+    async fn open_wallet(&self, cmd: OpenWallet) -> Result<WalletView, CqrsError> {
+        self.ledger.open(&cmd.owner, Money::cents(cmd.opening_balance)).await.map_err(to_cqrs)
+    }
+
+    #[query_handler]
+    async fn get_wallet(&self, q: GetWallet) -> Result<WalletView, CqrsError> {
+        if let Some(view) = self.read_model.find(&q.id) { return Ok(view); }
+        /* … repair from the event stream … */
+    }
+    // … deposit / withdraw
+}
 ```
 
-Beyond the helper, each `#[command_handler]` / `#[query_handler]` submits a
-`HandlerRegistration` into a compile-time `inventory` registry, and
-`FireflyApplication` drains it at boot with `register_discovered_handlers(&bus)`
-— so Lumen installs the four handlers by *declaring* them, calling neither the
-generated `register_<fn>` helpers nor a hand-written `register(&bus)` fn (that fn
-survives only for unit tests). Because free fns cannot capture wiring state, the
-resolved `Ledger` + `ReadModel` are published once through a `bind` / `OnceLock`
-and reached from the handlers — the pattern chapter 9 introduced.
+`#[handlers]` is an **impl-level** attribute (like `#[rest_controller]`) applied
+to the `impl` block of a registered bean. Each method marked `#[command_handler]`
+/ `#[query_handler]` takes `&self` plus one message argument; for every marker the
+macro submits a `BeanHandlerRegistration` into a compile-time `inventory` registry
+that resolves the bean from the container and installs a closure capturing it.
+`FireflyApplication` drains those registrations at boot — so Lumen installs the
+four handlers by *declaring* the bean and its methods, with no hand-written
+`register(&bus)` call and no `bind` / `OnceLock` publishing wiring state.
+
+> **The free-`fn` form remains.** `#[command_handler]` / `#[query_handler]` also
+> work on a **free `async fn(Msg) -> Result<R, CqrsError>`** (generating a
+> `register_<fn>(bus)` helper) for a simple, collaborator-free handler — the form
+> the `macro-quickstart` sample uses. `#[handlers]` is the **bean** form for a
+> handler that autowires collaborators, which is Lumen's actual wiring.
 
 > **What it generates.** `#[derive(Command)]` / `#[derive(Query)]` emit the
-> `Message` impl; `#[command_handler]` / `#[query_handler]` emit a typed
-> `register_<fn>(bus)` helper *and* a `HandlerRegistration` the framework drains
-> from inventory. `#[firefly(cache_ttl)]` exposes a TTL the query cache reads. The
+> `Message` impl; `#[handlers]` emits a `BeanHandlerRegistration` per marked method
+> that resolves the bean and installs it on the bus, drained by the framework from
+> inventory. `#[firefly(cache_ttl)]` exposes a TTL the query cache reads. The
 > `Bus` is the command/query gateway every dispatch flows through.
 
 ### Event sourcing — domain events and the aggregate (`domain.rs`)
@@ -204,28 +231,47 @@ discriminators and the wire conversion are generated.
 
 ### Messaging — the projection listener (`ledger.rs`)
 
-`#[event_listener(topic = "…")]` marks a free `async fn(Event) -> FireflyResult<()>`
-and generates a `subscribe_<fn>(broker)` helper that subscribes it to the topic.
-Lumen's read-model projection is one declaration:
+Lumen's read-model projection is an **EDA listener bean** — `WalletProjection`, a
+`#[derive(Service)]` that `#[autowired]`s the `Ledger` (for the event store it
+replays) and the `ReadModel` it feeds. Inside a `#[handlers]` impl, an
+`#[event_listener(topic = "…")]` method marks the projection — exactly like the
+CQRS bean above, but the marker subscribes the method to an EDA topic rather than
+the bus:
 
 ```rust,ignore
-#[event_listener(topic = "wallets.events")]
-pub async fn project_wallet_event(ev: Event) -> FireflyResult<()> {
-    // reload the wallet's stream, fold to a WalletView, upsert — idempotent.
-    Ok(())
+#[derive(Service)]
+struct WalletProjection {
+    #[autowired]
+    ledger: Arc<Ledger>,
+    #[autowired]
+    read_model: Arc<ReadModel>,
 }
-// generated: subscribe_project_wallet_event(broker)
+
+#[handlers]
+impl WalletProjection {
+    #[event_listener(topic = "wallets.events")]
+    async fn project(&self, ev: Event) -> FireflyResult<()> {
+        // reload the wallet's stream, fold to a WalletView, upsert — idempotent.
+        Ok(())
+    }
+}
 ```
 
-The macro also registers a `ListenerRegistration` in inventory, and
-`FireflyApplication` drains it at boot with
-`subscribe_discovered_listeners(broker)` — so the subscription that closes the
-CQRS loop is wired by the framework, not by a composition-root call to
-`subscribe_project_wallet_event`.
+`#[handlers]` submits a `BeanListenerRegistration` into inventory that resolves the
+bean from the container and subscribes its method to the topic on the very broker
+the ledger publishes to. `FireflyApplication` drains it at boot — so the
+subscription that closes the CQRS loop is wired entirely through the DI container,
+with no `bind` / `OnceLock` and no composition-root `subscribe(&broker)` call.
 
-> **What it generates.** `#[event_listener(topic = "…")]` emits a
-> `subscribe_<fn>(broker)` helper *and* a `ListenerRegistration` the framework
-> drains, subscribing the function to the topic on whatever broker transport is
+> **The free-`fn` form remains.** `#[event_listener(topic = "…")]` also works on a
+> **free `async fn(Event) -> FireflyResult<()>`** (generating a
+> `subscribe_<fn>(broker)` helper) for a simple, collaborator-free listener.
+> `#[handlers]` is the **bean** form for a projection that autowires collaborators
+> — Lumen's actual wiring.
+
+> **What it generates.** Inside a `#[handlers]` impl, `#[event_listener(topic =
+> "…")]` contributes a `BeanListenerRegistration` the framework drains, resolving
+> the bean and subscribing its method to the topic on whatever broker transport is
 > wired in. You write only the handler body; the subscription wiring is generated
 > and drained for you.
 
@@ -547,18 +593,21 @@ whatever a macro expands to without listing the underlying `firefly-*` crates.
 You never write `__rt` yourself. If you rename or shim the facade, pass
 `#[firefly(crate = "my_firefly")]` to any macro to override the leading segment.
 
-The declarative layer goes further than generating helpers: each handler,
-listener, scheduled task, and controller also submits a registration into a
+The declarative layer goes further than generating helpers: each handler bean,
+listener bean, scheduled task, and controller also submits a registration into a
 compile-time `inventory` registry, and `FireflyApplication` **drains** those
-registries at boot. So Lumen calls *none* of the generated wiring by hand — no
-`register(&bus)`, no `subscribe_project_wallet_event(broker)`, no
-`WalletApi::routes(state)` handed to the web stack. It declares the handlers,
-listener, task, and controller, and the framework finds and installs them
-(`register_discovered_handlers` / `subscribe_discovered_listeners` /
-`register_discovered_scheduled` / `mount_controllers`). The generated
-`register_<fn>` / `subscribe_<fn>` / `schedule_<fn>` / `routes(state)` helpers
-remain as the explicit fallback an app can call directly — Lumen's unit tests use
-them — but the running service is wired entirely by the inventory drain.
+registries at boot. So Lumen calls *none* of the wiring by hand — no
+`register(&bus)`, no `subscribe(&broker)`, no `WalletApi::routes(state)` handed to
+the web stack, and no `bind` / `OnceLock` publishing the handlers' collaborators.
+It declares the `WalletHandlers` / `WalletProjection` beans, the task, and the
+controller, and the framework resolves each bean from the container and installs
+it (`register_discovered_handlers` / `subscribe_discovered_listeners` /
+`register_discovered_scheduled` / `mount_controllers`). The free-`fn`
+`#[command_handler]` / `#[query_handler]` / `#[event_listener]` form still
+generates a `register_<fn>` / `subscribe_<fn>` helper for a collaborator-free
+handler (and `#[scheduled]` a `schedule_<fn>`); but Lumen's handlers autowire
+collaborators, so it uses the `#[handlers]` bean form, and the running service is
+wired entirely by the inventory drain.
 
 ## The whole crate, declaratively
 
@@ -567,9 +616,11 @@ Read top to bottom, the macros tell Lumen's story:
 ```text
   money.rs        (no macros — a pure value object; the no-thiserror promise)
   domain.rs       #[derive(DomainEvent)] x3   #[derive(AggregateRoot)]
-  ledger.rs       #[event_listener(topic = "wallets.events")]
+  ledger.rs       #[derive(Service)] WalletProjection
+                  #[handlers] + #[event_listener(topic = "wallets.events")]
   commands.rs     #[derive(Command)] x3   #[derive(Query)]
-                  #[command_handler] x3   #[query_handler]
+                  #[derive(Service)] WalletHandlers
+                  #[handlers] + #[command_handler] x3 + #[query_handler]
   transfer.rs     #[firefly::saga] + #[saga_step] x2
   compliance.rs   #[firefly::workflow] + #[workflow_step] x3
   tcc_transfer.rs #[firefly::tcc] + #[participant] x2
@@ -610,9 +661,12 @@ crate.
 
 Nothing — this chapter is the retrospective, not a new feature. Re-read as a
 catalogue, Lumen's macros are: three `#[derive(DomainEvent)]` + one
-`#[derive(AggregateRoot)]` (`domain.rs`); one `#[event_listener]` (`ledger.rs`);
-three `#[derive(Command)]` + one `#[derive(Query)]` + three `#[command_handler]`
-+ one `#[query_handler]` (`commands.rs`); the declarative orchestration set —
+`#[derive(AggregateRoot)]` (`domain.rs`); the `WalletProjection`
+`#[derive(Service)]` bean with `#[handlers]` + one `#[event_listener]`
+(`ledger.rs`); three `#[derive(Command)]` + one `#[derive(Query)]` + the
+`WalletHandlers` `#[derive(Service)]` bean with `#[handlers]` + three
+`#[command_handler]` + one `#[query_handler]` (`commands.rs`); the declarative
+orchestration set —
 `#[firefly::saga]` + `#[saga_step]` (`transfer.rs`), `#[firefly::workflow]` +
 `#[workflow_step]` (`compliance.rs`), and `#[firefly::tcc]` + `#[participant]`
 (`tcc_transfer.rs`); one `#[rest_controller]` with seven verb methods (`web.rs`);

@@ -475,3 +475,139 @@ fn register_all_explicit_list_still_works() {
     assert!(svc.has_repo());
     assert!(c.resolve::<LegacyRepo>().is_ok());
 }
+
+// ===========================================================================
+// Every Spring/pyfly stereotype registers a USER-defined bean with its label
+// ===========================================================================
+
+#[derive(Component, Default)]
+struct StereoComponent;
+
+#[derive(Service, Default)]
+struct StereoService;
+
+#[derive(Repository, Default)]
+struct StereoRepository;
+
+#[derive(Clone, Controller, Default)]
+struct StereoController;
+
+#[derive(Configuration, Default)]
+struct StereoConfig;
+struct ConfigWidget;
+
+#[firefly::bean]
+impl StereoConfig {
+    #[bean]
+    fn config_widget(&self) -> ConfigWidget {
+        ConfigWidget
+    }
+}
+
+#[derive(AutoConfiguration, Default)]
+struct StereoAutoConfig;
+struct AutoWidget;
+
+#[firefly::bean]
+impl StereoAutoConfig {
+    #[bean]
+    fn auto_widget(&self) -> AutoWidget {
+        AutoWidget
+    }
+}
+
+/// One user-defined bean for every stereotype the framework supports —
+/// `@Component` / `@Service` / `@Repository` / `@Controller` / `@Configuration`
+/// (+ `@Bean`) / `@AutoConfiguration` — registers, resolves, and is reported
+/// under its Spring/pyfly stereotype label, proving the DI container manages
+/// **all** kinds of user beans like Spring Boot.
+#[test]
+fn every_stereotype_registers_a_user_bean_with_its_label() {
+    let c = Container::new();
+    StereoComponent::firefly_register(&c);
+    StereoService::firefly_register(&c);
+    StereoRepository::firefly_register(&c);
+    StereoController::firefly_register(&c);
+    StereoConfig::firefly_register(&c);
+    StereoConfig::firefly_register_beans(&c);
+    StereoAutoConfig::firefly_register(&c);
+    StereoAutoConfig::firefly_register_beans(&c);
+
+    // Every user-defined bean resolves — including the `@Bean` factory products.
+    assert!(c.resolve::<StereoComponent>().is_ok());
+    assert!(c.resolve::<StereoService>().is_ok());
+    assert!(c.resolve::<StereoRepository>().is_ok());
+    assert!(c.resolve::<StereoController>().is_ok());
+    assert!(
+        c.resolve::<ConfigWidget>().is_ok(),
+        "@Bean product resolves"
+    );
+    assert!(
+        c.resolve::<AutoWidget>().is_ok(),
+        "@AutoConfiguration @Bean product resolves"
+    );
+
+    // ...and each is reported under its stereotype label in the bean registry
+    // (the labels the admin dashboard groups by).
+    let beans = c.beans();
+    let label = |suffix: &str| -> Option<String> {
+        beans
+            .iter()
+            .find(|b| b.type_name.ends_with(suffix))
+            .unwrap_or_else(|| panic!("bean `{suffix}` not registered"))
+            .stereotype
+            .clone()
+    };
+    assert_eq!(label("StereoComponent").as_deref(), Some("component"));
+    assert_eq!(label("StereoService").as_deref(), Some("service"));
+    assert_eq!(label("StereoRepository").as_deref(), Some("repository"));
+    assert_eq!(label("StereoController").as_deref(), Some("controller"));
+    assert_eq!(label("StereoConfig").as_deref(), Some("configuration"));
+    assert_eq!(
+        label("StereoAutoConfig").as_deref(),
+        Some("autoconfiguration")
+    );
+}
+
+// ===========================================================================
+// #[handlers] bean — a #[scheduled] task method autowires its collaborators
+// (Spring's `@Scheduled` on a `@Component`) and is drained from the container.
+// ===========================================================================
+
+#[derive(Component, Default)]
+struct TickCounter {
+    ticks: AtomicUsize,
+}
+
+#[derive(Service)]
+struct HeartbeatBean {
+    #[autowired]
+    counter: Arc<TickCounter>,
+}
+
+#[handlers]
+impl HeartbeatBean {
+    #[scheduled(fixed_rate = "60s")]
+    async fn beat(&self) -> Result<(), std::io::Error> {
+        self.counter.ticks.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn handlers_bean_scheduled_task_registers_from_the_container() {
+    let c = Container::new();
+    TickCounter::firefly_register(&c);
+    HeartbeatBean::firefly_register(&c);
+
+    // The bean `#[scheduled]` task is drained from the container onto a scheduler
+    // — the bean is resolved (autowiring `TickCounter`) and its method scheduled.
+    let scheduler = Scheduler::new();
+    let n = firefly::scheduling::register_discovered_scheduled_beans(&scheduler, &c);
+    assert!(n >= 1, "the bean #[scheduled] task was drained");
+    let names: Vec<String> = scheduler.tasks().into_iter().map(|t| t.name).collect();
+    assert!(
+        names.contains(&"beat".to_string()),
+        "the autowired #[scheduled] task registered, got {names:?}"
+    );
+}

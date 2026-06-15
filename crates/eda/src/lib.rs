@@ -147,7 +147,8 @@ mod serializer;
 pub use inventory;
 
 pub use discovery::{
-    discovered_listener_count, subscribe_discovered_listeners, BoxSubscribeFuture,
+    discovered_listener_bean_count, discovered_listener_count, subscribe_discovered_listener_beans,
+    subscribe_discovered_listeners, BeanListenerRegistration, BoxSubscribeFuture,
     ListenerRegistration,
 };
 pub use dlq::{EdaDeadLetterEntry, EdaDeadLetterStore, InMemoryEdaDeadLetterStore};
@@ -172,4 +173,4 @@ pub use serializer::{
 };
 
 /// The released framework version, shared across all Firefly crates.
-pub const VERSION: &str = "26.6.6";
+pub const VERSION: &str = "26.6.7";

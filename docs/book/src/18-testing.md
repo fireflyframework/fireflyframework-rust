@@ -32,58 +32,61 @@ plain `#[tokio::test]` with **no socket and no external service**. The HTTP test
 do not bind a port; they hand a `Request` to the router and `await` the
 `Response`. That is fast, deterministic, and CI-friendly.
 
-One caveat is worth stating up front, because Lumen's tests are built around it.
-`build_router()` bootstraps a `FireflyApplication`
+The model is worth stating up front, because Lumen's tests are built around it.
+Each test boots **one** app context with `build_router()` and drives every request
+against it — Spring Boot's `@SpringBootTest` model. `build_router()` bootstraps a
+`FireflyApplication`
 (`FireflyApplication::new(APP_NAME).version(VERSION).bootstrap().await`) and hands
 back its public router — the same component-scanned container, auto-mounted
-controller, inventory-drained handlers/listener, and auto-installed middleware the
-real `main()` boots. Lumen's free-function command handlers and its read-model
-projection publish their collaborators through process-global `OnceLock`s (the
-pattern from Chapter 9), and the `ledger` `#[bean]` factory binds them on
-construction. So the *first* `build_router()` in a test binary wires the shared
-ledger that every later test in that binary then drives. The tests cope by giving
-each wallet a fresh owner and a server-assigned id, so there is no cross-test
-interference even though the ledger is shared.
+controller, inventory-drained handler/projection beans, and auto-installed
+middleware the real `main()` boots. The CQRS handlers (`WalletHandlers`) and the
+read-model projection (`WalletProjection`) are now **autowired DI beans**, not
+free functions over a process-global, so each test's container is self-consistent:
+the `Ledger`, `ReadModel`, and `QueryCache` singletons one container resolves are
+the *same* instances every handler and the projection share. A wallet a command
+opens is therefore the wallet a later query reads, because both run against the
+one container the test booted. The `axum::Router` is cheap to `clone` (it is
+`Arc`-backed), so each request `clone`s the shared app rather than rebuilding it.
 
 ## Unit tests with no infrastructure
 
 The domain and the value object are pure, so their tests need nothing. Lumen's
 `money.rs` and `domain.rs` assert invariants directly — exact-cents arithmetic,
 positive amounts, sufficient funds, owner required. The CQRS layer is just as
-direct: dispatch a command through a real `Bus` and assert the result. This is
-the heart of `commands.rs`'s test module:
+direct: the handlers are a `#[derive(Service)]` bean (`WalletHandlers`), so a unit
+test constructs it with its collaborators in hand and calls a method straight,
+asserting the result. This is the heart of `commands.rs`'s test module:
 
 ```rust,ignore
 #[tokio::test]
-async fn handlers_dispatch_through_the_bus() {
-    let ledger = Ledger::new(
-        Arc::new(MemoryEventStore::new()),
-        Arc::new(InMemoryBroker::new()),
-    );
-    bind(ledger, Arc::new(ReadModel::default()));
-    let bus = Bus::new();
-    // Validation middleware enforces the `#[firefly(validate)]` checks.
-    bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
-    register(&bus);
+async fn handler_bean_operates_on_its_autowired_collaborators() {
+    let handlers = WalletHandlers {
+        ledger: Arc::new(Ledger::new(
+            Arc::new(MemoryEventStore::new()),
+            Arc::new(InMemoryBroker::new()),
+        )),
+        read_model: Arc::new(ReadModel::default()),
+    };
 
-    let opened: WalletView = bus
-        .send(OpenWallet { owner: "alice".into(), opening_balance: 100 })
+    let opened = handlers
+        .open_wallet(OpenWallet { owner: "alice".into(), opening_balance: 100 })
         .await
         .unwrap();
     assert_eq!(opened.balance, 100);
 
-    let after: WalletView = bus
-        .send(Deposit { wallet_id: opened.id.clone(), amount: 50 })
+    let after = handlers
+        .deposit(Deposit { wallet_id: opened.id.clone(), amount: 50 })
         .await
         .unwrap();
     assert_eq!(after.balance, 150);
 }
 ```
 
-This unit test wires its own bus explicitly with `register(&bus)` to isolate the
-dispatch path; the full application boot installs the *same* handlers by draining
-the inventory registry (`register_discovered_handlers`), so the test exercises the
-real handlers without standing up the container.
+This unit test builds the handler bean with the same `Ledger` + `ReadModel` the
+container would inject and drives its methods directly — no bus, no process-global.
+The full application boot installs the *same* bean on the bus by draining the
+inventory registry (`register_discovered_handlers`), so the test exercises the real
+handlers without standing up the container.
 
 Validation is tested without ever touching HTTP — call `.validate()` on the
 command directly, because `#[derive(Command)]` generated it from the
@@ -108,17 +111,24 @@ The end-to-end suite lives in `src/http_test.rs` (a `#[cfg(test)] mod http_test`
 declared in `main.rs`, so it runs as part of the binary's own test target) and
 drives the **fully-wired**
 `build_router()` — which bootstraps a `FireflyApplication` and returns its public
-router: the auto-mounted `#[rest_controller]` routes, the inventory-drained CQRS
-handlers, the event-sourced ledger, the read-model projection, the transfer saga,
-*and* the auto-discovered JWT/RBAC enforcement from Chapter 14. No mocks: every
-layer is the production layer, just over in-memory infrastructure.
+router: the auto-mounted `#[rest_controller]` routes, the CQRS handler bean, the
+event-sourced ledger, the read-model projection bean, the transfer saga, *and* the
+auto-discovered JWT/RBAC enforcement from Chapter 14. No mocks: every layer is the
+production layer, just over in-memory infrastructure.
 
-The pattern is `Router` + `tower::ServiceExt::oneshot`. Lumen wraps it in two
-tiny helpers so each test reads as one HTTP round-trip:
+The pattern is one `Router` per test + `tower::ServiceExt::oneshot`. A test boots
+the app once (`let app = build_router().await`) and drives every request against
+it; the helpers take the booted `&axum::Router` and `clone` it per request
+(`app.clone().oneshot(req)`), so they all share the one container:
 
 ```rust,ignore
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+
+/// Sends one request against the (cloned) shared app and returns the response.
+async fn send(app: &Router, req: Request<Body>) -> Response {
+    app.clone().oneshot(req).await.unwrap()
+}
 
 fn post(path: &str, body: serde_json::Value, auth: bool) -> Request<Body> {
     let mut b = Request::post(path).header("content-type", "application/json");
@@ -134,23 +144,20 @@ async fn body_json<T: serde::de::DeserializeOwned>(res: Response) -> T {
 }
 ```
 
-A test then opens a wallet and asserts the projected read came back through CQRS:
+A test then boots the app, opens a wallet, and asserts the projected read came
+back through CQRS — all against the one app context:
 
 ```rust,ignore
 #[tokio::test]
 async fn open_then_get_round_trips_through_cqrs() {
-    let opened = open_wallet("alice", 1_000).await;   // POST /api/v1/wallets, asserts 201
+    let app = build_router().await;                       // one app context per test
+    let opened = open_wallet(&app, "alice", 1_000).await; // POST /api/v1/wallets, asserts 201
     assert_eq!(opened.balance, 1_000);
 
-    // GET dispatches the #[query_handler]; the projection has already folded
-    // the WalletOpened event into the read model.
-    let res = build_router()
-        .await
-        .oneshot(get(&format!("/api/v1/wallets/{}", opened.id)))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let fetched: WalletView = body_json(res).await;
+    // GET dispatches the #[query_handler] on the handler bean; it reads the
+    // projection (or repairs from the event stream) — both resolved from the
+    // same container as the command that opened the wallet.
+    let fetched = get_wallet(&app, &opened.id).await;
     assert_eq!(fetched.balance, 1_000);
 }
 ```
@@ -349,11 +356,13 @@ Nothing in `src/` — this chapter is the retrospective on the test code that gr
 alongside every feature:
 
 - **Unit tests** per module: `money` and `domain` invariants, `commands`
-  validation + bus dispatch, `security` mint/verify/reject, `transfer` happy +
-  compensation, `housekeeping` registration + tick.
-- The **`src/http_test.rs`** end-to-end suite drives the real `build_router()`
-  with `tower::oneshot`, covering open → get → deposit/withdraw → transfer (happy +
-  compensated) → projection convergence → 401/422/404 problems.
+  validation + the handler bean over its autowired collaborators, `security`
+  mint/verify/reject, `transfer` happy + compensation, `housekeeping` registration
+  + tick.
+- The **`src/http_test.rs`** end-to-end suite boots one `build_router()` app
+  context per test and drives every request against it with `tower::oneshot`,
+  covering open → get → deposit/withdraw → transfer (happy + compensated) →
+  projection convergence → 401/422/404 problems.
 - **`src/streaming_test.rs`** (feature-gated) exercises the NDJSON / SSE endpoint.
 - The **`firefly-testkit`** helpers — `TestClient`, `Slice`,
   `assert_event_published`, the HMAC signers — are the terse path to the same
@@ -364,10 +373,11 @@ alongside every feature:
 1. **Rewrite a test with `TestClient`.** Take the read assertions from
    `deposit_and_withdraw_update_the_balance` in `src/http_test.rs` and rewrite the
    final `GET` round-trip using `TestClient` + `assert_json_path`. (The
-   `TestClient` request helpers carry no per-request header argument, so keep the
-   authenticated mutations on the raw `tower::oneshot` form that mints a bearer
-   token, then point a `TestClient` at the same `build_router()` for the public
-   read.)
+   `TestClient` request helpers carry no per-request header argument, so boot the
+   app once, keep the authenticated mutations on the raw `tower::oneshot` form that
+   mints a bearer token against that `Router`, then wrap the *same* `Router` in a
+   `TestClient` for the public read — one app context, so the read sees the
+   mutation.)
 2. **A `Slice` test for the read model.** Use `Slice` to register a
    `ReadModel::default()` instance, project a `WalletOpened` into it by hand, and
    assert `find` returns the view — all without the bus or the router.
