@@ -247,21 +247,24 @@ impl FireflyApplication {
             .await?;
         }
 
-        // 6. Security: an explicitly-configured chain, else the `FilterChain` +
-        //    `BearerLayer` DI beans (Spring's `SecurityFilterChain` bean).
-        let bearer = match security {
-            Some((chain, bearer)) => {
-                web.set_security(chain);
-                Some(bearer)
-            }
+        // 6. Security: an explicitly-configured chain + bearer, else the
+        //    `FilterChain` + `BearerLayer` DI beans (Spring's
+        //    `SecurityFilterChain` bean). Captured here and layered onto the
+        //    application routes ONLY in step 9 (not the public docs), so the
+        //    auth boundary covers exactly the application surface while the
+        //    observability edge still wraps everything.
+        let (filter_chain, bearer) = match security {
+            Some((chain, bearer)) => (Some(chain), Some(bearer)),
             None => {
-                if let Ok(chain) = container.resolve::<firefly_security::FilterChain>() {
-                    web.set_security((*chain).clone());
-                }
-                container
+                let chain = container
+                    .resolve::<firefly_security::FilterChain>()
+                    .ok()
+                    .map(|chain| (*chain).clone());
+                let bearer = container
                     .resolve::<firefly_security::BearerLayer>()
                     .ok()
-                    .map(|bearer| (*bearer).clone())
+                    .map(|bearer| (*bearer).clone());
+                (chain, bearer)
             }
         };
 
@@ -290,24 +293,27 @@ impl FireflyApplication {
         firefly_eda::subscribe_discovered_listeners(broker.as_ref()).await?;
         firefly_scheduling::register_discovered_scheduled(&scheduler);
 
-        // 9. Apply the middleware chain + bearer auth (+ admin trace layer).
-        let mut api = web.apply_middleware(routes);
-        if let Some(bearer) = bearer {
-            api = api.layer(bearer);
+        // 9. Assemble the public router and wrap EVERY request in the
+        //    observability edge. Security (the filter chain + bearer) is layered
+        //    onto the application routes ONLY; the OpenAPI docs and the default
+        //    404 are public siblings. `web.apply_middleware` then wraps the whole
+        //    combined router in the inherited edge — idempotency, the
+        //    request-access-log, metrics, correlation, W3C trace, security
+        //    headers, problem rendering, CORS, and the global exception advice —
+        //    so docs requests and unmatched-route 404s are logged, traced, and
+        //    correlated exactly like application requests (no observability gap).
+        let mut app = routes;
+        if let Some(chain) = filter_chain {
+            app = app.layer(chain.layer());
         }
-        #[cfg(feature = "admin")]
-        let trace_buffer = Arc::new(firefly_admin::TraceBuffer::new());
-        #[cfg(feature = "admin")]
-        {
-            api = api.layer(firefly_admin::TraceLayer::new(Arc::clone(&trace_buffer)));
+        if let Some(bearer) = bearer {
+            app = app.layer(bearer);
         }
 
-        // 9b. OpenAPI: build the spec from the live inventory — every
-        //     `#[rest_controller]` route plus every `#[derive(Schema)]` DTO —
-        //     and serve Swagger UI + ReDoc at the springdoc/pyfly paths
-        //     (`/v3/api-docs`, `/swagger-ui`, `/redoc`). Merged OUTSIDE the
-        //     security + bearer chain so the docs are reachable without auth,
-        //     like springdoc's permitted endpoints. Auto-wired: no app code.
+        // 9b. OpenAPI (public): the spec is built from the live inventory — every
+        //     `#[rest_controller]` route plus every `#[derive(Schema)]` DTO — and
+        //     served at the springdoc/pyfly paths (`/v3/api-docs`, `/swagger-ui`,
+        //     `/redoc`) with no application code.
         let openapi = firefly_openapi::Builder::new(firefly_openapi::Info {
             title: format!("{app_name} API"),
             version: if app_version.is_empty() {
@@ -318,12 +324,25 @@ impl FireflyApplication {
             ..firefly_openapi::Info::default()
         })
         .from_inventory();
-        api = api.merge(openapi.docs_router(&firefly_openapi::DocsConfig::default()));
 
-        // 9c. Default 404: an unmatched route returns a proper RFC 9457
-        //     `application/problem+json` 404 instead of axum's bare empty body
-        //     (which a browser offers to download as a blank file).
-        api = api.fallback(not_found_fallback);
+        // 9c. Default 404: an unmatched route answers a proper RFC 9457
+        //     `application/problem+json` instead of axum's bare empty body (which
+        //     a browser offers to download as a blank file). The fallback is set
+        //     on the combined router so the edge below logs + traces it too.
+        let combined = app
+            .merge(openapi.docs_router(&firefly_openapi::DocsConfig::default()))
+            .fallback(not_found_fallback);
+
+        let mut api = web.apply_middleware(combined);
+
+        // 9d. Admin trace capture at the outermost edge so EVERY request — app,
+        //     docs, and 404 — appears in the dashboard's Traces view.
+        #[cfg(feature = "admin")]
+        let trace_buffer = Arc::new(firefly_admin::TraceBuffer::new());
+        #[cfg(feature = "admin")]
+        {
+            api = api.layer(firefly_admin::TraceLayer::new(Arc::clone(&trace_buffer)));
+        }
 
         // 7. Management router: actuator + the self-hosted admin dashboard,
         //    wired to the live components (health, metrics, bus, scheduler,
