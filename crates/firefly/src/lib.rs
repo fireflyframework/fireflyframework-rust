@@ -258,6 +258,70 @@ pub use firefly_eda_redis as eda_redis;
 #[allow(unused_imports)]
 pub use firefly_macros::*;
 
+/// Force-links the inventory of sibling **layer crates** into THIS binary, so a
+/// multi-crate service discovers their beans / controllers / handlers.
+///
+/// Firefly's component discovery — `container.scan()`, `#[rest_controller]`
+/// auto-mount, `#[handlers]` / `#[command_handler]` / `#[event_listener]` /
+/// `#[scheduled]` draining — is **link-time** via the `inventory` crate: each
+/// crate's `inventory::submit!` registrations live in its own object file, and
+/// the linker **drops** an object file unless the final binary references a
+/// symbol from it. A `Cargo.toml` dependency is **not** a reference. So in a
+/// layered app (`-interfaces` / `-models` / `-core` / `-web`) whose `-web`
+/// binary merely *depends* on the others, their registrations are dead-stripped
+/// and `scan()` / auto-mount silently see nothing from them.
+///
+/// Invoke this **once at the crate root** of the binary, naming every layer
+/// crate that contributes scanned beans / controllers / handlers, so their
+/// registrations are linked in and discovered. `extern crate … as _;` is the
+/// minimal forcing reference (no name binding, no unused-import warning):
+///
+/// ```ignore
+/// firefly::link!(myapp_core, myapp_models, myapp_interfaces);
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), firefly::BoxError> {
+///     firefly::FireflyApplication::new("myapp").run().await
+/// }
+/// ```
+///
+/// Pair it with [`assert_discovered`](crate::assert_discovered) at startup to
+/// catch a forgotten crate as a loud failure instead of a silent bean drop.
+#[macro_export]
+macro_rules! link {
+    ($($krate:ident),+ $(,)?) => {
+        $( extern crate $krate as _; )+
+    };
+}
+
+/// Startup guard for [`link!`](crate::link) wiring in a multi-crate service:
+/// asserts the framework discovered at least `min_beans` beans (in `container`)
+/// and `min_controllers` `#[rest_controller]`s.
+///
+/// In a layered app a forgotten `firefly::link!` crate is dead-stripped and its
+/// beans / controllers silently vanish from discovery (the "6 of 16 beans"
+/// symptom). This turns that into a loud panic at startup. Call it right after
+/// [`FireflyApplication::bootstrap`](crate::FireflyApplication::bootstrap) with
+/// the returned [`Bootstrapped::container`](crate::Bootstrapped::container).
+pub fn assert_discovered(
+    container: &firefly_container::Container,
+    min_beans: usize,
+    min_controllers: usize,
+) {
+    let beans = container.beans().len();
+    let controllers = firefly_web::controller_count();
+    assert!(
+        beans >= min_beans,
+        "firefly: discovered {beans} beans but expected at least {min_beans} — a layer crate is \
+         likely not force-linked; add it to `firefly::link!(...)` at the binary's crate root"
+    );
+    assert!(
+        controllers >= min_controllers,
+        "firefly: discovered {controllers} controllers but expected at least {min_controllers} — a \
+         layer crate is likely not force-linked; add it to `firefly::link!(...)`"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 4. The prelude — the high-frequency surface plus every macro.
 // ---------------------------------------------------------------------------

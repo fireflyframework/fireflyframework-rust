@@ -1,0 +1,19 @@
+[package]
+name = "firefly-spike-linkspike-web"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "linkspike"
+path = "src/main.rs"
+
+[dependencies]
+firefly = { workspace = true, features = ["admin"] }
+firefly-spike-linkspike-core = { path = "../linkspike-core" }
+tokio = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }

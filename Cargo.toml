@@ -80,6 +80,8 @@ members = [
     "samples/reactive-banking",
     "samples/macro-quickstart",
     "samples/lumen",
+    "samples/linkspike-core",
+    "samples/linkspike-web",
 ]
 
 [workspace.package]
