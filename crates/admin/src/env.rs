@@ -82,7 +82,8 @@ impl EnvironmentSnapshot {
         let mut out: BTreeMap<String, String> = BTreeMap::new();
         for source in &self.property_sources {
             for (key, entry) in &source.properties {
-                out.entry(key.clone()).or_insert_with(|| entry.value.clone());
+                out.entry(key.clone())
+                    .or_insert_with(|| entry.value.clone());
             }
         }
         out

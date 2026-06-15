@@ -392,6 +392,80 @@ async fn async_bean_factories_are_awaited_then_registered_in_order() {
     assert_eq!(client.base, "client@sqlite::memory:");
 }
 
+struct AsyncRepo {
+    ok: bool,
+}
+
+struct UnregisteredDep;
+
+#[derive(Configuration, Default)]
+struct AsyncRepoConfig;
+
+#[firefly::bean]
+impl AsyncRepoConfig {
+    // An async-constructed data-access bean classified as `@Repository`.
+    #[bean(stereotype = "repository")]
+    async fn async_repo(&self) -> AsyncRepo {
+        tokio::task::yield_now().await;
+        AsyncRepo { ok: true }
+    }
+}
+
+#[derive(Configuration, Default)]
+struct FailingAsyncConfig;
+
+#[firefly::bean]
+impl FailingAsyncConfig {
+    // The factory resolves a dependency that was never registered; the failure
+    // must be wrapped with this bean's identity, not surfaced as a bare lookup.
+    #[bean]
+    async fn failing_repo(&self, missing: Arc<UnregisteredDep>) -> AsyncRepo {
+        let _ = missing;
+        AsyncRepo { ok: false }
+    }
+}
+
+#[tokio::test]
+async fn async_bean_stereotype_override_classifies_as_repository() {
+    let c = Arc::new(Container::new());
+    AsyncRepoConfig::firefly_register(&c);
+    AsyncRepoConfig::firefly_register_beans(&c);
+    c.init_async_beans().await.expect("init async beans");
+    assert!(c.resolve::<AsyncRepo>().expect("async repo").ok);
+
+    let label = c
+        .beans()
+        .iter()
+        .find(|b| b.type_name.ends_with("AsyncRepo"))
+        .and_then(|b| b.stereotype.clone());
+    assert_eq!(
+        label.as_deref(),
+        Some("repository"),
+        "an async #[bean(stereotype = \"repository\")] classifies as @Repository, not @Bean"
+    );
+}
+
+#[tokio::test]
+async fn async_bean_failure_is_wrapped_with_the_bean_identity() {
+    let c = Arc::new(Container::new());
+    FailingAsyncConfig::firefly_register(&c);
+    FailingAsyncConfig::firefly_register_beans(&c);
+
+    let err = c
+        .init_async_beans()
+        .await
+        .expect_err("a missing dependency must fail the batch");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("error creating bean"),
+        "Spring-style context; got: {msg}"
+    );
+    assert!(
+        msg.contains("failing_repo"),
+        "the failing bean is named in the message; got: {msg}"
+    );
+}
+
 // ===========================================================================
 // #[post_construct] / #[pre_destroy] lifecycle ordering
 // ===========================================================================

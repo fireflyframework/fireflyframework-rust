@@ -21,6 +21,11 @@ use lumen_ledger_interfaces::{AmountRequest, CreateWalletRequest, WalletResponse
 /// A typed client for the wallet API, over [`RestClient`]. Each method maps to
 /// one endpoint and (de)serialises the shared `-interfaces` DTOs, so a caller
 /// programs against the same contract the server enforces.
+///
+/// # Errors
+/// Every request method returns [`ClientError`] on a transport failure or a
+/// non-2xx response; an RFC 9457 `application/problem+json` body decodes into a
+/// typed `FireflyError` reachable via [`ClientError::as_firefly`].
 pub struct WalletClient {
     inner: RestClient,
 }
@@ -108,6 +113,22 @@ mod tests {
     #[test]
     fn client_constructs() {
         let _client = WalletClient::new("http://localhost:8080");
+    }
+
+    // The bring-your-own-client path: wrap a `RestClient` configured with custom
+    // headers / timeouts / retries (e.g. a bearer token, a tenant header).
+    #[test]
+    fn with_client_wraps_a_configured_rest_client() {
+        use std::time::Duration;
+
+        use firefly_client::RestBuilder;
+
+        let configured = RestBuilder::new("http://localhost:8080")
+            .with_header("X-Tenant", "acme")
+            .with_timeout(Duration::from_secs(5))
+            .with_retries(2)
+            .build();
+        let _client = WalletClient::with_client(configured);
     }
 
     // A compile-time contract check: every method's typed result lines up with

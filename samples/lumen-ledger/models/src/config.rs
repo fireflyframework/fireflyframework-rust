@@ -16,4 +16,7 @@
 
 mod wallet_persistence_config;
 
-pub use wallet_persistence_config::{connect_and_migrate, WalletPersistenceConfig};
+pub use wallet_persistence_config::WalletPersistenceConfig;
+// The datasource bootstrap is crate-internal (the async bean + the model tests).
+#[allow(unused_imports)]
+pub(crate) use wallet_persistence_config::{connect_and_migrate, connect_and_migrate_url};

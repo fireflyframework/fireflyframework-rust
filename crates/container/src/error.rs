@@ -71,6 +71,19 @@ pub enum ContainerError {
         /// The type being re-entered (closes the cycle).
         current: String,
     },
+
+    /// A bean's factory failed while constructing it — e.g. an
+    /// `async fn #[bean]` that errored opening a connection pool. Carries the
+    /// bean's name and the underlying cause's message, the analog of Spring's
+    /// `BeanCreationException: Error creating bean with name '…'`. The cause is
+    /// kept as a `String` so the error stays `Clone`/`Eq` like its siblings.
+    #[error("BeanCreation: error creating bean '{bean}': {message}")]
+    BeanCreation {
+        /// The bean being created (its name, or type when anonymous).
+        bean: String,
+        /// The underlying failure's message.
+        message: String,
+    },
 }
 
 impl ContainerError {
@@ -93,6 +106,15 @@ impl ContainerError {
             required_by: None,
             parameter: None,
             suggestions,
+        }
+    }
+
+    /// Construct a [`ContainerError::BeanCreation`] wrapping a factory failure
+    /// with the bean's identity (Spring's "Error creating bean named '…'").
+    pub(crate) fn bean_creation(bean: impl Into<String>, message: impl Into<String>) -> Self {
+        ContainerError::BeanCreation {
+            bean: bean.into(),
+            message: message.into(),
         }
     }
 }

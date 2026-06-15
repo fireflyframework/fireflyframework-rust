@@ -15,12 +15,11 @@
 //! The [`WalletController`] `@RestController` (`<domain>/v1`).
 //!
 //! A `#[derive(Controller)]` DI bean that autowires the `dyn WalletService`
-//! port from the `-core` crate and is auto-mounted by `#[rest_controller]`. Each
-//! handler dispatches to the service and turns a [`ServiceError`] into the
-//! precise RFC 9457 problem (`404` / `422` / `500`). The request/response
-//! schemas are **inferred** from the handler signatures — `Valid<T>` / `Json<T>`
-//! arguments and `Json<T>` results — so the OpenAPI document needs no manual
-//! `request`/`response` annotations.
+//! port from the `-core` crate and is auto-mounted by `#[rest_controller]`.
+//! Every input is validated/extracted at the edge — `Valid<T>` for JSON bodies,
+//! the framework's problem-rendering [`Path`]/[`Query`] for path/query params —
+//! and each [`ServiceError`] becomes the precise RFC 9457 problem
+//! (`404` / `409` / `422` / `500`) via [`service_to_web`].
 
 // `firefly::web::WebError` is a large enum by design; returning it from these
 // handlers is what makes `?`-into-`WebResult<T>` ergonomic.
@@ -28,13 +27,14 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
+use firefly::data::Page;
 use firefly::prelude::*;
-use firefly::web::{Valid, WebError, WebResult};
+use firefly::web::{Path, Query, Valid, WebError, WebResult};
 use lumen_ledger_core::{ServiceError, WalletService};
-use lumen_ledger_interfaces::{AmountRequest, CreateWalletRequest, WalletResponse};
+use lumen_ledger_interfaces::{AmountRequest, CreateWalletRequest, WalletResponse, WalletStatus};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -47,11 +47,39 @@ pub struct WalletController {
     service: Arc<dyn WalletService>,
 }
 
-/// `?owner=…` query for the list endpoint.
+/// `?owner=…` query for the by-owner list endpoint.
 #[derive(Debug, Deserialize)]
 struct OwnerQuery {
     /// The owner whose wallets to list.
     owner: String,
+}
+
+/// `?status=&page=&size=` query for the paged list endpoint.
+#[derive(Debug, Deserialize)]
+struct StatusPageQuery {
+    /// The status to filter by (defaults to `active`).
+    #[serde(default)]
+    status: WalletStatus,
+    /// 1-based page number (defaults to `1`).
+    #[serde(default = "default_page")]
+    page: usize,
+    /// Page size (defaults to `20`).
+    #[serde(default = "default_size")]
+    size: usize,
+}
+
+fn default_page() -> usize {
+    1
+}
+fn default_size() -> usize {
+    20
+}
+
+/// JSON body for the status-transition endpoint.
+#[derive(Debug, Deserialize)]
+struct StatusBody {
+    /// The new status.
+    status: WalletStatus,
 }
 
 /// `#[rest_controller]` generates `WalletController::routes(state)`; each method
@@ -59,8 +87,9 @@ struct OwnerQuery {
 /// RFC 9457 `application/problem+json`.
 #[rest_controller(path = "/api/v1", tag = "Wallets")]
 impl WalletController {
-    /// `POST /api/v1/wallets` — open a wallet (`Valid<…>` enforces the DTO's
-    /// bean-validation constraints, rendering `422` on a blank owner/currency).
+    /// `POST /api/v1/wallets` — open a wallet (`Valid<…>` enforces every DTO
+    /// constraint, rendering `422` on a blank owner / bad currency / negative
+    /// opening balance).
     #[post(
         "/wallets",
         summary = "Open a wallet",
@@ -89,7 +118,23 @@ impl WalletController {
         Ok(Json(views))
     }
 
-    /// `GET /api/v1/wallets/:id` — fetch one wallet (404 when unknown).
+    /// `GET /api/v1/wallets/page?status=&page=&size=` — a Spring Data `Page<T>`
+    /// of wallets in a status.
+    #[get("/wallets/page", summary = "List wallets by status (paged)")]
+    async fn list_paged(
+        State(api): State<WalletController>,
+        Query(query): Query<StatusPageQuery>,
+    ) -> WebResult<Json<Page<WalletResponse>>> {
+        let page = api
+            .service
+            .list_by_status(query.status, query.page, query.size)
+            .await
+            .map_err(service_to_web)?;
+        Ok(Json(page))
+    }
+
+    /// `GET /api/v1/wallets/:id` — fetch one wallet (404 when unknown, 400 on a
+    /// malformed UUID).
     #[get("/wallets/:id", summary = "Fetch a wallet")]
     async fn get(
         State(api): State<WalletController>,
@@ -99,12 +144,28 @@ impl WalletController {
         Ok(Json(view))
     }
 
-    /// `POST /api/v1/wallets/:id/deposit` — credit a wallet.
+    /// `PATCH /api/v1/wallets/:id/status` — transition a wallet's lifecycle.
+    #[patch("/wallets/:id/status", summary = "Change a wallet's status")]
+    async fn set_status(
+        State(api): State<WalletController>,
+        Path(id): Path<Uuid>,
+        Json(body): Json<StatusBody>,
+    ) -> WebResult<Json<WalletResponse>> {
+        let view = api
+            .service
+            .set_status(id, body.status)
+            .await
+            .map_err(service_to_web)?;
+        Ok(Json(view))
+    }
+
+    /// `POST /api/v1/wallets/:id/deposit` — credit a wallet (`Valid<…>` rejects a
+    /// non-positive amount as 422 before the service runs).
     #[post("/wallets/:id/deposit", summary = "Deposit funds", status = 200)]
     async fn deposit(
         State(api): State<WalletController>,
         Path(id): Path<Uuid>,
-        Json(body): Json<AmountRequest>,
+        Valid(body): Valid<AmountRequest>,
     ) -> WebResult<Json<WalletResponse>> {
         let view = api
             .service
@@ -119,7 +180,7 @@ impl WalletController {
     async fn withdraw(
         State(api): State<WalletController>,
         Path(id): Path<Uuid>,
-        Json(body): Json<AmountRequest>,
+        Valid(body): Valid<AmountRequest>,
     ) -> WebResult<Json<WalletResponse>> {
         let view = api
             .service
@@ -128,13 +189,35 @@ impl WalletController {
             .map_err(service_to_web)?;
         Ok(Json(view))
     }
+
+    /// `DELETE /api/v1/wallets/:id` — delete a wallet (idempotent; `204`).
+    #[delete("/wallets/:id", summary = "Delete a wallet", status = 204)]
+    async fn delete(
+        State(api): State<WalletController>,
+        Path(id): Path<Uuid>,
+    ) -> WebResult<StatusCode> {
+        api.service.delete(id).await.map_err(service_to_web)?;
+        Ok(StatusCode::NO_CONTENT)
+    }
 }
 
 /// Maps a [`ServiceError`] onto the precise HTTP problem the domain implies.
+///
+/// A free function rather than `impl From<ServiceError> for WebError`: both
+/// types are foreign to this crate, so Rust's orphan rule forbids the `From`
+/// impl here — the same cross-crate constraint that shapes the `@Mapper`. The
+/// mapping fn is the idiomatic alternative.
 fn service_to_web(err: ServiceError) -> WebError {
     match err {
         ServiceError::NotFound => WebError::from(FireflyError::not_found("wallet not found")),
         ServiceError::Validation(detail) => WebError::from(FireflyError::validation(detail)),
+        ServiceError::Conflict(detail) => WebError::from(FireflyError::conflict(detail)),
         ServiceError::Backend(detail) => WebError::from(FireflyError::internal(detail)),
     }
 }
+
+// `WalletStatus` must default for `#[serde(default)]` on the query — re-stated
+// here as a compile assertion that the contract enum stays `Default`.
+const _: fn() = || {
+    let _ = <WalletStatus as Default>::default();
+};

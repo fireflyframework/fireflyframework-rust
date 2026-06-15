@@ -83,4 +83,4 @@ pub use broker::{new_redis_broker, RedisStreamsBroker};
 pub use config::RedisConfig;
 
 /// The released framework version, shared across all Firefly crates.
-pub const VERSION: &str = "26.6.8";
+pub const VERSION: &str = "26.6.9";

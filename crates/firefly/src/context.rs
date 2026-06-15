@@ -191,8 +191,74 @@ impl ApplicationContextBuilder {
     /// Construct the [`ApplicationContext`]: build a shared container, install
     /// the condition context, scan the crate graph (registering survivors),
     /// then eagerly warm non-lazy singletons.
+    ///
+    /// # Panics
+    /// Panics if the scan discovered any `async fn` `#[bean]` factory — a
+    /// synchronous build cannot `await` it, so silently leaving it
+    /// uninitialized would be a wiring bug. Use [`build_async`](Self::build_async)
+    /// for any application that registers async beans (a DB pool, broker dial, …).
     #[must_use]
     pub fn build(self) -> ApplicationContext {
+        let (container, bean_count, eager) = self.scan_into_container();
+
+        assert!(
+            !container.has_pending_async_beans(),
+            "ApplicationContextBuilder::build() found async #[bean] factories it cannot await — \
+             call `.build_async().await` instead (it drains Container::init_async_beans)."
+        );
+
+        if eager {
+            // Eagerly resolve each discovered singleton so construction-time
+            // failures surface at startup and `#[post_construct]` hooks run
+            // before first use (pyfly's eager-init pass). Errors are
+            // swallowed: an unsatisfiable optional bean must not abort startup.
+            warm_singletons(&container);
+        }
+
+        ApplicationContext {
+            container,
+            bean_count,
+        }
+    }
+
+    /// The async sibling of [`build`](Self::build): identical, but it also
+    /// **awaits every `async fn` `#[bean]`** (via
+    /// [`Container::init_async_beans`](firefly_container::Container::init_async_beans))
+    /// between the scan and the eager-warm pass — Spring's single refresh
+    /// lifecycle, where every singleton (sync or I/O-bound) is initialised
+    /// before the context is handed back.
+    ///
+    /// Reach for this whenever the application registers any async bean and you
+    /// are building an [`ApplicationContext`] directly. (`FireflyApplication`
+    /// already drives `init_async_beans` on its own bootstrap path.)
+    ///
+    /// # Errors
+    /// Propagates the first async factory failure as
+    /// [`ContainerError::BeanCreation`](firefly_container::ContainerError) — a
+    /// fail-fast startup, like Spring's `BeanCreationException`.
+    pub async fn build_async(
+        self,
+    ) -> Result<ApplicationContext, firefly_container::ContainerError> {
+        let (container, bean_count, eager) = self.scan_into_container();
+
+        // Await async beans BEFORE warming, so a synchronous singleton that
+        // autowires an async bean finds it already installed.
+        container.init_async_beans().await?;
+
+        if eager {
+            warm_singletons(&container);
+        }
+
+        Ok(ApplicationContext {
+            container,
+            bean_count,
+        })
+    }
+
+    /// Shared prelude for [`build`](Self::build) / [`build_async`](Self::build_async):
+    /// install the condition context and run the synchronous scan. Returns the
+    /// shared container, the registered-bean count, and the resolved eager flag.
+    fn scan_into_container(self) -> (Arc<Container>, usize, bool) {
         let profiles = self
             .profiles
             .unwrap_or_else(|| firefly_config::active_profiles("default"));
@@ -207,19 +273,7 @@ impl ApplicationContextBuilder {
         let container = Container::shared();
         container.set_condition_context(cond);
         let bean_count = container.scan();
-
-        if self.eager.unwrap_or(true) {
-            // Eagerly resolve each discovered singleton so construction-time
-            // failures surface at startup and `#[post_construct]` hooks run
-            // before first use (pyfly's eager-init pass). Errors are
-            // swallowed: an unsatisfiable optional bean must not abort startup.
-            warm_singletons(&container);
-        }
-
-        ApplicationContext {
-            container,
-            bean_count,
-        }
+        (container, bean_count, self.eager.unwrap_or(true))
     }
 }
 

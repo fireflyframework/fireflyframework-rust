@@ -2,6 +2,65 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.9 — 2026-06-15
+
+The **Spring Boot fidelity pass**. A multi-lens audit (with every finding
+adversarially verified against the source) of the layered `lumen-ledger` sample
+and the v26.6.8 framework surfaced — and this release closes — the gaps between
+"compiles" and "behaves like a Spring Boot service".
+
+### Added (framework)
+
+- **Problem-rendering `Path<T>` / `Query<T>` extractors** (`firefly::web`).
+  Drop-in replacements for axum's: a malformed path segment (a non-UUID where a
+  `Uuid` is expected) or a missing/un-parseable query parameter now renders a
+  **400 RFC 9457 problem** instead of axum's plain-text rejection — the Rust
+  analog of `MethodArgumentTypeMismatchException` going through the same advice.
+- **`firefly_data_sqlx::is_optimistic_lock(&err)`** — detects the optimistic-lock
+  conflict the **reactive** `save` surfaces through its `FireflyError` channel
+  (the blocking `save` already returned `DataError::OptimisticLock`), so a service
+  can map a stale `@Version` write to a domain `409` instead of a generic `500`.
+- **`#[bean(stereotype = "…")]`** — overrides a bean's admin `/beans`
+  classification, so an async-constructed data-access bean still reads as
+  `@Repository`.
+- **`ApplicationContext::build_async()` / `testkit::Slice::build_async()`** —
+  await every `async fn #[bean]` (via `Container::init_async_beans`) off the
+  `FireflyApplication` bootstrap path. The synchronous `build()` now **fails fast**
+  (panics) if async beans are pending rather than silently dropping them — Spring's
+  single refresh lifecycle, where every singleton is initialised before the
+  context is handed back.
+- **`ContainerError::BeanCreation`** — an async-bean factory failure is wrapped
+  with the bean's identity ("error creating bean '…': <cause>"), Spring's
+  `BeanCreationException`.
+
+### Changed (sample — `lumen-ledger`)
+
+- **`@Version` optimistic locking** (`with_version_column`) and **store-side
+  auditing** (`with_auditor`) are wired onto the repository: the service no longer
+  hand-bumps `version` or stamps `created_at`/`updated_at`, and a concurrent stale
+  write is rejected as **409** (proven by a new repository test).
+- **`Wallet.status` is a typed `WalletStatus` enum**, converted token↔enum
+  exactly once at the `RowMapper`/`RowWriter` boundary (`@Enumerated(STRING)`).
+- **Bean validation at the edge**: `Valid<AmountRequest>` (`range(min = 1)`),
+  currency `pattern("[A-Z]{3}")`, opening-balance `range(min = 0)` — each a 422
+  before the service runs; the new `Path`/`Query` extractors render 400s.
+- **A fuller REST surface**: a status-transition `PATCH /…/status`, a `DELETE`
+  (204), and a paginated `GET /…?status=&page=&size=` returning a Spring-Data
+  `Page<T>` (built from the `find_by_status` paged derived query). `ServiceError`
+  gains a `Conflict` (409) variant.
+
+### Docs
+
+- The Layered Microservices chapter now covers the production-grade web surface,
+  `@Version`/auditing, and the full endpoint set; persistence documents generic
+  `SqlKey` keys + optimistic locking; the DI chapter documents `build_async` +
+  the stereotype override; the OpenAPI chapter documents enum schemas + the
+  `firefly openapi-client` generator.
+
+> Tracked for a follow-up: fallible `Result<T, E>` bean factories, OpenAPI
+> per-operation response codes + `#[schema(example = …)]` enrichment, and a
+> versioned (Flyway-style) migration runner.
+
 ## v26.6.8 — 2026-06-15
 
 The **layered-microservices milestone**. Firefly can now be built the way a

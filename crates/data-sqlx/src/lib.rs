@@ -145,7 +145,7 @@ mod writer;
 
 pub use connect::{auto_configure, DataSourceProperties};
 pub use db::{Backend, Db};
-pub use repository::{SqlKey, SqlxReactiveRepository, SqlxRepository};
+pub use repository::{is_optimistic_lock, SqlKey, SqlxReactiveRepository, SqlxRepository};
 pub use row::{AnyRow, SqlxRowMapper, TryGetAcross};
 pub use tx::SqlxTransactionManager;
 pub use writer::{ColumnValue, RowWriter};
@@ -157,4 +157,4 @@ pub use observe::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.8";
+pub const VERSION: &str = "26.6.9";

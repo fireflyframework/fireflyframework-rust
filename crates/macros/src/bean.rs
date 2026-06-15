@@ -66,6 +66,10 @@ struct BeanArgs {
     scope: Option<String>,
     primary: bool,
     order: Option<i32>,
+    /// `#[bean(stereotype = "repository")]` — the admin `/beans` classification
+    /// label (defaults to `"bean"`). Lets an async-constructed data-access bean
+    /// still classify as `@Repository`.
+    stereotype: Option<String>,
     profile: Option<String>,
     condition_on_property: Option<String>,
     condition_on_class: Option<String>,
@@ -182,6 +186,10 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
         let primary = m.args.primary;
         let order: i32 = m.args.order.unwrap_or(0);
         let scope_tokens = bean_scope_tokens(&container, m.args.scope.as_deref());
+        // The admin `/beans` classification label — `"bean"` unless overridden
+        // with `#[bean(stereotype = "...")]` (e.g. an async data-access bean
+        // that should still read as `@Repository`).
+        let stereotype_lit = m.args.stereotype.as_deref().unwrap_or("bean");
         let registrar_ident = format_ident!("__firefly_register_bean_{}", mident);
 
         // The raw registration body (no condition checks — those are evaluated
@@ -202,6 +210,7 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
                         #name,
                         #primary,
                         #order,
+                        #stereotype_lit,
                         &[#(#dep_names),*],
                         move |__carc: ::std::sync::Arc<#container::Container>| async move {
                             let __c: &#container::Container = &*__carc;
@@ -228,7 +237,7 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
                             ::core::result::Result::Ok(<#self_ty>::#mident(&__cfg, #(#resolvers),*))
                         },
                     );
-                    __container.set_stereotype::<#return_ty>("bean");
+                    __container.set_stereotype::<#return_ty>(#stereotype_lit);
                     __container.set_dependencies::<#return_ty>(&[#(#dep_names),*]);
                 }
             }
@@ -367,6 +376,8 @@ fn parse_bean_args(attr: &syn::Attribute) -> syn::Result<BeanArgs> {
             args.primary = true;
         } else if meta.path.is_ident("order") {
             args.order = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);
+        } else if meta.path.is_ident("stereotype") {
+            args.stereotype = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("profile") {
             args.profile = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else if meta.path.is_ident("condition_on_property") {
@@ -382,8 +393,8 @@ fn parse_bean_args(attr: &syn::Attribute) -> syn::Result<BeanArgs> {
                 Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else {
             return Err(meta.error(
-                "unknown #[bean] argument; use name, scope, primary, order, profile, \
-                 condition_on_property, condition_on_class, condition_on_bean, \
+                "unknown #[bean] argument; use name, scope, primary, order, stereotype, \
+                 profile, condition_on_property, condition_on_class, condition_on_bean, \
                  condition_on_missing_bean, or condition_on_single_candidate",
             ));
         }

@@ -36,3 +36,9 @@
 pub mod config;
 pub mod entities;
 pub mod repositories;
+
+/// Re-export of the framework predicate that detects an optimistic-lock
+/// conflict, so the `-core` service can map a stale `@Version` write to a domain
+/// `Conflict` without itself depending on the sqlx adapter (the `-models` layer
+/// owns the persistence concern).
+pub use firefly::data_sqlx::is_optimistic_lock;
