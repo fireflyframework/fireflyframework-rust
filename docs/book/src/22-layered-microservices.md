@@ -41,9 +41,11 @@ is a **DI bean** discovered by `container.scan()` — there is no composition ro
    │ autowires
 @Mapper          (core)   →  #[derive(Component)] WalletMapper        (DTO ↔ entity)
 @Component       (core)   →  #[derive(Component)] WalletNumberGenerator
-@Repository      (models) →  WalletRepository: ReactiveCrudRepository + #[firefly::repository]
-   │ binds
-@Entity          (models) →  Wallet
+@Repository      (models) →  #[derive(SqlxRepository)] WalletRepository  (built from the Db @Bean)
+   │ over
+@Entity          (models) →  impl SqlxEntity for Wallet
+   │ from
+@Bean (DataSource)(models) →  #[bean] async fn data_source() -> Db
 ```
 
 The `@Service` programs against the repository's **`ReactiveCrudRepository`**
@@ -52,45 +54,73 @@ plus the `#[firefly::repository]` derived queries — `find_by_owner`,
 `find_by_status(.., Pageable)` (paged), and `count_by_status` — the same Spring
 Data surface, generated from the method names.
 
-## The repository is an async bean
+## The repository, declared Spring Data-style
 
-A real repository needs a connection pool, and opening one is asynchronous. The
-`-models` crate declares the repository with an **`async fn` `#[bean]`**:
+A Spring Data repository is a *declaration*: you write the interface, the
+framework supplies the implementation. `lumen-ledger` does the same with two
+derives — no factory, no hand-written CRUD.
+
+The entity declares its `@Table` / `@Id` / `@Version` / `@Column` mapping by
+implementing `SqlxEntity`:
+
+```rust,ignore
+impl SqlxEntity for Wallet {
+    type Id = Uuid;
+    fn table() -> &'static str { "wallets" }
+    fn id_column() -> &'static str { "id" }
+    fn version_column() -> Option<&'static str> { Some("version") }   // @Version
+    fn columns() -> &'static [&'static str] { &[ /* … */ ] }
+    fn read_row(row: &AnyRow) -> Result<Self, FireflyError> { /* @Column mapping */ }
+    fn write_row(&self) -> Vec<ColumnValue> { /* … */ }
+}
+```
+
+The repository is then **one annotation** — `#[derive(SqlxRepository)]` over a
+struct holding the entity's repository:
+
+```rust,ignore
+#[derive(SqlxRepository)]
+pub struct WalletRepository {
+    repo: SqlxReactiveRepository<Wallet, Uuid>,
+}
+
+#[firefly::repository]               // the derived queries, on top
+impl WalletRepository {
+    pub async fn find_by_owner(&self, owner: &str) -> Result<Vec<Wallet>, DataError> { unimplemented!() }
+    // find_by_status(.., Pageable), count_by_status, …
+}
+```
+
+That derive registers `WalletRepository` as a **`@Repository` bean** (discovered
+by the scan, classified correctly in `/beans`), **builds the inner repository
+from the injected `Db`** — wiring `@Version` optimistic locking (a stale write
+→ `409`) and `@CreatedDate`/`@LastModifiedDate` auditing from the entity — and
+implements `ReactiveCrudRepository` by delegation, so the service programs
+against the canonical CRUD surface plus the derived queries.
+
+### The datasource is the async bean
+
+What *is* an async bean is the **datasource** — Spring Boot's auto-configured
+`DataSource`. The `-models` `@Configuration` opens the pool with `await`:
 
 ```rust,ignore
 #[firefly::bean]
 impl WalletPersistenceConfig {
-    // `stereotype = "repository"` keeps it classified as @Repository in /beans,
-    // even though it is built by an async factory rather than a stereotype derive.
-    #[bean(stereotype = "repository")]
-    async fn wallet_repository(&self) -> WalletRepository {
-        WalletRepository::new(connect_and_migrate().await)
+    #[bean]
+    async fn data_source(&self) -> Db {     // the DataSource @Bean
+        connect_and_migrate().await          // open pool + apply schema
     }
 }
 ```
 
-The framework parks the factory during the synchronous `container.scan()` and
+The framework parks this factory during the synchronous `container.scan()` and
 `await`s it during `Container::init_async_beans()` (run by the bootstrap right
-after the scan), then publishes the result as a ready singleton — so the service
-and controller resolve it normally. This is the Spring Boot pattern of a `@Bean`
-that performs I/O at context-refresh time, except the I/O is `await`ed instead of
-blocking a thread. By default the repository opens an in-memory SQLite database
-(the sample runs and tests with no external server); set `DATABASE_URL=postgres://…`
-to point it at real PostgreSQL.
-
-The `WalletRepository::new` chains the framework's data features onto the sqlx
-repository — Spring Data without the boilerplate:
-
-```rust,ignore
-SqlxReactiveRepository::new(db, cfg, read_wallet, write_wallet)
-    .with_version_column("version")   // @Version optimistic locking
-    .with_auditor(Auditor::new())     // @CreatedDate / @LastModifiedDate
-```
-
-`with_version_column` makes a stale write (one whose loaded `version` no longer
-matches the row) fail instead of silently clobbering a concurrent update; the
-service maps that conflict to a `409`. `with_auditor` stamps `created_at` /
-`updated_at` at the store, so the service never touches timestamps by hand.
+after the scan). The `#[derive(SqlxRepository)]` repository — a *synchronous*
+bean — then resolves that ready `Db` and builds itself from it. This is the
+Spring Boot pattern of a `@Bean` that performs I/O at context-refresh time,
+except the I/O is `await`ed instead of blocking a thread. By default the
+datasource opens an in-memory SQLite database (the sample runs and tests with no
+external server); set `DATABASE_URL=postgres://…` for real PostgreSQL.
 
 ## Any key type — generic like Java
 

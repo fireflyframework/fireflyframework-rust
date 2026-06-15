@@ -20,8 +20,6 @@ use firefly::data_sqlx::Db;
 use firefly::prelude::*;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-use crate::repositories::wallet::v1::WalletRepository;
-
 /// `CREATE TABLE` DDL for the SQLite default backend.
 const SQLITE_DDL: &str = "CREATE TABLE IF NOT EXISTS wallets (\
     id TEXT PRIMARY KEY, account_number TEXT NOT NULL, owner TEXT NOT NULL, \
@@ -34,21 +32,22 @@ const POSTGRES_DDL: &str = "CREATE TABLE IF NOT EXISTS wallets (\
     balance BIGINT NOT NULL, currency TEXT NOT NULL, status TEXT NOT NULL, \
     version BIGINT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)";
 
-/// The `@Configuration` holder for the wallet datasource + repository.
+/// The `@Configuration` holder for the wallet **datasource**.
 #[derive(Configuration, Default)]
 pub struct WalletPersistenceConfig;
 
 #[firefly::bean]
 impl WalletPersistenceConfig {
-    /// The wallet repository bean — an **async factory** classified as a
-    /// `@Repository` (`stereotype = "repository"`). It opens the connection
-    /// pool, applies the schema, and registers the transaction manager, all with
-    /// `await` (the framework resolves it during `Container::init_async_beans`,
-    /// after the scan). Defaults to an in-memory SQLite database; honours
+    /// The `Db` **datasource** bean (Spring Boot's auto-configured `DataSource`)
+    /// — an **async factory** that opens the connection pool and applies the
+    /// schema with `await` (the framework resolves it during
+    /// `Container::init_async_beans`, after the scan). The `WalletRepository` is
+    /// then built from this `Db` by its `#[derive(SqlxRepository)]` — no manual
+    /// repository factory. Defaults to an in-memory SQLite database; honours
     /// `DATABASE_URL` for real PostgreSQL.
-    #[bean(stereotype = "repository")]
-    async fn wallet_repository(&self) -> WalletRepository {
-        WalletRepository::new(connect_and_migrate().await)
+    #[bean]
+    async fn data_source(&self) -> Db {
+        connect_and_migrate().await
     }
 }
 
