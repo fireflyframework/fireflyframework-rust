@@ -16,9 +16,10 @@ does.
 > **By the end of this chapter, Lumen will** have `src/commands.rs`: the
 > `OpenWallet` / `Deposit` / `Withdraw` commands and the `GetWallet` query as
 > `#[derive(Command)]` / `#[derive(Query)]` structs, free-`fn` handlers marked
-> `#[command_handler]` / `#[query_handler]`, the bus wired with validation and
-> query-cache middleware, and the read-after-write cache invalidation that keeps
-> a balance from going stale after a deposit.
+> `#[command_handler]` / `#[query_handler]` that the framework drains from a
+> compile-time inventory registry onto a bus declared as a `#[bean]`, the
+> validation + query-cache middleware auto-installed, and the read-after-write
+> cache invalidation that keeps a balance from going stale after a deposit.
 
 > **Design note.** The `Bus` is Firefly's command/query dispatcher: it matches
 > each message to its handler by `TypeId` and runs it through a middleware chain
@@ -118,10 +119,12 @@ stay snake_case.
 ## The free-`fn` handlers
 
 A handler is a free `async fn` marked `#[command_handler]` or `#[query_handler]`.
-The macro reads the argument type as the dispatch key and generates a
-`register_<fn>(bus)` helper that installs it. The handler turns the bus's
-`CqrsError` channel into the precise outcome; the web layer (next) restores the
-HTTP status:
+The macro reads the argument type as the dispatch key, generates a
+`register_<fn>(bus)` helper that installs it, **and** submits a
+`HandlerRegistration` into a compile-time `inventory` registry so the framework
+can find and install the handler for you — Lumen never calls the generated
+helper by hand. The handler turns the bus's `CqrsError` channel into the precise
+outcome; the web layer (next) restores the HTTP status:
 
 ```rust,ignore
 use crate::domain::{DomainError, Wallet, WalletView};
@@ -225,12 +228,12 @@ fn state() -> &'static HandlerState {
 ```
 
 The subtle part is the return value. The global binds only **once**, so a second
-`build_app()` in the same test binary keeps the *first* ledger and read model.
-`bind` returns the *effective* pair — whichever the `OnceLock` actually holds —
-so the composition root can wire the controller's saga, the event projection,
-and the free-fn handlers all against the **same** collaborators, no matter how
-many times the app is built. (This is why the HTTP test suite can call
-`build_router()` per test and still share one ledger.)
+`FireflyApplication` boot in the same test binary keeps the *first* ledger and
+read model. `bind` returns the *effective* pair — whichever the `OnceLock`
+actually holds — so the `ledger` `#[bean]` factory wires the controller's saga,
+the event projection, and the free-fn handlers all against the **same**
+collaborators, no matter how many times the app is built. (This is why the HTTP
+test suite can call `build_router()` per test and still share one ledger.)
 
 > **Note.** Because a `#[command_handler]` free function can't capture state,
 > Lumen publishes its resolved collaborators once at startup with a one-line
@@ -242,46 +245,57 @@ many times the app is built. (This is why the HTTP test suite can call
 
 ## Wiring the bus
 
-The composition root in `src/web.rs` builds the bus, layers the middleware,
-binds the collaborators, and installs the handlers via the generated
-`register_*` helpers (gathered behind one `register(&bus)` fn):
+Lumen writes **no** bus-wiring code. The `Bus` and the `QueryCache` are declared
+as `#[bean]`s in `LumenBeans` (the `#[derive(Configuration)]` holder in
+`src/web.rs`), the `WalletApi` controller autowires the `Arc<Bus>`, and the
+framework — `FireflyApplication` — does the rest at boot:
+
+- it drains every `#[command_handler]` / `#[query_handler]` from the inventory
+  registry with `firefly::cqrs::register_discovered_handlers(&bus)`, so the four
+  handlers install themselves;
+- it auto-installs the bus middleware chain: a correlation propagator always, the
+  `QueryCache` read-cache middleware whenever a `QueryCache` bean is present, and
+  validation (already installed by the core);
+- it seeds the event-sourcing projection inside the `ledger` `#[bean]` factory.
+
+The generated per-handler `register_<fn>(bus)` helpers (and the one `register(&bus)`
+fn that gathers them) still exist — they are the explicit fallback for an app that
+wires its own bus — but Lumen calls none of them. The framework's drain is what
+installs the handlers:
 
 ```rust,ignore
-// samples/lumen/src/commands.rs
-/// Installs every generated handler-registration helper on `bus`.
-pub fn register(bus: &Bus) {
-    register_open_wallet(bus);
-    register_deposit(bus);
-    register_withdraw(bus);
-    register_get_wallet(bus);
+// What FireflyApplication does for you, conceptually — no Lumen code calls this.
+let installed = firefly::cqrs::register_discovered_handlers(&bus);   // 4 handlers
+```
+
+The bus and query cache are plain `#[bean]` factories:
+
+```rust,ignore
+// samples/lumen/src/web.rs — LumenBeans (#[derive(Configuration)]).
+#[bean]
+impl LumenBeans {
+    /// The read-side query cache honouring `GetWallet`'s 30s TTL (`@Bean`).
+    #[bean]
+    fn query_cache(&self) -> QueryCache {
+        QueryCache::new()
+    }
+    // ... event_store, read_model, jwt_service, ledger, security beans ...
 }
 ```
 
-```rust,ignore
-// samples/lumen/src/web.rs — build_app(), the relevant slice.
-let bus = Arc::clone(&web.bus);
-let read_model = Arc::new(ReadModel::default());
+> **Where does the `Bus` come from?** It is a framework-provided infrastructure
+> bean: the core registers an `Arc<Bus>` into the container before the scan, so the
+> `WalletApi` controller can autowire it (`#[autowired] pub bus: Arc<Bus>`) and the
+> framework can drain the discovered handlers onto it. You declare the
+> *application* beans (`QueryCache`, the ledger); the bus is wired in for you.
 
-// Read-side caching on the bus (honours GetWallet's 30s cache_ttl).
-let query_cache = QueryCache::new();
-bus.use_middleware(query_cache.middleware());
-// Validation middleware enforces the `#[firefly(validate)]` checks.
-bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
-
-// Publish the handler collaborators, then install the generated registrations.
-let (ledger, read_model) = crate::commands::bind(
-    Ledger::new(Arc::clone(&store), Arc::clone(&broker)),
-    read_model,
-);
-crate::commands::register(&bus);
-```
-
-Middleware runs first-registered = outermost. Two ship in this chain (a third,
-authorization, arrives with [Security](./14-security.md)):
+Middleware runs first-registered = outermost. Two app-visible entries ship in this
+chain — and the framework installs them automatically (a third, authorization,
+arrives at the HTTP edge with [Security](./14-security.md)):
 
 | Middleware                  | Behaviour                                                      |
 |-----------------------------|---------------------------------------------------------------|
-| `QueryCache::middleware()`  | memoises results for messages whose `cache_ttl` is `Some`     |
+| `QueryCache::middleware()`  | memoises results for messages whose `cache_ttl` is `Some` — installed when a `QueryCache` bean exists |
 | `ValidationMiddleware`      | calls `Message::validate` before dispatch, short-circuits on error |
 
 <figure class="fig">
@@ -346,6 +360,8 @@ registration time and lets you ask about the two halves separately:
 use firefly::cqrs::{Bus, MessageKind};
 
 let bus = Bus::new();
+// In a unit test you populate a bus explicitly; the app boot drains the same
+// handlers from inventory with `register_discovered_handlers(&bus)`.
 crate::commands::register(&bus);   // installs the three commands + one query
 
 // Inspect the registry, split by CQRS kind.
@@ -390,7 +406,9 @@ task — and each of those leaves the original request task. For the logs and
 traces to read as *one* operation, they must all share a single correlation id.
 
 `firefly::cqrs::CorrelationMiddleware` enforces that at the dispatch boundary.
-Add it to the bus like any other middleware:
+The framework installs it on every `FireflyApplication` bus as the outermost
+middleware, before the query-cache and validation layers, so you never wire it by
+hand. If you build a bus yourself, add it like any other middleware:
 
 ```rust,ignore
 use firefly::cqrs::{Bus, CorrelationMiddleware};
@@ -412,13 +430,13 @@ sibling operations never leak ids into one another.
 let trace = firefly_kernel::correlation_id();   // Some(<id>) under the middleware
 ```
 
-Because Lumen wires the bus in `build_app()`, adding `CorrelationMiddleware`
-there means the same id that the HTTP layer stamped on `POST /wallets/:id/deposit`
-flows into the `Deposit` handler, into the transfer saga it may start, and into
-the events the saga publishes — without any handler touching the id explicitly.
-Register it first so it sits outermost in the chain shown earlier — the
-correlation scope must already be open before `QueryCache` and
-`ValidationMiddleware` run, so anything they log carries the id too:
+Because the framework installs `CorrelationMiddleware` outermost on Lumen's bus,
+the same id that the HTTP layer stamped on `POST /wallets/:id/deposit` flows into
+the `Deposit` handler, into the transfer saga it may start, and into the events
+the saga publishes — without any handler touching the id explicitly. It sits
+outermost in the chain shown earlier — the correlation scope is already open
+before `QueryCache` and `ValidationMiddleware` run, so anything they log carries
+the id too:
 
 <figure class="fig">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 320" role="img"
@@ -548,10 +566,12 @@ async fn deposit(
 ```
 
 This is where `WalletApi` finally grows the second field [First HTTP
-API](./06-first-http-api.md) deferred: alongside `bus`, the controller now holds
-the `QueryCache` handle built when the bus was wired, so `api.query_cache` has a
-receiver. The same `QueryCache` instance is registered as middleware *and* stored
-on the controller — one cache, read by the bus and invalidated by the handler.
+API](./06-first-http-api.md) deferred: alongside `bus`, the controller
+**autowires** the `Arc<QueryCache>` from the container (`#[autowired] pub
+query_cache: Arc<QueryCache>`), so `api.query_cache` has a receiver. The same
+`QueryCache` bean the framework registers as bus middleware is the one the
+controller invalidates — one cache, read by the bus and invalidated by the
+handler.
 
 `QueryCache::invalidate_type::<GetWallet>()` evicts every cached result for
 exactly that query type. The withdraw handler does the same, and the transfer
@@ -663,11 +683,15 @@ Lumen's read and write paths are now separate, typed, and bus-dispatched:
   folding the stream for read-after-write freshness.
 - **The `OnceLock` bind pattern** publishes the resolved `Ledger` + `ReadModel`
   once and returns the *effective* pair, so every collaborator across repeated
-  builds shares one ledger and one read model.
-- **The bus** is wired with `QueryCache::middleware()` and `ValidationMiddleware`,
-  dispatched from the `#[rest_controller]` via `bus.send` / `bus.query`, with
-  `cqrs_to_web` mapping a `CqrsError` (carrying the domain `Display` string) to
-  the right RFC 9457 status — 422 for business rules, 404 for not-found.
+  builds shares one ledger and one read model. (The bind runs inside the `ledger`
+  `#[bean]` factory.)
+- **The bus** is a framework-provided bean the `WalletApi` autowires; the
+  framework drains the discovered handlers onto it
+  (`register_discovered_handlers`) and auto-installs the correlation,
+  `QueryCache`, and validation middleware. The controller dispatches via
+  `bus.send` / `bus.query`, with `cqrs_to_web` mapping a `CqrsError` (carrying the
+  domain `Display` string) to the right RFC 9457 status — 422 for business rules,
+  404 for not-found.
 - **Read-after-write** is enforced at the bus boundary:
   `query_cache.invalidate_type::<GetWallet>()` runs after every mutation.
 
@@ -679,17 +703,18 @@ Lumen's read and write paths are now separate, typed, and bus-dispatched:
    `CqrsError::Validation` and that the ledger was never touched (open a wallet
    first, then deposit zero, and confirm its balance is unchanged).
 
-2. **Prove the cache, then bust it.** With the full `build_app()` bus,
-   `query(GetWallet { id })` twice and confirm the second is served from cache
-   (instrument the `ReadModel::find` or trace a counter). Deposit into the
-   wallet, then `query` again — assert the new balance comes back, proving
-   `invalidate_type::<GetWallet>()` did its job.
+2. **Prove the cache, then bust it.** Against the framework-assembled router
+   (`build_router().await`), `query(GetWallet { id })` twice and confirm the
+   second is served from cache (instrument the `ReadModel::find` or trace a
+   counter). Deposit into the wallet, then `query` again — assert the new balance
+   comes back, proving `invalidate_type::<GetWallet>()` did its job.
 
 3. **Add a `CloseWallet` command.** Define `CloseWallet { #[firefly(validate)]
    wallet_id: String }` with `#[derive(Command)]`, write a `#[command_handler]`
-   `close_wallet` that returns a `WalletView`, add `register_close_wallet(bus)`
-   to `register`, and dispatch it. (You do not need a domain `close` yet —
-   returning the current view is enough to exercise the wiring.)
+   `close_wallet` that returns a `WalletView`, and dispatch it. The framework
+   drains the new handler from inventory automatically — you add no registration
+   call. (You do not need a domain `close` yet — returning the current view is
+   enough to exercise the wiring.)
 
 4. **Reactive compose.** Rewrite the `get` controller handler to use
    `bus.query_mono::<_, WalletView>(GetWallet { id }).map(|v| v.balance)` and

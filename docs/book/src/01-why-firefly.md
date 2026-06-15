@@ -47,10 +47,12 @@ is structured to make.
 
 Firefly's defining principles:
 
-- **Composed, not constructed.** One call wires the whole infrastructure tier —
-  middleware chain, cache, CQRS bus, event broker, health composite, metrics,
-  scheduler, lifecycle. You write commands, queries, handlers, and routes;
-  nothing more. Lumen builds its core with `WebStack::new(CoreConfig { .. })`.
+- **Composed, not constructed.** One line boots the whole service. `FireflyApplication::new("lumen").run()`
+  component-scans your beans, auto-wires and auto-mounts the controllers,
+  handlers, listeners, and scheduled tasks, self-hosts an admin dashboard, and
+  serves the public + management ports with graceful shutdown — the framework
+  assembles the object graph instead of you spelling it out in a composition
+  root. You write commands, queries, handlers, and routes; nothing more.
 - **Contract-first and interoperable.** The wire contract — the
   `application/problem+json` shape, the `Idempotency-Key` semantics, the saga
   step definitions, the event envelopes — is a stable, versioned, language-neutral
@@ -67,11 +69,12 @@ Firefly's defining principles:
   client, and reactive EDA/CQRS — a lazy, composable, backpressure-aware
   streaming model built natively on tokio.
 
-> **Design note.** One `WebStack::new` call stands up the middleware, the bus,
-> the broker, health, and metrics — Firefly's composition root. Configuration
-> layers defaults → profile → environment, and any handler can return a
-> `Mono<T>` / `Flux<T>`. If you have used a batteries-included framework before,
-> this will feel familiar.
+> **Design note.** `FireflyApplication::new(name).run()` is Firefly's composition
+> root — the Rust analog of Spring Boot's `SpringApplication.run`. It stands up
+> the middleware, the bus, the broker, health, and metrics, then component-scans
+> and wires your beans, all from one line. Configuration layers defaults →
+> profile → environment, and any handler can return a `Mono<T>` / `Flux<T>`. If
+> you have used a batteries-included framework before, this will feel familiar.
 
 ## The one-dependency facade
 
@@ -82,7 +85,7 @@ exactly one Firefly dependency. This is its real `Cargo.toml`:
 ```toml
 [dependencies]
 # The whole framework AND every `#[derive(...)]` / `#[...]` macro.
-firefly = { version = "26.6.5" }
+firefly = { version = "26.7.0" }
 
 # The two ecosystem crates a Firefly service still writes against directly:
 # axum (you author the controller handlers) and serde (your messages and
@@ -282,7 +285,8 @@ shape tells you where each capability lives.
   adapters and points at the production swaps in callouts.
 - **Starters** bundle a sensible default stack so a service depends on one crate.
   Lumen's web tier is `firefly::starter_web::WebStack`, which wires the core
-  (`firefly::starter_core`) plus the web middleware in one constructor.
+  (`firefly::starter_core`) plus the web middleware — the stack
+  `FireflyApplication` builds for you at boot.
 
 For the full per-crate catalogue see the [Module Index](./91-appendix-modules.md).
 
@@ -306,8 +310,8 @@ need nothing but the crate. When you are ready for production, you change the
   that do not use them.
 
 This is the thread that runs through the whole book: Lumen is written so the
-in-memory baseline and the production deployment differ only at the composition
-root.
+in-memory baseline and the production deployment differ only in a `#[bean]`
+factory — the wiring the framework scans, not the business code.
 
 ## The road ahead: Lumen, chapter by chapter
 
@@ -316,8 +320,8 @@ chapters introduce the framework with small standalone snippets; **Lumen proper
 begins in [Chapter 6](./06-first-http-api.md)**:
 
 - **Foundations** — scaffold and boot Lumen, bind its configuration and profiles,
-  understand the composition root, master `Mono`/`Flux`, and expose the first
-  validated REST endpoints.
+  understand how `FireflyApplication` wires the beans it scans, master
+  `Mono`/`Flux`, and expose the first validated REST endpoints.
 - **Modeling & persisting** — a read model behind a repository, the `Money`
   value object and the `Wallet` aggregate, and the CQRS command/query split on a
   bus.
@@ -344,14 +348,15 @@ Nothing in code yet. This chapter framed the journey:
   end.
 - The **tiers** behind that facade (foundational → platform → adapters →
   starters) and the in-memory-to-production **adapter swap** that Lumen is built
-  to make at the composition root.
+  to make by changing a single `#[bean]` factory.
 
 ## Exercises
 
 1. Open `samples/lumen/Cargo.toml` and confirm the dependency list: one
    `firefly`, plus `axum`/`serde`/`serde_json`/`tokio`/`uuid`/`chrono`/`async-trait`.
    Note that no `firefly-*` sub-crate is listed directly.
-2. Skim `samples/lumen/src/lib.rs`. List the ten modules it declares
+2. Skim `samples/lumen/src/main.rs` — the single-binary crate root. List the ten
+   modules it declares
    (`money`, `domain`, `ledger`, `commands`, `transfer`, `tcc_transfer`,
    `security`, `compliance`, `web`, `housekeeping`) and predict which book part
    introduces each.

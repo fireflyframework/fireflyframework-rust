@@ -2,6 +2,68 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.7.0 — 2026-06-15
+
+The **turnkey-bootstrap & auto-generated-API-docs milestone**. A service now
+boots from a single line — `firefly::FireflyApplication::new("app").run().await`
+— and the framework discovers, wires, and serves everything Spring Boot's
+`SpringApplication.run` would: component scan, controller auto-mount, handler /
+listener / scheduled draining, security + middleware, the self-hosted admin
+dashboard, and now a fully **auto-generated OpenAPI surface** and a transparent
+**global exception-advice** layer. No composition root, no `build_app`, no
+manual route registration.
+
+### Added
+
+- **`FireflyApplication` — the turnkey bootstrap** (Spring's
+  `SpringApplication.run`). `new(name).version(v).run().await` builds the web
+  stack, auto-registers the infrastructure beans, component-scans the app's
+  beans, drains the inventory-registered CQRS handlers / EDA listeners /
+  `#[scheduled]` tasks, auto-mounts every `#[rest_controller]`, auto-discovers
+  the security `FilterChain` + `BearerLayer` beans, installs the correlation /
+  W3C-trace / read-cache middleware, self-hosts the admin dashboard on the
+  management port, prints a pyfly/Spring-style line-by-line startup report, and
+  serves the public + management ports with graceful shutdown.
+  `bootstrap()` returns the assembled (un-served) app for in-process tests.
+- **Auto-generated OpenAPI 3.1 + Swagger UI + ReDoc**, wired automatically into
+  every app (the springdoc-openapi model — no application code). The spec is
+  built from the live inventory (`#[rest_controller]` routes +
+  `#[derive(Schema)]` DTOs) and served at `/v3/api-docs` (+ `/openapi.json`
+  alias), with Swagger UI at `/swagger-ui` (+ `/swagger-ui.html`) and ReDoc at
+  `/redoc`.
+- **`#[derive(Schema)]`** — registers a DTO's OpenAPI component schema
+  (springdoc's `@Schema`), computed at compile time (no runtime reflection) by
+  walking the struct's fields, honouring serde `rename` / `rename_all` / `skip`,
+  and `$ref`-ing nested `#[derive(Schema)]` types. Every registered schema lands
+  in the document's `components.schemas`.
+- **Request / response model inference** — the `#[rest_controller]` macro infers
+  each operation's request and response schema from the handler signature (the
+  `Json<T>` parameter and the `Json<T>` in the `WebResult<…>` / tuple return
+  type); a `$ref` is emitted only when the type is a registered `Schema`, so an
+  unannotated body (e.g. `serde_json::Value`) never dangles.
+- **Per-operation OpenAPI metadata on the verb macros** —
+  `#[get("/x", summary = "…", description = "…", tags = ["…"], status = 200,
+  deprecated, request = T, response = T)]` and a `#[rest_controller(tag = "…")]`
+  group tag. `request` / `response` are optional overrides of the inference.
+- **Global exception-advice layer** (Spring's `@ControllerAdvice`) — register an
+  `ExceptionHandlerRegistry` bean and `FireflyApplication` installs an
+  `ExceptionAdviceLayer` at the outermost edge that re-parses every
+  `application/problem+json` response and re-renders it through the registry
+  (custom status / title / body), preserving existing response headers.
+- **Default RFC 9457 `404`** — an unmatched route now returns a proper
+  `application/problem+json` not-found document (rendered identically to every
+  other framework error) instead of axum's bare empty body.
+
+### Changed
+
+- The Lumen sample is now a single-binary crate with a **one-line `main`**; its
+  HTTP surface (`web.rs`) is purely declarative — `#[derive(Configuration)]` +
+  `#[bean]` factories, a `#[derive(Controller)]` + `#[autowired]` controller,
+  `FilterChain` / `BearerLayer` beans, a feature-gated `RouteContributor` bean,
+  and `#[derive(Schema)]` DTOs annotated with per-operation OpenAPI metadata.
+- Bind addresses are overridden with `FIREFLY_SERVER_ADDR` /
+  `FIREFLY_MANAGEMENT_ADDR` (honoured by `FireflyApplication`).
+
 ## v26.6.5 — 2026-06-15
 
 The **declarative-services milestone**. A complete declarative layer lands on top

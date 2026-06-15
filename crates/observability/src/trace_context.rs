@@ -148,6 +148,22 @@ impl TraceParent {
     pub fn sampled(&self) -> bool {
         self.flags & 0x01 == 0x01
     }
+
+    /// Mints a fresh **root** trace context — a random 32-hex trace-id + a random
+    /// 16-hex span-id, with the sampled flag set — for an inbound request that
+    /// carried no (valid) `traceparent`. This is what makes the framework
+    /// *originate* a distributed trace (Spring Boot / OpenTelemetry behaviour)
+    /// instead of dropping it, so logs and downstream hops get a trace id.
+    pub fn new_root() -> Self {
+        let trace_id = uuid::Uuid::new_v4().simple().to_string();
+        let span_id = format!("{:016x}", uuid::Uuid::new_v4().as_u128() as u64);
+        Self {
+            version: 0,
+            trace_id,
+            parent_id: span_id,
+            flags: 0x01,
+        }
+    }
 }
 
 impl fmt::Display for TraceParent {
@@ -376,7 +392,20 @@ where
                 }
                 (Some(raw_tp), raw_ts)
             }
-            None => (None, None),
+            None => {
+                // No (valid) inbound `traceparent` — ORIGINATE a root span so the
+                // trace id reaches the logs + downstream hops (Spring Boot / OTel
+                // root behaviour) instead of dropping the trace. Insert it into
+                // the request headers so the correlation layer echoes it on the
+                // response, and into the extensions for handlers.
+                let root = TraceParent::new_root();
+                let raw = root.to_string();
+                if let Ok(value) = HeaderValue::from_str(&raw) {
+                    req.headers_mut().insert(TRACEPARENT_HEADER, value);
+                }
+                req.extensions_mut().insert(root);
+                (Some(raw), None)
+            }
         };
         let fut = self.inner.call(req);
         Box::pin(with_trace_context(traceparent, tracestate, fut))

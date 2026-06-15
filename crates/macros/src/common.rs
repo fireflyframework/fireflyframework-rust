@@ -17,8 +17,7 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::parse::{Parse, ParseStream};
-use syn::{LitStr, Path, Token};
+use syn::Path;
 
 /// The facade crate the generated code resolves runtime types through.
 ///
@@ -54,6 +53,14 @@ impl Facade {
     pub(crate) fn container(&self) -> TokenStream {
         let rt = self.rt();
         quote!(#rt::firefly_container)
+    }
+
+    /// `#facade::__rt::firefly_web` — the web runtime the `#[rest_controller]`
+    /// macro's auto-mount thunk resolves through (`ControllerMount`, plus the
+    /// re-exported `inventory` + `Container`).
+    pub(crate) fn web(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::firefly_web)
     }
 
     /// `#facade::__rt::firefly_config` — the config crate, used by
@@ -234,23 +241,4 @@ pub(crate) fn parse_duration(spec: &str, span: proc_macro2::Span) -> syn::Result
         }
     };
     Ok(tokens)
-}
-
-/// A single `path = literal` pair inside an attribute argument list, used by
-/// the hand-rolled method-mapping parser (`#[get("/:id")]`).
-pub(crate) struct LitStrArg(pub(crate) LitStr);
-
-impl Parse for LitStrArg {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        // Accept either `#[get("/path")]` or an empty `#[get]`/`#[post()]`.
-        if input.is_empty() {
-            return Ok(LitStrArg(LitStr::new("", proc_macro2::Span::call_site())));
-        }
-        let lit: LitStr = input.parse()?;
-        // Tolerate a trailing comma.
-        if input.peek(Token![,]) {
-            let _: Token![,] = input.parse()?;
-        }
-        Ok(LitStrArg(lit))
-    }
 }

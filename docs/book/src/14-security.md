@@ -228,32 +228,40 @@ Two design choices are worth dwelling on:
 
 ## Layering it onto the router
 
-The chain is attached to the `WebStack` at build time, and the bearer layer is
-applied around the whole router so the chain sees a populated `Authentication`.
-This is the relevant slice of `LumenApp::router` and `build_app` in `src/web.rs`:
+Lumen does not layer security by hand. The `FilterChain` and the `BearerLayer`
+are each declared as a `#[bean]` in `LumenBeans` (the `#[derive(Configuration)]`
+holder in `src/web.rs`), and `FireflyApplication` auto-discovers and applies them
+— the Rust analog of Spring's `SecurityFilterChain` bean. There is no
+`.with_security(...)` call and no manual `.layer(bearer)`:
 
 ```rust,ignore
-// in build_app():
-let (_bearer, chain) = crate::security::security_layers();
-let web = WebStack::new(firefly::starter_web::CoreConfig {
-    app_name: APP_NAME.into(),
-    app_version: VERSION.into(),
-    ..Default::default()
-})
-.with_security(chain);
+// samples/lumen/src/web.rs — LumenBeans (#[derive(Configuration)]).
+#[bean]
+impl LumenBeans {
+    /// The HTTP security filter chain (path-based RBAC) — the Spring
+    /// `SecurityFilterChain` bean. `FireflyApplication` auto-discovers + applies it.
+    #[bean]
+    fn security_filter_chain(&self) -> FilterChain {
+        crate::security::security_layers().1
+    }
 
-// in LumenApp::router():
-let (bearer, _chain) = crate::security::security_layers();
-// The WebStack carries the FilterChain (set in build_app); layer the
-// bearer auth on the outside so the chain sees a populated Authentication.
-self.web.apply_middleware(routes).layer(bearer)
+    /// The bearer-token authentication layer — auto-discovered + layered onto
+    /// the API by `FireflyApplication`.
+    #[bean]
+    fn bearer_layer(&self) -> BearerLayer {
+        crate::security::security_layers().0
+    }
+}
 ```
 
-`WebStack::with_security(chain)` stores the chain; `WebStack::apply_middleware`
-layers it *inside* the inherited correlation / security-headers / CORS edge, so
-even a 401 response carries those headers and a correlation id. The bearer layer
-goes on the outside (axum runs the last-added layer first): authenticate, then
-authorize.
+At boot the framework resolves the `FilterChain` bean and sets it on the web
+stack, then resolves the `BearerLayer` bean and layers it around the whole router
+so the chain sees a populated `Authentication`. The chain runs *inside* the
+inherited correlation / security-headers / CORS edge, so even a 401 response
+carries those headers and a correlation id; the bearer layer goes on the outside
+(axum runs the last-added layer first): authenticate, then authorize. Declaring
+the two beans is the *entire* wiring — no `with_security`, no `apply_middleware`
+call in app code.
 
 ## Method security
 
@@ -544,9 +552,10 @@ line of business logic to the handlers:
   and a path-ordered RBAC `FilterChain`: public `GET /api/v1/wallets/:id`,
   public `/actuator/*`, and `CUSTOMER`-only `POST /api/v1/wallets`,
   `/deposit`, `/withdraw`, and `/transfers`.
-- **`WebStack::with_security` + `apply_middleware`** attach the chain inside the
-  correlation/headers edge; `LumenApp::router` layers the bearer auth on the
-  outside.
+- **The `FilterChain` + `BearerLayer` `#[bean]`s** are auto-discovered and
+  layered by `FireflyApplication`: it sets the chain inside the
+  correlation/headers edge and layers the bearer auth on the outside — no
+  `with_security` / `apply_middleware` call in Lumen's code.
 - **Method security** pushes authorization onto domain operations:
   `#[firefly::pre_authorize(role = "CUSTOMER")]` guards before the body runs,
   `#[firefly::post_authorize(result.owner == auth.principal)]` vets the return

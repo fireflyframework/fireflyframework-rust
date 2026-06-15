@@ -127,6 +127,7 @@
 
 #![warn(missing_docs)]
 
+mod discovery;
 mod dlq;
 mod error;
 mod event;
@@ -141,6 +142,14 @@ mod reactive;
 mod registry;
 mod serializer;
 
+// Re-export `inventory` so `#[event_listener]`-generated `ListenerRegistration`
+// thunks submit through `firefly_eda::inventory`.
+pub use inventory;
+
+pub use discovery::{
+    discovered_listener_count, subscribe_discovered_listeners, BoxSubscribeFuture,
+    ListenerRegistration,
+};
 pub use dlq::{EdaDeadLetterEntry, EdaDeadLetterStore, InMemoryEdaDeadLetterStore};
 pub use error::{EdaError, EdaResult};
 pub use event::Event;
@@ -163,4 +172,4 @@ pub use serializer::{
 };
 
 /// The released framework version, shared across all Firefly crates.
-pub const VERSION: &str = "26.6.5";
+pub const VERSION: &str = "26.7.0";

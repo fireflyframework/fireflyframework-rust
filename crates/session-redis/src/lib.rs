@@ -97,7 +97,7 @@ use redis::{AsyncCommands, Client};
 use tokio::sync::Mutex;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.5";
+pub const VERSION: &str = "26.7.0";
 
 /// The default key prefix for a principal's session sorted set — pyfly's
 /// `pyfly:session:user:` under the Rust framework's `firefly:` namespace. The

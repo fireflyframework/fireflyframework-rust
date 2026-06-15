@@ -26,22 +26,21 @@
 //!
 //! ```toml
 //! [dependencies]
-//! firefly = "26.6"
+//! firefly = "26.7"
 //! ```
 //!
-//! ```no_run
-//! use firefly::prelude::*;
+//! A service boots from a **single line** over [`FireflyApplication`] — the Rust
+//! analog of Spring Boot's `SpringApplication.run(App.class, args)`. It
+//! component-scans the DI container, auto-mounts every `#[rest_controller]`,
+//! drains the discovered CQRS handlers / event listeners / `#[scheduled]` tasks,
+//! auto-discovers security, self-hosts the admin dashboard, serves an
+//! auto-generated OpenAPI surface (Swagger UI + ReDoc), and runs the public +
+//! management ports with graceful shutdown:
 //!
-//! #[tokio::main]
-//! async fn main() -> FireflyResult<()> {
-//!     let core = Core::new(CoreConfig {
-//!         app_name: "orders".into(),
-//!         app_version: "1.0.0".into(),
-//!         ..CoreConfig::default()
-//!     });
-//!     core.print_banner();
-//!     Ok(())
-//! }
+//! ```no_run
+//! # async fn demo() -> Result<(), firefly::BoxError> {
+//! firefly::FireflyApplication::new("orders").version("1.0.0").run().await
+//! # }
 //! ```
 //!
 //! ## Three ways in
@@ -68,7 +67,7 @@
 //! third-party drivers). Heavy adapters are opt-in cargo features:
 //!
 //! ```toml
-//! firefly = { version = "26.6", features = ["data-sqlx", "eda-kafka"] }
+//! firefly = { version = "26.7", features = ["data-sqlx", "eda-kafka"] }
 //! ```
 //!
 //! | Feature | Re-exports under | Pulls in |
@@ -88,7 +87,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 
+mod application;
 mod context;
+pub use application::{AppContext, Bootstrapped, BoxError, FireflyApplication};
 pub use context::{ApplicationContext, ApplicationContextBuilder};
 
 /// Component-scan a container: register every stereotype-annotated bean
@@ -204,6 +205,7 @@ pub use firefly_eventsourcing as eventsourcing;
 pub use firefly_kernel as kernel;
 pub use firefly_lifecycle as lifecycle;
 pub use firefly_observability as observability;
+pub use firefly_openapi as openapi;
 pub use firefly_orchestration as orchestration;
 pub use firefly_reactive as reactive;
 pub use firefly_resilience as resilience;
@@ -276,6 +278,10 @@ pub use firefly_macros::*;
 /// let _ok: FireflyResult<()> = Ok(());
 /// ```
 pub mod prelude {
+    // ---- Application bootstrap ------------------------------------------
+    /// The turnkey `SpringApplication.run` analog + its readiness-hook context.
+    pub use crate::{AppContext, FireflyApplication};
+
     // ---- CQRS -----------------------------------------------------------
     /// The in-process command/query bus.
     pub use firefly_cqrs::{Bus, CqrsError, Message};

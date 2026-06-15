@@ -24,6 +24,8 @@ sysinfo = { workspace = true }
 tower = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
+# Random W3C trace-id / span-id generation when originating a root span.
+uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

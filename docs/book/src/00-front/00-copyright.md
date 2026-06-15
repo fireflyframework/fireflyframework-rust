@@ -8,6 +8,6 @@ Unless required by applicable law or agreed to in writing, software and document
 
 **First edition, 2026.**
 
-All code listings in this book were written and verified against the Firefly framework for Rust, version 26.6.x, targeting Rust 1.88+ on the `tokio` + `axum` stack.
+All code listings in this book were written and verified against the Firefly framework for Rust, version 26.7.x, targeting Rust 1.88+ on the `tokio` + `axum` stack.
 
 Published by the Firefly Software Foundation.

@@ -7,7 +7,7 @@
  * Data source: GET /admin/api/overview
  */
 
-import { DonutChart, GaugeChart, createLineChart, createGaugeChart } from '../charts.js';
+import { DonutChart, createLineChart } from '../charts.js';
 import { createEmptyStateCard } from '../components/empty-state.js';
 import { pageSkeleton } from '../components/skeleton.js';
 import { createStatusBadge } from '../components/status-badge.js';
@@ -382,7 +382,6 @@ export async function render(container, api) {
     const memoryLabels = [];
     const taskData = [];
     let memChart = null;
-    let threadGauge = null;
     let tasksChart = null;
 
     const runtimeRow = document.createElement('div');
@@ -405,7 +404,8 @@ export async function render(container, api) {
     memCard.appendChild(memBody);
     runtimeRow.appendChild(memCard);
 
-    // 2) Thread Count Gauge card
+    // 2) Worker Threads card — a COUNT, not a percentage, so it renders as a
+    //    plain numeric stat (a radial gauge would imply a 0–100% scale).
     const threadCard = document.createElement('div');
     threadCard.className = 'admin-card';
     const threadHeader = document.createElement('div');
@@ -417,12 +417,22 @@ export async function render(container, api) {
     const threadBody = document.createElement('div');
     threadBody.className = 'admin-card-body';
     threadBody.style.display = 'flex';
+    threadBody.style.flexDirection = 'column';
     threadBody.style.justifyContent = 'center';
     threadBody.style.alignItems = 'center';
-    const threadCanvas = document.createElement('canvas');
-    threadCanvas.width = 180;
-    threadCanvas.height = 180;
-    threadBody.appendChild(threadCanvas);
+    threadBody.style.height = '200px';
+    threadBody.style.gap = '6px';
+    const threadValueEl = document.createElement('div');
+    threadValueEl.className = 'stat-card-value';
+    threadValueEl.style.fontSize = '3.5rem';
+    threadValueEl.style.fontWeight = '700';
+    threadValueEl.style.lineHeight = '1';
+    threadValueEl.textContent = '--';
+    threadBody.appendChild(threadValueEl);
+    const threadSubEl = document.createElement('div');
+    threadSubEl.className = 'text-muted text-sm';
+    threadSubEl.textContent = 'tokio worker threads';
+    threadBody.appendChild(threadSubEl);
     threadCard.appendChild(threadBody);
     runtimeRow.appendChild(threadCard);
 
@@ -450,12 +460,6 @@ export async function render(container, api) {
         memChart = createLineChart(memCanvas, {
             label: 'Memory RSS (MB)',
             color: '--admin-primary',
-        });
-
-        threadGauge = createGaugeChart(threadCanvas, {
-            value: 0,
-            label: 'Workers',
-            thresholds: { warning: 60, danger: 80 },
         });
 
         tasksChart = createLineChart(tasksCanvas, {
@@ -490,9 +494,14 @@ export async function render(container, api) {
             }
         }
 
-        // Worker-threads gauge
-        if (tokio.worker_threads != null && threadGauge) {
-            threadGauge.update(tokio.worker_threads);
+        // Worker-threads count (a count, not a percentage)
+        if (tokio.worker_threads != null) {
+            threadValueEl.textContent = String(tokio.worker_threads);
+            const cores = (data.cpu || {}).logical_cores;
+            threadSubEl.textContent =
+                cores != null
+                    ? `tokio worker threads · ${cores} logical cores`
+                    : 'tokio worker threads';
         }
     });
 

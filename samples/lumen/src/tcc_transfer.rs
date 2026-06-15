@@ -41,7 +41,7 @@ use crate::money::Money;
 use crate::transfer::{TransferError, TransferRequest};
 
 /// The wire result of a confirmed two-phase transfer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, firefly::Schema)]
 pub struct TccTransferResult {
     /// `"confirmed"` when both participants captured.
     pub status: String,

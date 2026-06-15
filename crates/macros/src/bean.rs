@@ -49,6 +49,9 @@ struct BeanMethod {
     return_ty: syn::Type,
     /// Resolve expressions for each method argument (constructor injection).
     arg_resolvers: Vec<TokenStream>,
+    /// Short type names of each `Arc<Dep>` argument, for the admin dependency
+    /// graph's edges.
+    dep_names: Vec<String>,
     args: BeanArgs,
 }
 
@@ -121,6 +124,7 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
 
         // Build resolve expressions for each argument (skip the receiver).
         let mut arg_resolvers = Vec::new();
+        let mut dep_names = Vec::new();
         for input in &method.sig.inputs {
             match input {
                 FnArg::Receiver(_) => {}
@@ -132,6 +136,9 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
                              the container resolves dependencies as `Arc<T>`",
                         )
                     })?;
+                    if let Some(name) = type_short_name(inner) {
+                        dep_names.push(name);
+                    }
                     arg_resolvers.push(quote! {
                         #container::Container::resolve::<#inner>(__c)?
                     });
@@ -143,6 +150,7 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
             ident: method.sig.ident.clone(),
             return_ty,
             arg_resolvers,
+            dep_names,
             args: bean_args,
         });
     }
@@ -164,6 +172,7 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
         let mident = &m.ident;
         let return_ty = &m.return_ty;
         let resolvers = &m.arg_resolvers;
+        let dep_names = &m.dep_names;
         let name = m.args.name.clone().unwrap_or_else(|| mident.to_string());
         let primary = m.args.primary;
         let order: i32 = m.args.order.unwrap_or(0);
@@ -187,6 +196,7 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
                     },
                 );
                 __container.set_stereotype::<#return_ty>("bean");
+                __container.set_dependencies::<#return_ty>(&[#(#dep_names),*]);
             }
         };
         registrar_fns.push(registrar_fn);
@@ -365,6 +375,20 @@ fn parse_crate_override(args: TokenStream) -> syn::Result<Option<String>> {
     });
     syn::parse::Parser::parse2(parser, args)?;
     Ok(found)
+}
+
+/// The short type name of a dependency for the admin graph — the last path
+/// segment of a concrete type (`a::b::ReadModel` → `ReadModel`) or the trait
+/// name of a `dyn Trait` port (`dyn Broker` → `Broker`).
+fn type_short_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(tp) => tp.path.segments.last().map(|s| s.ident.to_string()),
+        syn::Type::TraitObject(to) => to.bounds.iter().find_map(|b| match b {
+            syn::TypeParamBound::Trait(t) => t.path.segments.last().map(|s| s.ident.to_string()),
+            _ => None,
+        }),
+        _ => None,
+    }
 }
 
 /// Returns the inner `T` of an `Arc<T>` type, or `None`.

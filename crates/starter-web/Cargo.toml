@@ -11,6 +11,10 @@ description = "Firefly Framework for Rust — web stack starter (starter-core + 
 [dependencies]
 firefly-starter-core = { workspace = true }
 firefly-security = { workspace = true }
+# The global exception-advice layer (`ExceptionAdviceLayer` /
+# `ExceptionHandlerRegistry`) lives in `firefly-web`; the web stack installs it
+# at the outermost edge when a registry is attached.
+firefly-web = { workspace = true }
 axum = { workspace = true }
 
 [dev-dependencies]

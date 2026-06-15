@@ -1,135 +1,179 @@
 # Dependency Wiring
 
-> By the end of this chapter you will understand Lumen's **composition root** —
-> the `build_app()` function that resolves every collaborator and hands the
-> wallet controller its state — and you will know both ways Firefly lets you
-> wire a service: explicit construction (Lumen's choice, for teachability) and
-> the best-in-class DI container with component scanning (`#[derive(Service)]`,
-> `#[autowired]`, `firefly::scan`). Lumen keeps an explicit root *and* shows the
-> scan alternative, so you can pick the style that fits your team.
+> By the end of this chapter you will understand how Lumen is wired: it
+> **declares beans** and lets the framework's dependency-injection container
+> discover and connect them. There is no hand-written composition root — every
+> collaborator is a bean (`#[derive(Configuration)]` + `#[bean]` factories,
+> `#[derive(Controller)]` controllers), every dependency is `#[autowired]` by
+> type, and `FireflyApplication` component-scans the whole graph at boot. This
+> is the best-in-class DI container that powers the framework, told against
+> Lumen's own collaborators.
 
 Every service has a moment where the pieces come together: the cache, the bus,
-the repositories, the services that depend on them. Firefly calls that the
-*composition root*, and it gives you two ways to write it. The explicit style
-builds collaborators with plain constructors and passes them where they are
-needed — idiomatic Rust, checked entirely by the compiler. The container style
-is a full dependency-injection engine: declare beans with stereotype
-derives, mark dependencies `#[autowired]`, and let `firefly::scan` discover and
-wire the whole graph. This chapter covers both, using Lumen as the worked
-example, and is honest about when to reach for each.
+the event store, the ledger, the controller that depends on them. In a Firefly
+service that moment is **not** a hand-written function — it is the framework's
+component scan. You *declare* each collaborator as a bean with a stereotype
+derive, mark its dependencies `#[autowired]`, and `FireflyApplication` discovers
+and wires the whole object graph when it boots. This chapter walks that path
+using Lumen's real beans, then surveys the full container surface
+[the next chapter](./04a-dependency-injection.md) covers in depth.
 
-## Lumen's explicit composition root
+## How `FireflyApplication` wires the object graph
 
-Lumen wires its application explicitly, in one function, on purpose: a reader
-can see the entire dependency graph in a single screen, and the borrow checker
-proves it is correct before the program runs. Here is the shape `build_app`
-grows into (later chapters add the bus middleware, the ledger, and the security
-chain — the *structure* is what matters now):
+When `FireflyApplication::new("lumen").run()` boots (the one-line `main` from
+the [Quickstart](./02-quickstart.md)), it does the wiring a composition root
+used to do by hand:
+
+1. It builds the web stack and **auto-registers** the framework's infrastructure
+   beans — the CQRS `Bus`, the event `Broker`, the cache, the metric registry,
+   the scheduler — into the container so your beans can autowire them.
+2. It **component-scans** the crate graph: every stereotype-derived type and
+   every `#[bean]` factory in Lumen is discovered, condition-checked, and
+   registered.
+3. It **resolves** the controllers to mount them, which recursively constructs
+   their autowired collaborators in dependency order — exactly the graph a
+   hand-written root would build, but derived from the bean declarations instead
+   of spelled out.
+
+The whole graph lives in `src/web.rs` as declarations next to each type. Two
+declarations carry it: a `#[derive(Configuration)]` holder whose `#[bean]`
+methods declare the domain beans, and a `#[derive(Controller)]` whose
+`#[autowired]` fields name what it needs.
+
+## Lumen's beans — `#[derive(Configuration)]` + `#[bean]`
+
+Not every collaborator is a type you can annotate directly: the event store, the
+read model, the query cache, the JWT service, and the ledger are all built by a
+factory. Lumen declares them on a `#[derive(Configuration)]` holder — the Spring
+`@Configuration` + `@Bean` analog. Each `#[bean]` method is keyed by its return
+type, and the container resolves each method's `Arc<Dep>` arguments from the
+container before calling it, so a factory can depend on other beans:
 
 ```rust,ignore
 // src/web.rs
 use std::sync::Arc;
 use firefly::cqrs::QueryCache;
-use firefly::eventsourcing::MemoryEventStore;
+use firefly::eda::Broker;
+use firefly::eventsourcing::{EventStore, MemoryEventStore};
 use firefly::prelude::*;
-use firefly::starter_web::WebStack;
+use firefly::security::{BearerLayer, FilterChain, JwtService};
 
-/// The fully-assembled Lumen application: the web-tier stack, the CQRS bus, the
-/// ledger application service, and the read model.
-pub struct LumenApp {
-    pub web: WebStack,
-    pub bus: Arc<Bus>,
-    pub ledger: Ledger,
-    pub read_model: Arc<ReadModel>,
-    pub query_cache: QueryCache,
-}
+/// Lumen's `@Configuration` holder. Its `#[bean]` factory methods **declare**
+/// the app's domain beans. `container.scan()` discovers and registers them —
+/// the framework does the registration, so there is no `register_arc` to call.
+#[derive(Configuration)]
+struct LumenBeans;
 
-/// Assembles a `LumenApp` over **in-memory** infrastructure — the default for
-/// tests and a no-infra run.
-pub async fn build_app() -> LumenApp {
-    let web = WebStack::new(firefly::starter_web::CoreConfig {
-        app_name: APP_NAME.into(),
-        app_version: VERSION.into(),
-        ..Default::default()
-    });
+#[bean]
+impl LumenBeans {
+    /// The in-memory event store (`@Bean`).
+    #[bean]
+    fn event_store(&self) -> MemoryEventStore {
+        MemoryEventStore::new()
+    }
 
-    // Reuse the WebStack's already-wired collaborators — no duplication,
-    // no globals. `web` Derefs to the Core, so `web.bus` / `web.broker`
-    // are the same instances the middleware and actuator see.
-    let bus = Arc::clone(&web.bus);
-    let store: Arc<dyn firefly::eventsourcing::EventStore> = Arc::new(MemoryEventStore::new());
-    let broker = Arc::clone(&web.broker);
-    let read_model = Arc::new(ReadModel::default());
+    /// The read model the projection feeds and `GetWallet` serves (`@Bean`).
+    #[bean]
+    fn read_model(&self) -> ReadModel {
+        ReadModel::default()
+    }
 
-    let ledger = Ledger::new(Arc::clone(&store), Arc::clone(&broker));
-    let query_cache = QueryCache::new();
+    /// The read-side query cache honouring `GetWallet`'s 30s TTL (`@Bean`).
+    #[bean]
+    fn query_cache(&self) -> QueryCache {
+        QueryCache::new()
+    }
 
-    LumenApp { web, bus, ledger, read_model, query_cache }
+    /// The HS256 JWT service (`@Bean`).
+    #[bean]
+    fn jwt_service(&self) -> JwtService {
+        JwtService::new(crate::security::DEMO_SIGNING_KEY)
+    }
+
+    /// The security filter chain + bearer layer — auto-discovered and applied
+    /// by `FireflyApplication`, no `.security(...)` call (Chapter 14).
+    #[bean]
+    fn security_filter_chain(&self) -> FilterChain {
+        crate::security::security_layers().1
+    }
+    #[bean]
+    fn bearer_layer(&self) -> BearerLayer {
+        crate::security::security_layers().0
+    }
+
+    /// The ledger application service — its parameters are **autowired**: the
+    /// container resolves the event store, the framework-provided `Broker` port,
+    /// and the read model by type, then hands them to the factory.
+    #[bean]
+    fn ledger(
+        &self,
+        store: Arc<MemoryEventStore>,
+        broker: Arc<dyn Broker>,
+        read_model: Arc<ReadModel>,
+    ) -> Ledger {
+        let store: Arc<dyn EventStore> = store;
+        Ledger::new(store, broker)
+    }
 }
 ```
 
 Three ideas carry the whole design:
 
-- **The root reuses, it does not re-create.** `web.bus` and `web.broker` are the
-  instances `WebStack::new` already wired; `build_app` clones the `Arc`s rather
-  than standing up a second bus. There is exactly one of each, and everything
-  downstream shares it.
-- **Ports are `Arc<dyn Trait>` fields.** `store: Arc<dyn EventStore>` is "depend
-  on the interface, inject the implementation" with no machinery. Swap
-  `MemoryEventStore` for a Postgres-backed store and *only this line* changes —
-  the ledger, the handlers, and the controller never notice.
-- **The controller gets its state from the root.** When the wallet routes arrive
-  in [Your First HTTP API](./06-first-http-api.md), `LumenApp::router()`
-  constructs the `WalletApi` controller from these resolved collaborators and
-  hands it to the macro-generated router as axum `State`.
+- **The framework does the registration.** You never call `register_arc` or
+  `Container::bind`: `container.scan()` discovers the `LumenBeans` holder *and*
+  each of its `#[bean]` methods (every method submits its own link-time scan
+  thunk) and registers the produced values keyed by their return type.
+- **Ports are resolved by type.** The `ledger` factory takes `broker: Arc<dyn
+  Broker>` — "depend on the interface, inject the implementation" — and the
+  container supplies the framework's broker. Swap `MemoryEventStore` for a
+  Postgres-backed store by changing *only this holder*; the ledger, the
+  handlers, and the controller never notice.
+- **A bean can depend on a bean.** `ledger(&self, store, broker, read_model)`
+  pulls in three other beans by type. The container builds them first, then
+  calls the factory — the same dependency-ordered construction a hand-written
+  root would do, derived from the parameter types.
 
-> **Tip** — Explicit wiring keeps the dependency graph visible in code and
-> checked by the compiler. There is no reflection and no startup-time magic; if
-> it compiles, it is wired. For an application as focused as Lumen, this is the
-> clearest choice — and it is why the book uses it.
+> **Tip** — Declarative wiring keeps each collaborator's dependencies *next to
+> the collaborator*, and the container resolves them by type. A missing
+> dependency is a clear resolution error at startup — not a panic three frames
+> deep at runtime. The startup report logs every bean it registered, so "what is
+> wired" is printed line-by-line at boot.
 
-> **Design note.** This is constructor injection done by hand: the
-> `LumenApp { .. }` literal is the place where dependencies are "injected." Lumen
-> spells the graph out explicitly rather than inferring it — the trade-off is
-> verbosity for transparency, and for many Rust services transparency wins.
+> **Design note.** A `#[derive(Configuration)]` holder with `#[bean]` methods is
+> the Spring `@Configuration` + `@Bean` analog: a factory whose methods produce
+> beans keyed by return type, resolving their own arguments from the container.
+> Lumen declares its whole domain graph this way, and the framework's component
+> scan turns the declarations into the wired object graph.
 
 ## The container as a composition root
 
-`WebStack`/`Core` is itself a wired bundle of the components a typical service
-needs. You read them straight off the struct (Lumen does), or pass overrides in
-`CoreConfig`:
+The container *is* Lumen's composition root: `FireflyApplication` scans it, and
+the framework's own infrastructure beans — the bus, broker, cache, scheduler,
+and metric/health registries — are pre-registered into it before the scan, so
+any bean can autowire them. The infrastructure surface available by type:
 
-| Field / accessor          | Type                                  |
+| Bean (resolve by type)    | Type                                  |
 |---------------------------|----------------------------------------|
-| `web.bus`                 | `Arc<cqrs::Bus>` (validation pre-installed) |
-| `web.cache`               | `Arc<dyn cache::Adapter>` (Memory by default) |
-| `web.broker`              | `Arc<dyn eda::Broker>` (InMemory by default) |
-| `web.scheduler`           | `Arc<scheduling::Scheduler>`           |
-| `web.metrics`             | `Arc<actuator::MetricRegistry>`        |
-| `web.health`              | `Arc<actuator::HealthComposite>`       |
+| `Bus`                     | `Arc<cqrs::Bus>` (validation pre-installed) |
+| cache adapter             | `Arc<dyn cache::Adapter>` (Memory by default) |
+| broker                    | `Arc<dyn eda::Broker>` (InMemory by default) |
+| scheduler                 | `Arc<scheduling::Scheduler>`           |
+| metric registry           | `Arc<actuator::MetricRegistry>`        |
+| health composite          | `Arc<actuator::HealthComposite>`       |
 
-```rust,ignore
-let web = WebStack::new(firefly::starter_web::CoreConfig {
-    app_name: "lumen".into(),
-    cache: Some(Arc::new(my_redis_adapter)),   // Arc<dyn cache::Adapter>
-    broker: Some(Arc::new(my_kafka_broker)),    // Arc<dyn eda::Broker>
-    ..Default::default()
-});
-```
+Tune the underlying `WebStack`/`Core` knobs through
+`FireflyApplication::configure(|cfg: &mut CoreConfig| { … })` — but the
+collaborators themselves you reach by autowiring them into a bean.
 
-Override any field and everything downstream uses your choice — the same "swap
-the adapter, keep the code" move you will make per subsystem throughout the book.
+## The DI container under the hood — `firefly-container`
 
-## The best-in-class DI container — `firefly-container`
-
-When you would rather *declare* beans and let the framework discover and wire
-them, Firefly ships a full dependency-injection
-container with **component scanning**, stereotype derives, constructor-style
-`#[autowired]` injection, qualifier/primary/order disambiguation, `Vec` and
-`Provider` injection, `#[bean]` factories, lifecycle hooks, and
-conditional/profile gating. It is `TypeId`-keyed, `Send + Sync`, and shareable
-as `Arc<Container>`. Beans default to singleton lifetime; the container also
-supports transient, request, and session scopes, which [Dependency
+The container the scan drives is a full dependency-injection engine with
+**component scanning**, stereotype derives, constructor-style `#[autowired]`
+injection, qualifier/primary/order disambiguation, `Vec` and `Provider`
+injection, `#[bean]` factories, lifecycle hooks, and conditional/profile gating.
+It is `TypeId`-keyed, `Send + Sync`, and shareable as `Arc<Container>`. Beans
+default to singleton lifetime; the container also supports transient, request,
+and session scopes, which [Dependency
 Injection](./04a-dependency-injection.md) covers in full.
 
 ### Stereotypes — declaring your beans
@@ -156,26 +200,33 @@ each name communicates (and that the web layer uses to find controllers):
 
 Mark a field `#[autowired]` and the container fills it in by type. This is the
 Rust spelling of constructor injection — you declare *what* a bean needs; the
-container supplies it. Here is how Lumen's ledger-and-read-model pair would look
-in container style:
+container supplies it. This is exactly how Lumen's wallet controller names its
+collaborators (the real `WalletApi` from `src/web.rs`):
 
 ```rust,ignore
 use std::sync::Arc;
+use firefly::cqrs::QueryCache;
 use firefly::prelude::*;
 
-#[derive(Repository, Default)]
-struct WalletReadModel { /* in-memory rows */ }
-
-#[derive(Service)]
-struct WalletService {
+/// The wallet HTTP surface — a `#[derive(Controller)]` DI bean. Its
+/// collaborators are autowired from the container; `#[rest_controller]`
+/// auto-mounts it (Chapter 6).
+#[derive(Clone, Controller)]
+pub struct WalletApi {
     #[autowired]
-    read_model: Arc<WalletReadModel>,   // resolved by type, recursively
+    pub bus: Arc<Bus>,            // the CQRS bus it dispatches through
+    #[autowired]
+    pub ledger: Arc<Ledger>,      // the application service the saga + stream use
+    #[autowired]
+    pub query_cache: Arc<QueryCache>,  // invalidated after a mutation
 }
 ```
 
-When the container constructs `WalletService` it first constructs
-`WalletReadModel`, then injects it. A dependency that does not exist surfaces as
-a clear resolution error at startup — not a panic three frames deep at runtime.
+When the container constructs `WalletApi` it first resolves the `Bus`, the
+`Ledger` (recursively building *its* store, broker, and read model from the
+`#[bean]` factories above), and the `QueryCache`, then injects all three. A
+dependency that does not exist surfaces as a clear resolution error at startup —
+not a panic three frames deep at runtime.
 
 `#[autowired]` injects more than a single `Arc<T>`:
 
@@ -193,8 +244,9 @@ Rust has no runtime package introspection, so discovery is **link-time**: every
 stereotype derive emits an `inventory` thunk, and `firefly::scan(&container)`
 (equivalently `container.scan()`) collects every submitted thunk across the
 whole crate graph and registers them — honoring conditionals and profiles as it
-goes. The usual entry point is the `ApplicationContext`, which wraps the
-container with the full startup sequence:
+goes. **`FireflyApplication` runs this scan for you at boot**; the lower-level
+entry point is the `ApplicationContext`, which wraps the container with the full
+startup sequence and is handy in a focused test:
 
 ```rust,ignore
 use firefly::prelude::*;
@@ -206,7 +258,7 @@ let ctx = ApplicationContext::builder()
 let c = ctx.container();
 
 // Every stereotype-derived bean in the crate graph is discovered and wired.
-let svc = c.resolve::<WalletService>().expect("scan registered the service");
+let api = c.resolve::<WalletApi>().expect("scan registered the controller");
 ```
 
 > **Design note.** `firefly::scan` / `ApplicationContext::builder()` discover
@@ -249,32 +301,28 @@ full disambiguation surface in depth.
 ### `#[bean]` factories — wiring things you do not own
 
 Not every dependency is a type you can annotate. Third-party clients need
-constructor arguments; some beans are clearest as a factory. A
-`#[derive(Configuration)]` holder with `#[firefly::bean]` methods produces beans
-keyed by their **return type** — the way you wire a third-party client or a
-hand-built adapter the container does not construct directly:
+constructor arguments; some beans are clearest as a factory. This is the
+`LumenBeans` holder you already saw — a `#[derive(Configuration)]` with `#[bean]`
+methods that produce beans keyed by their **return type** — the way Lumen wires
+its event store, read model, query cache, JWT service, and ledger. A single
+factory can swap an implementation in one place:
 
 ```rust,ignore
-use firefly::prelude::*;
-
-#[derive(Configuration, Default)]
-struct LumenInfraConfig;
-
-#[firefly::bean]
-impl LumenInfraConfig {
-    // Registered as `dyn EventStore` — swap MemoryEventStore for a Postgres
-    // store here and nothing else in Lumen changes.
-    #[bean(primary)]
-    fn event_store(&self) -> Arc<dyn firefly::eventsourcing::EventStore> {
-        Arc::new(firefly::eventsourcing::MemoryEventStore::new())
+#[bean]
+impl LumenBeans {
+    // Swap MemoryEventStore for a Postgres store here and nothing else in
+    // Lumen changes — the `ledger` factory depends on the EventStore *port*.
+    #[bean]
+    fn event_store(&self) -> MemoryEventStore {
+        MemoryEventStore::new()
     }
 }
 ```
 
 `#[bean]` methods may declare parameters; the container resolves each by type
-before the method runs. A `#[bean(profile = "prod")]` method registers only when
-the `prod` profile is active — the factory-level twin of the conditional gating
-below.
+before the method runs (Lumen's `ledger` factory does exactly that). A
+`#[bean(profile = "prod")]` method registers only when the `prod` profile is
+active — the factory-level twin of the conditional gating below.
 
 ### Lifecycle hooks — `#[post_construct]` / `#[pre_destroy]`
 
@@ -294,9 +342,9 @@ impl ProjectionSubscriber {
 
 `post_construct` runs after construction and injection complete; `pre_destroy`
 runs on `container.destroy()` in **reverse** construction order, so a subscriber
-started after the store is torn down before it. This is precisely the lifecycle
-Lumen drives by hand in `main` today (subscribe the projection, then run); the
-container would manage it for you.
+started after the store is torn down before it — the container-managed form of
+the kind of one-time wiring Lumen's `ledger` `#[bean]` does when it seeds the
+event-sourcing projection on construction.
 
 > **Design note.** `#[firefly(post_construct = "...", pre_destroy = "...")]` name
 > a method to run after a bean's dependencies are injected and a method to run on
@@ -334,8 +382,8 @@ container:
 
 ```rust,ignore
 let c = Container::new();
-firefly::register_all!(&c, [WalletReadModel, WalletService]);
-let svc = c.resolve::<WalletService>().expect("service resolves");
+firefly::register_all!(&c, [ReadModel, Ledger, WalletApi]);
+let api = c.resolve::<WalletApi>().expect("controller resolves");
 ```
 
 ### Errors and introspection
@@ -346,47 +394,50 @@ named error at resolution time. For diagnostics, the container can list its
 registered beans and report per-bean resolution stats — the data the admin
 dashboard's `/beans` view renders.
 
-## Choosing a style
+## Scan-driven wiring vs. an explicit list
 
-Both styles are first-class; neither is required by the core or the starters.
+The container is the path Lumen — and the framework — take: declare beans, let
+`FireflyApplication`'s component scan discover and wire them, and read the result
+off the `/beans` view. There is one explicit escape hatch, `register_all!`, for
+the cases the scan can't reach:
 
-- **Explicit construction** (Lumen's choice) keeps the graph visible and
-  compiler-checked, compiles faster, and reads top-to-bottom. Prefer it for a
-  focused service whose wiring fits on a screen.
-- **The container** shines as a service grows many beans, many adapters, and
-  many environment-specific variations — when "declare the bean, let scan find
-  it" removes more boilerplate than the indirection costs. Reach for it when you
-  want declarative, scan-driven wiring or the `/beans` introspection.
+- **Component scanning** is the default. `#[derive(...)]` a stereotype (or add a
+  `#[bean]` factory) and the bean is discovered link-time, condition-checked, and
+  wired — no list to maintain. This is how every bean in `samples/lumen` is
+  registered.
+- **`register_all!`** is the explicit fallback. Reach for it for **generic
+  beans** (which can't be inventoried, since the monomorphization is chosen at the
+  use site) or to keep wiring local to a single focused test.
 
-You can even mix them: keep an explicit root and resolve a scanned sub-graph
-from a `Container` field on `LumenApp`.
+Both register the same beans against the same container; the scan just builds the
+list for you from the link-time inventory.
 
 ## Recap — what changed in Lumen
 
 | Before | After this chapter |
 |--------|--------------------|
-| `build_app` understood only as "the thing `main` calls" | named as the **composition root**: it reuses the `WebStack`'s wired collaborators and hands them down |
-| ports felt abstract | seen concretely as `Arc<dyn EventStore>` / `Arc<dyn Broker>` fields — one line to swap an adapter |
-| only one wiring style implied | both styles in hand: explicit (Lumen's) and the full DI container with scan, stereotypes, `#[autowired]`, `#[bean]`, lifecycle, and conditions |
+| wiring imagined as a hand-written function | understood as **declared beans** the framework's component scan discovers and wires — no composition root to maintain |
+| ports felt abstract | seen concretely as `Arc<dyn Broker>` parameters on the `ledger` `#[bean]` — one factory to swap an adapter |
+| how `FireflyApplication` resolves the graph unclear | named: register infra beans → scan → resolve controllers, constructing collaborators in dependency order |
 
 ## Exercises
 
-1. **Trace the single bus.** In `build_app`, print `Arc::strong_count(&bus)`
-   before and after constructing `LumenApp`. Confirm there is exactly one `Bus`
-   shared by the middleware, the controller, and the handlers — never a second
-   one.
-2. **Scan a two-bean graph.** Recreate the `WalletReadModel` / `WalletService`
-   pair above, build an `ApplicationContext`, and `resolve::<WalletService>()`.
-   Then add `#[firefly(condition_on_property = "wallet.enabled=true")]` to the
-   service and watch it disappear from the container until you set the property.
+1. **Read the bean inventory.** Run Lumen and read the `:: beans (…) ::` block in
+   the startup report. Find `LumenBeans`, `WalletApi`, and the `ledger` /
+   `event_store` / `read_model` factories, grouped by stereotype — the same data
+   the admin dashboard's `/beans` view renders.
+2. **Add a bean and watch it appear.** Add a small `#[derive(Service)]` to
+   `web.rs`, run Lumen, and confirm it shows up in the startup report — you wrote
+   no registration call. Then add `#[firefly(condition_on_property =
+   "wallet.enabled=true")]` and watch it disappear until you set the property.
 3. **Auto-bind a port.** Define a `Clock` trait, give `SystemClock`
    `#[firefly(provides = "dyn Clock", primary)]`, and resolve `dyn Clock`. Add a
    second implementation without `primary` and observe the non-unique-bean error;
    move `primary` to fix it.
-4. **Produce a bean from a factory.** Move Lumen's `MemoryEventStore` behind a
-   `#[derive(Configuration)]` holder with a `#[bean]` method returning
-   `Arc<dyn EventStore>`, and resolve the trait object. Note that swapping in a
-   real store is now a one-method change — the same seam the explicit root has.
+4. **Swap a store from one factory.** Change the `event_store` `#[bean]` in
+   `LumenBeans` to return a different store, and explain in one sentence why the
+   `ledger` factory, the handlers, and the controller need no change — they
+   depend on the `EventStore` *port*.
 
 With the wiring understood, the reactive primitives underpin everything that
 follows — read [The Reactive Model](./05-reactive-model.md) next, then give

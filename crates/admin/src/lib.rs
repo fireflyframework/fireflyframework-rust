@@ -107,6 +107,7 @@ mod client;
 mod config;
 mod data;
 mod deps;
+mod env;
 mod instance;
 mod log;
 mod router;
@@ -117,6 +118,7 @@ mod view;
 pub use client::AdminClient;
 pub use config::{AdminClientConfig, AdminConfig, AdminServerConfig, InstanceConfig};
 pub use deps::AdminDeps;
+pub use env::{EnvironmentSnapshot, PropertyEntry, PropertySource};
 pub use instance::{InstanceInfo, InstanceRegistry};
 pub use log::{LogBuffer, LogRecord, DEFAULT_LOG_CAPACITY};
 pub use router::mount;
@@ -125,7 +127,7 @@ pub use view::{AdminView, AdminViewRegistry};
 
 /// Released framework version. Calendar-versioned (`YY.M.PATCH`), the Rust
 /// port's counterpart of the Go `kernel.Version` constant.
-pub const VERSION: &str = "26.6.5";
+pub const VERSION: &str = "26.7.0";
 
 #[cfg(test)]
 mod tests {

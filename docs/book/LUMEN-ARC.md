@@ -31,35 +31,52 @@ the chapter authors follow: for each chapter it says **what code is added**,
 samples/lumen/
 ├── Cargo.toml            # one dep: firefly; + axum/serde/tokio/uuid/chrono; feature `streaming`
 ├── src/
-│   ├── lib.rs            # module wiring + crate-root re-exports + VERSION
-│   ├── main.rs           # process entry point: banner, API+admin servers, scheduler, lifecycle
+│   ├── main.rs           # ONE-LINE entry point: `FireflyApplication::new("lumen").run().await`
 │   ├── money.rs          # Money value object (immutable, cents, exact)
-│   ├── domain.rs         # Wallet aggregate + DomainEvent payloads + WalletView/WalletEvent
+│   ├── domain.rs         # Wallet aggregate + DomainEvent payloads + #[derive(Schema)] WalletView/WalletEvent
 │   ├── ledger.rs         # event-sourced Ledger service + ReadModel + #[event_listener] projection
-│   ├── commands.rs       # CQRS messages (#[derive(Command/Query)]) + #[command_handler]/#[query_handler]
-│   ├── transfer.rs       # Transfer saga (debit → credit, with compensation)
-│   ├── security.rs       # JWT mint/verify + BearerLayer + RBAC FilterChain
-│   ├── web.rs            # #[rest_controller] + composition root (build_app / build_router)
+│   ├── commands.rs       # CQRS messages (#[derive(Command/Query/Schema)]) + #[command_handler]/#[query_handler]
+│   ├── transfer.rs       # Transfer saga (#[saga]) + #[derive(Schema)] TransferRequest/TransferResult
+│   ├── compliance.rs     # Compliance workflow (#[workflow] / #[workflow_step])
+│   ├── tcc_transfer.rs   # Two-phase transfer (#[tcc] / #[participant]) + #[derive(Schema)] TccTransferResult
+│   ├── security.rs       # JWT mint/verify + BearerLayer + RBAC FilterChain (declared as #[bean]s in web.rs)
+│   ├── web.rs            # declarative beans (LumenBeans #[derive(Configuration)] + #[bean]) +
+│   │                     #   the #[rest_controller(tag="Wallets")] WalletApi + a test-only build_router()
 │   └── housekeeping.rs   # #[scheduled] heartbeat task
-└── tests/
-    ├── http.rs           # tower::oneshot end-to-end: HTTP + CQRS + saga + projection + auth
-    └── streaming.rs      # feature-gated NDJSON / SSE streaming endpoint
+└── (HTTP/streaming tests live in `src/http_test.rs` / `src/streaming_test.rs`,
+    driving the framework-assembled `build_router()` in-process — no socket)
 ```
+
+> **No composition root.** `main.rs` is **one line** over `FireflyApplication`.
+> `web.rs` is *not* a `build_app`/`build_router` composition root any more: it is
+> a `LumenBeans` `#[derive(Configuration)]` whose `#[bean]` factories declare the
+> domain beans, an annotated `#[rest_controller]` `WalletApi`, and a single
+> `#[cfg(test)] build_router()` that just calls
+> `FireflyApplication::new(..).bootstrap().await.api_router` so the HTTP tests
+> drive the same app `main` serves. The framework component-scans the beans,
+> auto-mounts the controller, auto-discovers security, drains the inventory
+> handlers/listeners/tasks, and serves OpenAPI + admin — see
+> [`04b-bootstrap.md`](src/04b-bootstrap.md).
 
 ## Endpoints (the contract the chapters converge on)
 
-| Method & path                        | Handler                | Engine                       |
-|--------------------------------------|------------------------|------------------------------|
-| `POST /api/v1/wallets`               | `WalletApi::open`      | CQRS `OpenWallet` → 201       |
-| `GET  /api/v1/wallets/:id`           | `WalletApi::get`       | CQRS `GetWallet` (cached 30s) |
-| `POST /api/v1/wallets/:id/deposit`   | `WalletApi::deposit`   | CQRS `Deposit`                |
-| `POST /api/v1/wallets/:id/withdraw`  | `WalletApi::withdraw`  | CQRS `Withdraw`               |
-| `POST /api/v1/transfers`             | `WalletApi::transfer`  | Saga (debit → credit)         |
-| `GET  /api/v1/wallets/:id/events`    | `stream_events`        | reactive `Flux` → NDJSON/SSE (feature `streaming`) |
-| `GET  /actuator/*`                   | actuator router        | health / info / metrics / loggers |
+| Method & path                          | Handler                       | Engine                       |
+|----------------------------------------|-------------------------------|------------------------------|
+| `POST /api/v1/wallets`                 | `WalletApi::open`             | CQRS `OpenWallet` → 201       |
+| `GET  /api/v1/wallets/:id`             | `WalletApi::get`              | CQRS `GetWallet` (cached 30s) |
+| `POST /api/v1/wallets/:id/deposit`     | `WalletApi::deposit`          | CQRS `Deposit`                |
+| `POST /api/v1/wallets/:id/withdraw`    | `WalletApi::withdraw`         | CQRS `Withdraw`               |
+| `POST /api/v1/transfers`               | `WalletApi::transfer`         | Saga (debit → credit)         |
+| `POST /api/v1/transfers/compliance`    | `WalletApi::transfer_compliance` | Workflow (parallel checks) |
+| `POST /api/v1/transfers/2pc`           | `WalletApi::transfer_2pc`     | TCC (reserve → capture)       |
+| `GET  /api/v1/wallets/:id/events`      | `stream_events`               | reactive `Flux` → NDJSON/SSE (feature `streaming`) |
+| `GET  /v3/api-docs` · `/swagger-ui` · `/redoc` | OpenAPI generator     | live spec from the inventory (auto-served) |
+| `GET  /actuator/*` · `/admin/`         | actuator + admin router       | health / info / metrics / mappings / beans + dashboard |
 
-The mutating routes require a `CUSTOMER` JWT; the `GET` reads and the actuator
-surface are public.
+The mutating routes require a `CUSTOMER` JWT; the `GET` reads, the OpenAPI docs,
+and the actuator/admin surface are public. The API serves on
+`FIREFLY_SERVER_ADDR` (default `0.0.0.0:8080`); the actuator + admin serve on
+`FIREFLY_MANAGEMENT_ADDR` (default `0.0.0.0:8081`).
 
 ---
 
@@ -81,29 +98,56 @@ crate.
 
 ### Ch 2 — Quickstart (`02-quickstart.md`)
 - **Adds:** the Lumen **scaffold** — `Cargo.toml` with the single `firefly`
-  dependency, an empty `lib.rs`/`main.rs`, the workspace member entry. A
-  `#[tokio::main]` that builds a `Core`/`WebStack` and prints the banner.
-- **Files:** `Cargo.toml`, `src/lib.rs`, `src/main.rs` (banner only).
-- **APIs/macros:** `use firefly::prelude::*;`, `CoreConfig`, `WebStack::new`,
-  `Core::print_banner`, `firefly::VERSION`.
+  dependency, the module tree, and the **one-line `main`**:
+  `firefly::FireflyApplication::new("lumen").run().await`. No composition root,
+  no banner plumbing — the framework prints the banner, the docs URLs, and the
+  startup report.
+- **Files:** `Cargo.toml`, `src/main.rs` (the one-line `main` + module decls).
+- **APIs/macros:** `firefly::FireflyApplication::{new, run}`, `firefly::BoxError`,
+  `firefly::VERSION`, `use firefly::prelude::*;`.
+
+### Ch 2.5 — Bootstrapping with FireflyApplication (`04b-bootstrap.md`)
+- **Adds:** the explanation of the one-line `main` — the full `run` pipeline
+  (build web stack → scan container → auto-configure CQRS bus → discover security
+  → auto-mount controllers + route contributors → drain inventory
+  handlers/listeners/`#[scheduled]` → apply middleware + W3C trace → serve
+  OpenAPI + admin → print startup report → serve both ports with graceful
+  shutdown), the builder knobs, the line-by-line startup report, the
+  env-overridable binds, and the default RFC 9457 404.
+- **Files:** `src/main.rs` (one-line `main`), `src/web.rs` (`build_router` for
+  the in-process tests).
+- **APIs/macros:** `FireflyApplication::{new, version, configure, security,
+  on_ready, extra_routes, info_contributor, api_addr, management_addr, bootstrap,
+  run}`, `Bootstrapped::{api_router, serve}`, `FIREFLY_SERVER_ADDR` /
+  `FIREFLY_MANAGEMENT_ADDR`.
 
 ### Ch 3 — Configuration (`03-configuration.md`)
 - **Adds:** `CoreConfig` fields (`app_name`, `app_version`) that name Lumen and
-  feed `/actuator/info`; introduces the env-overridable bind addresses
-  (`LUMEN_ADDR` / `LUMEN_ADMIN_ADDR`) used by `main.rs`.
-- **Files:** `src/web.rs` (`APP_NAME`, `build_app` config), `src/main.rs`.
-- **APIs/macros:** `CoreConfig`, profile/property knobs; (forward-reference to
+  feed `/actuator/info` — set via `FireflyApplication::new("lumen").version(..)`
+  (or `.configure(|cfg| ..)`); and the env-overridable bind addresses
+  `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR` that `FireflyApplication`
+  honours (default `0.0.0.0:8080` / `0.0.0.0:8081`).
+- **Files:** `src/web.rs` (`APP_NAME` / `VERSION` consts), `src/main.rs`.
+- **APIs/macros:** `FireflyApplication::{version, configure, api_addr,
+  management_addr}`, `CoreConfig`, profile/property knobs; (forward-reference to
   `#[derive(ConfigProperties)]` for a reader exercise).
 
-### Ch 4 — Dependency Wiring (`04-dependency-wiring.md`)
-- **Adds:** the composition-root idea — `build_app()` resolves collaborators
-  and hands the controller its state. Introduces the DI vocabulary
-  (`Container`, stereotypes) and where Lumen *could* use `#[derive(Component)]`
-  / `#[autowired]` (the explicit-wiring vs. scan trade-off; Lumen keeps an
-  explicit root for teachability and shows the scan alternative as a callout).
-- **Files:** `src/web.rs` (`build_app` skeleton).
-- **APIs/macros:** `Container`, `firefly::scan`, `#[derive(Component/Service/Repository)]`,
-  `#[autowired]`, `register_all!` (shown; Lumen wires explicitly).
+### Ch 4 — Dependency Wiring (`04-dependency-wiring.md`) + DI & Auto-Configuration (`04a-dependency-injection.md`)
+- **Adds:** Lumen's real wiring model — **declarative beans**, not a composition
+  root. `LumenBeans` (`#[derive(Configuration)]`) declares the domain beans
+  (event store, read model, query cache, JWT service, `FilterChain`,
+  `BearerLayer`, ledger) as `#[bean]` factories; the `WalletApi` controller is a
+  `#[derive(Controller)]` bean whose `Arc<Bus>` / `Arc<Ledger>` /
+  `Arc<QueryCache>` collaborators are `#[autowired]`. The framework
+  `container.scan()`s them — no `register_arc`, no `build_app`. `04a` walks the
+  full DI surface (stereotypes, `#[autowired]`, `#[bean]`, primary, profiles,
+  conditions, lifecycle) and the auto-configuration the bootstrap performs.
+- **Files:** `src/web.rs` (`LumenBeans` + `#[bean]` factories, the autowired
+  `WalletApi`).
+- **APIs/macros:** `Container::{scan, resolve, beans}`,
+  `#[derive(Configuration/Controller/Component/Service/Repository)]`, `#[bean]`,
+  `#[autowired]`, `#[firefly(provides = "dyn ..")]` (the `RouteContributor`
+  bean).
 
 ### Ch 5 — The Reactive Model — Mono & Flux (`05-reactive-model.md`)
 - **Adds:** the reactive primitives Lumen leans on later — `Mono`/`Flux`. No
@@ -115,13 +159,34 @@ crate.
 ### Ch 6 — Your First HTTP API (`06-first-http-api.md`)
 - **Adds:** the **first real endpoints**. The `WalletApi` controller with
   `POST /api/v1/wallets` and `GET /api/v1/wallets/:id`, returning a
-  `WalletView`. At this stage the store is a simple in-memory map; the
-  controller is the `#[rest_controller]` macro target.
+  `WalletView`. The controller is a `#[rest_controller]` macro target — the
+  framework **auto-mounts** it (no hand-built router); each handler is a plain
+  axum handler returning `WebResult<T>`.
 - **Files:** `src/web.rs` (`WalletApi`, `#[rest_controller]`, `open`/`get`),
-  early `WalletView`, `tests/http.rs` (first `oneshot` round-trip).
-- **APIs/macros:** `#[rest_controller(path = "/api/v1")]`, `#[get]`/`#[post]`,
-  `WebResult<T>`, `WebError`, `FireflyError::{not_found, validation}`,
-  RFC 9457 problem rendering; `tower::ServiceExt::oneshot`.
+  early `WalletView`, `src/http_test.rs` (first `oneshot` round-trip over
+  `build_router()`).
+- **APIs/macros:** `#[rest_controller(path = "/api/v1", tag = "Wallets")]`,
+  `#[get]`/`#[post]`, `WebResult<T>`, `WebError`,
+  `FireflyError::{not_found, validation}`, RFC 9457 problem rendering;
+  `tower::ServiceExt::oneshot`.
+
+### Ch 6.5 — OpenAPI, Swagger UI & ReDoc (`06a-openapi.md`)
+- **Adds:** how the OpenAPI 3.1 spec is generated from the **live inventory**
+  (every `#[rest_controller]` route + every `#[derive(Schema)]` DTO) and served
+  with **no app code** at `/v3/api-docs` (+ `/openapi.json`), `/swagger-ui`,
+  `/redoc`. Request/response models are **inferred** from the handler signature
+  (the `Json<T>` parameter / return); `#[derive(Schema)]` computes the JSON
+  schema at compile time, honouring serde `rename`/`rename_all`/`skip`;
+  per-operation `summary`/`description`/`tags`/`status`/`deprecated`/`request=`/
+  `response=` and `#[rest_controller(tag)]` enrich the operations. Uses the real
+  `WalletApi` as the worked example; covers the `firefly openapi` CLI export.
+- **Files:** `src/web.rs` (the annotated `WalletApi` + its `#[derive(Schema)]`
+  DTOs), `src/domain.rs` / `src/commands.rs` / `src/transfer.rs` /
+  `src/tcc_transfer.rs` (the `#[derive(Schema)]` types).
+- **APIs/macros:** `#[derive(Schema)]`, `#[rest_controller(tag = ..)]`, the verb
+  `summary`/`description`/`tags`/`status`/`deprecated`/`request=`/`response=`
+  args; `firefly_openapi::{Builder, Info, DocsConfig}`, `from_inventory`,
+  `docs_router`; `firefly openapi --format json|yaml`.
 
 ### Ch 7 — Persistence & Reactive Repositories (`07-persistence.md`)
 - **Adds:** the **read model** — `ReadModel` as the query-side store the
@@ -145,27 +210,37 @@ crate.
 
 ### Ch 9 — CQRS (`09-cqrs.md`)
 - **Adds:** the **command/query split**. The `OpenWallet` / `Deposit` /
-  `Withdraw` commands and the `GetWallet` query, the free-fn handlers, and the
-  bus wiring. Introduces the `OnceLock` "publish the resolved collaborators for
-  free-fn handlers" pattern and the read-after-write cache invalidation.
-- **Files:** `src/commands.rs` (whole file), `src/web.rs` (handlers dispatch
-  through `Bus`, `query_cache.invalidate_type::<GetWallet>()`).
+  `Withdraw` commands and the `GetWallet` query, plus the free-fn handlers. The
+  handlers are **not** wired by a hand-written `register(&bus)` call — each
+  `#[command_handler]` / `#[query_handler]` submits to the inventory, and
+  `FireflyApplication` **drains the registry** (`register_discovered_handlers`)
+  at boot. Introduces the `OnceLock` "publish the resolved collaborators for
+  free-fn handlers" pattern and the read-after-write cache invalidation. The
+  `QueryCache` bean's read-cache middleware is auto-configured onto the bus
+  whenever the bean is present.
+- **Files:** `src/commands.rs` (whole file), `src/web.rs` (the controller
+  dispatches through the autowired `Bus`,
+  `query_cache.invalidate_type::<GetWallet>()`).
 - **APIs/macros:** `#[derive(Command)]` / `#[derive(Query)]` (with
   `#[firefly(validate)]` and `#[firefly(cache_ttl = "30s")]`),
-  `#[command_handler]` / `#[query_handler]` (→ `register_*`), `Bus::{send,
-  query}`, `ValidationMiddleware`, `QueryCache`, `CqrsError`.
+  `#[command_handler]` / `#[query_handler]` (drained from the inventory at boot),
+  `Bus::{send, query}`, `ValidationMiddleware`, `QueryCache`, `CqrsError`.
 
 ### Ch 10 — Event-Driven Architecture & Messaging (`10-eda-messaging.md`)
 - **Adds:** the **domain events on the wire** — the `Ledger` publishes each
-  persisted event to a `Broker`, and the **read-model projection** consumes
-  them to keep `ReadModel` current (the CQRS loop closes here). Idempotent
-  rebuild-from-stream projection.
+  persisted event to the framework-provided `Broker`, and the **read-model
+  projection** consumes them to keep `ReadModel` current (the CQRS loop closes
+  here). The `#[event_listener]` is **not** subscribed by a hand-written
+  `subscribe(&broker)` call — it submits to the inventory, and
+  `FireflyApplication` **drains the registry**
+  (`subscribe_discovered_listeners`) at boot; the projection itself is seeded
+  inside the `ledger` `#[bean]`. Idempotent rebuild-from-stream projection.
 - **Files:** `src/ledger.rs` (`Ledger::commit` publish step, `to_envelope`,
   `project_wallet_event`, `bind_projection`).
-- **APIs/macros:** `#[event_listener(topic = "wallets.events")]`
-  (→ `subscribe_*`), `firefly::eda::{Broker, Event, handler, InMemoryBroker}`,
-  `Event::{new, with_key, with_header}`, the Kafka/RabbitMQ adapter swap
-  callout.
+- **APIs/macros:** `#[event_listener(topic = "wallets.events")]` (drained from
+  the inventory at boot), `firefly::eda::{Broker, Event, handler,
+  InMemoryBroker}`, `Event::{new, with_key, with_header}`, the Kafka/RabbitMQ
+  adapter swap callout.
 
 ### Ch 11 — Event Sourcing (`11-event-sourcing.md`)
 - **Adds:** the **event-sourced ledger** proper — the `EventStore`, optimistic
@@ -202,36 +277,45 @@ crate.
 - **Adds:** **JWT-secured endpoints**. HS256 mint + verify via the framework's
   `JwtService`, a `BearerLayer` resource-server verifier, and a path-based RBAC
   `FilterChain` that requires `CUSTOMER` on the mutating routes while leaving
-  reads + actuator public. `build_router` layers bearer auth around the
-  controller.
-- **Files:** `src/security.rs` (whole file), `src/web.rs` (`router()` applies
-  `security_layers()`), `tests/http.rs` (401/422 problem assertions).
+  reads + the OpenAPI docs + actuator public. Both the `FilterChain` and the
+  `BearerLayer` are declared as **`#[bean]`s** in `LumenBeans` — `FireflyApplication`
+  **auto-discovers and applies** them at boot (no `.security(...)` call, no
+  `router()` layering by hand).
+- **Files:** `src/security.rs` (whole file), `src/web.rs` (`security_filter_chain`
+  + `bearer_layer` `#[bean]` factories), `src/http_test.rs` (401/422 problem
+  assertions).
 - **APIs/macros:** `firefly::security::{JwtService, Verifier, VerifierFn,
-  Authentication, SecurityError, BearerLayer, BearerConfig, FilterChain}`,
-  `claims → Authentication`, RFC 9457 401 rendering; `JwksVerifier` as the
-  production IdP swap.
+  Authentication, SecurityError, BearerLayer, BearerConfig, FilterChain}` as
+  scanned beans, `claims → Authentication`, RFC 9457 401 rendering;
+  `JwksVerifier` as the production IdP swap.
 
 ### Ch 15 — Observability (`15-observability.md`)
-- **Adds:** the **actuator + admin surface**. `main.rs` serves
-  `actuator_router(...)` on the admin port (`/actuator/health`,
-  `/info`, `/metrics`, `/loggers`), with an `InfoContributor` describing the
-  Lumen build. Structured logging via `init_logging`. The web stack's request
-  metrics + correlation id are already on by default.
-- **Files:** `src/main.rs` (`actuator_router`, `InfoContributor`,
-  `init_logging`).
-- **APIs/macros:** `WebStack::actuator_router`, `firefly::starter_core::InfoContributor`,
-  `Core::init_logging`, request-metrics / correlation middleware (on by default
-  in `WebStack`).
+- **Adds:** the **actuator + self-hosted admin surface**, served on the
+  management port (`FIREFLY_MANAGEMENT_ADDR`) with **no app code** —
+  `FireflyApplication` mounts `/actuator/*`
+  (`health`/`info`/`metrics`/`loggers`/`mappings`/`beans`/`conditions`/`env`)
+  and the `/admin/` dashboard, wired to the live components (health, metrics,
+  the bus, the scheduler, the container, the environment snapshot, the trace +
+  log buffers). Structured logging is initialised by the bootstrap (and teed
+  into the admin log buffer); request metrics, correlation id, and originated
+  W3C `traceparent` are on by default.
+- **Files:** — (the surface is framework-provided; an optional `info_contributor`
+  builder knob adds an `/actuator/info` block).
+- **APIs/macros:** `FireflyApplication::info_contributor`,
+  `firefly_starter_core::InfoContributor`; the self-hosted `firefly-admin`
+  dashboard; `/admin/api/mappings` (the live route table shared with OpenAPI).
 
 ### Ch 16 — Scheduling & Notifications (`16-scheduling-notifications.md`)
-- **Adds:** the **scheduled housekeeping** task — a `#[scheduled]` heartbeat
-  registered on a `Scheduler` and started from `main.rs`. Framed as where a
-  daily-statement notification (`firefly::notifications`) would hang.
-- **Files:** `src/housekeeping.rs` (whole file), `src/main.rs` (build + start
-  the scheduler).
+- **Adds:** the **scheduled housekeeping** task — a `#[scheduled]` heartbeat. It
+  is **not** registered or started from `main.rs` — it submits to the inventory,
+  and `FireflyApplication` **drains the registry**
+  (`register_discovered_scheduled`) and starts the scheduler on a background task
+  at boot. Framed as where a daily-statement notification
+  (`firefly::notifications`) would hang.
+- **Files:** `src/housekeeping.rs` (whole file).
 - **APIs/macros:** `#[scheduled(fixed_rate = "60s", initial_delay = "5s")]`
-  (→ `schedule_*`), `firefly::prelude::Scheduler`, `Scheduler::start`;
-  notifications adapters as a callout.
+  (drained from the inventory at boot), `firefly::prelude::Scheduler` (started by
+  `Bootstrapped::serve`); notifications adapters as a callout.
 
 ### Ch 17 — Caching (`17-caching.md`)
 - **Adds:** deepens the **read-side cache** introduced with CQRS — the
@@ -250,30 +334,36 @@ crate.
   suite covering the full flow (open → get → deposit/withdraw → transfer happy
   + compensation → projection convergence → auth/validation problems). Explains
   the in-process, no-socket testing model and the shared-global handler caveat.
-- **Files:** `tests/http.rs`, every `#[cfg(test)] mod tests` in `src/`.
-- **APIs/macros:** `tower::ServiceExt::oneshot`, `http_body_util::BodyExt`,
-  `firefly::testkit` helpers; `StepVerifier`/Testcontainers as production-grade
-  callouts.
+- **Files:** `src/http_test.rs`, every `#[cfg(test)] mod tests` in `src/`. The
+  HTTP suite drives the framework-assembled `build_router()`
+  (`FireflyApplication::bootstrap().api_router`) in-process — the same app
+  `main` serves, no socket.
+- **APIs/macros:** `FireflyApplication::bootstrap` → `Bootstrapped::api_router`,
+  `tower::ServiceExt::oneshot`, `http_body_util::BodyExt`, `firefly::testkit`
+  helpers; `StepVerifier`/Testcontainers as production-grade callouts.
 
 ### Ch 19 — The CLI (`19-cli.md`)
 - **Adds:** (tooling-level) how the `firefly` CLI scaffolds and runs a service
-  like Lumen; not a Lumen source change. References `cargo run --bin lumen` and
-  the `LUMEN_ADDR` overrides.
+  like Lumen; not a Lumen source change. References `cargo run --bin lumen`, the
+  `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR` overrides, and `firefly
+  openapi` (skeleton export; the live spec is served at `/v3/api-docs`).
 - **Files:** — (operational).
 - **APIs/macros:** `firefly-cli` commands.
 
 ### Ch 20 — Production & Deployment (`20-production.md`)
-- **Adds:** the **production entry point** — `main.rs` end to end: banner,
-  public API + admin servers wired through the lifecycle `Application` with
-  graceful SIGINT/SIGTERM shutdown, and the optional **reactive streaming
-  endpoint** turned on with the `streaming` feature
-  (`GET /api/v1/wallets/:id/events` → NDJSON / SSE). Discusses the in-memory →
-  real-infra (Postgres event store + Kafka broker) swap.
-- **Files:** `src/main.rs` (whole lifecycle wiring), `src/web.rs`
-  (`streaming_router` / `stream_events`, feature-gated), `Cargo.toml`
-  (`[features] streaming`), `tests/streaming.rs`.
-- **APIs/macros:** `firefly::prelude::Application`, `Core::new_application`,
-  `on_server`, `ShutdownHandle::wait`, `axum::serve(...).with_graceful_shutdown`,
+- **Adds:** the **production entry point** as the **one-line `main`** —
+  `firefly::FireflyApplication::new("lumen").run().await` boots and serves both
+  ports through the framework lifecycle with graceful SIGINT/SIGTERM shutdown,
+  no hand-written `Application` wiring. Adds the optional **reactive streaming
+  endpoint** with the `streaming` feature
+  (`GET /api/v1/wallets/:id/events` → NDJSON / SSE), contributed as a
+  `RouteContributor` **bean** the framework auto-merges. Discusses the in-memory
+  → real-infra (Postgres event store + Kafka broker) swap.
+- **Files:** `src/main.rs` (the one-line `main`), `src/web.rs` (`StreamingRoutes`
+  `RouteContributor` bean + `streaming_router` / `stream_events`, feature-gated),
+  `Cargo.toml` (`[features] streaming`), `src/streaming_test.rs`.
+- **APIs/macros:** `FireflyApplication::{new, run}` (graceful shutdown built in),
+  `firefly::web::RouteContributor` (as a `#[firefly(provides = "dyn ..")]` bean),
   `firefly::web::{NdJson, Sse}`, `firefly::reactive::Flux`.
 
 ### Ch 21 — Declarative Services with Macros (`21-declarative-macros.md`)
@@ -303,8 +393,8 @@ From the workspace root, with `export PATH="/opt/homebrew/bin:$PATH"`:
 
 ```sh
 cargo build  -p firefly-sample-lumen
-cargo test   -p firefly-sample-lumen                       # 34 unit + 7 HTTP + 1 doctest
-cargo test   -p firefly-sample-lumen --features streaming  # + 3 streaming tests
+cargo test   -p firefly-sample-lumen                       # 42 unit + 12 HTTP = 54
+cargo test   -p firefly-sample-lumen --features streaming  # + 3 streaming = 57
 cargo clippy -p firefly-sample-lumen --all-targets -- -D warnings
 cargo clippy -p firefly-sample-lumen --all-targets --features streaming -- -D warnings
 cargo fmt    -p firefly-sample-lumen -- --check

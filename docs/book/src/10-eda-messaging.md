@@ -225,8 +225,10 @@ publisher. After `close()`, publish and subscribe fail with `EdaError::Closed`.
 
 Here is where Lumen closes the CQRS loop. The **projection** is a free `async fn`
 carrying one attribute. The `#[event_listener(topic = "wallets.events")]` macro
-generates a `subscribe_project_wallet_event(broker)` helper that subscribes the
-function to the topic; for each delivered event it reloads the affected wallet's
+generates a `subscribe_project_wallet_event(broker)` helper **and** submits a
+`ListenerRegistration` into a compile-time `inventory` registry, so the framework
+subscribes the function to the topic for you — Lumen never calls the generated
+helper. For each delivered event the listener reloads the affected wallet's
 stream, folds it into a `WalletView`, and upserts it into the read model:
 
 ```rust
@@ -273,8 +275,10 @@ You can add a `FraudDetector` or a `WelcomeNotifier` subscriber next to it
 without touching a line of the command path.
 
 > **Note.** `#[event_listener(topic = "wallets.events")]` generates
-> `subscribe_project_wallet_event(broker)`: the framework wires the subscription
-> for you; you write only the reaction.
+> `subscribe_project_wallet_event(broker)` *and* registers the listener in the
+> `inventory` registry the framework drains
+> (`subscribe_discovered_listeners(broker)`): the subscription is wired for you;
+> you write only the reaction.
 
 ### Wiring state into a free-fn listener
 
@@ -317,26 +321,40 @@ fn projection_state() -> Option<&'static ProjectionState> {
 }
 ```
 
-The composition root ties it all together: it binds the projection's
-collaborators to the *same* store and read model the command handlers use, then
-awaits the generated subscription so the events the handlers publish are exactly
-the events the projection consumes:
+The `ledger` `#[bean]` factory seeds the projection on construction — it binds
+the projection's collaborators to the *same* store and read model the command
+handlers use — and the framework drains the discovered listener at boot, so the
+events the handlers publish are exactly the events the projection consumes:
 
 ```rust,ignore
-// in build_app() — crate::web
-ledger::bind_projection(Arc::clone(ledger.store()), Arc::clone(&read_model));
-crate::commands::register(&bus);
-// Subscribe the projection to the effective ledger's broker.
-ledger::subscribe_project_wallet_event(ledger.broker().as_ref())
-    .await
-    .expect("projection subscription");
+// samples/lumen/src/web.rs — the `ledger` #[bean] factory.
+#[bean]
+fn ledger(
+    &self,
+    store: Arc<MemoryEventStore>,
+    broker: Arc<dyn Broker>,
+    read_model: Arc<ReadModel>,
+) -> Ledger {
+    let store: Arc<dyn EventStore> = store;
+    let ledger = crate::commands::bind(Ledger::new(store, broker), read_model).0;
+    // Seed the event-sourcing projection on the *effective* store + read model.
+    crate::ledger::bind_projection(
+        Arc::clone(ledger.store()),
+        crate::commands::effective_read_model(),
+    );
+    ledger
+}
 ```
 
-With that one `await`, every `POST /api/v1/wallets/:id/deposit` flows
-command → ledger → store → broker → projection → read model, and the next
-`GET /api/v1/wallets/:id` is served from the projected view. The HTTP test suite
-proves the loop converges: it deposits, withdraws, then reads back the balance
-and `version` the projection folded — no manual repair needed.
+The subscription itself is wired by `FireflyApplication` —
+`subscribe_discovered_listeners(broker)` drains the `inventory` registry the
+`#[event_listener]` macro populated — so neither the `ledger` factory nor any
+composition root calls `subscribe_project_wallet_event` by hand. With that, every
+`POST /api/v1/wallets/:id/deposit` flows command → ledger → store → broker →
+projection → read model, and the next `GET /api/v1/wallets/:id` is served from the
+projected view. The HTTP test suite proves the loop converges: it deposits,
+withdraws, then reads back the balance and `version` the projection folded — no
+manual repair needed.
 
 ## Glob topics and consumer groups
 
@@ -544,9 +562,10 @@ second to a broker producer.
 
 Each transport crate implements the same `Broker` port; swap the constructor and
 keep every handler. Code against `firefly_eda::Broker` and select the adapter at
-wiring time. For Lumen this is a one-line change in `build_app`: replace the
-in-memory broker with a Kafka one and the projection, the ledger, and every
-command keep compiling unchanged.
+wiring time — for a `FireflyApplication` service that is a `firefly.*` config knob
+(or a `#[bean]` that provides the `dyn Broker` port). Replace the in-memory broker
+with a Kafka one and the projection, the ledger, and every command keep compiling
+unchanged.
 
 | Crate                  | Backend         | Constructor                                  |
 |------------------------|-----------------|----------------------------------------------|
@@ -628,10 +647,10 @@ and projects it back automatically.
 | `EVENTS_TOPIC` / `EVENT_SOURCE` | Shared constants the publisher and listener agree on |
 | `to_envelope(&DomainEvent)` | Bridges a persisted domain event to the wire `Event` (key = wallet id, headers carry routing) |
 | `Ledger::commit` | Appends, **then** publishes each event — save before you publish |
-| `#[event_listener(topic = "wallets.events")]` | Generates `subscribe_project_wallet_event(broker)` |
+| `#[event_listener(topic = "wallets.events")]` | Generates `subscribe_project_wallet_event(broker)` and registers a `ListenerRegistration` the framework drains |
 | `project_wallet_event` | The idempotent rebuild-from-stream projection that feeds the read model |
-| `bind_projection` / `projection_state` | Publish-once wiring so the free-fn listener reaches its collaborators |
-| `web.broker` (`InMemoryBroker`) | The default transport — swap the constructor for Kafka/RabbitMQ/Redis, keep the listener |
+| `bind_projection` / `projection_state` | Publish-once wiring so the free-fn listener reaches its collaborators (seeded inside the `ledger` `#[bean]`) |
+| framework `Broker` (`InMemoryBroker`) | The default transport — swap the adapter for Kafka/RabbitMQ/Redis, keep the listener |
 
 Three principles carry forward: **save before you publish** so a subscriber
 never sees an uncommitted fact; **make projections idempotent** so at-least-once
@@ -649,9 +668,10 @@ recomputed.
 1. **Add a `WelcomeNotifier` listener.** Write a second
    `#[event_listener(topic = "wallets.events")]` free fn that reacts only to
    `WalletOpened` (check `ev.event_type`) and logs a welcome line carrying the
-   `aggregateId` header. Subscribe it next to the projection in `build_app` and
-   confirm — via an `InMemoryBroker` unit test that publishes a `WalletOpened`
-   envelope — that it fires, while the existing command handlers stay untouched.
+   `aggregateId` header. The framework drains the new listener automatically —
+   you add no subscribe call. Confirm — via an `InMemoryBroker` unit test that
+   publishes a `WalletOpened` envelope — that it fires, while the existing command
+   handlers stay untouched.
 
 2. **Prove idempotency.** In a test, build a `Ledger` over a `MemoryEventStore`
    and an `InMemoryBroker`, subscribe the projection, open a wallet, and deposit
@@ -666,7 +686,7 @@ recomputed.
    cheaper guard than checking inside the handler body.
 
 4. **Swap in a real broker (sketch).** Add the `eda-kafka` feature to the crate
-   and write the `build_app` variant that constructs `new_kafka_broker(...)`
-   instead of using `web.broker`. You do not need a running Kafka — the point is
-   to confirm the projection, the ledger, and the command handlers compile
-   unchanged against the `Broker` port.
+   and provide the `dyn Broker` port as a `#[bean]` that constructs
+   `new_kafka_broker(...)` instead of relying on the default in-memory broker. You
+   do not need a running Kafka — the point is to confirm the projection, the
+   ledger, and the command handlers compile unchanged against the `Broker` port.

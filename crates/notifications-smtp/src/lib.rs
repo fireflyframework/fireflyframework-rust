@@ -87,7 +87,7 @@ use thiserror::Error;
 pub use email::{Attachment, EmailMessage, EmailProvider, EmailStatus, NotificationResult};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.5";
+pub const VERSION: &str = "26.7.0";
 
 /// The stable provider name used as the `provider` field of results.
 pub const PROVIDER_NAME: &str = "smtp";

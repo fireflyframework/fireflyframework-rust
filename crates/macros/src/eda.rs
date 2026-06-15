@@ -113,6 +113,27 @@ pub(crate) fn event_listener_attr(args: TokenStream, item: ItemFn) -> syn::Resul
         fn = fn_ident
     );
 
+    // Link-time discovery: a non-generic listener also submits a
+    // `ListenerRegistration` (the async subscribe wrapped as a boxed-future fn
+    // pointer) so `subscribe_discovered_listeners(&broker)` (and
+    // `FireflyApplication`) subscribes it with zero manual `subscribe_<fn>` calls.
+    let wrapper_ident = format_ident!("__firefly_listener_{}", fn_ident);
+    let inventory_submit = if item.sig.generics.params.is_empty() {
+        quote! {
+            #[doc(hidden)]
+            fn #wrapper_ident<'__fa>(
+                __broker: &'__fa dyn #eda::Broker,
+            ) -> #eda::BoxSubscribeFuture<'__fa> {
+                ::std::boxed::Box::pin(#register_ident(__broker))
+            }
+            #eda::inventory::submit! {
+                #eda::ListenerRegistration { subscribe: #wrapper_ident }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     Ok(quote! {
         #item
 
@@ -125,5 +146,7 @@ pub(crate) fn event_listener_attr(args: TokenStream, item: ItemFn) -> syn::Resul
             });
             #subscribe_call
         }
+
+        #inventory_submit
     })
 }

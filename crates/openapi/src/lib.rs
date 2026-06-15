@@ -19,14 +19,24 @@
 //! return — the Rust counterpart of `springdoc-openapi` in the Java
 //! framework and the `openapi` module in the Go port.
 //!
-//! The generator walks [`serde_json::Value`] samples (where Go walked
-//! struct types via reflection), registers named schemas under
-//! `#/components/schemas/{TypeName}`, and serves the result at
-//! `/openapi.json` with a Swagger-UI shim at `/openapi/ui`.
+//! The generator registers named schemas under
+//! `#/components/schemas/{TypeName}` — from `#[derive(Schema)]` component
+//! descriptors ([`Builder::add_schema_descriptors`]) and/or from
+//! [`serde_json::Value`] samples (where Go walked struct types via reflection)
+//! — and serves the document plus a Swagger-UI and a ReDoc page.
 //!
-//! The generator is deliberately small — it has no annotation
-//! framework, no DI, no codegen step. You hand-register routes and the
-//! JSON samples do the rest.
+//! ## Two ways to serve it
+//!
+//! - [`Builder::router`] serves the Go-port paths `/openapi.json` +
+//!   `/openapi/ui` + `/redoc`.
+//! - [`Builder::docs_router`] serves a configurable surface — by default the
+//!   springdoc/pyfly paths `/v3/api-docs` (+ `/openapi.json`), `/swagger-ui`
+//!   (+ `/swagger-ui.html`) and `/redoc` — and is what `FireflyApplication`
+//!   auto-mounts so every service exposes live API docs with no app code.
+//!
+//! [`Builder::from_inventory`] builds a complete document straight from the
+//! live registries: every `#[rest_controller]` route plus every
+//! `#[derive(Schema)]` component schema.
 //!
 //! ## Automatic generation from `#[rest_controller]`
 //!
@@ -122,7 +132,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.5";
+pub const VERSION: &str = "26.7.0";
 
 /// Errors produced by the OpenAPI generator.
 #[derive(Debug, thiserror::Error)]
@@ -248,6 +258,13 @@ pub struct RouteDef {
     pub request: Option<Sample>,
     /// Sample of the success response body, or `None` for no body.
     pub response: Option<Sample>,
+    /// Request body component-schema name to `$ref` (set by a route's
+    /// `request = Type` attribute, naming a `#[derive(Schema)]` type). Takes
+    /// precedence over [`request`](Self::request) when both are present.
+    pub request_schema: Option<String>,
+    /// Success-response component-schema name to `$ref` (a route's
+    /// `response = Type`). Takes precedence over [`response`](Self::response).
+    pub response_schema: Option<String>,
     /// Success status code; `0` defaults to 201 for POST, 200 otherwise.
     pub status: u16,
     /// Whether the endpoint is deprecated; renders `deprecated: true` and
@@ -438,6 +455,9 @@ pub struct Builder {
     /// Tag names in discovery order (de-duplicated), emitted into the
     /// document's top-level `tags` array.
     tags: Vec<String>,
+    /// Component schemas registered explicitly (e.g. from `#[derive(Schema)]`
+    /// descriptors), merged into `components.schemas`. Keyed by component name.
+    extra_schemas: BTreeMap<String, Value>,
 }
 
 impl Builder {
@@ -490,19 +510,70 @@ impl Builder {
     #[must_use]
     pub fn add_route(self, descriptor: &firefly_container::RouteDescriptor) -> Self {
         let (path, params) = openapi_path_and_params(descriptor.path);
-        let tag = derive_tag(descriptor.controller);
+        // Tags from the macro (`#[get(tags = [..])]` / `#[rest_controller(tag)]`)
+        // win; otherwise derive a single tag from the controller type name.
+        let tags = if descriptor.tags.is_empty() {
+            let tag = derive_tag(descriptor.controller);
+            if tag.is_empty() {
+                Vec::new()
+            } else {
+                vec![tag]
+            }
+        } else {
+            descriptor.tags.iter().map(|t| (*t).to_string()).collect()
+        };
+        let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
         self.add(RouteDef {
             method: descriptor.method.to_string(),
             path,
             operation_id: descriptor.handler.to_string(),
-            tags: if tag.is_empty() {
-                Vec::new()
-            } else {
-                vec![tag]
-            },
+            summary: descriptor.summary.to_string(),
+            description: descriptor.description.to_string(),
+            tags,
+            deprecated: descriptor.deprecated,
             parameters: params,
+            request_schema: opt(descriptor.request_schema),
+            response_schema: opt(descriptor.response_schema),
+            status: descriptor.status,
             ..RouteDef::default()
         })
+    }
+
+    /// Registers a component schema under `name` from a JSON Schema value,
+    /// merged into `components.schemas`. The Rust analog of springdoc adding a
+    /// `@Schema` model to the document.
+    #[must_use]
+    pub fn add_schema(mut self, name: impl Into<String>, schema: Value) -> Self {
+        self.extra_schemas.insert(name.into(), schema);
+        self
+    }
+
+    /// Registers every [`firefly_container::SchemaDescriptor`] in `descriptors`
+    /// (the JSON Schema strings emitted by `#[derive(Schema)]`) into
+    /// `components.schemas`. A descriptor whose JSON fails to parse is skipped.
+    #[must_use]
+    pub fn add_schema_descriptors<'a, I>(mut self, descriptors: I) -> Self
+    where
+        I: IntoIterator<Item = &'a firefly_container::SchemaDescriptor>,
+    {
+        for descriptor in descriptors {
+            if let Ok(schema) = serde_json::from_str::<Value>(descriptor.schema) {
+                self.extra_schemas
+                    .insert(descriptor.name.to_string(), schema);
+            }
+        }
+        self
+    }
+
+    /// Builds a complete document from the **live inventory**: every
+    /// `#[rest_controller]` route ([`firefly_container::routes`]) plus every
+    /// `#[derive(Schema)]` component schema ([`firefly_container::schemas`]).
+    /// This is what `FireflyApplication` serves at `/v3/api-docs` — the Rust
+    /// analog of springdoc scanning the classpath.
+    #[must_use]
+    pub fn from_inventory(self) -> Self {
+        self.from_routes(firefly_container::routes())
+            .add_schema_descriptors(firefly_container::schemas())
     }
 
     /// Registers every descriptor in `descriptors` via [`Builder::add_route`].
@@ -555,7 +626,25 @@ impl Builder {
                 request_body: None,
                 responses: BTreeMap::new(),
             };
-            if let Some(req) = &r.request {
+            // A request schema name `$ref`s a component — but ONLY when that
+            // component is actually registered (a `#[derive(Schema)]` type), so
+            // an inferred-but-unregistered body type (e.g. `serde_json::Value`)
+            // never produces a dangling `$ref`. Otherwise a JSON sample is used.
+            let request_ref = r
+                .request_schema
+                .as_ref()
+                .filter(|name| self.extra_schemas.contains_key(*name));
+            if let Some(name) = request_ref {
+                op.request_body = Some(RequestBody {
+                    required: true,
+                    content: BTreeMap::from([(
+                        "application/json".to_string(),
+                        MediaType {
+                            schema: json!({"$ref": format!("#/components/schemas/{name}")}),
+                        },
+                    )]),
+                });
+            } else if let Some(req) = &r.request {
                 let schema = schema_for(req, &mut schemas);
                 op.request_body = Some(RequestBody {
                     required: true,
@@ -574,7 +663,18 @@ impl Builder {
                 description: status_text(status).to_string(),
                 content: None,
             };
-            if let Some(res) = &r.response {
+            let response_ref = r
+                .response_schema
+                .as_ref()
+                .filter(|name| self.extra_schemas.contains_key(*name));
+            if let Some(name) = response_ref {
+                resp.content = Some(BTreeMap::from([(
+                    "application/json".to_string(),
+                    MediaType {
+                        schema: json!({"$ref": format!("#/components/schemas/{name}")}),
+                    },
+                )]));
+            } else if let Some(res) = &r.response {
                 let schema = schema_for(res, &mut schemas);
                 resp.content = Some(BTreeMap::from([(
                     "application/json".to_string(),
@@ -598,6 +698,15 @@ impl Builder {
                 .entry(r.path.clone())
                 .or_default()
                 .insert(r.method.to_lowercase(), op);
+        }
+
+        // Merge the explicitly-registered component schemas (`#[derive(Schema)]`
+        // DTOs). A sample-derived schema of the same name keeps the sample
+        // version; otherwise the registered schema is added.
+        for (name, schema) in &self.extra_schemas {
+            schemas
+                .entry(name.clone())
+                .or_insert_with(|| schema.clone());
         }
 
         schemas.insert(
@@ -705,6 +814,139 @@ impl Builder {
                 }),
             )
     }
+
+    /// Returns an [`axum::Router`] serving the documentation surface at the
+    /// configured paths — the spec JSON (with aliases), a Swagger-UI page, and
+    /// a ReDoc page, with the UI shells pointed at the configured spec path.
+    ///
+    /// Unlike [`router`](Self::router) (which hard-codes the Go-port paths),
+    /// this honours a [`DocsConfig`]. The default surface is the spec at
+    /// `GET /v3/api-docs` (with `/openapi.json` as an alias), Swagger-UI at
+    /// `GET /swagger-ui` and `/swagger-ui.html` (Spring Boot's springdoc paths),
+    /// and ReDoc at `GET /redoc` (pyfly's path). This is what
+    /// `FireflyApplication` auto-mounts so every service exposes live API docs
+    /// with no application code. The document is rendered once, here.
+    pub fn docs_router(&self, cfg: &DocsConfig) -> Router {
+        let body = self.json();
+        let swagger = swagger_ui_html(&cfg.spec_path, &self.info.title);
+        let redoc = redoc_html(&cfg.spec_path, &self.info.title);
+
+        // The spec is served at its primary path plus any aliases, de-duplicated
+        // (axum panics on a duplicate route).
+        let mut spec_paths = vec![cfg.spec_path.clone()];
+        for alias in &cfg.spec_aliases {
+            if !spec_paths.contains(alias) {
+                spec_paths.push(alias.clone());
+            }
+        }
+
+        let mut router = Router::new();
+        for path in spec_paths {
+            let body = body.clone();
+            router = router.route(
+                &path,
+                get(move || {
+                    let body = body.clone();
+                    async move { ([(header::CONTENT_TYPE, "application/json")], body) }
+                }),
+            );
+        }
+
+        // Swagger UI at its path and a `.html` alias (Spring serves both).
+        let swagger_html_path = format!("{}.html", cfg.swagger_ui_path);
+        for path in [cfg.swagger_ui_path.clone(), swagger_html_path] {
+            let swagger = swagger.clone();
+            router = router.route(
+                &path,
+                get(move || {
+                    let swagger = swagger.clone();
+                    async move {
+                        (
+                            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                            swagger,
+                        )
+                    }
+                }),
+            );
+        }
+
+        router.route(
+            &cfg.redoc_path,
+            get(move || {
+                let redoc = redoc.clone();
+                async move { ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], redoc) }
+            }),
+        )
+    }
+}
+
+/// Where the live documentation endpoints are mounted by
+/// [`Builder::docs_router`]. The defaults mirror Spring Boot's springdoc
+/// (`/v3/api-docs`, `/swagger-ui`) and pyfly's ReDoc (`/redoc`), keeping
+/// `/openapi.json` as a spec alias for the framework's own tooling.
+#[derive(Debug, Clone)]
+pub struct DocsConfig {
+    /// The primary spec path (Swagger/ReDoc point here). Default `/v3/api-docs`.
+    pub spec_path: String,
+    /// Additional paths the spec JSON is also served at. Default `/openapi.json`.
+    pub spec_aliases: Vec<String>,
+    /// The Swagger-UI mount (also served at `{path}.html`). Default `/swagger-ui`.
+    pub swagger_ui_path: String,
+    /// The ReDoc mount. Default `/redoc`.
+    pub redoc_path: String,
+}
+
+impl Default for DocsConfig {
+    fn default() -> Self {
+        Self {
+            spec_path: "/v3/api-docs".to_string(),
+            spec_aliases: vec!["/openapi.json".to_string()],
+            swagger_ui_path: "/swagger-ui".to_string(),
+            redoc_path: "/redoc".to_string(),
+        }
+    }
+}
+
+/// The Swagger-UI HTML page, pointed at `spec_url` and titled `title`
+/// (CDN-loaded `swagger-ui-dist@5` from jsdelivr).
+fn swagger_ui_html(spec_url: &str, title: &str) -> String {
+    let title = html_escape(title);
+    format!(
+        r##"<!doctype html>
+<html><head><meta charset="utf-8"><title>{title} · Swagger UI</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"></head>
+<body><div id="swagger-ui"></div>
+<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>
+window.onload = () => SwaggerUIBundle({{ url: "{spec_url}", dom_id: "#swagger-ui", deepLinking: true, persistAuthorization: true }});
+</script></body></html>"##
+    )
+}
+
+/// The ReDoc HTML page, pointed at `spec_url` and titled `title`
+/// (CDN-loaded `redoc@2` from jsdelivr).
+fn redoc_html(spec_url: &str, title: &str) -> String {
+    let title = html_escape(title);
+    format!(
+        r##"<!doctype html>
+<html><head><meta charset="utf-8"><title>{title} · ReDoc</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body {{ margin: 0; padding: 0; }}</style></head>
+<body><div id="redoc-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/redoc@2/bundles/redoc.standalone.js"></script>
+<script>
+Redoc.init("{spec_url}", {{ expandResponses: "200,201" }}, document.getElementById("redoc-container"));
+</script>
+<noscript>ReDoc requires JavaScript to render the API documentation.</noscript></body></html>"##
+    )
+}
+
+/// Minimal HTML-escaping for the document title interpolated into the UI shells.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// The Swagger-UI HTML shim served at `/openapi/ui` — byte-for-byte the
@@ -828,6 +1070,12 @@ fn merge_route(base: &mut RouteDef, incoming: &RouteDef) {
     }
     if incoming.response.is_some() {
         base.response = incoming.response.clone();
+    }
+    if incoming.request_schema.is_some() {
+        base.request_schema = incoming.request_schema.clone();
+    }
+    if incoming.response_schema.is_some() {
+        base.response_schema = incoming.response_schema.clone();
     }
     if incoming.status != 0 {
         base.status = incoming.status;
@@ -993,6 +1241,94 @@ mod tests {
             .unwrap_or_default();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         (status, ct, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    // ----- docs_router: springdoc/pyfly serving + component schemas -----
+
+    #[tokio::test]
+    async fn docs_router_serves_springdoc_and_pyfly_paths() {
+        let router = || orders_builder().docs_router(&DocsConfig::default());
+
+        let (status, ct, body) = get_response(router(), "/v3/api-docs").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ct, "application/json");
+        assert!(body.contains("\"openapi\":\"3.1.0\""));
+
+        // `/openapi.json` is a back-compat alias for the same spec.
+        let (status, ct, _) = get_response(router(), "/openapi.json").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ct, "application/json");
+
+        // Swagger UI at the springdoc path + its `.html` alias, pointed at the spec.
+        for path in ["/swagger-ui", "/swagger-ui.html"] {
+            let (status, ct, body) = get_response(router(), path).await;
+            assert_eq!(status, StatusCode::OK, "path {path}");
+            assert!(ct.starts_with("text/html"), "path {path} ct {ct}");
+            assert!(body.contains("swagger-ui"), "path {path}");
+            assert!(body.contains("/v3/api-docs"), "swagger points at spec");
+        }
+
+        // ReDoc at pyfly's path.
+        let (status, ct, body) = get_response(router(), "/redoc").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ct.starts_with("text/html"));
+        assert!(body.contains("redoc"));
+        assert!(body.contains("/v3/api-docs"), "redoc points at spec");
+    }
+
+    #[test]
+    fn add_schema_registers_component_and_route_refs_it() {
+        let doc = Builder::new(Info {
+            title: "T".into(),
+            version: "1".into(),
+            ..Info::default()
+        })
+        .add_schema(
+            "Foo",
+            json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}),
+        )
+        .add(RouteDef {
+            method: "POST".to_string(),
+            path: "/foo".to_string(),
+            request_schema: Some("Foo".to_string()),
+            response_schema: Some("Foo".to_string()),
+            ..RouteDef::default()
+        })
+        .build();
+
+        assert!(doc.components.schemas.contains_key("Foo"));
+        let op = doc.paths.get("/foo").unwrap().get("post").unwrap();
+        let req = &op.request_body.as_ref().unwrap().content["application/json"].schema;
+        assert_eq!(req, &json!({"$ref": "#/components/schemas/Foo"}));
+        let resp = op.responses["201"].content.as_ref().unwrap()["application/json"]
+            .schema
+            .clone();
+        assert_eq!(resp, json!({"$ref": "#/components/schemas/Foo"}));
+    }
+
+    #[test]
+    fn unregistered_schema_name_is_not_reffed() {
+        // An inferred body type that is not a `#[derive(Schema)]` component must
+        // NOT produce a dangling `$ref`.
+        let doc = Builder::new(Info {
+            title: "T".into(),
+            version: "1".into(),
+            ..Info::default()
+        })
+        .add(RouteDef {
+            method: "POST".to_string(),
+            path: "/foo".to_string(),
+            request_schema: Some("Missing".to_string()),
+            response_schema: Some("Missing".to_string()),
+            ..RouteDef::default()
+        })
+        .build();
+
+        assert!(!doc.components.schemas.contains_key("Missing"));
+        let op = doc.paths.get("/foo").unwrap().get("post").unwrap();
+        assert!(op.request_body.is_none(), "no dangling request $ref");
+        // The success response carries no JSON content (no dangling $ref).
+        assert!(op.responses["201"].content.is_none());
     }
 
     // ----- Ported from Go: TestBuildAndServe -----
@@ -1379,12 +1715,26 @@ mod tests {
             method: "POST",
             path: "/api/v1/orders",
             handler: "create",
+            summary: "",
+            description: "",
+            tags: &[],
+            deprecated: false,
+            request_schema: "",
+            response_schema: "",
+            status: 0,
         },
         RouteDescriptor {
             controller: "OrderApi",
             method: "GET",
             path: "/api/v1/orders/:id",
             handler: "fetch",
+            summary: "",
+            description: "",
+            tags: &[],
+            deprecated: false,
+            request_schema: "",
+            response_schema: "",
+            status: 0,
         },
     ];
 

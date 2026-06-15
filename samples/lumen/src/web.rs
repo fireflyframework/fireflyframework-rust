@@ -46,16 +46,17 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::Json;
 use firefly::cqrs::QueryCache;
-use firefly::eventsourcing::MemoryEventStore;
+use firefly::eda::Broker;
+use firefly::eventsourcing::{EventStore, MemoryEventStore};
 use firefly::prelude::*;
-use firefly::starter_web::WebStack;
+use firefly::security::{BearerLayer, FilterChain, JwtService};
 use firefly::web::{WebError, WebResult};
 use serde::Deserialize;
 
 use crate::commands::{Deposit, GetWallet, OpenWallet, Withdraw};
 use crate::compliance::{run_compliance, ComplianceError};
 use crate::domain::{DomainError, WalletView};
-use crate::ledger::{self, Ledger, ReadModel};
+use crate::ledger::{Ledger, ReadModel};
 use crate::tcc_transfer::{run_tcc_transfer, TccTransferResult};
 use crate::transfer::{run_transfer, TransferError, TransferRequest, TransferResult};
 
@@ -65,129 +66,145 @@ pub const APP_NAME: &str = "lumen";
 /// The released framework version, surfaced in the banner.
 pub const VERSION: &str = firefly::VERSION;
 
-/// The fully-assembled Lumen application: the web-tier stack (with the
-/// security filter chain attached), the CQRS bus, the ledger application
-/// service, and the read model. `main()` reads [`LumenApp::web`] for the
-/// actuator surface + lifecycle; the HTTP tests read [`LumenApp::router`].
-pub struct LumenApp {
-    /// The web-tier starter (CORS / security-headers / correlation / metrics
-    /// on by default), `Deref`-ing to the core.
-    pub web: WebStack,
-    /// The CQRS bus with the query cache + handlers wired.
-    pub bus: Arc<Bus>,
-    /// The shared application service (event store + broker).
-    pub ledger: Ledger,
-    /// The read model the projection feeds and `GetWallet` serves.
-    pub read_model: Arc<ReadModel>,
-    /// The query-cache handle, so a mutation can invalidate the cached
-    /// `GetWallet` view for read-after-write consistency.
-    pub query_cache: QueryCache,
-}
+/// Lumen's `@Configuration` holder. Its `#[bean]` factory methods **declare**
+/// the app's domain beans — the event store, read model, query cache, JWT
+/// service, and the ledger application service. `container.scan()` discovers and
+/// registers them: the **framework** does the registration, so `build_app` calls
+/// no `register_arc` (the Spring `@Configuration` + `@Bean` analog).
+#[derive(Configuration)]
+struct LumenBeans;
 
-impl LumenApp {
-    /// Builds the public router: the macro-generated wallet routes wrapped in
-    /// the web middleware chain **and** the JWT bearer + RBAC security layers.
-    pub fn router(&self) -> axum::Router {
-        let state = WalletApi {
-            bus: Arc::clone(&self.bus),
-            ledger: self.ledger.clone(),
-            query_cache: self.query_cache.clone(),
-        };
-        #[allow(unused_mut)]
-        let mut routes = WalletApi::routes(state.clone());
-        #[cfg(feature = "streaming")]
-        {
-            routes = routes.merge(streaming_router(state));
-        }
-        #[cfg(not(feature = "streaming"))]
-        let _ = state;
-        let (bearer, _chain) = crate::security::security_layers();
-        // The WebStack carries the FilterChain (set in build_app); layer the
-        // bearer auth on the outside so the chain sees a populated
-        // Authentication.
-        self.web.apply_middleware(routes).layer(bearer)
+#[bean]
+impl LumenBeans {
+    /// The in-memory event store (`@Bean`).
+    #[bean]
+    fn event_store(&self) -> MemoryEventStore {
+        MemoryEventStore::new()
+    }
+
+    /// The read model the projection feeds and `GetWallet` serves (`@Bean`).
+    #[bean]
+    fn read_model(&self) -> ReadModel {
+        ReadModel::default()
+    }
+
+    /// The read-side query cache honouring `GetWallet`'s 30s TTL (`@Bean`).
+    #[bean]
+    fn query_cache(&self) -> QueryCache {
+        QueryCache::new()
+    }
+
+    /// The HS256 JWT service (`@Bean`).
+    #[bean]
+    fn jwt_service(&self) -> JwtService {
+        JwtService::new(crate::security::DEMO_SIGNING_KEY)
+    }
+
+    /// The HTTP security filter chain (path-based RBAC) — the Spring
+    /// `SecurityFilterChain` bean. `FireflyApplication` auto-discovers + applies
+    /// it; no `.security(...)` call.
+    #[bean]
+    fn security_filter_chain(&self) -> FilterChain {
+        crate::security::security_layers().1
+    }
+
+    /// The bearer-token authentication layer — auto-discovered + layered onto
+    /// the API by `FireflyApplication`.
+    #[bean]
+    fn bearer_layer(&self) -> BearerLayer {
+        crate::security::security_layers().0
+    }
+
+    /// The ledger application service — autowires the event store, the
+    /// **framework-provided** `Broker` port, and the read model. Routed through
+    /// [`commands::bind`](crate::commands::bind) so every build shares the
+    /// *effective* (first build's) ledger, and **seeds the event-sourcing
+    /// projection on construction** so the framework wires it with no
+    /// composition-root step.
+    #[bean]
+    fn ledger(
+        &self,
+        store: Arc<MemoryEventStore>,
+        broker: Arc<dyn Broker>,
+        read_model: Arc<ReadModel>,
+    ) -> Ledger {
+        let store: Arc<dyn EventStore> = store;
+        let ledger = crate::commands::bind(Ledger::new(store, broker), read_model).0;
+        crate::ledger::bind_projection(
+            Arc::clone(ledger.store()),
+            crate::commands::effective_read_model(),
+        );
+        ledger
     }
 }
 
-/// Assembles a [`LumenApp`] over **in-memory** infrastructure — the default
-/// for tests and a no-infra run.
-pub async fn build_app() -> LumenApp {
-    let (_bearer, chain) = crate::security::security_layers();
-    let web = WebStack::new(firefly::starter_web::CoreConfig {
-        app_name: APP_NAME.into(),
-        app_version: VERSION.into(),
-        ..Default::default()
-    })
-    .with_security(chain);
+/// (feature `streaming`) A [`RouteContributor`](firefly::web::RouteContributor)
+/// bean adding the reactive `GET /api/v1/wallets/:id/events` endpoint. The
+/// framework discovers it (resolved as the `dyn RouteContributor` port) and
+/// merges its routes — a feature-gated endpoint wired by **declaring a bean**,
+/// not by a composition root.
+#[cfg(feature = "streaming")]
+#[derive(Service)]
+#[firefly(provides = "dyn firefly::web::RouteContributor")]
+struct StreamingRoutes {
+    #[autowired]
+    api: Arc<WalletApi>,
+}
 
-    let bus = Arc::clone(&web.bus);
-    let store: Arc<dyn firefly::eventsourcing::EventStore> = Arc::new(MemoryEventStore::new());
-    let broker = Arc::clone(&web.broker);
-    let read_model = Arc::new(ReadModel::default());
+#[cfg(feature = "streaming")]
+impl firefly::web::RouteContributor for StreamingRoutes {
+    fn routes(&self) -> axum::Router {
+        streaming_router((*self.api).clone())
+    }
+}
 
-    // Read-side caching on the bus (honours GetWallet's 30s cache_ttl). The
-    // handle is kept so a mutation can invalidate it for read-after-write.
-    let query_cache = QueryCache::new();
-    bus.use_middleware(query_cache.middleware());
-    // Validation middleware enforces the `#[firefly(validate)]` checks.
-    bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
-    // Correlation propagation: every command/query dispatch runs under a
-    // correlation id — reusing the one the HTTP layer set, or generating one —
-    // so a command and the saga / projection it triggers share a trace id.
-    bus.use_middleware(firefly::cqrs::CorrelationMiddleware::new());
-
-    // Publish the handler + projection collaborators (free-fn macro handlers
-    // and the `#[event_listener]` reach them through module-local statics).
-    // `bind` returns the *effective* ledger/read-model — the first build's, on
-    // every subsequent build — so the controller's saga, the projection, and
-    // the free-fn handlers all share one ledger (store + broker) and one read
-    // model. Everything downstream wires against the effective collaborators.
-    let (ledger, read_model) = crate::commands::bind(
-        Ledger::new(Arc::clone(&store), Arc::clone(&broker)),
-        read_model,
-    );
-    ledger::bind_projection(Arc::clone(ledger.store()), Arc::clone(&read_model));
-    crate::commands::register(&bus);
-    // Subscribe the projection to the *effective* ledger's broker, so the
-    // events the handlers publish are the events the projection consumes.
-    ledger::subscribe_project_wallet_event(ledger.broker().as_ref())
+/// The testable in-process public router (no socket bound), assembled by the
+/// framework exactly as `main()` does — used by the HTTP tests.
+///
+/// There is **no hand-written composition root and no builder**: every bean in
+/// this file is auto-registered by `container.scan()`, every `#[rest_controller]`
+/// is auto-mounted, security (`FilterChain` + `BearerLayer` beans) and the
+/// read-cache bus middleware are auto-discovered, the streaming endpoint is a
+/// `RouteContributor` bean, the projection is seeded inside the `ledger` `#[bean]`,
+/// and the CQRS handlers / listener / `#[scheduled]` task are drained from the
+/// inventory registries. The whole app boots from a single
+/// [`FireflyApplication`](firefly::FireflyApplication) line.
+#[cfg(test)]
+pub(crate) async fn build_router() -> axum::Router {
+    firefly::FireflyApplication::new(APP_NAME)
+        .version(VERSION)
+        .bootstrap()
         .await
-        .expect("projection subscription");
-
-    LumenApp {
-        web,
-        bus,
-        ledger,
-        read_model,
-        query_cache,
-    }
-}
-
-/// The testable composition root: the full public router of an in-memory
-/// [`LumenApp`], wired with the web middleware + JWT security.
-pub async fn build_router() -> axum::Router {
-    build_app().await.router()
+        .expect("lumen bootstrap")
+        .api_router
 }
 
 // ---------------------------------------------------------------------------
 // REST controller — `#[rest_controller]` + `#[get]` / `#[post]`.
 // ---------------------------------------------------------------------------
 
-/// The wallet HTTP surface. It carries the [`Bus`] (CQRS dispatch) and the
-/// [`Ledger`] (the saga + streaming endpoint drive it directly).
-#[derive(Clone)]
+/// The wallet HTTP surface — a `#[derive(Controller)]` DI bean. Its
+/// collaborators are **autowired** from the container (the `Arc<Bus>` for CQRS
+/// dispatch, the `Arc<Ledger>` the saga + stream drive, the `Arc<QueryCache>`),
+/// and `#[rest_controller]` auto-mounts it via `firefly::web::mount_controllers`
+/// — no hand-built state, no manual `routes()`.
+#[derive(Clone, Controller)]
 pub struct WalletApi {
-    /// The command/query bus the controller dispatches through.
+    /// The command/query bus the controller dispatches through (autowired).
+    #[autowired]
     pub bus: Arc<Bus>,
-    /// The application service the transfer saga and event stream use.
-    pub ledger: Ledger,
+    /// The application service the transfer saga and event stream use
+    /// (autowired).
+    #[autowired]
+    pub ledger: Arc<Ledger>,
     /// The query cache, invalidated after a mutation so a read-after-write
-    /// never serves a stale balance within the 30s `GetWallet` TTL.
-    pub query_cache: QueryCache,
+    /// never serves a stale balance within the 30s `GetWallet` TTL (autowired).
+    #[autowired]
+    pub query_cache: Arc<QueryCache>,
 }
 
 /// A `{ "amount": <i64> }` request body for deposit / withdraw.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Schema)]
 #[serde(default)]
 struct AmountBody {
     amount: i64,
@@ -197,11 +214,16 @@ struct AmountBody {
 /// axum::Router`. Each method carries one verb mapping and returns
 /// `WebResult<T>`, so a handler error renders as RFC 9457
 /// `application/problem+json`.
-#[rest_controller(path = "/api/v1")]
+#[rest_controller(path = "/api/v1", tag = "Wallets")]
 impl WalletApi {
     /// `POST /api/v1/wallets` — open a wallet. Validation failures surface as
     /// 422 problems; success answers `201 Created` with the view.
-    #[post("/wallets")]
+    #[post(
+        "/wallets",
+        summary = "Open a wallet",
+        description = "Opens a new wallet for an owner with an optional opening balance.",
+        status = 201
+    )]
     async fn open(
         State(api): State<WalletApi>,
         Json(body): Json<OpenWallet>,
@@ -212,7 +234,11 @@ impl WalletApi {
 
     /// `GET /api/v1/wallets/:id` — fetch the read-model view (cached 30s). An
     /// unknown id renders as a 404 problem.
-    #[get("/wallets/:id")]
+    #[get(
+        "/wallets/:id",
+        summary = "Fetch a wallet",
+        description = "Returns the read-model view of a wallet (served from a 30s cache)."
+    )]
     async fn get(
         State(api): State<WalletApi>,
         Path(id): Path<String>,
@@ -222,7 +248,7 @@ impl WalletApi {
     }
 
     /// `POST /api/v1/wallets/:id/deposit` — credit a wallet.
-    #[post("/wallets/:id/deposit")]
+    #[post("/wallets/:id/deposit", summary = "Deposit funds", status = 200)]
     async fn deposit(
         State(api): State<WalletApi>,
         Path(id): Path<String>,
@@ -238,7 +264,7 @@ impl WalletApi {
     }
 
     /// `POST /api/v1/wallets/:id/withdraw` — debit a wallet.
-    #[post("/wallets/:id/withdraw")]
+    #[post("/wallets/:id/withdraw", summary = "Withdraw funds", status = 200)]
     async fn withdraw(
         State(api): State<WalletApi>,
         Path(id): Path<String>,
@@ -256,7 +282,13 @@ impl WalletApi {
     /// `POST /api/v1/transfers` — run a money transfer as a saga. A clean
     /// rollback is a business failure surfaced as a 422 carrying the cause
     /// (e.g. "insufficient funds"); success answers `200 OK`.
-    #[post("/transfers")]
+    #[post(
+        "/transfers",
+        summary = "Transfer funds (saga)",
+        description = "Moves funds between two wallets as a compensating saga (debit then credit).",
+        tags = ["Transfers"],
+        status = 200
+    )]
     async fn transfer(
         State(api): State<WalletApi>,
         Json(body): Json<TransferRequest>,
@@ -278,7 +310,13 @@ impl WalletApi {
     /// parallel compliance **workflow** (balance + limit checks → approve).
     /// `200 OK` with the decision when approved; `422` carrying the reason when
     /// rejected. A read-only pre-check, so it does not move funds.
-    #[post("/transfers/compliance")]
+    #[post(
+        "/transfers/compliance",
+        summary = "Compliance-gated transfer (workflow)",
+        description = "Runs the parallel compliance workflow (balance + limit checks) before approving a transfer.",
+        tags = ["Transfers"],
+        status = 200
+    )]
     async fn transfer_compliance(
         State(api): State<WalletApi>,
         Json(body): Json<TransferRequest>,
@@ -306,7 +344,13 @@ impl WalletApi {
     /// `POST /api/v1/transfers/2pc` — run a two-phase (Try/Confirm/Cancel)
     /// transfer via the **TCC** coordinator. `200 OK` with the confirmed result,
     /// or `422` if a reservation failed (the source hold is released).
-    #[post("/transfers/2pc")]
+    #[post(
+        "/transfers/2pc",
+        summary = "Two-phase transfer (TCC)",
+        description = "Runs a Try/Confirm/Cancel two-phase transfer via the TCC coordinator.",
+        tags = ["Transfers"],
+        status = 200
+    )]
     async fn transfer_2pc(
         State(api): State<WalletApi>,
         Json(body): Json<TransferRequest>,

@@ -61,10 +61,16 @@
 //! let _response = registry.handle(&err);
 //! ```
 
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
+use axum::body::Body;
 use axum::response::Response;
-use firefly_kernel::ProblemDetail;
+use firefly_kernel::{ProblemDetail, PROBLEM_CONTENT_TYPE};
+use futures::future::BoxFuture;
+use http::{header, HeaderValue, Request, StatusCode};
+use tower::{Layer, Service};
 
 use crate::problem::{problem_response, WebError};
 
@@ -207,6 +213,18 @@ impl ExceptionHandlerRegistry {
         }
     }
 
+    /// Applies the registry to an **already-rendered** [`ProblemDetail`]
+    /// (re-parsed from an outgoing `application/problem+json` body), returning
+    /// the transformed detail or `None` when no handler matches.
+    ///
+    /// This is the entry point used by [`ExceptionAdviceLayer`] to
+    /// post-process every error response transparently — the missing piece that
+    /// makes a registered registry behave like a global `@ControllerAdvice`
+    /// without each handler opting in.
+    pub fn apply(&self, pd: &ProblemDetail) -> Option<ProblemDetail> {
+        self.resolve(pd).map(|transform| transform(pd))
+    }
+
     /// Finds the transform for `pd`: a by-`type` match first (most
     /// specific), then a by-status match.
     fn resolve(&self, pd: &ProblemDetail) -> Option<Transform> {
@@ -219,6 +237,126 @@ impl ExceptionHandlerRegistry {
                     .find(|h| matches!(&h.matcher, Matcher::Status(s) if *s == pd.status))
             })
             .map(|h| Arc::clone(&h.transform))
+    }
+}
+
+/// The transparent **global exception-advice** tower layer — Spring's
+/// `@ControllerAdvice` applied to *every* response, not per handler.
+///
+/// It wraps the whole handler chain: when an inner layer or handler emits an
+/// `application/problem+json` response (a per-handler [`WebError`], or a
+/// panic-recovered 500 from [`ProblemLayer`](crate::ProblemLayer)), this layer
+/// re-parses the body back into a [`ProblemDetail`], runs it through the
+/// configured [`ExceptionHandlerRegistry`], and — when a handler matches —
+/// re-renders the customized status + body while preserving the response's
+/// existing headers (correlation id, security headers, CORS). Non-problem
+/// responses and unmatched problems pass through untouched.
+///
+/// `FireflyApplication` installs this automatically when an
+/// [`ExceptionHandlerRegistry`] bean is registered, so a service gets global
+/// advice with zero wiring.
+#[derive(Clone)]
+pub struct ExceptionAdviceLayer {
+    registry: Arc<ExceptionHandlerRegistry>,
+}
+
+impl ExceptionAdviceLayer {
+    /// Builds the layer from a registry (cloned into a shared `Arc`).
+    pub fn new(registry: ExceptionHandlerRegistry) -> Self {
+        Self {
+            registry: Arc::new(registry),
+        }
+    }
+}
+
+impl<S> Layer<S> for ExceptionAdviceLayer {
+    type Service = ExceptionAdviceService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ExceptionAdviceService {
+            inner,
+            registry: Arc::clone(&self.registry),
+        }
+    }
+}
+
+/// The tower service produced by [`ExceptionAdviceLayer`].
+#[derive(Clone)]
+pub struct ExceptionAdviceService<S> {
+    inner: S,
+    registry: Arc<ExceptionHandlerRegistry>,
+}
+
+impl<S> Service<Request<Body>> for ExceptionAdviceService<S>
+where
+    S: Service<Request<Body>, Response = Response, Error = Infallible> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = Response;
+    type Error = Infallible;
+    type Future = BoxFuture<'static, Result<Response, Infallible>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        // Ready-clone dance: the future owns a ready inner service.
+        let clone = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, clone);
+        let registry = Arc::clone(&self.registry);
+        Box::pin(async move {
+            let res = inner.call(req).await?;
+
+            // Fast path: only buffer + re-parse `application/problem+json`.
+            let is_problem = res
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| ct.starts_with(PROBLEM_CONTENT_TYPE))
+                .unwrap_or(false);
+            if !is_problem {
+                return Ok(res);
+            }
+
+            let (mut parts, body) = res.into_parts();
+            let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+                Ok(bytes) => bytes,
+                // The body was consumed and cannot be reconstructed; surface a
+                // generic problem rather than a torn-down connection.
+                Err(_) => {
+                    return Ok(problem_response(&ProblemDetail::internal(
+                        "exception advice could not read the response body",
+                    )));
+                }
+            };
+
+            // Re-parse the problem body. A non-problem JSON shape (or invalid
+            // JSON) passes through with its original bytes.
+            let pd = match serde_json::from_slice::<ProblemDetail>(&bytes) {
+                Ok(pd) => pd,
+                Err(_) => return Ok(Response::from_parts(parts, Body::from(bytes))),
+            };
+
+            match registry.apply(&pd) {
+                // A handler matched: re-render the customized status + body,
+                // keeping the headers the chain already set.
+                Some(mapped) => {
+                    let mut out = serde_json::to_vec(&mapped).unwrap_or_default();
+                    out.push(b'\n');
+                    parts.status = StatusCode::from_u16(mapped.status)
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                    parts.headers.remove(header::CONTENT_LENGTH);
+                    parts.headers.insert(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static(PROBLEM_CONTENT_TYPE),
+                    );
+                    Ok(Response::from_parts(parts, Body::from(out)))
+                }
+                // No handler matched: emit the original problem unchanged.
+                None => Ok(Response::from_parts(parts, Body::from(bytes))),
+            }
+        })
     }
 }
 
@@ -373,5 +511,100 @@ mod tests {
     fn registry_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<ExceptionHandlerRegistry>();
+    }
+
+    // ---- ExceptionAdviceLayer (transparent global advice) -------------------
+
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    fn teapot_registry() -> ExceptionHandlerRegistry {
+        ExceptionHandlerRegistry::new().on_type(TYPE_NOT_FOUND, |pd| {
+            let mut out = pd.clone();
+            out.status = 418;
+            out.title = "Teapot".into();
+            out
+        })
+    }
+
+    async fn problem_404_handler() -> Response {
+        problem_response(&firefly_kernel::ProblemDetail::not_found(
+            "order 7 not found",
+        ))
+    }
+
+    #[tokio::test]
+    async fn advice_layer_transforms_a_matching_problem_response() {
+        let app = Router::new()
+            .route("/x", get(problem_404_handler))
+            .layer(ExceptionAdviceLayer::new(teapot_registry()));
+        let res = app
+            .oneshot(Request::builder().uri("/x").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // The 404 problem was post-processed into the registry's 418 teapot.
+        assert_eq!(res.status(), StatusCode::IM_A_TEAPOT);
+        assert_eq!(
+            res.headers().get(http::header::CONTENT_TYPE).unwrap(),
+            firefly_kernel::PROBLEM_CONTENT_TYPE
+        );
+        let body = collect(res.into_body()).await;
+        assert!(body.contains("\"status\":418"), "body: {body}");
+        assert!(body.contains("Teapot"), "body: {body}");
+        // The original detail survives the transform.
+        assert!(body.contains("order 7 not found"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn advice_layer_passes_non_problem_responses_through_untouched() {
+        async fn ok_handler() -> &'static str {
+            "hello"
+        }
+        let app = Router::new()
+            .route("/x", get(ok_handler))
+            .layer(ExceptionAdviceLayer::new(teapot_registry()));
+        let res = app
+            .oneshot(Request::builder().uri("/x").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(collect(res.into_body()).await, "hello");
+    }
+
+    #[tokio::test]
+    async fn advice_layer_leaves_unmatched_problems_unchanged() {
+        // The registry only handles validation; a not-found passes through 404.
+        let registry = ExceptionHandlerRegistry::new().on_type(TYPE_VALIDATION, |pd| pd.clone());
+        let app = Router::new()
+            .route("/x", get(problem_404_handler))
+            .layer(ExceptionAdviceLayer::new(registry));
+        let res = app
+            .oneshot(Request::builder().uri("/x").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let body = collect(res.into_body()).await;
+        assert!(body.contains("order 7 not found"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn advice_layer_preserves_existing_response_headers() {
+        async fn handler() -> Response {
+            let mut res = problem_response(&firefly_kernel::ProblemDetail::not_found("missing"));
+            res.headers_mut()
+                .insert("x-correlation-id", http::HeaderValue::from_static("abc123"));
+            res
+        }
+        let app = Router::new()
+            .route("/x", get(handler))
+            .layer(ExceptionAdviceLayer::new(teapot_registry()));
+        let res = app
+            .oneshot(Request::builder().uri("/x").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // Re-rendered to 418, but the correlation header set upstream survives.
+        assert_eq!(res.status(), StatusCode::IM_A_TEAPOT);
+        assert_eq!(res.headers().get("x-correlation-id").unwrap(), "abc123");
     }
 }

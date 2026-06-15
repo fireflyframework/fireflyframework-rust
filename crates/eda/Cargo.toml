@@ -26,6 +26,9 @@ thiserror = { workspace = true }
 futures = { workspace = true }
 globset = { workspace = true }
 regex = { workspace = true }
+# Link-time listener discovery: `#[event_listener("topic")]` submits a
+# `ListenerRegistration` thunk drained by `subscribe_discovered_listeners`.
+inventory = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

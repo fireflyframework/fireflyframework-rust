@@ -24,14 +24,14 @@
 //! then drives. Each test opens its own wallets (random ids), so there is no
 //! cross-test interference.
 
+use crate::build_router;
+use crate::domain::WalletView;
+use crate::security::{mint_token, CUSTOMER_ROLE};
+use crate::tcc_transfer::TccTransferResult;
+use crate::transfer::TransferResult;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
-use firefly_sample_lumen::build_router;
-use firefly_sample_lumen::domain::WalletView;
-use firefly_sample_lumen::security::{mint_token, CUSTOMER_ROLE};
-use firefly_sample_lumen::tcc_transfer::TccTransferResult;
-use firefly_sample_lumen::transfer::TransferResult;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 

@@ -72,13 +72,24 @@ The stack adds five experience-tier public fields on top of the embedded `web: W
 | `children` | `Arc<ChildWorkflowService>` | child-workflow composition for nested journeys |
 
 `ExperienceStack` `Deref`s to its `WebStack` (which derefs to `Core`), so every
-web + core method you met building Lumen — `apply_middleware`, `actuator_router`,
-`new_application`, `with_security`, `cache`, `bus`, `scheduler` — is reachable
-directly on the BFF value. There is also a bootstrap pair,
-`register_experience_stack(cfg)` (== `ExperienceStack::new`) and
-`enable_experience_stack(cfg)` (stamps the tier defaults onto a `CoreConfig`), so
-you can reach the tier through whichever spelling reads more naturally at the
-call site.
+web + core method — `apply_middleware`, `actuator_router`, `new_application`,
+`with_security`, `cache`, `bus`, `scheduler` — is reachable directly on the BFF
+value. These are the lower-level building blocks `FireflyApplication` drives for
+you on a plain domain service like Lumen; a BFF reaches for them directly because
+its router is assembled by hand from workflow controllers rather than
+auto-mounted. There is also a bootstrap pair, `register_experience_stack(cfg)`
+(== `ExperienceStack::new`) and `enable_experience_stack(cfg)` (stamps the tier
+defaults onto a `CoreConfig`), so you can reach the tier through whichever
+spelling reads more naturally at the call site.
+
+> **`FireflyApplication` is the primary bootstrap.** For an ordinary domain or
+> experience service, the turnkey path is `FireflyApplication::new(name).run().await`
+> — it component-scans beans, auto-mounts controllers, drains the inventory-registered
+> handlers/listeners/scheduled tasks, applies security + middleware, self-hosts the
+> admin dashboard, and serves both ports. The `ExperienceStack` methods below
+> (`apply_middleware`, `with_security`, `new_application`) are the explicit
+> building blocks you compose by hand when a BFF's signal-gated journey controllers
+> need wiring the auto-mount path does not cover; they remain fully supported.
 
 > **Two ways to build the stack.** `ExperienceStack::new(cfg)` and the equivalent
 > `register_experience_stack(cfg)` both build the BFF; `enable_experience_stack(cfg)`

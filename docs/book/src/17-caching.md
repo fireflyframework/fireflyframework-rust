@@ -49,31 +49,33 @@ fn get_wallet_carries_cache_ttl() {
 ```
 
 The TTL is inert until something *honors* it. That something is the `QueryCache`
-middleware, installed on the bus in Lumen's composition root (`build_app` in
-`src/web.rs`):
+middleware. In Lumen the `QueryCache` is declared as a `#[bean]` in `LumenBeans`
+(the `#[derive(Configuration)]` holder in `src/web.rs`), and `FireflyApplication`
+auto-installs its read-cache middleware on the bus whenever such a bean is present:
 
 ```rust
 use firefly::cqrs::QueryCache;
 
-// Read-side caching on the bus (honours GetWallet's 30s cache_ttl). The
-// handle is kept so a mutation can invalidate it for read-after-write.
-let query_cache = QueryCache::new();
-bus.use_middleware(query_cache.middleware());
-// Validation middleware enforces the `#[firefly(validate)]` checks.
-bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
+// samples/lumen/src/web.rs — the query_cache #[bean].
+#[bean]
+fn query_cache(&self) -> QueryCache {
+    QueryCache::new()
+}
 ```
 
-`QueryCache::new()` builds the cache; `query_cache.middleware()` returns the bus
-middleware that consults it. When a `GetWallet` flows through the bus, the
-middleware checks the cache: a hit returns the memoized `WalletView` without ever
-reaching the handler; a miss runs the handler, stores the result under the
-query's key for 30 seconds, and returns it. The `query_cache` handle is kept on
-`LumenApp` precisely so the write side can reach back into it.
+`QueryCache::new()` builds the cache; the framework calls `query_cache.middleware()`
+for you and registers it on the bus (validation is installed by the core). When a
+`GetWallet` flows through the bus, the middleware checks the cache: a hit returns
+the memoized `WalletView` without ever reaching the handler; a miss runs the
+handler, stores the result under the query's key for 30 seconds, and returns it.
+The same bean is autowired into the controller so the write side can reach back
+into it.
 
-> **Why the handle, not just the middleware?** The middleware reads and fills the
-> cache; only a *holder of the handle* can invalidate it. Lumen keeps
-> `query_cache` on `LumenApp` and passes a clone into the controller state, so
-> the mutating handlers can drop stale entries the moment they change a balance.
+> **One bean, two readers.** The bean the framework installs as bus middleware is
+> the same `Arc<QueryCache>` the `WalletApi` controller autowires (`#[autowired]
+> pub query_cache: Arc<QueryCache>`). The middleware reads and fills the cache; the
+> controller — holding the same handle — invalidates it, so the mutating handlers
+> can drop stale entries the moment they change a balance.
 
 ### Read-after-write invalidation
 
@@ -309,9 +311,10 @@ You now have a fast, resilient read path — the same one Lumen's declarative
 
 - We opened up the read-side cache Lumen has used since CQRS:
   `#[firefly(cache_ttl = "30s")]` on `GetWallet` is honored by the `QueryCache`
-  middleware that `build_app` installs on the bus with
-  `bus.use_middleware(query_cache.middleware())`.
-- We saw why the `query_cache` handle lives on `LumenApp`: so every mutating
+  read-cache middleware that `FireflyApplication` auto-installs on the bus
+  whenever a `QueryCache` `#[bean]` is present.
+- We saw that the `QueryCache` is a single `#[bean]` — installed as bus middleware
+  by the framework and **autowired** into the controller — so every mutating
   handler — deposit, withdraw, **and** transfer — can call
   `invalidate_type::<GetWallet>()` and keep read-after-write honest within the
   30-second TTL.

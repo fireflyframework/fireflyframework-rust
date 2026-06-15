@@ -16,6 +16,9 @@ firefly-kernel = { workspace = true }
 firefly-observability = { workspace = true }
 firefly-reactive = { workspace = true }
 futures = { workspace = true }
+# Link-time handler discovery: `#[command_handler]`/`#[query_handler]` submit a
+# `HandlerRegistration` thunk drained by `register_discovered_handlers`.
+inventory = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -28,6 +28,7 @@ use firefly_cqrs::Bus;
 use firefly_orchestration::OrchestrationRegistry;
 use firefly_scheduling::Scheduler;
 
+use crate::env::EnvironmentSnapshot;
 use crate::instance::InstanceRegistry;
 use crate::log::LogBuffer;
 use crate::trace::TraceBuffer;
@@ -86,6 +87,13 @@ pub struct AdminDeps {
     pub container: Option<Arc<Container>>,
     /// Custom dashboard views, surfaced under `/admin/api/views`.
     pub views: Vec<Arc<dyn AdminView>>,
+    /// Optional resolved-configuration snapshot behind `/admin/api/env`
+    /// (active profiles + ordered, origin-attributed property sources) and
+    /// `/admin/api/config` (the same, grouped by prefix). A missing snapshot
+    /// yields the process active-profiles with an empty source list rather
+    /// than 404 — the Rust analog of pyfly's lazily-resolved
+    /// `EnvironmentProvider`.
+    pub environment: Option<EnvironmentSnapshot>,
 }
 
 impl AdminDeps {
@@ -131,6 +139,7 @@ impl AdminDeps {
             instances: None,
             container: None,
             views: Vec::new(),
+            environment: None,
         }
     }
 }

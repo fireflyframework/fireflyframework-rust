@@ -43,7 +43,9 @@ pub async fn ledger_heartbeat() -> Result<(), std::io::Error> {
 /// starts it; tests assert it registered.
 pub fn build_scheduler() -> std::sync::Arc<Scheduler> {
     let scheduler = std::sync::Arc::new(Scheduler::new());
-    schedule_ledger_heartbeat(&scheduler);
+    // `#[scheduled]` tasks are DISCOVERED and registered through the
+    // inventory/DI registry — no manual `schedule_<fn>` calls.
+    firefly::scheduling::register_discovered_scheduled(&scheduler);
     scheduler
 }
 

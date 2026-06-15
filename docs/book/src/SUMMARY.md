@@ -6,8 +6,9 @@
 
 - [Why Firefly for Rust](./01-why-firefly.md)
 - [Quickstart](./02-quickstart.md)
+- [Bootstrapping with FireflyApplication](./04b-bootstrap.md)
 - [Configuration](./03-configuration.md)
-- [Dependency Injection & the Application Context](./04a-dependency-injection.md)
+- [Dependency Injection & Auto-Configuration](./04a-dependency-injection.md)
 - [Dependency Wiring](./04-dependency-wiring.md)
 
 # The Reactive Model
@@ -17,6 +18,7 @@
 # Building Services
 
 - [Your First HTTP API](./06-first-http-api.md)
+- [OpenAPI, Swagger UI & ReDoc](./06a-openapi.md)
 - [Persistence & Reactive Repositories](./07-persistence.md)
 - [Domain-Driven Design](./08-domain-driven-design.md)
 - [CQRS](./09-cqrs.md)

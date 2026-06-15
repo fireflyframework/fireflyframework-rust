@@ -96,8 +96,8 @@ pub use registration::{
     BeanMetrics, DestroyHook, Factory, Registration, HIGHEST_PRECEDENCE, LOWEST_PRECEDENCE,
 };
 pub use scan::{
-    discovered, routes, BeanDescriptor, BeanStats, ComponentRegistration, RouteDescriptor,
-    Stereotype as BeanStereotype,
+    discovered, routes, schemas, BeanDescriptor, BeanStats, ComponentRegistration, RouteDescriptor,
+    SchemaDescriptor, Stereotype as BeanStereotype,
 };
 pub use scope::{RefreshScope, Scope, ScopeHandler, ScopeSpec, SharedInstance, REFRESH_SCOPE_NAME};
 pub use value::resolve_value;
@@ -109,7 +109,7 @@ pub use value::resolve_value;
 pub use inventory;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.5";
+pub const VERSION: &str = "26.7.0";
 
 /// Type-erased boxed `Arc<T>` — a sized fat pointer wrapped in `Box<dyn Any>`
 /// so resolution can return `Arc<T>` for both sized and `?Sized` (trait-object)
@@ -279,6 +279,122 @@ impl Container {
         *reg.instance.lock().expect("registration mutex poisoned") = Some(shared);
     }
 
+    /// Register an already-shared `Arc<T>` as a singleton, preserving the
+    /// *existing* `Arc` so [`resolve::<T>()`](Container::resolve) hands back the
+    /// very same instance other parts of the app already hold.
+    ///
+    /// Unlike [`register_instance`](Container::register_instance), which wraps a
+    /// fresh `Arc` around a moved value, this installs the caller's `Arc`
+    /// unchanged — the right call when an infrastructure object (a CQRS `Bus`,
+    /// an event `Broker`, a shared service handle) is created outside the
+    /// container and must be the same instance the container autowires into
+    /// beans. Spring's `registerSingleton(name, existingBean)`.
+    pub fn register_arc<T>(&self, instance: Arc<T>)
+    where
+        T: Send + Sync + 'static,
+    {
+        self.register_arc_named(instance, "");
+    }
+
+    /// Register an already-shared `Arc<T>` as a named singleton (see
+    /// [`register_arc`](Container::register_arc)).
+    pub fn register_arc_named<T>(&self, instance: Arc<T>, name: &str)
+    where
+        T: Send + Sync + 'static,
+    {
+        let shared: SharedInstance = instance;
+        let cached = shared.clone();
+        let erased: Factory = Box::new(move |_| Ok(cached.clone()));
+        let reg = self.install::<T>(ScopeSpec::Builtin(Scope::Singleton), name, false, 0, erased);
+        *reg.instance.lock().expect("registration mutex poisoned") = Some(shared);
+    }
+
+    /// Register an already-shared **trait-object port** `Arc<dyn Trait>` as a
+    /// singleton keyed by the trait, so `resolve::<dyn Trait>()` and
+    /// `#[autowired] field: Arc<dyn Trait>` hand back this exact instance.
+    ///
+    /// [`register_arc`](Container::register_arc) needs a `Sized` type; an
+    /// infrastructure object that is only available pre-erased (a
+    /// `Core`-provided `Arc<dyn Broker>` / `Arc<dyn Adapter>`, a hand-built
+    /// `Arc<dyn EventStore>`) cannot go through it. This installs the erased
+    /// `Arc<I>` behind a sized holder, with a caster that recovers the original
+    /// `Arc<I>` on resolve — the missing primitive that lets the **framework**
+    /// register port beans so application `@Bean` factories can autowire them.
+    /// Spring's `registerSingleton(name, bean)` for an interface-typed bean.
+    pub fn register_port<I>(&self, instance: Arc<I>)
+    where
+        I: ?Sized + Send + Sync + 'static,
+    {
+        self.register_port_named(instance, "");
+    }
+
+    /// Register an already-shared trait-object port `Arc<dyn Trait>` as a named
+    /// singleton (see [`register_port`](Container::register_port)).
+    pub fn register_port_named<I>(&self, instance: Arc<I>, name: &str)
+    where
+        I: ?Sized + Send + Sync + 'static,
+    {
+        /// A sized wrapper so an `Arc<dyn Trait>` can be stored as a
+        /// [`SharedInstance`] (`Arc<dyn Any>`) and recovered by the caster.
+        struct PortHolder<I: ?Sized>(Arc<I>);
+
+        let type_id = TypeId::of::<I>();
+        let type_name_str = type_name::<I>().to_string();
+        let holder: Arc<PortHolder<I>> = Arc::new(PortHolder(instance));
+        let shared: SharedInstance = holder;
+        let cached = shared.clone();
+
+        let reg = Arc::new(Registration {
+            impl_type: type_id,
+            type_name: type_name_str.clone(),
+            scope: ScopeSpec::Builtin(Scope::Singleton),
+            name: name.to_string(),
+            primary: false,
+            order: 0,
+            factory: Box::new(move |_| Ok(cached.clone())),
+            instance: std::sync::Mutex::new(Some(shared)),
+            metrics: std::sync::Mutex::new(BeanMetrics::default()),
+            stereotype: std::sync::Mutex::new(None),
+            destroy: std::sync::Mutex::new(None),
+            dependencies: std::sync::Mutex::new(Vec::new()),
+        });
+
+        // The caster recovers `Arc<I>` from the stored `Arc<PortHolder<I>>`.
+        let caster: Caster = Box::new(|shared: SharedInstance| {
+            let holder: Arc<PortHolder<I>> = shared.downcast::<PortHolder<I>>().ok()?;
+            Some(Box::new(holder.0.clone()) as ErasedArc)
+        });
+
+        {
+            let mut by_type = self.by_type.write().expect("by_type lock poisoned");
+            let entries = by_type.entry(type_id).or_default();
+            entries.retain(|e| {
+                !(e.registration.impl_type == type_id && e.registration.name == reg.name)
+            });
+            entries.push(TypeEntry {
+                registration: Arc::clone(&reg),
+                caster,
+            });
+        }
+        if !name.is_empty() {
+            self.by_name
+                .write()
+                .expect("by_name lock poisoned")
+                .insert(name.to_string(), Arc::clone(&reg));
+        }
+        {
+            let mut names = self.type_names.write().expect("type_names lock poisoned");
+            if !names.contains(&type_name_str) {
+                names.push(type_name_str);
+            }
+        }
+        {
+            let mut registered = self.registered.write().expect("registered lock poisoned");
+            registered.retain(|r| !(r.impl_type == type_id && r.name == reg.name));
+            registered.push(Arc::clone(&reg));
+        }
+    }
+
     /// Mark a registration primary and/or set its order, then register.
     ///
     /// A builder-style variant of [`register_factory`](Container::register_factory)
@@ -308,11 +424,29 @@ impl Container {
     /// Used by the stereotype derives in `firefly-macros` so
     /// [`beans`](Container::beans) and the admin `/beans` view can group beans
     /// by layer. No-op if `T` is not registered.
-    pub fn set_stereotype<T: 'static>(&self, label: &str) {
+    pub fn set_stereotype<T: ?Sized + 'static>(&self, label: &str) {
         let type_id = TypeId::of::<T>();
         let registered = self.registered.read().expect("registered lock poisoned");
         if let Some(reg) = registered.iter().rev().find(|r| r.impl_type == type_id) {
             *reg.stereotype.lock().expect("stereotype mutex poisoned") = Some(label.to_string());
+        }
+    }
+
+    /// Record the short type names of the most-recently-registered `T`'s
+    /// `#[autowired]` dependencies.
+    ///
+    /// Used by the stereotype derives in `firefly-macros` so
+    /// [`beans`](Container::beans) and the admin `/beans/graph` dependency graph
+    /// can draw edges from a bean to the beans it injects. No-op if `T` is not
+    /// registered.
+    pub fn set_dependencies<T: 'static>(&self, deps: &[&str]) {
+        let type_id = TypeId::of::<T>();
+        let registered = self.registered.read().expect("registered lock poisoned");
+        if let Some(reg) = registered.iter().rev().find(|r| r.impl_type == type_id) {
+            *reg.dependencies
+                .lock()
+                .expect("dependencies mutex poisoned") =
+                deps.iter().map(|s| (*s).to_string()).collect();
         }
     }
 
@@ -417,6 +551,7 @@ impl Container {
             metrics: std::sync::Mutex::new(BeanMetrics::default()),
             stereotype: std::sync::Mutex::new(None),
             destroy: std::sync::Mutex::new(None),
+            dependencies: std::sync::Mutex::new(Vec::new()),
         });
 
         let caster: Caster = Box::new(|shared: SharedInstance| {
@@ -1176,6 +1311,7 @@ impl Container {
                         .expect("registration mutex poisoned")
                         .is_some(),
                     resolution_count: metrics.resolution_count,
+                    dependencies: reg.dependencies(),
                 }
             })
             .collect()
@@ -1358,5 +1494,35 @@ mod unit {
         let s2 = similarity("Greet", "Greeter");
         assert!((s1 - s2).abs() < 1e-9);
         assert!(s1 > 0.4);
+    }
+
+    // `register_port` installs a pre-erased `Arc<dyn Trait>` so it resolves as
+    // the trait object — the framework's path for infrastructure ports.
+    #[test]
+    fn register_port_resolves_trait_object() {
+        trait Greeter: Send + Sync {
+            fn hello(&self) -> &'static str;
+        }
+        struct Polite;
+        impl Greeter for Polite {
+            fn hello(&self) -> &'static str {
+                "good day"
+            }
+        }
+
+        let container = Container::new();
+        let port: Arc<dyn Greeter> = Arc::new(Polite);
+        container.register_port::<dyn Greeter>(Arc::clone(&port));
+        container.set_stereotype::<dyn Greeter>("component");
+
+        let resolved: Arc<dyn Greeter> = container.resolve::<dyn Greeter>().expect("port resolves");
+        assert_eq!(resolved.hello(), "good day");
+        // It is the SAME instance, not a copy.
+        assert!(Arc::ptr_eq(&port, &resolved));
+        // And it shows up in the bean listing under its trait name + stereotype.
+        let beans = container.beans();
+        assert!(beans.iter().any(
+            |b| b.type_name.contains("Greeter") && b.stereotype.as_deref() == Some("component")
+        ));
     }
 }

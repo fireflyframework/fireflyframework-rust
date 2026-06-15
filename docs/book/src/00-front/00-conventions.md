@@ -32,7 +32,7 @@ A snippet annotated `rust,ignore` or `rust,no_run` elides surrounding setup for 
 
 ```text
 $ cargo run -p firefly-sample-lumen
-:: lumen :: digital-wallet & ledger (v26.6.5)
+:: lumen :: digital-wallet & ledger (v26.7.0)
 ```
 
 ### The One-Dependency Reminder
@@ -53,7 +53,7 @@ Four callout styles appear throughout the body. Each is a blockquote that opens 
 
 > **Tip.** Tips share a shortcut, idiom, or best practice that will save you time in real projects — for example, keeping money in integer cents so floating-point drift can never corrupt a balance.
 
-> **Warning.** Warnings flag a common mistake or a sharp edge that causes hard-to-debug problems if ignored — for example, that Lumen's free-function CQRS handlers publish their collaborators through a process-global `OnceLock`, so a second `build_app()` in the same test binary keeps the *first* wiring.
+> **Warning.** Warnings flag a common mistake or a sharp edge that causes hard-to-debug problems if ignored — for example, that Lumen's free-function CQRS handlers publish their collaborators through a process-global `OnceLock`, so a second `build_router()` boot in the same test binary keeps the *first* wiring.
 
 > **Design note.** Design-note callouts explain *why* Firefly does something a particular way, and point out where an idea will feel familiar if you have used an opinionated, batteries-included framework or a reactive-streams library before. They are orientation, framed as Firefly's own design choices — not a translation table for another framework. You will meet these in nearly every chapter.
 

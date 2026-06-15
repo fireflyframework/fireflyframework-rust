@@ -99,13 +99,21 @@
 //! ```
 
 mod cron;
+mod discovery;
 mod executor;
 mod lock;
 mod postgres_lock;
 mod redis_lock;
 mod scheduler;
 
+// Re-export `inventory` so `#[scheduled]`-generated `ScheduledRegistration`
+// thunks submit through `firefly_scheduling::inventory`.
+pub use inventory;
+
 pub use cron::{parse_cron, CronError, CronExpr};
+pub use discovery::{
+    discovered_scheduled_count, register_discovered_scheduled, ScheduledRegistration,
+};
 pub use executor::{
     register_task_executor, task_executor, TaskExecutor, TaskHandle, TaskJoinError,
 };
@@ -119,4 +127,4 @@ pub use scheduler::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.5";
+pub const VERSION: &str = "26.7.0";

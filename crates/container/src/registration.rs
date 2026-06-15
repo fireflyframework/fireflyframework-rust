@@ -72,6 +72,12 @@ pub struct Registration {
     pub(crate) stereotype: Mutex<Option<String>>,
     /// An optional `#[pre_destroy]` teardown hook, invoked on shutdown.
     pub(crate) destroy: Mutex<Option<DestroyHook>>,
+    /// The short type names of this bean's `#[autowired]` dependencies, recorded
+    /// by the stereotype derive via
+    /// [`Container::set_dependencies`](crate::Container::set_dependencies) so the
+    /// admin `/beans` view and the dependency graph can draw edges. Empty for
+    /// hand-registered instances/factories.
+    pub(crate) dependencies: Mutex<Vec<String>>,
 }
 
 impl Registration {
@@ -116,6 +122,16 @@ impl Registration {
         self.stereotype
             .lock()
             .expect("stereotype mutex poisoned")
+            .clone()
+    }
+
+    /// The recorded `#[autowired]` dependency type names for this bean
+    /// (short names, e.g. `Bus`), used to draw the admin dependency graph.
+    #[must_use]
+    pub fn dependencies(&self) -> Vec<String> {
+        self.dependencies
+            .lock()
+            .expect("dependencies mutex poisoned")
             .clone()
     }
 }

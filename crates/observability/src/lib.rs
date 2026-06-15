@@ -100,9 +100,10 @@ pub use config_loader::{
 };
 pub use health::{Composite, HealthResult, Indicator, IndicatorFn, Status};
 pub use logging::{
-    init_logging, init_logging_with_handle, subscriber, subscriber_with_handle,
-    subscriber_with_writer, subscriber_with_writer_and_handle, BufferWriter, CorrelationLayer,
-    LevelHandle, LogConfig, LogFormat, ROOT_TARGET,
+    init_logging, init_logging_with_handle, init_logging_with_layers, subscriber,
+    subscriber_with_handle, subscriber_with_writer, subscriber_with_writer_and_handle,
+    BufferWriter, CorrelationLayer, DynLogLayer, FireflyRegistry, LevelHandle, LogConfig,
+    LogFormat, ROOT_TARGET,
 };
 pub use metrics::{
     counted, counted_result, sanitize_metric_name, timed, timed_result, Counted, Counter, Gauge,

@@ -150,6 +150,12 @@ pub struct WebStack {
     /// router by [`WebStack::apply_middleware`]; `None` until
     /// [`WebStack::with_security`] is called.
     pub security: Option<FilterChain>,
+    /// The optional global exception-advice registry (Spring's
+    /// `@ControllerAdvice`). When set, [`WebStack::apply_middleware`] installs
+    /// an [`ExceptionAdviceLayer`](firefly_web::ExceptionAdviceLayer) at the
+    /// outermost edge so every `application/problem+json` response is
+    /// post-processed; `None` until [`WebStack::set_exception_advice`] is called.
+    pub exception_advice: Option<firefly_web::ExceptionHandlerRegistry>,
 }
 
 impl WebStack {
@@ -195,6 +201,7 @@ impl WebStack {
         WebStack {
             core,
             security: None,
+            exception_advice: None,
         }
     }
 
@@ -207,6 +214,25 @@ impl WebStack {
     pub fn with_security(mut self, chain: FilterChain) -> Self {
         self.security = Some(chain);
         self
+    }
+
+    /// Attaches (or replaces) the security [`FilterChain`] in place — used by
+    /// [`FireflyApplication`](firefly::FireflyApplication) to apply a chain
+    /// **discovered as a DI bean** after the container is scanned (the web stack
+    /// is built before the scan). Same effect as
+    /// [`with_security`](Self::with_security).
+    pub fn set_security(&mut self, chain: FilterChain) {
+        self.security = Some(chain);
+    }
+
+    /// Attaches (or replaces) the global exception-advice registry (Spring's
+    /// `@ControllerAdvice`) in place — used by `FireflyApplication` to install a
+    /// registry **discovered as a DI bean** after the container is scanned.
+    /// [`WebStack::apply_middleware`] then wraps the whole chain in an
+    /// [`ExceptionAdviceLayer`](firefly_web::ExceptionAdviceLayer) so every
+    /// `application/problem+json` response is post-processed through it.
+    pub fn set_exception_advice(&mut self, registry: firefly_web::ExceptionHandlerRegistry) {
+        self.exception_advice = Some(registry);
     }
 
     /// Wraps `router` in the full web middleware chain: the optional
@@ -233,7 +259,16 @@ impl WebStack {
             Some(chain) => router.layer(chain.clone().layer()),
             None => router,
         };
-        self.core.apply_middleware(router)
+        let router = self.core.apply_middleware(router);
+        // The global exception-advice sits at the very outermost edge so it
+        // post-processes EVERY problem+json body — per-handler `WebError`s and
+        // the panic-recovered 500 the inner `ProblemLayer` emits alike.
+        match &self.exception_advice {
+            Some(registry) => {
+                router.layer(firefly_web::ExceptionAdviceLayer::new(registry.clone()))
+            }
+            None => router,
+        }
     }
 }
 
