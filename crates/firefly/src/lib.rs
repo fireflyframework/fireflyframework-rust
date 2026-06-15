@@ -334,9 +334,14 @@ pub mod prelude {
     pub use firefly_starter_core::{Core, CoreConfig};
 
     // ---- Web ------------------------------------------------------------
-    /// The web result/error types, the RFC 9457 problem-response helper, and
-    /// the auto-validating `Valid<T>` JSON extractor.
-    pub use firefly_web::{problem_response, Valid, WebError, WebResult};
+    /// The web result/error types, the RFC 9457 problem-response helper, the
+    /// auto-validating `Valid<T>` JSON extractor, and the reactive responders
+    /// that let a controller return `Mono`/`Flux`: `MonoJson` (Mono to JSON,
+    /// empty to 404), `NdJson` (Flux to backpressured `application/x-ndjson`),
+    /// and `Sse` / `SseEvents` (Flux to `text/event-stream`).
+    pub use firefly_web::{
+        problem_response, MonoJson, NdJson, Sse, SseEvents, Valid, WebError, WebResult,
+    };
 
     // ---- Declarative bean validation -----------------------------------
     /// The JSR-380-style `Validate` trait and its violation set — the target

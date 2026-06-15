@@ -159,8 +159,8 @@ The macro-generated code references runtime types through the facade's hidden
 `axum`/`serde` it writes against anyway) compiles whatever a macro expands to —
 without ever listing the underlying `firefly-*` crates. The new
 [`samples/macro-quickstart`](samples/macro-quickstart) re-implements the
-[`orders`](samples/orders) sample this way: the same behaviour in **376 source
-lines instead of 1022 (−63%)**, **2 modules instead of 7**, no hand-written
+[`orders`](samples/orders) sample this way: the same behaviour — plus reactive `Mono`/`Flux` endpoints — in **415 source
+lines instead of 1022**, **2 modules instead of 7**, no hand-written
 `impl Message`, `bus.register(…)`, `Router::new().route(…)`, or scheduler
 builder. See the
 [Declarative Services with Macros](docs/book/src/21-declarative-macros.md)
@@ -284,33 +284,9 @@ release.
 The framework is organised into four strictly-layered tiers, with a
 left-to-right dependency direction:
 
-```
-┌────────────────┐   ┌──────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
-│  FOUNDATIONAL  │ → │     PLATFORM     │ → │       ADAPTERS       │ → │       STARTERS       │
-│                │   │                  │   │                      │   │                      │
-│  reactive      │   │  cache           │   │  client (WebClient)  │   │  starter-core        │
-│  kernel        │   │  observability   │   │  idp-*               │   │  starter-application │
-│  utils         │   │  data            │   │  ecm-*               │   │  starter-domain      │
-│  validators    │   │  cqrs            │   │  notifications-*     │   │  starter-data        │
-│  web           │   │  eda  · eda-*    │   │  callbacks           │   │  starter-web         │
-│  config        │   │  eventsourcing   │   │  webhooks            │   │  backoffice          │
-│  i18n          │   │  orchestration   │   │  config-server       │   │                      │
-│  session       │   │  rule-engine     │   │  cache-redis         │   │  ── Front door ──    │
-│                │   │  plugins         │   │  cache-postgres      │   │  firefly (facade)    │
-│                │   │  container · aop │   │  notifications-smtp  │   │  firefly-macros      │
-│                │   │  lifecycle       │   │  data-sqlx (pg/      │   │                      │
-│                │   │  actuator        │   │    mysql/sqlite)     │   │  ── Operations ──    │
-│                │   │  scheduling      │   │  data-mongodb        │   │  admin               │
-│                │   │  resilience      │   │  session-redis       │   │                      │
-│                │   │  security        │   │  session-postgres    │   │  ── Tooling ──       │
-│                │   │  migrations      │   │                      │   │  cli                 │
-│                │   │  openapi         │   │                      │   │                      │
-│                │   │  sse · websocket │   │                      │   │                      │
-│                │   │  shell           │   │                      │   │                      │
-│                │   │  transactional   │   │                      │   │                      │
-│                │   │  testkit         │   │                      │   │                      │
-└────────────────┘   └──────────────────┘   └──────────────────────┘   └──────────────────────┘
-```
+<p align="center">
+  <img src="assets/architecture.svg" alt="Firefly architecture at a glance: one firefly facade front door; four strictly-layered tiers (Foundational, Platform, Adapters, Starters) building left to right; a firefly-reactive Mono/Flux core at the base." width="100%">
+</p>
 
 The [`firefly`](crates/firefly/README.md) facade and
 [`firefly-macros`](crates/macros/README.md) sit at the **front door**: a
@@ -428,78 +404,99 @@ you need:
 > actuator, and graceful shutdown — see the book's
 > [Quickstart chapter](docs/book/src/02-quickstart.md).
 
-Add the starter and the reactive core to a binary crate:
+One dependency — the `firefly` facade re-exports the whole framework and every
+macro. Add it plus the ecosystem crates you author against:
 
 ```toml
 [dependencies]
-firefly-starter-core = "26.6.5"
-firefly-reactive = "26.6.5"
-firefly-web = "26.6.5"
-axum = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
-serde_json = "1"
+firefly = "26.6.5"            # the whole framework + every macro
+axum    = "0.7"               # you author axum handlers
+serde   = { version = "1", features = ["derive"] }
+tokio   = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 ```
 
-> Prefer the new **one-dependency** front door? Replace the three `firefly-*`
-> lines with a single `firefly = "26.6.5"` and `use firefly::prelude::*;` — see
-> [the macro-quickstart sample](samples/macro-quickstart) and the
-> [Declarative Services with Macros](docs/book/src/21-declarative-macros.md)
-> chapter.
-
-Boot a service — one `Core::new` wires the problem renderer,
-correlation propagation, idempotency replay, cache, CQRS bus, event
-broker, health, metrics and scheduler — then mount a plain route, a
-reactive `Mono` route, and a streaming `Flux` (NDJSON) route:
+Declare a **reactive REST controller** with `#[rest_controller]`. A method returns
+a Spring-WebFlux-style `Mono<T>` (a single value) or `Flux<T>` (a stream) instead
+of a hand-rolled `async fn` body, and Firefly renders it: `MonoJson` to JSON (an
+empty `Mono` becomes a `404 problem+json`), `NdJson` to a backpressured
+`application/x-ndjson` stream, and `Sse` / `SseEvents` to `text/event-stream`.
 
 ```rust
-use axum::{routing::get, Router};
-use firefly_reactive::{Flux, Mono};
-use firefly_starter_core::{Core, CoreConfig};
-use firefly_web::{MonoJson, NdJson};
+use axum::extract::{Path, State};
+use firefly::prelude::*;   // Core, CoreConfig, Mono, Flux, MonoJson, NdJson, Sse, rest_controller, ...
+use serde::Serialize;
 
-// A reactive Mono → 200 application/json (Ok(None) → 404 problem+json).
-async fn one_order() -> MonoJson<serde_json::Value> {
-    MonoJson(Mono::just(serde_json::json!({ "id": "o1", "customer": "alice" })))
-}
+#[derive(Clone, Serialize)]
+struct Order { id: String, customer: String }
 
-// A streaming Flux → application/x-ndjson, one line per element, backpressured.
-async fn stream_orders() -> NdJson<i64> {
-    NdJson(Flux::range(1, 3))
+/// The controller's fields are its shared state; this demo keeps none.
+#[derive(Clone)]
+struct OrderApi;
+
+#[rest_controller(path = "/orders")]
+impl OrderApi {
+    // GET /orders/:id  ->  a reactive Mono<Order>; an empty Mono renders 404.
+    #[get("/:id")]
+    async fn one(State(_): State<OrderApi>, Path(id): Path<String>) -> MonoJson<Order> {
+        MonoJson(Mono::just(Order { id, customer: "alice".into() }))
+    }
+
+    // GET /orders/stream  ->  a Flux<Order> streamed as NDJSON, flushed with
+    // real backpressure (one JSON object per line).
+    #[get("/stream")]
+    async fn stream(State(_): State<OrderApi>) -> NdJson<Order> {
+        NdJson(Flux::from_iter(
+            (1..=3).map(|n| Order { id: format!("o{n}"), customer: "alice".into() }),
+        ))
+    }
+
+    // GET /orders/live  ->  the same Flux as Server-Sent Events.
+    #[get("/live")]
+    async fn live(State(_): State<OrderApi>) -> Sse<Order> {
+        Sse(Flux::from_iter(
+            (1..=3).map(|n| Order { id: format!("o{n}"), customer: "alice".into() }),
+        ))
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let core = Core::new(CoreConfig {
-        app_name: "orders".into(),
-        ..CoreConfig::default()
-    });
+    // One Core wires the problem renderer, correlation propagation, idempotency
+    // replay, cache, the CQRS bus, the event broker, health, metrics, and the
+    // scheduler.
+    let core = Core::new(CoreConfig { app_name: "orders".into(), ..CoreConfig::default() });
     core.init_logging()?;
     core.print_banner();
 
-    let api = core.apply_middleware(
-        Router::new()
-            .route("/orders", get(|| async { "[]" }))
-            .route("/orders/one", get(one_order))
-            .route("/orders/stream", get(stream_orders)),
-    );
+    // `#[rest_controller]` generated `OrderApi::routes(state)`; mount it under Core.
+    let app = core.apply_middleware(OrderApi::routes(OrderApi));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-    axum::serve(listener, api).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }
 ```
 
-`curl -N localhost:8080/orders/stream` streams `1`, `2`, `3` as NDJSON,
-flushed incrementally with real backpressure. Every `POST`/`PUT`/`PATCH`
-carrying an `Idempotency-Key` header is recorded; repeating the request
-replays the stored response with `Idempotent-Replay: true`. Every
-response echoes an `X-Correlation-Id`. Any handler error renders as
-`application/problem+json`. Add `core.actuator_router(..)` on a second
-listener for the `/actuator/{health,info,metrics,env,tasks,version}`
-management surface, and `core.new_application()` for signal-aware
-graceful shutdown — see
+```sh
+curl    localhost:8080/orders/o1      # {"id":"o1","customer":"alice"}  (reactive Mono -> JSON)
+curl -N localhost:8080/orders/stream  # NDJSON, one object per line, streamed with backpressure
+curl -N localhost:8080/orders/live    # text/event-stream Server-Sent Events
+```
+
+Every response echoes an `X-Correlation-Id`; every `POST`/`PUT`/`PATCH` carrying an
+`Idempotency-Key` header replays its stored response with `Idempotent-Replay: true`;
+any handler error renders as `application/problem+json`. Add `core.actuator_router(..)`
+on a second listener for the `/actuator/{health,info,metrics,env,tasks,version}`
+surface, and `core.new_application()` for signal-aware graceful shutdown — see
 [`crates/starter-core/README.md`](crates/starter-core/README.md) and the
-[Reactive Model](docs/book/src/05-reactive-model.md) chapter.
+[Reactive Model](docs/book/src/05-reactive-model.md) chapter. The same reactive
+controller, end to end, is [`samples/macro-quickstart`](samples/macro-quickstart).
+
+> **Not using the facade or the controller macro?** The reactive responders are
+> plain `firefly-web` types: return `MonoJson`/`NdJson`/`Sse` from any `async fn`
+> and mount it with `Router::new().route("/orders/stream", get(stream))` — no
+> macro required. Depend on `firefly-starter-core` + `firefly-web` +
+> `firefly-reactive` directly if you prefer naming the crates.
 
 Four reference services ship in the workspace: a minimal idempotent
 [`samples/orders/`](samples/orders); the end-to-end reactive
@@ -509,7 +506,7 @@ transfer, a `Flux<AccountEvent>` NDJSON/SSE stream, and a `WebClient`
 SDK, running against in-memory defaults or real Postgres/Kafka; and
 [`samples/macro-quickstart/`](samples/macro-quickstart) — the same orders
 behaviour re-expressed through the declarative macros over the single
-`firefly` facade (376 source lines vs 1022, two modules vs seven); and
+`firefly` facade (415 source lines vs 1022, two modules vs seven, now also showing reactive `Mono`/`Flux` endpoints); and
 [`samples/lumen/`](samples/lumen) — the declarative orchestration showcase,
 a wallet/ledger service driving a `#[firefly::saga]` money transfer, a
 `#[firefly::workflow]` compliance check, and a `#[firefly::tcc]` two-phase

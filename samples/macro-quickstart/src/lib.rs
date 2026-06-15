@@ -111,6 +111,11 @@ impl OrderStore {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// A snapshot of every stored order (drives the reactive stream endpoint).
+    pub fn all(&self) -> Vec<Order> {
+        self.inner.lock().expect("orders store poisoned").clone()
+    }
 }
 
 /// The store the `#[command_handler]` / `#[query_handler]` / `#[scheduled]`
@@ -264,6 +269,40 @@ impl OrderApi {
             other => WebError::from(FireflyError::internal(other.to_string())),
         })?;
         Ok(Json(view))
+    }
+
+    /// `GET /api/v1/orders/:id/reactive` — the same fetch, returned as a
+    /// reactive `Mono<OrderView>`: an unknown id resolves the `Mono` empty,
+    /// which renders a 404 problem (Spring WebFlux's `Mono<T>` controller
+    /// return).
+    #[get("/:id/reactive")]
+    async fn fetch_reactive(
+        State(_api): State<OrderApi>,
+        Path(id): Path<String>,
+    ) -> MonoJson<OrderView> {
+        match store().get(&id) {
+            Some(order) => MonoJson(Mono::just(OrderView::from(order))),
+            None => MonoJson(Mono::empty()),
+        }
+    }
+
+    /// `GET /api/v1/orders/stream` — every order as a backpressured
+    /// `application/x-ndjson` stream from a `Flux<OrderView>` (Spring WebFlux's
+    /// streaming `Flux<T>` return).
+    #[get("/stream")]
+    async fn stream(State(_api): State<OrderApi>) -> NdJson<OrderView> {
+        NdJson(Flux::from_iter(
+            store().all().into_iter().map(OrderView::from),
+        ))
+    }
+
+    /// `GET /api/v1/orders/live` — the same orders as a `text/event-stream` of
+    /// Server-Sent Events from a `Flux<OrderView>`.
+    #[get("/live")]
+    async fn live(State(_api): State<OrderApi>) -> Sse<OrderView> {
+        Sse(Flux::from_iter(
+            store().all().into_iter().map(OrderView::from),
+        ))
     }
 }
 

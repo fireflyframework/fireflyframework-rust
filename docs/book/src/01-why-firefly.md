@@ -133,57 +133,136 @@ rarely name these crates directly — the facade re-exports them — but knowing
 shape tells you where each capability lives.
 
 <figure class="fig">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 244" role="img"
-     aria-label="The four framework tiers, left to right: Foundational, Platform, Adapters, Starters"
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 900 520" role="img"
+     aria-label="Firefly architecture: one firefly facade front door, four strictly-layered tiers (Foundational, Platform, Adapters, Starters) building left to right, on a firefly-reactive Mono/Flux core"
      font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
-  <!-- Foundational -->
-  <rect x="8" y="20" width="150" height="216" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
-  <path d="M8,30 a10,10 0 0 1 10,-10 h130 a10,10 0 0 1 10,10 v22 h-150 z" fill="#f6a821"/>
-  <text x="83" y="41" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">FOUNDATIONAL</text>
+  <defs>
+    <linearGradient id="parch" x1="0" y1="0" x2="0" y2="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fdf7ec"/><stop offset="1" stop-color="#f4e7d0"/>
+    </linearGradient>
+    <radialGradient id="amb" cx="770" cy="40" r="460" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f6a821" stop-opacity="0.13"/><stop offset="1" stop-color="#f6a821" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="amber" x1="0" y1="92" x2="0" y2="156" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd87a"/><stop offset="1" stop-color="#f3a41d"/>
+    </linearGradient>
+    <linearGradient id="goldbar" x1="0" y1="174" x2="0" y2="216" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f9ba43"/><stop offset="1" stop-color="#ee9b14"/>
+    </linearGradient>
+    <linearGradient id="bedrock" x1="60" y1="0" x2="840" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#241a10"/><stop offset="0.5" stop-color="#37270f"/><stop offset="1" stop-color="#241a10"/>
+    </linearGradient>
+    <g id="ff"><circle r="9" fill="#f6a821" opacity="0.10"/><circle r="5" fill="#ffc24a" opacity="0.22"/><circle r="2.6" fill="#ffd980" opacity="0.7"/><circle r="1.3" fill="#fff6e0"/></g>
+    <g id="fg"><circle r="9" fill="#9bd24a" opacity="0.10"/><circle r="5" fill="#c2e85f" opacity="0.20"/><circle r="2.6" fill="#dff58a" opacity="0.7"/><circle r="1.3" fill="#fbffe2"/></g>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0.5" y="0.5" width="899" height="519" rx="18" fill="url(#parch)" stroke="#e6d3ad"/>
+  <rect rx="18" fill="url(#amb)"/>
+  <!-- background motes -->
+  <g fill="#e0b25a">
+    <circle cx="828" cy="38" r="1.4" opacity="0.5"/><circle cx="690" cy="30" r="1.0" opacity="0.4"/>
+    <circle cx="44" cy="300" r="1.2" opacity="0.4"/><circle cx="862" cy="300" r="1.1" opacity="0.42"/>
+    <circle cx="500" cy="20" r="1.0" opacity="0.35"/>
+  </g>
+  <use xlink:href="#fg" transform="translate(842,470) scale(0.85)"/>
+  <use xlink:href="#ff" transform="translate(36,150) scale(0.8)"/>
+
+  <!-- title -->
+  <use xlink:href="#ff" transform="translate(70,40) scale(1.25)"/>
+  <text x="92" y="46" font-size="22" font-weight="800" fill="#2a1d10" letter-spacing="0.3">Architecture at a glance</text>
+  <text x="840" y="44" text-anchor="end" font-size="12" font-weight="600" fill="#b18a52" letter-spacing="0.5">fireflyframework-rust</text>
+  <line x1="60" y1="62" x2="840" y2="62" stroke="#f6a821" stroke-width="1.4" opacity="0.45"/>
+  <text x="450" y="80" text-anchor="middle" font-size="11.5" font-style="italic" fill="#8a6f48">One dependency in; four strictly-layered tiers building left to right; a reactive core at the base.</text>
+
+  <!-- front door (facade) -->
+  <rect x="60" y="98" width="780" height="62" rx="14" fill="#e3cfa8" opacity="0.55"/>
+  <rect x="60" y="94" width="780" height="62" rx="14" fill="url(#amber)" stroke="#d98f1e" stroke-width="1.4"/>
+  <rect x="74" y="100" width="752" height="2" rx="1" fill="#fffdf5" opacity="0.30"/>
+  <use xlink:href="#ff" transform="translate(98,126) scale(1.35)"/>
+  <text x="128" y="119" font-size="11" font-weight="800" fill="#6e4710" letter-spacing="1.6">THE FRONT DOOR</text>
+  <text x="128" y="141" font-size="16" font-weight="800" fill="#3a2310" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">firefly  +  firefly-macros</text>
+  <text x="826" y="119" text-anchor="end" font-size="11.5" fill="#6e4710" font-weight="600">one dependency &#183; use firefly::prelude::*;</text>
+  <text x="826" y="141" text-anchor="end" font-size="11.5" fill="#6e4710" font-weight="600">declarative macros &#183; stable __rt contract</text>
+
+  <!-- front-door to tiers connectors -->
+  <g stroke="#e0a93a" stroke-width="1.5" stroke-dasharray="2 3" opacity="0.75">
+    <line x1="148.5" y1="158" x2="148.5" y2="173"/><line x1="349.5" y1="158" x2="349.5" y2="173"/>
+    <line x1="550.5" y1="158" x2="550.5" y2="173"/><line x1="751.5" y1="158" x2="751.5" y2="173"/>
+  </g>
+
+  <!-- ===== TIER 1: FOUNDATIONAL ===== -->
+  <rect x="60" y="178" width="177" height="268" rx="12" fill="#e7d4b2" opacity="0.5"/>
+  <rect x="60" y="174" width="177" height="268" rx="12" fill="#fffdf8" stroke="#e3d0aa" stroke-width="1.4"/>
+  <path d="M60,186 a12,12 0 0 1 12,-12 h153 a12,12 0 0 1 12,12 v30 h-177 z" fill="url(#goldbar)"/>
+  <circle cx="80" cy="195" r="11" fill="#fff6e0" opacity="0.9"/><text x="80" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#b06a16">1</text>
+  <text x="155" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#2a1d10" letter-spacing="0.4">FOUNDATIONAL</text>
+  <text x="148.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#a07e4e">reactive base &#183; cross-cutting</text>
   <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
-    <text x="22" y="74">kernel</text><text x="22" y="95">reactive</text>
-    <text x="22" y="116">web</text><text x="22" y="137">config</text>
-    <text x="22" y="158">validators</text><text x="22" y="179">i18n</text>
-    <text x="22" y="200">container</text>
+    <text x="78" y="262">kernel</text><text x="78" y="284">web</text>
+    <text x="78" y="306">config</text><text x="78" y="328">validators</text>
+    <text x="78" y="350">container</text><text x="78" y="372">i18n</text>
+    <text x="78" y="394" fill="#a98f63">+ utils, session</text>
   </g>
-  <!-- Platform -->
-  <rect x="186" y="20" width="150" height="216" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
-  <path d="M186,30 a10,10 0 0 1 10,-10 h130 a10,10 0 0 1 10,10 v22 h-150 z" fill="#f6a821"/>
-  <text x="261" y="41" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">PLATFORM</text>
+
+  <!-- ===== TIER 2: PLATFORM ===== -->
+  <rect x="261" y="178" width="177" height="268" rx="12" fill="#e7d4b2" opacity="0.5"/>
+  <rect x="261" y="174" width="177" height="268" rx="12" fill="#fffdf8" stroke="#e3d0aa" stroke-width="1.4"/>
+  <path d="M261,186 a12,12 0 0 1 12,-12 h153 a12,12 0 0 1 12,12 v30 h-177 z" fill="url(#goldbar)"/>
+  <circle cx="281" cy="195" r="11" fill="#fff6e0" opacity="0.9"/><text x="281" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#b06a16">2</text>
+  <text x="356" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#2a1d10" letter-spacing="0.4">PLATFORM</text>
+  <text x="349.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#a07e4e">engines &#183; defines ports</text>
   <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
-    <text x="200" y="74">cache</text><text x="200" y="95">observability</text>
-    <text x="200" y="116">cqrs</text><text x="200" y="137">eda</text>
-    <text x="200" y="158">eventsourcing</text><text x="200" y="179">orchestration</text>
-    <text x="200" y="200">scheduling</text><text x="200" y="221">security</text>
+    <text x="279" y="262">cqrs</text><text x="279" y="284">eda</text>
+    <text x="279" y="306">eventsourcing</text><text x="279" y="328">orchestration</text>
+    <text x="279" y="350">cache</text><text x="279" y="372">security</text>
+    <text x="279" y="394" fill="#a98f63">+ observability, &#8230;</text>
   </g>
-  <!-- Adapters -->
-  <rect x="364" y="20" width="150" height="216" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
-  <path d="M364,30 a10,10 0 0 1 10,-10 h130 a10,10 0 0 1 10,10 v22 h-150 z" fill="#f6a821"/>
-  <text x="439" y="41" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">ADAPTERS</text>
+
+  <!-- ===== TIER 3: ADAPTERS ===== -->
+  <rect x="462" y="178" width="177" height="268" rx="12" fill="#e7d4b2" opacity="0.5"/>
+  <rect x="462" y="174" width="177" height="268" rx="12" fill="#fffdf8" stroke="#e3d0aa" stroke-width="1.4"/>
+  <path d="M462,186 a12,12 0 0 1 12,-12 h153 a12,12 0 0 1 12,12 v30 h-177 z" fill="url(#goldbar)"/>
+  <circle cx="482" cy="195" r="11" fill="#fff6e0" opacity="0.9"/><text x="482" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#b06a16">3</text>
+  <text x="557" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#2a1d10" letter-spacing="0.4">ADAPTERS</text>
+  <text x="550.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#a07e4e">implement the ports</text>
   <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
-    <text x="378" y="74">client</text><text x="378" y="95">idp-*</text>
-    <text x="378" y="116">ecm-*</text><text x="378" y="137">notifications-*</text>
-    <text x="378" y="158">cache-redis</text><text x="378" y="179">eda-kafka</text>
-    <text x="378" y="200">data-sqlx</text><text x="378" y="221">data-mongodb</text>
+    <text x="480" y="262">data-sqlx</text><text x="480" y="284">data-mongodb</text>
+    <text x="480" y="306">eda-kafka</text><text x="480" y="328">cache-redis</text>
+    <text x="480" y="350">idp-* &#183; ecm-*</text><text x="480" y="372">notifications-*</text>
+    <text x="480" y="394" fill="#a98f63">+ client, webhooks</text>
   </g>
-  <!-- Starters -->
-  <rect x="542" y="20" width="150" height="216" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
-  <path d="M542,30 a10,10 0 0 1 10,-10 h130 a10,10 0 0 1 10,10 v22 h-150 z" fill="#f6a821"/>
-  <text x="617" y="41" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">STARTERS</text>
+
+  <!-- ===== TIER 4: STARTERS ===== -->
+  <rect x="663" y="178" width="177" height="268" rx="12" fill="#e7d4b2" opacity="0.5"/>
+  <rect x="663" y="174" width="177" height="268" rx="12" fill="#fffdf8" stroke="#e3d0aa" stroke-width="1.4"/>
+  <path d="M663,186 a12,12 0 0 1 12,-12 h153 a12,12 0 0 1 12,12 v30 h-177 z" fill="url(#goldbar)"/>
+  <circle cx="683" cy="195" r="11" fill="#fff6e0" opacity="0.9"/><text x="683" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#b06a16">4</text>
+  <text x="758" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#2a1d10" letter-spacing="0.4">STARTERS</text>
+  <text x="751.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#a07e4e">compose &#183; ship</text>
   <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
-    <text x="556" y="74">starter-core</text><text x="556" y="95">starter-web</text>
-    <text x="556" y="116">starter-domain</text><text x="556" y="137">starter-data</text>
-    <text x="556" y="158">starter-experience</text><text x="556" y="179">admin</text>
-    <text x="556" y="200">cli</text>
+    <text x="681" y="262">starter-core</text><text x="681" y="284">starter-web</text>
+    <text x="681" y="306">starter-domain</text><text x="681" y="328">starter-data</text>
+    <text x="681" y="350">admin</text><text x="681" y="372">cli</text>
+    <text x="681" y="394" fill="#a98f63">+ backoffice</text>
   </g>
-  <!-- left-to-right "builds on" arrows -->
-  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
-    <line x1="160" y1="128" x2="178" y2="128"/><polygon points="186,128 178,124 178,132"/>
-    <line x1="338" y1="128" x2="356" y2="128"/><polygon points="364,128 356,124 356,132"/>
-    <line x1="516" y1="128" x2="534" y2="128"/><polygon points="542,128 534,124 534,132"/>
+
+  <!-- left-to-right "builds on" chevrons (direction explained in the subtitle) -->
+  <g fill="#d4793a">
+    <polygon points="243,300 259,310 243,320"/><polygon points="444,300 460,310 444,320"/><polygon points="645,300 661,310 645,320"/>
   </g>
+
+  <!-- reactive bedrock -->
+  <rect x="60" y="466" width="780" height="46" rx="13" fill="url(#bedrock)"/>
+  <circle cx="94" cy="489" r="12" fill="none" stroke="#9bd24a" stroke-width="1.4" opacity="0.65"/>
+  <ellipse cx="94" cy="489" rx="12" ry="4.5" fill="none" stroke="#c2e85f" stroke-width="1" opacity="0.5"/>
+  <circle cx="94" cy="489" r="3.4" fill="#dff58a"/>
+  <text x="120" y="484" font-size="13" font-weight="800" fill="#ffe9b0" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">firefly-reactive</text>
+  <text x="120" y="500" font-size="10.5" fill="#cdb389">the Mono / Flux reactive core every tier is built on</text>
+  <text x="824" y="492" text-anchor="end" font-size="10.5" fill="#8f7a52" font-weight="600" letter-spacing="0.4">tokio &#183; axum &#183; async-native</text>
 </svg>
-<figcaption>The framework's four tiers. Each tier may depend only on the tiers to its left; the Cargo crate graph enforces the layering.</figcaption>
+<figcaption>Firefly at a glance: a service depends only on the firefly facade (the front door); the four tiers build left to right, each depending only on the tiers to its left, all on the firefly-reactive Mono / Flux core.</figcaption>
 </figure>
 
 - **Foundational** crates are the vocabulary: `firefly-kernel` (errors, clock,
