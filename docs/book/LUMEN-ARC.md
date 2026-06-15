@@ -135,10 +135,12 @@ crate.
 ### Ch 4 — Dependency Wiring (`04-dependency-wiring.md`) + DI & Auto-Configuration (`04a-dependency-injection.md`)
 - **Adds:** Lumen's real wiring model — **declarative beans**, not a composition
   root. `LumenBeans` (`#[derive(Configuration)]`) declares the domain beans
-  (event store, read model, query cache, JWT service, `FilterChain`,
-  `BearerLayer`, ledger) as `#[bean]` factories; the `WalletApi` controller is a
-  `#[derive(Controller)]` bean whose `Arc<Bus>` / `Arc<Ledger>` /
-  `Arc<QueryCache>` collaborators are `#[autowired]`. The framework
+  (event store, query cache, JWT service, `FilterChain`, `BearerLayer`, ledger)
+  as `#[bean]` factories; the `ReadModel` is a `#[derive(Repository)]`
+  data-access bean (Spring's `@Repository`) scanned straight from its struct, not
+  a `#[bean]` product; the `WalletApi` controller is a `#[derive(Controller)]`
+  bean whose `Arc<Bus>` / `Arc<Ledger>` / `Arc<QueryCache>` collaborators are
+  `#[autowired]`. The framework
   `container.scan()`s them — no `register_arc`, no `build_app`. `04a` walks the
   full DI surface (stereotypes, `#[autowired]`, `#[bean]`, primary, profiles,
   conditions, lifecycle) and the auto-configuration the bootstrap performs.

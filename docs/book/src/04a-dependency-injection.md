@@ -678,10 +678,14 @@ autowiring their dependencies, `MemoryEventStore` vs. a hypothetical
 `#[bean]` factories that produce Lumen's beans, lifecycle hooks bracketing a
 projection, eager warm-up at `ApplicationContext::build()`, and
 `Container::scan()` (the scan `FireflyApplication` runs at boot) / `register_all!`
-discovering it all. Every attribute shown — `autowired`, `primary`, `order`,
-`qualifier`, `scope`, `lazy`, `profile`, the `condition_on_*` family,
-`post_construct`, `pre_destroy`, `provides`, `value`, and `prefix` (on
-`#[derive(ConfigProperties)]`) — is a real option on the stereotype derives.
+discovering it all. Between them, Lumen's beans exercise the **full stereotype
+set**: `@Configuration` + `@Bean` (`LumenBeans`), `@Service` (`WalletHandlers`,
+`WalletProjection`, the streaming `RouteContributor`), `@Repository` (`ReadModel`),
+and `@Controller` + `@Autowired` (`WalletApi`). Every attribute shown —
+`autowired`, `primary`, `order`, `qualifier`, `scope`, `lazy`, `profile`, the
+`condition_on_*` family, `post_construct`, `pre_destroy`, `provides`, `value`, and
+`prefix` (on `#[derive(ConfigProperties)]`) — is a real option on the stereotype
+derives.
 
 ## Exercises
 

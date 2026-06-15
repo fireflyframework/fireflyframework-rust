@@ -41,13 +41,17 @@ and dependency-free, the right baseline for teaching:
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use firefly::prelude::*;
 use crate::domain::WalletView;
 
 /// The in-memory read model: a map of wallet id → WalletView, upserted by the
-/// projection and served by the GetWallet query. A real service would back this
-/// with firefly's reactive repository over Postgres; an in-memory map keeps the
+/// projection and served by the GetWallet query. It carries
+/// `#[derive(Repository)]` (Spring's `@Repository`), so `container.scan()`
+/// registers it as a data-access singleton — autowired as `Arc<ReadModel>` into
+/// the handler and projection beans. A real service would back this with
+/// firefly's reactive repository over Postgres; an in-memory map keeps the
 /// teaching baseline dependency-free.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Repository)]
 pub struct ReadModel {
     rows: Mutex<HashMap<String, WalletView>>,
 }
@@ -840,7 +844,8 @@ Lumen now has a clear persistence story, even though its teaching build stays
 infrastructure-free:
 
 - **The read store is a repository.** `ReadModel` (in `samples/lumen/src/ledger.rs`)
-  is a `Mutex<HashMap<String, WalletView>>` exposing exactly `upsert(view)` and
+  is a `#[derive(Repository)]` data-access bean wrapping a
+  `Mutex<HashMap<String, WalletView>>` and exposing exactly `upsert(view)` and
   `find(id)` — the two operations the query side needs, keyed by the
   `WalletView`'s own id. The `GetWallet` handler depends on the *contract*, not
   the map.

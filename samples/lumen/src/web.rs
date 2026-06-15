@@ -56,7 +56,7 @@ use serde::Deserialize;
 use crate::commands::{Deposit, GetWallet, OpenWallet, Withdraw};
 use crate::compliance::{run_compliance, ComplianceError};
 use crate::domain::{DomainError, WalletView};
-use crate::ledger::{Ledger, ReadModel};
+use crate::ledger::Ledger;
 use crate::tcc_transfer::{run_tcc_transfer, TccTransferResult};
 use crate::transfer::{run_transfer, TransferError, TransferRequest, TransferResult};
 
@@ -80,12 +80,6 @@ impl LumenBeans {
     #[bean]
     fn event_store(&self) -> MemoryEventStore {
         MemoryEventStore::new()
-    }
-
-    /// The read model the projection feeds and `GetWallet` serves (`@Bean`).
-    #[bean]
-    fn read_model(&self) -> ReadModel {
-        ReadModel::default()
     }
 
     /// The read-side query cache honouring `GetWallet`'s 30s TTL (`@Bean`).
