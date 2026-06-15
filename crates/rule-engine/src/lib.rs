@@ -142,4 +142,4 @@ pub use crate::web::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.9";
+pub const VERSION: &str = "26.6.10";

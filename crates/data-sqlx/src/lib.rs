@@ -135,6 +135,7 @@
 mod binding;
 mod connect;
 mod db;
+mod entity;
 #[cfg(feature = "actuator")]
 mod observe;
 mod repository;
@@ -145,6 +146,7 @@ mod writer;
 
 pub use connect::{auto_configure, DataSourceProperties};
 pub use db::{Backend, Db};
+pub use entity::{repository_for, SqlxEntity};
 pub use repository::{is_optimistic_lock, SqlKey, SqlxReactiveRepository, SqlxRepository};
 pub use row::{AnyRow, SqlxRowMapper, TryGetAcross};
 pub use tx::SqlxTransactionManager;
@@ -157,4 +159,4 @@ pub use observe::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.9";
+pub const VERSION: &str = "26.6.10";

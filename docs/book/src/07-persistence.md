@@ -290,8 +290,27 @@ rejected instead of silently overwriting a concurrent update. The blocking
 `SqlxRepository::save` surfaces this as `DataError::OptimisticLock`; the reactive
 `save` surfaces it through its `FireflyError` channel (a 409), which
 `firefly_data_sqlx::is_optimistic_lock(&err)` detects so a service can map it to
-a domain conflict. The layered [`lumen-ledger`](./22-layered-microservices.md)
-service wires both `with_version_column` and store-side auditing.
+a domain conflict.
+
+### Declaring a repository: `#[derive(SqlxRepository)]`
+
+You rarely build the repository by hand. Implement `SqlxEntity` on the entity
+(its `@Table` / `@Id` / `@Version` / `@Column` mapping), then `#[derive(SqlxRepository)]`
+over a struct holding its `SqlxReactiveRepository`:
+
+```rust,ignore
+#[derive(SqlxRepository)]
+pub struct WalletRepository { repo: SqlxReactiveRepository<Wallet, Uuid> }
+```
+
+The derive registers it as a `@Repository` bean **built from the injected `Db`
+datasource bean** (wiring `@Version` locking + auditing from the entity), and
+implements `ReactiveCrudRepository` by delegation — the Spring Data "declare a
+repository, get the implementation" experience. The
+[`lumen-ledger`](./22-layered-microservices.md) sample uses exactly this. (A
+`#[derive(Entity)]` to generate the `SqlxEntity` mapping from the fields is a
+tracked next step; for now the entity declares its column mapping explicitly,
+like JPA `@Column`s.)
 
 ### Reactive specification / paging
 

@@ -17,9 +17,11 @@
 //! real SQLite repository.
 
 use std::str::FromStr;
+use std::sync::Arc;
 
+use firefly::container::Container;
 use firefly::data::{DataError, Order, Pageable, ReactiveCrudRepository, RequestSort, TableConfig};
-use firefly::data_sqlx::{AnyRow, ColumnValue, Db, SqlxReactiveRepository};
+use firefly::data_sqlx::{AnyRow, ColumnValue, Db, SqlxEntity, SqlxReactiveRepository};
 use firefly::kernel::FireflyError;
 
 /// Opens a **shared-cache** in-memory SQLite pool under a unique `name`. A
@@ -227,4 +229,100 @@ async fn paged_and_custom_queries_execute() {
         4,
         "all four are now active"
     );
+}
+
+// ── #[derive(SqlxRepository)] — Spring-Data-style @Repository from a Db bean ──
+
+#[derive(Debug, Clone, PartialEq)]
+struct Doc {
+    id: i64,
+    title: String,
+    status: String,
+}
+
+impl SqlxEntity for Doc {
+    type Id = i64;
+    fn table() -> &'static str {
+        "docs"
+    }
+    fn id_column() -> &'static str {
+        "id"
+    }
+    fn columns() -> &'static [&'static str] {
+        &["id", "title", "status"]
+    }
+    fn read_row(row: &AnyRow<'_>) -> Result<Self, FireflyError> {
+        Ok(Doc {
+            id: row.get_i64("id")?,
+            title: row.get_str("title")?,
+            status: row.get_str("status")?,
+        })
+    }
+    fn write_row(&self) -> Vec<ColumnValue> {
+        vec![
+            ColumnValue::new("id", self.id),
+            ColumnValue::new("title", self.title.clone()),
+            ColumnValue::new("status", self.status.clone()),
+        ]
+    }
+}
+
+/// A repository declared the Spring Data way: one annotation over the entity.
+#[derive(firefly::SqlxRepository)]
+struct DocRepo {
+    repo: SqlxReactiveRepository<Doc, i64>,
+}
+
+#[firefly::repository]
+impl DocRepo {
+    async fn find_by_status(&self, status: &str) -> Result<Vec<Doc>, DataError> {
+        unimplemented!()
+    }
+}
+
+#[tokio::test]
+async fn sqlx_repository_derive_builds_from_the_db_bean() {
+    let pool = shared_memory_pool("firefly_sqlx_repo_derive").await;
+    sqlx::query(
+        "CREATE TABLE docs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create table");
+
+    // The container holds only the `Db` datasource bean; the repository is
+    // built from it by the derive (no hand-written #[bean] factory).
+    let c = Arc::new(Container::new());
+    c.register_instance(Db::Sqlite(pool));
+    DocRepo::firefly_register(&c); // what Container::scan() calls.
+
+    let repo = c
+        .resolve::<DocRepo>()
+        .expect("DocRepo resolves from the Db bean");
+
+    // CRUD via the derived `ReactiveCrudRepository` delegation.
+    for (id, title, status) in [(1, "a", "open"), (2, "b", "open"), (3, "c", "closed")] {
+        repo.save(Doc {
+            id,
+            title: title.into(),
+            status: status.into(),
+        })
+        .await
+        .expect("save");
+    }
+    let got = repo.find_by_id(1).await.expect("find").expect("present");
+    assert_eq!(got.title, "a");
+    assert_eq!(repo.count().await.expect("count").unwrap_or(0), 3);
+
+    // The `#[firefly::repository]` derived query, via the generated accessor.
+    let open = repo.find_by_status("open").await.expect("by status");
+    assert_eq!(open.len(), 2);
+
+    // Classified as @Repository in /beans (not a generic @Bean).
+    let label = c
+        .beans()
+        .iter()
+        .find(|b| b.type_name.ends_with("DocRepo"))
+        .and_then(|b| b.stereotype.clone());
+    assert_eq!(label.as_deref(), Some("repository"));
 }

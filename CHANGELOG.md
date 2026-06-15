@@ -2,6 +2,41 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.10 — 2026-06-16
+
+The **Spring Data repository** pass. A hand-built repository declared with a
+`#[bean]` factory is *not* how Spring Data reads — you declare a repository over
+an entity and the framework supplies the implementation. Firefly does that now.
+
+### Added
+
+- **`#[derive(SqlxRepository)]`** (firefly-macros) — turns a struct holding a
+  `SqlxReactiveRepository<Entity, Id>` into a fully-wired **`@Repository` bean**:
+  discovered by the scan and classified as `@Repository` in `/beans`, **built
+  from the injected `Db` datasource bean** (table config + `@Version` optimistic
+  locking + `@CreatedDate`/`@LastModifiedDate` auditing, all wired from the
+  entity), and implementing `ReactiveCrudRepository` by delegation. The Spring
+  Data "declare a repository, get the implementation" experience — no `#[bean]`
+  factory, no hand-written CRUD.
+- **`SqlxEntity` + `repository_for`** (firefly-data-sqlx) — the
+  `@Table`/`@Id`/`@Version`/`@Column` entity contract and the one-call factory
+  the derive builds from.
+
+### Changed
+
+- **lumen-ledger**: the repository is now `#[derive(SqlxRepository)]` over a
+  `Wallet` that `impl SqlxEntity`; the `#[bean]` moved to the **`Db` datasource**
+  (Spring Boot's auto-configured `DataSource`), which is the only async bean.
+- `ApplicationContextBuilder::build()` no longer *panics* on a pending async bean
+  (a shared test binary's inventory could trip it for unrelated tests). It
+  documents that the synchronous path does not await async beans — use
+  `build_async()`; an un-awaited async bean now fails discoverably at resolve
+  time (`NoSuchBean`) rather than at build.
+
+> Tracked next: a `#[derive(Entity)]` to generate the `SqlxEntity` mapping from
+> the entity's fields. Today the entity declares its column mapping explicitly,
+> like JPA `@Column`s.
+
 ## v26.6.9 — 2026-06-15
 
 The **Spring Boot fidelity pass**. A multi-lens audit (with every finding

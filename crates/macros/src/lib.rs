@@ -72,6 +72,7 @@ mod orchestration;
 mod repository_query;
 mod scheduling;
 mod schema;
+mod sqlx_repository;
 mod transactional;
 mod validate;
 mod web;
@@ -229,6 +230,18 @@ pub fn derive_service(input: TokenStream) -> TokenStream {
 pub fn derive_repository(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     emit(container::derive_component(input, Stereotype::Repository))
+}
+
+/// Derives a fully-wired **sqlx `@Repository`** from a struct holding a
+/// `SqlxReactiveRepository<Entity, Id>` field: registers it as a `@Repository`
+/// bean built from the injected `Db` datasource (via `repository_for`),
+/// implements `ReactiveCrudRepository` by delegation, and emits the
+/// `repository()` accessor the `#[firefly::repository]` derived queries use.
+/// The Spring Data "declare a repository, get the implementation" experience.
+#[proc_macro_derive(SqlxRepository, attributes(firefly))]
+pub fn derive_sqlx_repository(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    emit(sqlx_repository::derive_sqlx_repository(input))
 }
 
 /// Derives a DI registration for a configuration-holder bean — a

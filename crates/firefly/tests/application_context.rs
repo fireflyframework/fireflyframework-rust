@@ -126,14 +126,14 @@ async fn build_async_awaits_async_beans() {
         .resolve::<AsyncResource>()
         .expect("async bean initialized by build_async");
     assert!(resource.ready);
-}
 
-#[test]
-#[should_panic(expected = "build_async")]
-fn sync_build_panics_when_async_beans_are_pending() {
-    // The synchronous build cannot await async beans; it must fail fast rather
-    // than silently dropping them.
-    let _ = ApplicationContext::builder()
+    // The synchronous build does NOT await async beans (the documented
+    // limitation); resolving the un-initialized async bean fails discoverably.
+    let sync = ApplicationContext::builder()
         .profiles(["async-ctx"])
         .build();
+    assert!(
+        sync.container().resolve::<AsyncResource>().is_err(),
+        "sync build() leaves an async bean uninitialized"
+    );
 }

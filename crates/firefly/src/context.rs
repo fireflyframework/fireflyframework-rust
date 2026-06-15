@@ -192,20 +192,14 @@ impl ApplicationContextBuilder {
     /// the condition context, scan the crate graph (registering survivors),
     /// then eagerly warm non-lazy singletons.
     ///
-    /// # Panics
-    /// Panics if the scan discovered any `async fn` `#[bean]` factory — a
-    /// synchronous build cannot `await` it, so silently leaving it
-    /// uninitialized would be a wiring bug. Use [`build_async`](Self::build_async)
-    /// for any application that registers async beans (a DB pool, broker dial, …).
+    /// **Note:** this synchronous path does *not* await `async fn` `#[bean]`
+    /// factories — it cannot. An application that registers any async bean (a DB
+    /// pool, broker dial, …) must use [`build_async`](Self::build_async)
+    /// instead; otherwise those beans stay uninitialized and resolving one
+    /// fails with a `NoSuchBean` pointing at it.
     #[must_use]
     pub fn build(self) -> ApplicationContext {
         let (container, bean_count, eager) = self.scan_into_container();
-
-        assert!(
-            !container.has_pending_async_beans(),
-            "ApplicationContextBuilder::build() found async #[bean] factories it cannot await — \
-             call `.build_async().await` instead (it drains Container::init_async_beans)."
-        );
 
         if eager {
             // Eagerly resolve each discovered singleton so construction-time
