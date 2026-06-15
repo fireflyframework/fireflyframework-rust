@@ -299,10 +299,11 @@ async fn tower_layer_inherits_inbound_trace() {
     );
 }
 
-/// Malformed traceparent headers are dropped — the W3C "restart the
-/// trace" rule (OTel does the same).
+/// A malformed traceparent is dropped and the trace is **restarted** — the
+/// framework originates a fresh root span (W3C "restart" / OTel root behaviour)
+/// rather than propagating the bad header or dropping the trace.
 #[tokio::test]
-async fn tower_layer_drops_malformed_traceparent() {
+async fn tower_layer_restarts_trace_on_malformed_traceparent() {
     let svc = tower::service_fn(|req: Request<()>| async move {
         Ok::<_, Infallible>(Response::new((
             current_traceparent(),
@@ -320,8 +321,37 @@ async fn tower_layer_drops_malformed_traceparent() {
         .await
         .unwrap()
         .into_body();
-    assert!(tp.is_none());
-    assert!(ext.is_none());
+    // The malformed header is NOT propagated; a fresh, valid root is minted.
+    let tp = tp.expect("a root span is originated");
+    assert!(!tp.contains("not-a-trace"), "malformed header must be dropped");
+    let ext = ext.expect("root TraceParent in extensions");
+    assert_eq!(ext.trace_id.len(), 32);
+    assert_eq!(ext.parent_id.len(), 16);
+    assert!(ext.sampled());
+}
+
+/// With no inbound traceparent at all, the layer still originates a root span
+/// (so logs + downstream hops get a trace id) — Spring Boot / OTel behaviour.
+#[tokio::test]
+async fn tower_layer_originates_root_when_absent() {
+    let svc = tower::service_fn(|req: Request<()>| async move {
+        Ok::<_, Infallible>(Response::new((
+            current_traceparent(),
+            req.extensions().get::<TraceParent>().cloned(),
+        )))
+    });
+    let req = Request::builder().uri("/x").body(()).unwrap();
+    let (tp, ext) = TraceContextLayer::new()
+        .layer(svc)
+        .oneshot(req)
+        .await
+        .unwrap()
+        .into_body();
+    let tp = tp.expect("a root span is originated when no traceparent arrives");
+    let ext = ext.expect("root TraceParent in extensions");
+    assert_eq!(tp, ext.to_string());
+    assert_eq!(ext.trace_id.len(), 32);
+    assert!(ext.sampled());
 }
 
 /// The reqwest helper stamps the current context onto an outbound request

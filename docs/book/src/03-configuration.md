@@ -3,15 +3,16 @@
 > By the end of this chapter Lumen reads its identity and its bind addresses
 > from configuration instead of hard-coding them: the `app_name` and
 > `app_version` that flow into the banner and `/actuator/info`, and the
-> `LUMEN_ADDR` / `LUMEN_ADMIN_ADDR` overrides `main` already honors. You will
-> also see the typed, layered, profile-aware machinery Lumen grows into as it
-> moves toward production.
+> `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR` overrides `FireflyApplication`
+> already honors. You will also see the typed, layered, profile-aware machinery
+> Lumen grows into as it moves toward production.
 
-In the last chapter Lumen named itself with two `pub const` strings and pulled
-its ports straight off the environment with `std::env::var`. That is the right
-starting point — but a real wallet service runs in dev, in CI, and in prod, and
-each environment wants different ports, log levels, and (eventually) database
-URLs. `firefly-config` provides **typed, layered configuration binding**: you
+In the last chapter Lumen named itself with two `pub const` strings, and
+`FireflyApplication` pulled its ports straight off the environment
+(`FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR`). That is the right starting
+point — but a real wallet service runs in dev, in CI, and in prod, and each
+environment wants different ports, log levels, and (eventually) database URLs.
+`firefly-config` provides **typed, layered configuration binding**: you
 declare a `serde`-deserializable struct, call `load`/`load_from_profile`, and the
 loader merges sources in precedence order, resolves the active profile, resolves
 `${...}` placeholders, and binds the flat dot-keyed map onto your struct. If
@@ -25,19 +26,20 @@ you've used a batteries-included framework before, the shape will feel familiar.
 
 ## Where Lumen is today: app identity
 
-Recall the composition root from the Quickstart:
+Recall the one-line bootstrap from the Quickstart — `main()` is a single
+`FireflyApplication` call that carries the app name and version:
 
 ```rust,ignore
-// src/web.rs
-let web = WebStack::new(firefly::starter_web::CoreConfig {
-    app_name: APP_NAME.into(),       // "lumen"
-    app_version: VERSION.into(),     // firefly::VERSION
-    ..Default::default()
-});
+// src/main.rs
+firefly::FireflyApplication::new("lumen")
+    .version(firefly::VERSION)
+    .run()
+    .await
 ```
 
-`CoreConfig` is itself plain configuration: every field is a knob, and the two
-Lumen sets — `app_name` and `app_version` — are exactly the values
+Under the hood those two values become `CoreConfig.app_name` / `app_version` —
+plain configuration: every field of `CoreConfig` is a knob, and the two
+Lumen sets are exactly the values
 `/actuator/info` reports and the banner prints. The remaining fields default
 (in-memory cache, in-process broker, a fresh CQRS bus), which is why a bare
 `cargo run` needs no infrastructure. Promoting any of those to real
@@ -57,9 +59,9 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct Web {
-    /// Public API bind address — the typed home of LUMEN_ADDR.
+    /// Public API bind address — the typed home of FIREFLY_SERVER_ADDR.
     addr: String,
-    /// Admin/actuator bind address — the typed home of LUMEN_ADMIN_ADDR.
+    /// Admin/management bind address — the typed home of FIREFLY_MANAGEMENT_ADDR.
     admin_addr: String,
 }
 
@@ -112,9 +114,10 @@ wins**. The canonical chain is:
 | 5     | CLI flags — `FlagSource::new().set("web.addr", "0.0.0.0:80")` | everything |
 
 So an environment override (`LUMEN_WEB_ADDR=0.0.0.0:80`) always beats a YAML
-file, and a CLI override always beats both. That precedence is precisely why
-`main` can read `LUMEN_ADDR` and have it win over any baked-in default. Build
-the chain explicitly when you need full control:
+file, and a CLI override always beats both. That same precedence is why
+`FireflyApplication` lets `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR` win
+over any baked-in default bind address. Build the chain explicitly when you need
+full control:
 
 ```rust,ignore
 use firefly_config::{from_env, from_optional_yaml, load, Source, StaticSource};
@@ -439,7 +442,7 @@ lives in [`firefly-config-server`](./91-appendix-modules.md).
 | Before | After this chapter |
 |--------|--------------------|
 | identity hard-coded in two `pub const` strings | the same values understood as `CoreConfig` knobs that feed the banner and `/actuator/info` |
-| ports read with bare `std::env::var` | the typed home of `LUMEN_ADDR` / `LUMEN_ADMIN_ADDR`, sitting at the top of a documented precedence chain |
+| bind addresses read by `FireflyApplication` from `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR` | the typed home for those addresses, sitting at the top of a documented precedence chain |
 | no path to per-environment settings | profiles, placeholders, and `#[derive(ConfigProperties)]` ready for injection in the next chapter |
 | secrets unconsidered | masking + `/actuator/env` redaction in place before Lumen ever holds a signing key |
 

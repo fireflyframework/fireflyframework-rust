@@ -337,7 +337,8 @@ pub trait EventStore: Send + Sync {
 The default is `MemoryEventStore` — the in-process store Lumen runs on, ideal for
 development and tests. `SqlEventStore` backs it with a SQL store over the
 `firefly-transactional` `Database` port for production; swapping it is a one-line
-change in `build_app`, exactly like swapping the broker in the last chapter.
+change to the `event_store` `#[bean]` in `LumenBeans`, exactly like swapping the
+broker in the last chapter.
 
 ## The Ledger ties it together
 

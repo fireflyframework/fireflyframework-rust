@@ -30,6 +30,7 @@ firefly-data = { workspace = true }
 firefly-cache = { workspace = true }
 firefly-config = { workspace = true }
 firefly-observability = { workspace = true }
+firefly-openapi = { workspace = true }
 firefly-actuator = { workspace = true }
 firefly-scheduling = { workspace = true }
 firefly-transactional = { workspace = true }
@@ -48,6 +49,10 @@ firefly-client = { workspace = true }
 # WITHOUT the user crate having to add `serde_json` itself — preserving the
 # one-dependency facade contract.
 serde_json = { workspace = true }
+# `FireflyApplication` (the turnkey bootstrap) binds the listeners and serves
+# the assembled routers itself, so it needs axum + tokio directly.
+axum = { workspace = true }
+tokio = { workspace = true }
 
 # ---- optional: heavy adapter crates, gated behind cargo features ------
 # A minimal `firefly` dep pulls NONE of these. Turn them on with the

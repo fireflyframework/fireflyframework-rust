@@ -11,6 +11,10 @@ description = "Firefly Framework for Rust — Bundles web + cache + observabilit
 [dependencies]
 firefly-kernel = { workspace = true }
 firefly-web = { workspace = true }
+# The DI container: `Core::register_beans` auto-registers the framework's infra
+# singletons (Bus, Scheduler, MetricRegistry, HealthComposite) so no product
+# hand-wires them.
+firefly-container = { workspace = true }
 firefly-cache = { workspace = true }
 firefly-observability = { workspace = true }
 firefly-eda = { workspace = true }

@@ -167,6 +167,9 @@ pub(crate) fn derive_component(
     // `Arc<Container>`. To keep the borrowed-factory signature, we resolve the
     // provider lazily through the container reference captured at build time.
     let mut inits = Vec::new();
+    // Short type names of every `#[autowired]` dependency, recorded into the
+    // container so the admin `/beans/graph` can draw edges.
+    let mut dep_names: Vec<String> = Vec::new();
     for field in &fields {
         let fident = &field.ident;
         let fty = &field.ty;
@@ -187,6 +190,9 @@ pub(crate) fn derive_component(
                          beans as `Arc<T>`",
                     )
                 })?;
+                if let Some(dep) = autowired_dep_name(&shape) {
+                    dep_names.push(dep);
+                }
                 autowired_init(&container, fident, &shape, qualifier.as_deref())
             }
         };
@@ -284,6 +290,7 @@ pub(crate) fn derive_component(
                     },
                 );
                 __container.set_stereotype::<#ident #ty_g>(#stereo_label);
+                __container.set_dependencies::<#ident #ty_g>(&[#(#dep_names),*]);
                 #pre_destroy
                 #bind_tokens
             }
@@ -495,6 +502,29 @@ fn parse_field_str_arg(field: &syn::Field, key: &str) -> syn::Result<Option<Stri
         })?;
     }
     Ok(found)
+}
+
+/// The short type name of an autowired dependency's resolved bean type — the
+/// inner `T` of `Arc<T>` / `Vec<Arc<T>>` / `Option<Arc<T>>` / `Provider<T>`,
+/// reduced to its last path segment (`firefly_cqrs::Bus` → `Bus`). Recorded for
+/// the admin dependency graph.
+fn autowired_dep_name(shape: &AutowiredShape) -> Option<String> {
+    let inner = match shape {
+        AutowiredShape::Single(t)
+        | AutowiredShape::All(t)
+        | AutowiredShape::Optional(t)
+        | AutowiredShape::Provider(t) => *t,
+    };
+    type_short_name(inner)
+}
+
+/// The last path-segment ident of a type (`a::b::Foo<T>` → `Foo`), or `None`
+/// for non-path types.
+fn type_short_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(tp) => tp.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    }
 }
 
 /// Infer the injection shape from an `#[autowired]` field's type.

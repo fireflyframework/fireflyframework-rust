@@ -239,6 +239,21 @@ pub(crate) fn handler_attr(
         fn = fn_ident
     );
 
+    // Link-time discovery: a non-generic handler also submits a
+    // `HandlerRegistration` thunk so `register_discovered_handlers(&bus)` (and
+    // `FireflyApplication`) wires it with zero manual `register_<fn>` calls.
+    // Generic handlers can't be inventoried (monomorphization is per-use-site),
+    // so they keep only the explicit helper.
+    let inventory_submit = if item.sig.generics.params.is_empty() {
+        quote! {
+            #cqrs::inventory::submit! {
+                #cqrs::HandlerRegistration { register: #register_ident }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     Ok(quote! {
         #item
 
@@ -246,5 +261,7 @@ pub(crate) fn handler_attr(
         #vis fn #register_ident(bus: &#cqrs::Bus) {
             bus.register(move |__msg: #msg_ty| async move { #fn_ident(__msg).await });
         }
+
+        #inventory_submit
     })
 }

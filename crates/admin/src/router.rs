@@ -188,22 +188,11 @@ async fn health(State(st): State<AdminState>) -> Response {
 }
 
 async fn env(State(st): State<AdminState>) -> Json<Value> {
-    // No DI container / config-source introspection in this wiring; report the
-    // process env profile + an empty property-source list (pyfly env shape).
-    Json(json!({
-        "activeProfiles": active_profiles(),
-        "active_profiles": active_profiles(),
-        "propertySources": [],
-        "properties": {},
-        "origins": {},
-        "sources": [],
-        "app": { "name": st.deps.app_name, "version": st.deps.app_version },
-    }))
+    Json(data::env(&st.deps))
 }
 
 async fn config(State(st): State<AdminState>) -> Json<Value> {
-    let _ = st;
-    Json(json!({ "groups": {}, "groupCount": 0, "propertyCount": 0, "sourceCount": 0 }))
+    Json(data::config(&st.deps))
 }
 
 async fn loggers(State(st): State<AdminState>) -> Json<Value> {
@@ -264,10 +253,7 @@ async fn scheduled(State(st): State<AdminState>) -> Json<Value> {
 }
 
 async fn mappings(State(_st): State<AdminState>) -> Json<Value> {
-    // No central HTTP route registry is wired here, so report an empty mapping
-    // list. (Bean introspection IS available via the `/beans` routes when a
-    // container is wired; only the route table remains a stub.)
-    Json(json!({ "mappings": [], "total": 0 }))
+    Json(data::mappings())
 }
 
 async fn caches(State(st): State<AdminState>) -> Json<Value> {
@@ -520,20 +506,6 @@ async fn spa_shell(State(st): State<AdminState>) -> Response {
         stamped,
     )
         .into_response()
-}
-
-/// Active profiles from the `FIREFLY_PROFILES_ACTIVE` env var, comma-split.
-fn active_profiles() -> Vec<String> {
-    std::env::var("FIREFLY_PROFILES_ACTIVE")
-        .ok()
-        .map(|raw| {
-            raw.split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// A coarse content-type guess from a static asset's extension.

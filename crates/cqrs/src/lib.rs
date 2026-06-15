@@ -169,6 +169,7 @@ mod bus;
 mod cache;
 mod context;
 mod correlation;
+mod discovery;
 mod eda_bridge;
 mod error;
 mod event;
@@ -178,10 +179,15 @@ mod metrics;
 mod reactive;
 mod validation;
 
+// Re-export `inventory` so `#[command_handler]`/`#[query_handler]`-generated
+// `HandlerRegistration` thunks submit through `firefly_cqrs::inventory`.
+pub use inventory;
+
 pub use authorization::{
     AuthorizationError, AuthorizationMiddleware, AuthorizationResult, AuthorizationSeverity,
     AUTHORIZATION_ERROR_CODE,
 };
+pub use discovery::{discovered_handler_count, register_discovered_handlers, HandlerRegistration};
 pub use bus::{
     AnyResult, Bus, DynHandler, Envelope, HandlerFuture, Message, MessageKind, Middleware,
     ValidationMiddleware,
@@ -208,5 +214,5 @@ pub use validation::{
 
 /// The released framework version. Calendar-versioned (`YY.M.PATCH`)
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to
-/// `26.6.5` in the June 2026 release window.
-pub const VERSION: &str = "26.6.5";
+/// `26.7.0` in the June 2026 release window.
+pub const VERSION: &str = "26.7.0";

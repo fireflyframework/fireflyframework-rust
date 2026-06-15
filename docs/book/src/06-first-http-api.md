@@ -8,37 +8,48 @@
 > router without binding a socket. This is the chapter where Lumen stops being a
 > banner and starts being a service.
 
-So far Lumen compiles, runs, and serves an actuator, and you know how its
-composition root resolves collaborators. Now you give it endpoints. The HTTP
-layer is axum; Firefly contributes the controller macro, the problem rendering,
-and the correlation/idempotency middleware you met in the Quickstart, all woven
-in by the `WebStack`. You write handlers; the framework supplies the wiring.
+So far Lumen compiles, runs, and serves an actuator, and you know how the
+framework wires the beans it scans. Now you give it endpoints. The HTTP layer is
+axum; Firefly contributes the controller macro, the problem rendering, and the
+correlation/idempotency middleware you met in the Quickstart, all woven in by the
+framework. You write handlers; the framework supplies the wiring *and* mounts the
+controller for you.
 
 ## The `#[rest_controller]` macro
 
-Lumen's wallet endpoints live on one type, `WalletApi`, whose `impl` block
-carries `#[rest_controller]`. The macro reads each verb attribute and generates
-a `WalletApi::routes(state) -> axum::Router` function — so a controller is just
-an `impl` with annotated methods, and the routing table is derived from the
-code rather than maintained beside it.
+Lumen's wallet endpoints live on one type, `WalletApi`, a `#[derive(Controller)]`
+DI bean whose `impl` block carries `#[rest_controller]`. The struct's
+collaborators are `#[autowired]` from the container, and the macro reads each
+verb attribute and generates a `WalletApi::routes(state) -> axum::Router`
+function — so a controller is just a bean plus an `impl` with annotated methods,
+and the routing table is derived from the code rather than maintained beside it.
 
 ```rust,ignore
 // src/web.rs
 use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::Json;
+use firefly::cqrs::QueryCache;
 use firefly::prelude::*;
 use firefly::web::{WebError, WebResult};
 
 use crate::commands::{GetWallet, OpenWallet};
 use crate::domain::WalletView;
 
-/// The wallet HTTP surface. It carries the CQRS `Bus` it dispatches through;
-/// the controller stays thin and delegates every decision to a handler.
-#[derive(Clone)]
+/// The wallet HTTP surface — a `#[derive(Controller)]` DI bean. Its
+/// collaborators are **autowired** from the container, and `#[rest_controller]`
+/// auto-mounts it; there is no hand-built state and no manual `routes()` call.
+#[derive(Clone, Controller)]
 pub struct WalletApi {
+    /// The command/query bus the controller dispatches through (autowired).
+    #[autowired]
     pub bus: Arc<Bus>,
-    // (the ledger and query cache fields arrive in later chapters)
+    /// The application service the transfer saga and event stream use (autowired).
+    #[autowired]
+    pub ledger: Arc<Ledger>,
+    /// The query cache, invalidated after a mutation (autowired).
+    #[autowired]
+    pub query_cache: Arc<QueryCache>,
 }
 
 /// `#[rest_controller(path = "...")]` generates `WalletApi::routes(state) ->
@@ -281,8 +292,8 @@ registry.add(std::sync::Arc::new(MappingJsonConverter::new(mapper)));
 ```
 
 Because it registers as a user converter, `MappingJsonConverter` takes priority
-over the built-in `JsonMessageConverter` for `application/json` — so installing it
-once at the composition root is all it takes to apply a global JSON naming and
+over the built-in `JsonMessageConverter` for `application/json` — so registering it
+once (as a converter bean) is all it takes to apply a global JSON naming and
 inclusion policy to the entire HTTP surface, instead of repeating
 `#[serde(rename_all = ...)]` on every DTO. Per-type serde attributes still work
 and compose on top: reach for them when a specific type needs to deviate from the
@@ -354,36 +365,39 @@ A rendered problem for an unknown wallet looks like this — note the dedicated
 > errors. The RFC 9457 contract is stable and language-neutral, so a Firefly 404
 > presents identically to every client regardless of which service produced it.
 
-## Mounting the routes
+## Controllers are auto-mounted
 
-The controller's `routes(state)` function returns a plain `axum::Router`, which
-the composition root wraps in the `WebStack` middleware chain. `LumenApp::router`
-is that one place — construct the controller from the resolved collaborators,
-call `WalletApi::routes`, and hand it to `apply_middleware`:
+You never mount the controller. Because `WalletApi` is a `#[derive(Controller)]`
+bean, the `#[rest_controller]` macro registers a *mount thunk* into the
+link-time inventory alongside the generated `routes(state)` function. At boot,
+`FireflyApplication` calls `firefly::web::mount_controllers(&container)`, which
+resolves each controller bean from the container (constructing its autowired
+collaborators), calls its `routes(state)`, and merges the result — then wraps the
+whole thing in the web middleware chain:
 
 ```rust,ignore
-// src/web.rs
-impl LumenApp {
-    /// Builds the public router: the macro-generated wallet routes wrapped in
-    /// the web middleware chain.
-    pub fn router(&self) -> axum::Router {
-        let state = WalletApi { bus: Arc::clone(&self.bus) };
-        let routes = WalletApi::routes(state);
-        self.web.apply_middleware(routes)
-    }
-}
+// inside FireflyApplication::bootstrap — you write none of this:
+let routes = firefly::web::mount_controllers(&container)         // every #[rest_controller]
+    .merge(firefly::web::mount_route_contributors(&container));  // every RouteContributor bean
+let api = web.apply_middleware(routes);                          // + security, trace, docs, 404
 ```
 
-Every request to a wallet route now passes through the canonical chain you got
-for free in the Quickstart — the RFC 9457 problem layer, correlation-id
-propagation, and idempotency replay — before it reaches your handler. You wrote
-the two handlers; the rest of the request lifecycle is the framework's.
+So adding the controller *is* mounting it: declare the bean, annotate the impl,
+and the route table grows. The macro's generated `routes(state)` is still there
+(it is what the mount thunk calls), and the `RouteDescriptor` it emits per
+endpoint feeds the actuator `/mappings` view and the OpenAPI generator — but you
+never call either by hand.
 
-> **Note** — `LumenApp::router` is the *only* function that changes as Lumen
-> grows. The streaming endpoint merges into it in
-> [Production](./20-production.md); the JWT security layer wraps it in
-> [Security](./14-security.md). `main` keeps calling `app.router()` and never
-> learns the difference — the composition root absorbs every addition.
+Every request to a wallet route passes through the canonical chain you got for
+free in the Quickstart — the RFC 9457 problem layer, correlation-id propagation,
+and idempotency replay — before it reaches your handler. You wrote the two
+handlers; the rest of the request lifecycle is the framework's.
+
+> **Note** — `main` never changes as Lumen grows. The JWT security layer is
+> discovered from a `FilterChain` bean in [Security](./14-security.md); the
+> streaming endpoint is added as a `RouteContributor` bean in
+> [Production](./20-production.md). Each is a *new bean the scan finds*, not a
+> line edited into a composition root — the framework absorbs every addition.
 
 ## Proving it works — an in-process round-trip
 
@@ -440,10 +454,27 @@ async fn open_then_get_round_trips_through_cqrs() {
 }
 ```
 
-`build_router()` is the testable composition root: it is `build_app().await`
-followed by `.router()`, returning exactly the `axum::Router` `main` serves. The
-test exercises the macro-generated routes, the JSON contract, and the
-status-code mapping — the same code path a real client hits, minus the network.
+`build_router()` is the testable boot path. It calls
+`FireflyApplication::bootstrap()` — the sibling of `run()` that assembles the
+app **without serving** — and returns its `api_router`, exactly the
+`axum::Router` `main` serves:
+
+```rust,ignore
+// src/web.rs — the in-process router the tests drive (no socket bound).
+pub(crate) async fn build_router() -> axum::Router {
+    firefly::FireflyApplication::new(APP_NAME)
+        .version(VERSION)
+        .bootstrap()
+        .await
+        .expect("lumen bootstrap")
+        .api_router
+}
+```
+
+Because `bootstrap()` runs the *same* component scan and auto-mount as `run()`,
+the test drives the real, fully-wired controller stack — the macro-generated
+routes, the JSON contract, and the status-code mapping — the same code path a
+real client hits, minus the network.
 
 The error paths are tested the same way. An empty `owner` is a `422` problem; an
 id that was never opened is a `404` problem — and both assert the

@@ -10,12 +10,13 @@ reconstruct the decision.
 By the end of this chapter Lumen will expose an **actuator admin surface** on a
 separate port — health, info, metrics, loggers, scheduled tasks — feed it an
 **info contributor** describing the build, emit **structured logs** with a
-correlation id on every request, and (as the next step it grows into) surface all
-of it in the embedded **admin dashboard** with its fifteen views, including the
-new **Beans** view. Lumen is **observable by default**: `WebStack::new` already
-wired the logging layer, the health composite, the metric registry, and the
-request-metrics middleware. This chapter turns those defaults into an admin
-surface and explains what each piece reports.
+correlation id on every request, and surface all of it in the **self-hosted admin
+dashboard** with its fifteen views, including the **Beans** view. Lumen is
+**observable by default**, and `FireflyApplication` does the wiring: it installs
+the logging layer, the health composite, the metric registry, the request-metrics
+middleware, W3C trace-context origination, and a self-hosted `/admin` dashboard
+bound to the live components — all with no observability code in `main.rs`. This
+chapter explains what each piece reports.
 
 > **An `/actuator` management surface.** Firefly exposes a JSON management
 > surface under `/actuator/*` — health, info, metrics, env, loggers, scheduled
@@ -24,32 +25,40 @@ surface and explains what each piece reports.
 > the conventional shape standard metrics and management tooling expects, so
 > off-the-shelf scrapers and dashboards work unchanged.
 
-## The admin surface in main.rs
+## The management surface, self-hosted
 
-Lumen serves the public API on `127.0.0.1:8080` and the actuator on
-`127.0.0.1:8081` — a separate listener, so `/actuator/*` never leaks onto the
-public network. The `WebStack` `Deref`s to its `Core`, so `actuator_router` is
-reachable directly. This is the relevant slice of `src/main.rs`:
+Lumen serves the public API on `0.0.0.0:8080` and the **management surface**
+(actuator + the admin dashboard) on `0.0.0.0:8081` — a separate listener, so
+`/actuator/*` and `/admin/*` never leak onto the public network.
+`FireflyApplication` assembles and serves both routers; Lumen writes no actuator
+or admin wiring at all. (Override the bind addresses with `FIREFLY_SERVER_ADDR` /
+`FIREFLY_MANAGEMENT_ADDR`.)
+
+The one piece of observability *application* code Lumen could add is an
+`/actuator/info` contributor, registered fluently on the application builder:
 
 ```rust,ignore
 use firefly::starter_core::InfoContributor;
 
-let api = app.router();
 let contributor: InfoContributor = Box::new(|| {
     let mut info = serde_json::Map::new();
     info.insert(
         "sample".into(),
-        serde_json::json!({ "name": APP_NAME, "store": "in-memory", "eventBus": "in-memory" }),
+        serde_json::json!({ "name": "lumen", "store": "in-memory", "eventBus": "in-memory" }),
     );
     info
 });
-let admin = app.web.actuator_router(vec![contributor]);
+
+firefly::FireflyApplication::new("lumen")
+    .info_contributor(contributor)   // adds a section to /actuator/info
+    .run()
+    .await
 ```
 
-`actuator_router(info_contributors)` returns an axum `Router` carrying the full
-management surface. Lumen mounts it on the admin listener in its lifecycle wiring
-(the production chapter covers that end to end); for now, the two routers are
-served on two ports.
+The framework builds the management router (`/actuator/*` + the self-hosted
+`/admin` dashboard) from the live components, threads your info contributors into
+`/actuator/info`, and serves it on the management port — no `actuator_router(..)`
+call, no second-listener bookkeeping in app code.
 
 ## The actuator endpoints
 
@@ -82,7 +91,7 @@ in-memory infrastructure:
 ```jsonc
 // GET /actuator/info
 {
-  "app": { "name": "lumen", "version": "26.6.5" },
+  "app": { "name": "lumen", "version": "26.7.0" },
   "sample": { "name": "lumen", "store": "in-memory", "eventBus": "in-memory" }
 }
 ```
@@ -95,15 +104,18 @@ set in Chapter 3; the `sample` block is the contributor above.
 A health `Indicator` is an async probe returning a `HealthResult` (status +
 message + details); a `Composite` aggregates them into the canonical rollup —
 `DOWN` if any indicator is `DOWN`, else `DEGRADED` if any is `DEGRADED`, else
-`UP`. The `Core` already carries a `HealthComposite`; bridge an observability
-indicator onto it with `core.add_observability_indicator(..)`. A real Lumen
-deployment would add a broker-liveness indicator and a store probe:
+`UP`. The framework's `Core` already carries a `HealthComposite`; you bridge an
+observability indicator onto it with `core.add_observability_indicator(..)`. A
+real Lumen deployment would add a broker-liveness indicator and a store probe —
+the cleanest place is to declare the indicator as a `#[bean]` (the framework
+discovers it), or to reach the composite through a `FireflyApplication::on_ready`
+hook:
 
 ```rust,ignore
 use firefly_observability::{HealthResult, IndicatorFn};
 
-// Wire a probe onto the WebStack's composite (it Derefs to Core):
-app.web.add_observability_indicator(IndicatorFn::new("event-bus", || async {
+// Inside an on_ready hook, the Core's composite is reachable from the web stack:
+core.add_observability_indicator(IndicatorFn::new("event-bus", || async {
     HealthResult::up()   // a real probe would ping the broker
 }));
 ```
@@ -133,12 +145,12 @@ The dot-case meter names map straight to Prometheus
 `/actuator/prometheus` lights up Grafana with no extra code.
 
 Beyond the request timer, you record your own meters on the same registry. Pull
-it off the `Core` with `metric_registry()`, then increment a counter or set a
-gauge — both surface at `/actuator/metrics` and `/actuator/prometheus`
-immediately:
+it off the `Core` with `metric_registry()` (the registry is also a resolvable
+bean), then increment a counter or set a gauge — both surface at
+`/actuator/metrics` and `/actuator/prometheus` immediately:
 
 ```rust,ignore
-let metrics = app.web.metric_registry();
+let metrics = core.metric_registry();
 
 // A domain counter, bumped each time the transfer saga completes.
 metrics.counter("lumen_transfers_total").inc(); // or .add(1) for an explicit count
@@ -149,15 +161,16 @@ metrics.gauge("lumen_wallets_active").set(wallet_count as f64);
 
 ## Structured logging and correlation
 
-`WebStack` installs a `tracing` layer that formats every event as one structured
-line and enriches it with the request's correlation id (set by the correlation
-middleware, on by default). Lumen calls `init_logging` once at startup, best-effort
-so a test harness that already owns the global subscriber does not panic:
+`FireflyApplication` installs a `tracing` layer that formats every event as one
+structured line and enriches it with the request's correlation id (set by the
+correlation middleware, on by default). It calls `init_logging` for you at boot
+(best-effort, so a test harness that already owns the global subscriber does not
+panic) and — with the `admin` feature on — tees the records into the dashboard's
+live log buffer:
 
 ```rust,ignore
-let app = build_app().await;
-// Best-effort: a test harness may already own the global subscriber.
-let _ = app.web.init_logging();
+// What FireflyApplication does at boot — Lumen writes none of this:
+let _ = web.init_logging();   // (or init_logging_with_layers([log_buffer]) for the admin tail)
 ```
 
 After that, plain `tracing` macros produce enriched lines; fields recorded on an
@@ -205,11 +218,18 @@ through `POST /actuator/loggers/{name}` — the actuator's runtime logger contro
 
 `firefly-observability` exposes the building blocks that compose with the
 `tracing` ecosystem and propagates W3C trace-context (`traceparent` /
-`tracestate`) on the HTTP edges and outbound client calls. The OpenTelemetry SDK
-wiring — exporters, sampling, resource attributes — is left to your `main.rs`,
+`tracestate`) on the HTTP edges and outbound client calls. The default middleware
+chain `FireflyApplication` applies includes the `TraceContextLayer`, which
+**originates** trace context: it validates an inbound `traceparent` / `tracestate`
+and, when one is absent, *mints a W3C root span* (a 32-hex trace-id and a 16-hex
+span-id), inserts it into the request, and enriches every log line with
+`trace_id` / `span_id`. So a request that arrives with no trace header still
+leaves Lumen as the head of a well-formed distributed trace. The OpenTelemetry SDK
+wiring — exporters, sampling, resource attributes — is left to your application,
 where you add your preferred OTel `tracing` layer alongside the correlation
 layer. Lumen ships without an exporter (it is teaching code with no external
-collector), but the trace-context propagation is already on the edges.
+collector), but the trace-context origination + propagation is already on the
+edges.
 
 When you do want spans flowing to a collector, build an OTLP tracer and add
 `tracing-opentelemetry`'s layer to the subscriber Firefly installed — the
@@ -235,43 +255,77 @@ The `traceparent` headers Firefly already propagates become the parent/child
 edges between spans, so a request that fans out to an outbound call appears as a
 single distributed trace in your backend.
 
+## Global exception advice
+
+Lumen's errors already render as RFC 9457 `application/problem+json` at the
+handler boundary. For a *cross-cutting* rewrite — mapping a whole class of errors
+to a custom status or body without touching each handler — the framework offers a
+transparent global advice layer, the Rust analog of Spring's `@ControllerAdvice`.
+Register an `ExceptionHandlerRegistry` bean and `FireflyApplication` installs an
+`ExceptionAdviceLayer` as the outermost layer, post-processing every
+`application/problem+json` response through your registered transforms:
+
+```rust,ignore
+use firefly_web::{ExceptionHandlerRegistry};
+use firefly_kernel::{ProblemDetail, TYPE_NOT_FOUND};
+
+// A #[bean] returning a registry: every "not found" becomes a friendlier 410.
+#[bean]
+fn exception_advice(&self) -> ExceptionHandlerRegistry {
+    ExceptionHandlerRegistry::new().on_type(TYPE_NOT_FOUND, |pd: &ProblemDetail| {
+        let mut out = pd.clone();
+        out.status = 410;
+        out
+    })
+}
+```
+
+The framework only installs the layer when the registry is non-empty, so a
+service that declares no such bean keeps the plain RFC 9457 path. Controller-local
+overrides still win over the global rules.
+
 ## The admin dashboard
 
 The actuator surface is JSON for machines. `firefly-admin` mounts a single-page
 admin dashboard — vendored, no `npm` build — that ties health, metrics, loggers,
 beans, mappings, caches, CQRS handlers, sagas, traces, and a live log tail into
-one pane of glass with Server-Sent-Event streams. It is the next surface Lumen grows into; you enable the facade's
-`admin` feature and wire it from the `Core` accessors.
+one pane of glass with Server-Sent-Event streams. With the facade's `admin`
+feature enabled, **`FireflyApplication` self-hosts it on the management port** and
+binds it to the live components: the health composite, the metric registry, the
+CQRS bus, the scheduler, the DI container (Beans), an environment snapshot built
+from the active profiles and the `FIREFLY_*` process environment, a trace buffer
+fed by the HTTP-exchanges recorder, and a log buffer fed by the tee'd logging
+layer. The `env` / `config` / `mappings` panels show **real data**, not stubs.
+Lumen writes none of this wiring — it ships the dashboard on `/admin/` simply by
+being a `FireflyApplication`.
 
-`mount(AdminConfig, AdminDeps)` returns the dashboard router. `AdminDeps::new`
-takes the required collaborators; the rest are optional fields you fill in with
-struct-update syntax. A Lumen wiring drawing on its `Core` looks like:
-
-```rust,ignore
-use std::sync::Arc;
-use firefly::admin::{mount, AdminConfig, AdminDeps, LogBuffer, TraceBuffer};
-
-let traces = Arc::new(TraceBuffer::new());
-let logs = LogBuffer::new();
-
-// `AdminDeps::new` takes the required collaborators; the optional fields that
-// back the remaining views are set afterwards with struct-update syntax.
-let deps = AdminDeps {
-    scheduler: Some(app.web.scheduler()), // → Scheduled Tasks view
-    bus: Some(app.web.cqrs_bus()),        // → CQRS view
-    container: Some(container),           // → Beans view
-    ..AdminDeps::new(
-        APP_NAME,
-        VERSION,
-        app.web.health_composite(), // Arc<HealthComposite>
-        app.web.metric_registry(),  // Arc<MetricRegistry>
-        Arc::clone(&traces),
-        logs,
-    )
-};
-
-let dashboard = mount(AdminConfig::default(), deps);
-```
+> **Advanced: standalone mount.** The dashboard router is also reachable directly
+> when you want to host it outside `FireflyApplication` (a custom server, a test).
+> `mount(AdminConfig, AdminDeps)` returns the router; `AdminDeps::new` takes the
+> required collaborators and the rest are optional fields filled with struct-update
+> syntax:
+>
+> ```rust,ignore
+> use std::sync::Arc;
+> use firefly::admin::{mount, AdminConfig, AdminDeps, LogBuffer, TraceBuffer};
+>
+> let deps = AdminDeps {
+>     scheduler: Some(scheduler),    // → Scheduled Tasks view
+>     bus: Some(bus),                // → CQRS view
+>     container: Some(container),    // → Beans view
+>     ..AdminDeps::new(
+>         "lumen", VERSION,
+>         health_composite,          // Arc<HealthComposite>
+>         metric_registry,           // Arc<MetricRegistry>
+>         Arc::new(TraceBuffer::new()),
+>         LogBuffer::new(),
+>     )
+> };
+> let dashboard = mount(AdminConfig::default(), deps);
+> ```
+>
+> `FireflyApplication` performs exactly this mount for you, sourcing every
+> collaborator from the live web stack and the scanned container.
 
 The dashboard auto-discovers what those collaborators expose and renders it in
 **fifteen built-in views**, grouped in the sidebar:
@@ -292,7 +346,8 @@ trace capture so they never pollute the trace panel.
 ### The Beans view
 
 The newest view is **Beans** — the dashboard's window onto the dependency-injection
-container. When you set `deps.container = Some(container)`, the dashboard serves:
+container. `FireflyApplication` always passes the scanned container, so the
+dashboard serves:
 
 | Endpoint                  | Returns                                                  |
 |---------------------------|----------------------------------------------------------|
@@ -303,12 +358,14 @@ container. When you set `deps.container = Some(container)`, the dashboard serves
 
 The Overview view also rolls up a `beans` block (`{ total, stereotypes }`) and a
 `wiring` block (live CQRS-handler and scheduled-task counts) drawn from the same
-container, so the landing page shows how much the service is wired without
-opening the full Beans view. Because Lumen wires its composition root explicitly
-rather than scanning a container, the Beans view is sparse for Lumen itself — but
-the moment you adopt `#[derive(Component)]` + `firefly::scan` (Chapter 4), the
-graph fills in. Without a container the endpoints degrade gracefully to an empty
-`{ total: 0 }` block.
+container, so the landing page shows how much the service is wired without opening
+the full Beans view. Lumen's Beans view is **populated**, not sparse: the
+framework component-scans the `LumenBeans` configuration, so the event store, read
+model, query cache, JWT service, the `FilterChain` / `BearerLayer`, the ledger
+application service, and the `WalletApi` controller all appear as beans with their
+stereotypes and the autowired dependencies between them. (Were you to host the
+dashboard standalone without a container, the endpoints degrade gracefully to an
+empty `{ total: 0 }` block.)
 
 > **Beans and server mode.** The Beans view is the dashboard's window onto the
 > DI container. `firefly-admin` also runs in *server mode* (`AdminServerConfig`):
@@ -351,40 +408,44 @@ deps.views.push(Arc::new(TreasuryView { read_model: Arc::clone(&read_model) }));
 
 ## What changed in Lumen
 
-This chapter turned Lumen's always-on observability defaults into a working
-admin surface:
+This chapter explained Lumen's always-on observability surface — all of it wired
+by `FireflyApplication`, with no observability code in `main.rs`:
 
-- **`main.rs`** builds an `InfoContributor` describing the in-memory store and
-  event bus, and serves `app.web.actuator_router(vec![contributor])` on the
-  admin port — `/actuator/health`, `/info`, `/metrics`, `/loggers`,
-  `/scheduledtasks`, and the rest.
-- **`init_logging`** (best-effort, so the test harness can own the subscriber)
-  switches on structured, correlation-enriched logging; the correlation id flows
-  into every log line, published event, and outbound call automatically.
-- The **request-metrics** middleware — on since `WebStack::new` — records
-  `http_server_requests_seconds` per templated route, now exposed at
-  `/actuator/metrics` and `/actuator/prometheus`.
-- The **admin dashboard** (the `firefly-admin` step Lumen grows into) ties it all
-  together in fifteen views, including the new **Beans** view backed by the DI
-  container, with live SSE streams.
+- An optional **`InfoContributor`** (registered with `.info_contributor(..)` on
+  the application builder) describes the in-memory store and event bus on
+  `/actuator/info`; the framework serves the full `/actuator/*` surface —
+  `health`, `info`, `metrics`, `loggers`, `scheduledtasks`, and the rest — on the
+  management port.
+- **`init_logging`** (called by the framework, best-effort so the test harness can
+  own the subscriber) switches on structured, correlation-enriched logging; the
+  correlation id flows into every log line, published event, and outbound call
+  automatically. The **`TraceContextLayer`** originates a W3C `traceparent` when
+  one is absent.
+- The **request-metrics** middleware records `http_server_requests_seconds` per
+  templated route, exposed at `/actuator/metrics` and `/actuator/prometheus`.
+- The **self-hosted admin dashboard** ties it all together in fifteen views on the
+  management port — including the **Beans** view, which is *populated* because the
+  framework component-scans `LumenBeans` — with real env/config/mappings, live SSE
+  streams, and a live log tail.
 
 ## Exercises
 
 1. **Reach the actuator.** Run `cargo run --bin lumen`, then
    `curl http://127.0.0.1:8081/actuator/info` and confirm the `sample` block
    reports the in-memory store. Hit `/actuator/health` and `/actuator/metrics`.
-2. **Add a health indicator.** Wire a `IndicatorFn::new("read-model", ..)` onto
-   the composite with `add_observability_indicator` that returns `UP` when the
-   read model holds at least one wallet view, and watch it appear under
-   `/actuator/health`.
+2. **Add a health indicator.** Wire an `IndicatorFn::new("read-model", ..)` onto
+   the composite with `add_observability_indicator` (from an `on_ready` hook, or
+   declare it as a `#[bean]`) that returns `UP` when the read model holds at least
+   one wallet view, and watch it appear under `/actuator/health`.
 3. **A Lumen metric.** Record a counter — e.g. `lumen_transfers_total` — on the
    `metric_registry()` each time the transfer saga completes, and verify it
    appears at `/actuator/metrics`. (Recall the housekeeping heartbeat in
    Chapter 16 keeps an `AtomicU64` you could surface the same way.)
-4. **Mount the dashboard.** Enable the facade's `admin` feature, mount the
-   dashboard with the `container` field set, and open `/admin` — note how the Beans view
-   is sparse for Lumen's explicit root, then convert one collaborator to
-   `#[derive(Component)]` and watch it appear.
+4. **Explore the Beans view.** Run `cargo run --bin lumen --features admin`, open
+   `http://127.0.0.1:8081/admin/`, and find the Beans view — note that it is
+   *populated* (the framework scanned `LumenBeans`). Locate the `WalletApi`
+   controller and confirm its autowired `bus` / `ledger` / `query_cache`
+   dependencies show in the bean graph.
 
 With Lumen observable, the next chapter adds background work and the path to
 outbound notifications. Continue to

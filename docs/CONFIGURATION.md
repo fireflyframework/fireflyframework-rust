@@ -164,6 +164,30 @@ let core = Core::new(CoreConfig {
 | `firefly.app.version`  | `CoreConfig.app_version`                     |
 | `firefly.starter.name` | `CoreConfig.starter_name`                    |
 
+The application name is also what
+[`firefly::FireflyApplication::new("<name>")`](../crates/firefly/README.md)
+takes — it sets `CoreConfig.app_name`, drives the startup banner, the
+`/actuator/info` identity, and the `firefly.application.name` property in the
+admin environment snapshot. `.version("<v>")` sets `CoreConfig.app_version`.
+
+### Application bind addresses — `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR`
+
+When a service boots through `firefly::FireflyApplication`, the **public API**
+and the **management surface** (actuator + the self-hosted admin dashboard +
+the auto-served OpenAPI docs) are served on two separate ports, defaulted from
+the environment:
+
+| Env var                    | Binds                                              | Default          |
+|----------------------------|----------------------------------------------------|------------------|
+| `FIREFLY_SERVER_ADDR`      | public API listener (controllers + OpenAPI docs)   | `0.0.0.0:8080`   |
+| `FIREFLY_MANAGEMENT_ADDR`  | management listener (`/actuator/*` + `/admin`)     | `0.0.0.0:8081`   |
+
+These are read once in `FireflyApplication::new`; the builder overrides
+`.api_addr("…")` / `.management_addr("…")` take precedence over the env vars.
+(The `server.host` / `server.port` keys under
+[HTTP server](#http-server--firefly_webserverproperties) configure the
+lower-level `firefly_web::Server` directly when you assemble a stack by hand.)
+
 ### Cache — `firefly_cache::Adapter`
 
 | Config key                              | Rust wiring                                  |
@@ -384,6 +408,14 @@ It implements both `EmailProvider` and a thin
 
 `AdminConfig` / `AdminServerConfig` / `AdminClientConfig`
 (`firefly-admin`) bind from a `firefly-config` document.
+
+When a service boots through
+[`firefly::FireflyApplication`](../crates/firefly/README.md) (the turnkey
+bootstrap), the dashboard is **self-hosted automatically** on the management
+port (see [Application bind addresses](#application-bind-addresses) below) and
+wired to the service's live components — health, metrics, CQRS bus, scheduler,
+beans, the environment snapshot, and the trace + log buffers. No per-service
+mounting code is required; the keys below tune it.
 
 | Key                                  | Field            | Default          |
 |--------------------------------------|------------------|------------------|

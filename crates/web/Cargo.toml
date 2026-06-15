@@ -10,6 +10,11 @@ description = "Firefly Framework for Rust — Problem renderer, correlation, ide
 
 [dependencies]
 firefly-kernel = { workspace = true }
+# The DI container: `mount_controllers` resolves each `#[rest_controller]`'s
+# state bean from it, and re-exports `inventory` + `Container` so generated
+# `ControllerMount` thunks resolve through the web crate.
+firefly-container = { workspace = true }
+inventory = { workspace = true }
 # Supplies the `bean::Validate` trait + `ValidationErrors` the `Valid<T>`
 # extractor runs after JSON decoding (failure → 422 problem via FireflyError).
 firefly-validators = { workspace = true }

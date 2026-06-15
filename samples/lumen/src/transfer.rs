@@ -46,7 +46,7 @@ use crate::money::Money;
 
 /// `POST /api/v1/transfers` command — move `amount` (cents) from `from` to
 /// `to`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, firefly::Schema)]
 #[serde(default)]
 pub struct TransferRequest {
     /// The source wallet id (debited).
@@ -59,7 +59,7 @@ pub struct TransferRequest {
 
 /// The result of a completed (or compensated) transfer — the wire shape
 /// returned by `POST /api/v1/transfers`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, firefly::Schema)]
 pub struct TransferResult {
     /// `"completed"` when both legs succeeded — the lowercase
     /// [`SagaStatus`](firefly::orchestration::SagaStatus) wire string.

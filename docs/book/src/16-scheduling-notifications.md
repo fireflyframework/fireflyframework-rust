@@ -9,7 +9,7 @@ webhooks (`firefly-callbacks`) and inbound webhooks (`firefly-webhooks`) roundin
 out the integration story.
 
 By the end of this chapter Lumen will run a **scheduled housekeeping heartbeat**,
-declared with `#[scheduled]` and started from `main.rs`, and you will know
+declared with `#[scheduled]` and started by the framework, and you will know
 exactly where a daily-statement notification, an outbound balance-changed
 webhook, and an inbound payment-provider callback would hang off it. Lumen keeps
 the heartbeat deliberately tiny — it records that it ran — so the macro is shown
@@ -25,7 +25,9 @@ wired end to end without dragging in a provider SDK.
 
 Lumen's `src/housekeeping.rs` is the whole feature. A zero-argument `async fn`
 carries `#[scheduled(...)]`; the macro generates a `schedule_<fn>(scheduler)`
-registration helper. Here is the file, end to end:
+registration helper **and** submits a `ScheduledRegistration` into a compile-time
+`inventory` registry, so the framework finds and registers the task for you. Here
+is the file, end to end:
 
 ```rust,ignore
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,20 +37,22 @@ use firefly::prelude::*;
 /// a real service, a counter you would surface on `/actuator/metrics`).
 static HEARTBEAT_TICKS: AtomicU64 = AtomicU64::new(0);
 
-/// A periodic housekeeping heartbeat. `#[scheduled(fixed_rate = "60s")]`
-/// generates `schedule_ledger_heartbeat(scheduler)`; the framework calls this
-/// on every tick after the initial delay.
+/// A periodic housekeeping heartbeat. `#[scheduled(fixed_rate = "60s")]` makes
+/// the framework call this on every tick after the initial delay.
 #[scheduled(fixed_rate = "60s", initial_delay = "5s")]
 pub async fn ledger_heartbeat() -> Result<(), std::io::Error> {
     HEARTBEAT_TICKS.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
-/// Registers the heartbeat on a fresh scheduler and returns it — `main()`
-/// starts it; tests assert it registered.
+/// Registers the heartbeat on a fresh scheduler and returns it — used by the
+/// tests to assert it registered. `main()` does NOT call this: `FireflyApplication`
+/// drains the same `inventory` registry and starts the scheduler.
 pub fn build_scheduler() -> std::sync::Arc<Scheduler> {
     let scheduler = std::sync::Arc::new(Scheduler::new());
-    schedule_ledger_heartbeat(&scheduler);
+    // `#[scheduled]` tasks are DISCOVERED and registered through the
+    // inventory/DI registry — no manual `schedule_<fn>` calls.
+    firefly::scheduling::register_discovered_scheduled(&scheduler);
     scheduler
 }
 
@@ -60,30 +64,25 @@ pub fn heartbeat_ticks() -> u64 {
 
 Three things are happening:
 
-- **The macro generates the wiring.** `#[scheduled(fixed_rate = "60s",
-  initial_delay = "5s")]` on `ledger_heartbeat` emits a
-  `schedule_ledger_heartbeat(&scheduler)` free function. You write the work;
-  the macro writes the trigger + registration. `Scheduler` comes from
-  `firefly::prelude::*`, so the one facade import covers it.
-- **`build_scheduler` is the composition root for timers.** It makes a fresh
-  `Scheduler`, registers the heartbeat, and hands it back. `main.rs` owns when it
-  starts.
+- **The macro generates the wiring and registers the task.** `#[scheduled(fixed_rate
+  = "60s", initial_delay = "5s")]` on `ledger_heartbeat` emits a
+  `schedule_ledger_heartbeat(&scheduler)` helper *and* submits a
+  `ScheduledRegistration` to the `inventory` registry the framework drains. You
+  write the work; the macro writes the trigger + registration. `Scheduler` comes
+  from `firefly::prelude::*`, so the one facade import covers it.
+- **The framework owns the scheduler.** `FireflyApplication` calls
+  `firefly::scheduling::register_discovered_scheduled(&scheduler)` to drain the
+  registry, then starts the scheduler on a background task — Lumen writes no
+  `build_scheduler()` call and no `tokio::spawn`. (`build_scheduler` survives only
+  so the test module can introspect the schedule.)
 - **The heartbeat is observable.** It bumps an `AtomicU64`, which a test reads —
   and which, in a real deployment, you would surface as a counter on
   `/actuator/metrics` (Chapter 15).
 
-`main.rs` starts the scheduler on a background task, because `Scheduler::start`
-runs until the scheduler is stopped:
-
-```rust,ignore
-// in main():
-let scheduler = build_scheduler();
-tokio::spawn(async move { scheduler.start().await });
-```
-
-`Scheduler::start` runs each task on its own tokio task with panic recovery, and
-`stop()` shuts down gracefully (in-flight runs finish first). The scheduled tasks
-also surface on `/actuator/scheduledtasks`.
+The framework starts the scheduler on a background task, because `Scheduler::start`
+runs until the scheduler is stopped. `Scheduler::start` runs each task on its own
+tokio task with panic recovery, and `stop()` shuts down gracefully (in-flight runs
+finish first). The scheduled tasks also surface on `/actuator/scheduledtasks`.
 
 ### What the tests assert
 
@@ -262,12 +261,13 @@ This chapter gave Lumen its first background work and mapped its integration
 surface:
 
 - **`src/housekeeping.rs`** declares the `ledger_heartbeat` with
-  `#[scheduled(fixed_rate = "60s", initial_delay = "5s")]`; the macro generates
-  `schedule_ledger_heartbeat(&scheduler)`, and `build_scheduler` registers it on
-  a fresh `Scheduler`.
-- **`src/main.rs`** starts the scheduler on a background tokio task
-  (`tokio::spawn(async move { scheduler.start().await })`); the tasks surface on
-  `/actuator/scheduledtasks` and in the dashboard's Scheduled Tasks view.
+  `#[scheduled(fixed_rate = "60s", initial_delay = "5s")]`; the macro submits a
+  `ScheduledRegistration` to the `inventory` registry the framework drains with
+  `register_discovered_scheduled(&scheduler)` — no manual `schedule_<fn>` call.
+- **`FireflyApplication`** drains that registry and starts the scheduler on a
+  background tokio task; Lumen's `main()` is the single `FireflyApplication::run()`
+  line and spawns nothing. The tasks surface on `/actuator/scheduledtasks` and in
+  the dashboard's Scheduled Tasks view.
 - The heartbeat's `AtomicU64` is the seam where a real **daily-statement
   notification** (`firefly-notifications`), an **outbound balance-changed
   webhook** (`firefly-callbacks`), and an **inbound provider callback**

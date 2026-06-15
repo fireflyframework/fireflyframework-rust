@@ -71,6 +71,15 @@ fn state() -> &'static HandlerState {
         .expect("commands::bind must run before a handler dispatches")
 }
 
+/// The **effective** read model — the one the process-global `OnceLock` holds
+/// (the first build's). Call after [`bind`] has run (the DI container's `Ledger`
+/// `#[bean]` factory calls it on resolve). The projection writes this instance
+/// and `GetWallet` reads it, so the composition root seeds the projection
+/// against the same read model the free-fn handlers use.
+pub fn effective_read_model() -> Arc<ReadModel> {
+    state().read_model.clone()
+}
+
 /// Maps a [`DomainError`] onto the bus's [`CqrsError`] channel. The web layer
 /// restores the precise HTTP status from the detail message.
 fn to_cqrs(e: DomainError) -> CqrsError {
@@ -87,7 +96,7 @@ fn to_cqrs(e: DomainError) -> CqrsError {
 /// It also derives [`Builder`](firefly::Builder) (Lombok `@Builder`), so a
 /// caller can construct it fluently — `OpenWallet::builder().owner("ada").build()`
 /// — with `opening_balance` defaulting to zero.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Command, Builder)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Command, Builder, Schema)]
 #[serde(default)]
 pub struct OpenWallet {
     /// The wallet owner's display name — required.

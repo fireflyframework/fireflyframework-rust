@@ -64,7 +64,7 @@ infrastructure adapters — including the hexagonal database adapters
 `firefly-data-sqlx` / `firefly-data-mongodb` and the distributed session
 registries `firefly-session-redis` / `firefly-session-postgres` /
 `firefly-session-mongodb`). One
-version (`26.6.5`), one edition (2021), one MSRV (1.88) — set once in
+version (`26.7.0`), one edition (2021), one MSRV (1.88) — set once in
 `[workspace.package]` and inherited by every member.
 
 The runtime stack is deliberate and small:
@@ -114,13 +114,13 @@ The infrastructure layer.
 | `firefly-orchestration`| `Saga` (sequential + reverse-order compensation), `Workflow` (DAG), `Tcc`     |
 | `firefly-rule-engine`  | YAML DSL → AST → recursive evaluator (interfaces / models / core / web / sdk sub-modules) |
 | `firefly-plugins`      | Lifecycle SPI + composite registry                                            |
-| `firefly-lifecycle`    | `Application::run()` orchestrator with ordered hooks + signal-based drain     |
+| `firefly-lifecycle`    | `Application::run()` lifecycle orchestrator with ordered hooks + signal-based drain (the engine the turnkey `firefly::FireflyApplication` runs underneath — see [Application bootstrap](#application-bootstrap-fireflyapplication)) |
 | `firefly-actuator`     | `/actuator/{health,info,metrics,env,tasks,version}` endpoints; counter / gauge registry |
 | `firefly-scheduling`   | Cron parser + `Scheduler` with FixedRate, FixedDelay, Cron triggers           |
 | `firefly-resilience`   | `CircuitBreaker`, `RateLimiter`, `Bulkhead`, `Timeout`, composable `Chain`    |
 | `firefly-security`     | `Authentication` extension, `BearerLayer`, path-pattern `FilterChain` RBAC    |
 | `firefly-migrations`   | Flyway-style versioned SQL migration runner over a `Database` port            |
-| `firefly-openapi`      | OAS 3.1 spec generator from route descriptors, Swagger-UI shim                |
+| `firefly-openapi`      | OAS 3.1 spec generator from the live `#[rest_controller]` + `#[derive(Schema)]` inventory (`Builder::from_inventory`); `docs_router` serves the springdoc/pyfly surface — spec at `/v3/api-docs` (+ `/openapi.json`), Swagger UI at `/swagger-ui`, ReDoc at `/redoc` — auto-mounted by `FireflyApplication` |
 | `firefly-sse`          | Server-Sent Events writer with heartbeat + Last-Event-Id resumption           |
 | `firefly-websocket`    | WebSocket server over axum: `WsSession`, `WebSocketHandler`, `ws_route`, topic `BroadcastHub` |
 | `firefly-transactional`| Async, declarative transactions: the object-safe `TransactionManager` port + `Propagation`/`Isolation`/`TxOptions` + the `transactional(...)` orchestrator (commit on `Ok`, rollback on `Err`); `with_tx` over pluggable `Database` / `Transaction` / `Executor` ports, nested-tx participation |
@@ -282,9 +282,14 @@ call sites portable across databases.
 
 ## Operations: the admin dashboard
 
-`firefly-admin` is an embedded operations dashboard. Architecturally it
-is a thin **read-mostly aggregation layer** over the management
-primitives already in the framework, plus a static single-page app:
+`firefly-admin` is an embedded operations dashboard. It is **self-hosted by
+`FireflyApplication`** on the management port (`FIREFLY_MANAGEMENT_ADDR`,
+default `0.0.0.0:8081`): the bootstrap builds `AdminDeps` from the live
+components (the health composite, metric registry, CQRS bus, scheduler,
+container/beans, the environment snapshot, and the trace + log buffers) and
+merges the admin router onto the actuator router automatically — no per-service
+wiring. Architecturally it is a thin **read-mostly aggregation layer** over the
+management primitives already in the framework, plus a static single-page app:
 
 - **No new data plane.** The dashboard's JSON API reads from
   `firefly-actuator` (health composites, the `MetricRegistry`, loggers,
@@ -335,6 +340,118 @@ journey-specific, atomic REST endpoints, owning no database of its own.
 Each starter ships an embedded banner printed at startup (via
 `Core::print_banner`) naming the active starter, the application name
 and the resolved Rust runtime.
+
+## Application bootstrap (`FireflyApplication`)
+
+`firefly::FireflyApplication` (in `crates/firefly/src/application.rs`,
+re-exported from the prelude) is the **turnkey bootstrap** — the Rust analog of
+Spring Boot's `SpringApplication.run(App.class, args)`. It is the primary entry
+point a service uses: `main` collapses to a single line,
+
+```rust,ignore
+#[tokio::main]
+async fn main() -> Result<(), firefly::BoxError> {
+    firefly::FireflyApplication::new("orders").run().await
+}
+```
+
+and the rest of the service is declarative app code the framework discovers —
+no composition root, no hand-built router, no `apply_middleware`. `new(name)`
+defaults the public bind from `FIREFLY_SERVER_ADDR` (else `0.0.0.0:8080`) and
+the management bind from `FIREFLY_MANAGEMENT_ADDR` (else `0.0.0.0:8081`);
+`version(..)`, `configure(..)`, `security(..)`, `on_ready(..)`,
+`extra_routes(..)`, `api_addr(..)` / `management_addr(..)` are optional builder
+overrides.
+
+**The run pipeline.** `run()` is `bootstrap().await?.serve().await`.
+[`bootstrap`](../crates/firefly/README.md) assembles the application **without
+serving** — returning a `Bootstrapped { api_router, management_router,
+container, scheduler, … }` so tests can drive `api_router` in-process — and
+performs, in order:
+
+1. Build the `WebStack` (the `firefly-starter-web` `Core` web tier) from the
+   `CoreConfig`, teeing logs into the admin `LogBuffer` when the `admin`
+   feature is on.
+2. **DI:** auto-register the framework's infrastructure beans
+   (`web.register_beans(&container)`), then `container.scan()` component-scans
+   and autowires the application's beans (the link-time `inventory` registry —
+   the Rust classpath component scan).
+3. Auto-configure the CQRS bus (correlation propagation always; the read-cache
+   middleware whenever a `QueryCache` bean is present).
+4. Run the optional `on_ready` readiness hook (most apps need none).
+5. **Security:** apply an explicitly-configured `FilterChain`, else
+   auto-discover the `FilterChain` + `BearerLayer` DI beans (Spring's
+   `SecurityFilterChain` bean).
+6. **Global exception advice:** when an `ExceptionHandlerRegistry` bean is
+   registered and non-empty, install it via `web.set_exception_advice(..)` so
+   the `ExceptionAdviceLayer` (a `tower::Layer`) post-processes every
+   `problem+json` response — the transparent `@ControllerAdvice` analog.
+7. **Controller auto-mount:** `firefly_web::mount_controllers(&container)`
+   builds one `axum::Router` from every `#[rest_controller]`, merged with
+   `firefly_web::mount_route_contributors(&container)` (every `RouteContributor`
+   bean) and any explicit `extra_routes`.
+8. **Drain the inventory registries:** `firefly_cqrs::register_discovered_handlers(&bus)`,
+   `firefly_eda::subscribe_discovered_listeners(broker).await`, and
+   `firefly_scheduling::register_discovered_scheduled(&scheduler)` register the
+   discovered CQRS handlers, EDA listeners, and `#[scheduled]` tasks.
+9. Apply the middleware chain + bearer auth (+ the admin `TraceLayer`),
+   then merge the auto-served OpenAPI docs and install the default 404
+   fallback (below).
+10. Build the management router: the actuator surface plus the self-hosted
+    admin dashboard wired to the live components.
+
+`serve()` then starts the scheduler on a background task, prints the banner
+(and the admin / API-docs URLs), emits the startup report, and serves the
+public + management routers with graceful SIGINT/SIGTERM shutdown.
+
+**Auto-mount + auto-registration inventory.** Three crates expose a link-time
+`inventory` registry that `FireflyApplication` drains, so a controller / handler
+/ listener / scheduled task is wired by *declaring it*, never by a composition
+root:
+
+- `firefly_web::ControllerMount` (`crates/web/src/controllers.rs`) — emitted by
+  `#[rest_controller]`; each `mount` thunk resolves the controller's state from
+  the container and calls `Self::routes(state)`. `mount_controllers` merges them
+  in a stable order; `controller_count()` feeds the startup report.
+- `firefly_cqrs::HandlerRegistration` — emitted by
+  `#[command_handler]` / `#[query_handler]`; drained by
+  `register_discovered_handlers`.
+- `firefly_eda::ListenerRegistration` — emitted by `#[event_listener]`; drained
+  by `subscribe_discovered_listeners`.
+- `firefly_scheduling::ScheduledRegistration` — emitted by `#[scheduled]`;
+  drained by `register_discovered_scheduled`.
+
+**The startup report.** `log_startup_report(&container)` emits a pyfly /
+Spring-Boot-style **line-by-line** boot log: the active profiles, every
+discovered/registered bean (grouped by stereotype), the auto-mounted route
+table (`GET /api/v1/wallets/:id → WalletApi::get`), and the
+handler / listener / scheduled / controller counts, plus the OpenAPI operation
++ component-schema counts — so a boot log reads like Spring Boot's console and
+you can see exactly what the framework wired.
+
+**W3C trace context.** The application originates W3C trace context: it mints a
+root span when no inbound `traceparent` is present, exposes the current
+`traceparent`, and (with the `admin` feature) layers a `TraceLayer` recording
+each exchange into the admin trace buffer.
+
+**Auto-served OpenAPI docs.** The application builds the OpenAPI 3.1 spec from
+the **live inventory** — `firefly_openapi::Builder::from_inventory()` reads every
+`#[rest_controller]` route (`firefly_container::routes()`) plus every
+`#[derive(Schema)]` component schema (`firefly_container::schemas()`) — and
+merges `docs_router(&DocsConfig::default())` **outside** the security + bearer
+chain, so the docs are reachable without auth (like springdoc's permitted
+endpoints). The default surface is the Spring-Boot springdoc / pyfly paths: the
+spec at `GET /v3/api-docs` (+ the `/openapi.json` alias), Swagger UI at
+`/swagger-ui` (+ `/swagger-ui.html`), and ReDoc at `/redoc`. Request / response
+models are inferred from handler signatures and per-operation metadata
+(`summary` / `description` / `status` / `tags`) comes from the verb macros —
+no application code. See [`firefly-openapi`](#platform-tier) below.
+
+**Default RFC 9457 404.** An unmatched route falls through to
+`not_found_fallback`, which renders a proper RFC 9457
+`application/problem+json` 404 (same `type` / `title` / `status` envelope as
+every other framework error) instead of axum's bare empty body — so an unknown
+path returns a readable problem document rather than a blank download.
 
 ## The front door: facade + declarative macros
 
@@ -398,7 +515,16 @@ only on `firefly` — plus the `axum`/`serde` it writes against anyway — compi
 whatever a macro expands to. Stereotype components are discovered at startup by
 `Container::scan()` — a link-time `inventory` registry, the Rust analog of
 Spring's classpath component scan — with `register_all!` as the explicit
-fallback for generic beans; the macros remove the *mechanical* boilerplate. The
+fallback for generic beans; the macros remove the *mechanical* boilerplate. Each
+macro also emits a link-time `inventory` registration that
+[`FireflyApplication`](#application-bootstrap-fireflyapplication) drains, so the
+whole surface is **auto-registered** with no composition root:
+`#[rest_controller]`s auto-mount (`ControllerMount`),
+`#[command_handler]` / `#[query_handler]`s register on the bus
+(`HandlerRegistration`), `#[event_listener]`s subscribe to the broker
+(`ListenerRegistration`), `#[scheduled]` tasks register on the scheduler
+(`ScheduledRegistration`), and `#[derive(Schema)]` DTOs register their component
+schemas (`SchemaDescriptor`) into the auto-served OpenAPI document. The
 `samples/macro-quickstart` service is the reference: the orders behaviour in
 376 source lines vs the builder-style `orders` sample's 1022.
 
@@ -617,5 +743,5 @@ Wave 4 ── composition + front door:
 ## Versioning
 
 Calendar-versioned, expressed as valid semver (`YY.M.PATCH`). The
-current version is exposed as `firefly_kernel::VERSION = "26.6.5"` and
+current version is exposed as `firefly_kernel::VERSION = "26.7.0"` and
 set once in the workspace `Cargo.toml`.

@@ -33,12 +33,17 @@ do not bind a port; they hand a `Request` to the router and `await` the
 `Response`. That is fast, deterministic, and CI-friendly.
 
 One caveat is worth stating up front, because Lumen's tests are built around it.
-Lumen's free-function command handlers and its read-model projection publish
-their collaborators through process-global `OnceLock`s (the declarative-macro
-pattern from Chapter 9). So the *first* `build_router()` in a test binary wires
-the shared ledger that every later test in that binary then drives. The tests
-cope by giving each wallet a fresh owner and a server-assigned id, so there is no
-cross-test interference even though the ledger is shared.
+`build_router()` bootstraps a `FireflyApplication`
+(`FireflyApplication::new(APP_NAME).version(VERSION).bootstrap().await`) and hands
+back its public router — the same component-scanned container, auto-mounted
+controller, inventory-drained handlers/listener, and auto-installed middleware the
+real `main()` boots. Lumen's free-function command handlers and its read-model
+projection publish their collaborators through process-global `OnceLock`s (the
+pattern from Chapter 9), and the `ledger` `#[bean]` factory binds them on
+construction. So the *first* `build_router()` in a test binary wires the shared
+ledger that every later test in that binary then drives. The tests cope by giving
+each wallet a fresh owner and a server-assigned id, so there is no cross-test
+interference even though the ledger is shared.
 
 ## Unit tests with no infrastructure
 
@@ -75,6 +80,11 @@ async fn handlers_dispatch_through_the_bus() {
 }
 ```
 
+This unit test wires its own bus explicitly with `register(&bus)` to isolate the
+dispatch path; the full application boot installs the *same* handlers by draining
+the inventory registry (`register_discovered_handlers`), so the test exercises the
+real handlers without standing up the container.
+
 Validation is tested without ever touching HTTP — call `.validate()` on the
 command directly, because `#[derive(Command)]` generated it from the
 `#[firefly(validate)]` fields:
@@ -94,11 +104,14 @@ path, register the heartbeat and assert it ticks.
 
 ## In-process HTTP tests with `tower::oneshot`
 
-The end-to-end suite lives in `tests/http.rs` and drives the **fully-wired**
-`build_router()` — the real `#[rest_controller]` routes, the CQRS handlers, the
-event-sourced ledger, the read-model projection, the transfer saga, *and* the
-JWT/RBAC enforcement from Chapter 14. No mocks: every layer is the production
-layer, just over in-memory infrastructure.
+The end-to-end suite lives in `src/http_test.rs` (a `#[cfg(test)] mod http_test`
+declared in `main.rs`, so it runs as part of the binary's own test target) and
+drives the **fully-wired**
+`build_router()` — which bootstraps a `FireflyApplication` and returns its public
+router: the auto-mounted `#[rest_controller]` routes, the inventory-drained CQRS
+handlers, the event-sourced ledger, the read-model projection, the transfer saga,
+*and* the auto-discovered JWT/RBAC enforcement from Chapter 14. No mocks: every
+layer is the production layer, just over in-memory infrastructure.
 
 The pattern is `Router` + `tower::ServiceExt::oneshot`. Lumen wraps it in two
 tiny helpers so each test reads as one HTTP round-trip:
@@ -284,7 +297,7 @@ async fn pipeline_filters_and_maps() {
 }
 ```
 
-Lumen's streaming tests (`tests/streaming.rs`, gated behind the `streaming`
+Lumen's streaming tests (`src/streaming_test.rs`, gated behind the `streaming`
 feature) take the HTTP route instead: open a wallet, deposit, then `GET
 /events` and assert two NDJSON lines (`WalletOpened` + `MoneyDeposited`) by
 default, `text/event-stream` with `?format=sse`, and a 404 for an unknown wallet.
@@ -309,7 +322,7 @@ async fn postgres_event_store_round_trips() {
 
 ```bash
 docker compose up -d                       # start the backing services
-DATABASE_URL=postgres://firefly:firefly@localhost:5432/firefly \
+DATABASE_URL=postgres://firefly:firefly@localhost:5442/firefly \
 REDIS_URL=redis://localhost:6379/0 \
   cargo test --workspace -- --ignored      # run the env-gated suite
 docker compose down
@@ -338,20 +351,23 @@ alongside every feature:
 - **Unit tests** per module: `money` and `domain` invariants, `commands`
   validation + bus dispatch, `security` mint/verify/reject, `transfer` happy +
   compensation, `housekeeping` registration + tick.
-- The **`tests/http.rs`** end-to-end suite drives the real `build_router()` with
-  `tower::oneshot`, covering open → get → deposit/withdraw → transfer (happy +
+- The **`src/http_test.rs`** end-to-end suite drives the real `build_router()`
+  with `tower::oneshot`, covering open → get → deposit/withdraw → transfer (happy +
   compensated) → projection convergence → 401/422/404 problems.
-- **`tests/streaming.rs`** (feature-gated) exercises the NDJSON / SSE endpoint.
+- **`src/streaming_test.rs`** (feature-gated) exercises the NDJSON / SSE endpoint.
 - The **`firefly-testkit`** helpers — `TestClient`, `Slice`,
   `assert_event_published`, the HMAC signers — are the terse path to the same
   coverage in your own service.
 
 ## Exercises
 
-1. **Rewrite a test with `TestClient`.** Take
-   `deposit_and_withdraw_update_the_balance` from `tests/http.rs` and rewrite it
-   using `TestClient` + `assert_json_path`. Add the `Authorization` header via
-   `TestClient::request` so the mutation is authenticated.
+1. **Rewrite a test with `TestClient`.** Take the read assertions from
+   `deposit_and_withdraw_update_the_balance` in `src/http_test.rs` and rewrite the
+   final `GET` round-trip using `TestClient` + `assert_json_path`. (The
+   `TestClient` request helpers carry no per-request header argument, so keep the
+   authenticated mutations on the raw `tower::oneshot` form that mints a bearer
+   token, then point a `TestClient` at the same `build_router()` for the public
+   read.)
 2. **A `Slice` test for the read model.** Use `Slice` to register a
    `ReadModel::default()` instance, project a `WalletOpened` into it by hand, and
    assert `find` returns the view — all without the bus or the router.

@@ -14,6 +14,9 @@ chrono = { workspace = true }
 chrono-tz = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Link-time task discovery: `#[scheduled]` submits a `ScheduledRegistration`
+# thunk drained by `register_discovered_scheduled`.
+inventory = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

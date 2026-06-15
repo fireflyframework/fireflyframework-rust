@@ -683,7 +683,7 @@ impl ContentStore for BlobStore {
 }
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.5";
+pub const VERSION: &str = "26.7.0";
 
 #[cfg(test)]
 mod tests {

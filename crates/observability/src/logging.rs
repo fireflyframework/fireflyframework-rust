@@ -785,6 +785,39 @@ pub fn init_logging_with_handle(cfg: LogConfig) -> Result<LevelHandle, SetGlobal
     Ok(handle)
 }
 
+/// The concrete subscriber type produced by [`subscriber`] — the registry
+/// with the [`CorrelationLayer`] installed. Exposed so callers can name the
+/// [`Layer`] bound required by [`init_logging_with_layers`].
+pub type FireflyRegistry =
+    tracing_subscriber::layer::Layered<CorrelationLayer, tracing_subscriber::Registry>;
+
+/// A boxed additional [`Layer`] composable over the Firefly logging
+/// subscriber — e.g. the admin dashboard's in-memory capture buffer feeding
+/// `/admin/api/logfile`. Build one with `my_layer.boxed()`.
+pub type DynLogLayer = Box<dyn Layer<FireflyRegistry> + Send + Sync + 'static>;
+
+/// Like [`init_logging_with_handle`] but also installs additional [`Layer`]s
+/// over the correlation layer before setting the global default — the hook a
+/// turnkey [`firefly_starter_core`]/admin wiring uses to tee every log record
+/// into a dashboard capture buffer while the console JSON stream stays on.
+/// Returns the [`LevelHandle`] for runtime level control.
+///
+/// ```no_run
+/// use firefly_observability::{init_logging_with_layers, LogConfig};
+/// // `extra` is typically `vec![log_buffer.clone().boxed()]`.
+/// let _handle = init_logging_with_layers(LogConfig::default(), Vec::new());
+/// ```
+pub fn init_logging_with_layers(
+    cfg: LogConfig,
+    extra: Vec<DynLogLayer>,
+) -> Result<LevelHandle, SetGlobalDefaultError> {
+    let correlation = CorrelationLayer::new(cfg);
+    let handle = correlation.level_handle();
+    let subscriber = tracing_subscriber::registry().with(correlation).with(extra);
+    tracing::subscriber::set_global_default(subscriber)?;
+    Ok(handle)
+}
+
 /// A clonable, thread-safe in-memory sink — the Rust stand-in for the
 /// `bytes.Buffer` the Go tests pass as `LogConfig.Output`. All clones
 /// share the same underlying buffer.

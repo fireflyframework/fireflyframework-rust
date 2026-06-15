@@ -2,7 +2,7 @@
 
 Rust gives you fearless concurrency, zero-cost abstractions, and a compiler that refuses to ship a data race. What it does not give you is *cohesion*. Every new back-office service forces the same cascade of decisions before a single line of business logic is written: which HTTP layer, which database story, how to wire dependencies, how to handle configuration, errors, correlation IDs, metrics, and graceful shutdown. **Firefly** changes that. It is an opinionated, convention-over-configuration framework that makes those cross-cutting decisions once, so every service shares one idiom — built from the ground up for Rust 1.88+ on `tokio` and `axum`.
 
-This book teaches Firefly **by example**. You build one real application from an empty crate to a secured, observable, event-sourced service — making every concept concrete before moving to the next. The code in these pages is not illustrative pseudocode: every listing is a slice of a **real project that compiles, boots, and passes its tests** against the framework at version 26.6.x. Each snippet was lifted from the running sample and checked against the crate APIs, so what you read is what actually works. When a listing drifts from the source, the sample's build breaks and a test fails — that is the guarantee behind every listing in this book.
+This book teaches Firefly **by example**. You build one real application from an empty crate to a secured, observable, event-sourced service — making every concept concrete before moving to the next. The code in these pages is not illustrative pseudocode: every listing is a slice of a **real project that compiles, boots, and passes its tests** against the framework at version 26.7.x. Each snippet was lifted from the running sample and checked against the crate APIs, so what you read is what actually works. When a listing drifts from the source, the sample's build breaks and a test fails — that is the guarantee behind every listing in this book.
 
 ### Who This Book Is For
 
@@ -18,7 +18,7 @@ The single most important property of Lumen is its dependency list:
 
 ```toml
 [dependencies]
-firefly = { version = "26.6.5" }   # the whole framework — and every macro
+firefly = { version = "26.7.0" }   # the whole framework — and every macro
 axum   = { version = "0.7" }       # you author the handler functions
 serde  = { version = "1", features = ["derive"] }
 ```

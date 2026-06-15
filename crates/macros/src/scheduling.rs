@@ -170,6 +170,19 @@ pub(crate) fn scheduled_attr(args: TokenStream, item: ItemFn) -> syn::Result<Tok
         fn = fn_ident
     );
 
+    // Link-time discovery: a non-generic task also submits a
+    // `ScheduledRegistration` so `register_discovered_scheduled(&scheduler)`
+    // (and `FireflyApplication`) wires it with zero manual `schedule_<fn>` calls.
+    let inventory_submit = if item.sig.generics.params.is_empty() {
+        quote! {
+            #scheduling::inventory::submit! {
+                #scheduling::ScheduledRegistration { schedule: #register_ident }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     Ok(quote! {
         #item
 
@@ -177,5 +190,7 @@ pub(crate) fn scheduled_attr(args: TokenStream, item: ItemFn) -> syn::Result<Tok
         #vis fn #register_ident(__scheduler: &#scheduling::Scheduler) {
             #register_body
         }
+
+        #inventory_submit
     })
 }

@@ -19,7 +19,7 @@ built for a compiled Cargo workspace.
 ```bash
 cargo install --path crates/cli   # installs the `firefly` binary
 firefly --help                     # prints the banner + every command
-firefly --version                  # 26.6.5
+firefly --version                  # 26.7.0
 ```
 
 ## Command overview
@@ -96,7 +96,7 @@ at startup, then exec's Cargo:
 firefly run                                  # cargo run
 firefly run -p dev -p test                   # FIREFLY_PROFILES_ACTIVE=dev,test
 firefly run -D server.port=9090              # FIREFLY_SERVER_PORT=9090
-firefly run --env LUMEN_ADDR=0.0.0.0:8080    # a raw env var for the process
+firefly run --env FIREFLY_SERVER_ADDR=0.0.0.0:8080  # a raw env var for the process
 firefly run --debug                          # FIREFLY_LOGGING_LEVEL_ROOT=DEBUG
 firefly run --release --bin lumen            # cargo run --release --bin lumen
 firefly run --dry-run                        # print the resolved env + cargo command
@@ -108,13 +108,14 @@ firefly run --dry-run                        # print the resolved env + cargo co
 > Firefly service is a single compiled binary, so there is no live-reload or
 > worker-process selection — you rebuild and rerun.
 
-For Lumen specifically, recall that `main.rs` reads `LUMEN_ADDR` /
-`LUMEN_ADMIN_ADDR` directly, so the equivalent of the two-port bind is:
+For Lumen specifically, recall that `FireflyApplication` honors
+`FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR`, so the equivalent of the
+two-port bind is:
 
 ```bash
 firefly run --bin lumen \
-  --env LUMEN_ADDR=127.0.0.1:8080 \
-  --env LUMEN_ADMIN_ADDR=127.0.0.1:8081
+  --env FIREFLY_SERVER_ADDR=127.0.0.1:8080 \
+  --env FIREFLY_MANAGEMENT_ADDR=127.0.0.1:8081
 ```
 
 ## Building for release
@@ -228,8 +229,9 @@ Nothing in `samples/lumen` itself — this chapter is operational. But you saw t
 CLI path to every artifact Lumen grew by hand: `firefly new --archetype web-api`
 scaffolds the chapter-2 skeleton, `firefly generate command/query/aggregate/saga`
 writes the CQRS, DDD, and orchestration pieces, `firefly run --bin lumen`
-launches it with `LUMEN_ADDR` overrides, and `firefly health/routes/beans
---url :8081` introspects the actuator surface from chapter 15. The CLI never
+launches it with `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR` overrides, and
+`firefly health/routes/beans --url :8081` introspects the actuator surface from
+chapter 15. The CLI never
 invents APIs — every command maps to a framework crate (`firefly-migrations`,
 `firefly-openapi`, the actuator endpoints) you have already met.
 

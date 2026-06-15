@@ -24,11 +24,11 @@
 
 #![cfg(feature = "streaming")]
 
+use crate::build_router;
+use crate::domain::WalletView;
+use crate::security::{mint_token, CUSTOMER_ROLE};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use firefly_sample_lumen::build_router;
-use firefly_sample_lumen::domain::WalletView;
-use firefly_sample_lumen::security::{mint_token, CUSTOMER_ROLE};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 

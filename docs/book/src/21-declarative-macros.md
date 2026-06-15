@@ -109,9 +109,12 @@ is the auto-config holder whose `#[bean]`s back off behind a
 declaring its own bean of the same type; `Container::scan()` auto-registers every
 `#[bean]` method, and `Container::scan_packages([..])` restricts discovery to the
 named module paths.
-Lumen wires its collaborators explicitly rather than through the container
-(chapter 4), so the [DI deep-dive](./04a-dependency-injection.md) is where you
-saw those at work.
+Lumen *does* use the container: `web.rs` carries a `#[derive(Configuration)]`
+holder (`LumenBeans`) whose `#[bean]` factories declare the event store, read
+model, query cache, JWT service, security `FilterChain` / `BearerLayer`, and the
+ledger application service, and the `WalletApi` controller is a
+`#[derive(Controller)]` bean with `#[autowired]` fields. The framework
+component-scans them at boot — see the [DI deep-dive](./04a-dependency-injection.md).
 
 ### CQRS — messages and handlers (`commands.rs`)
 
@@ -149,16 +152,20 @@ pub async fn get_wallet(q: GetWallet) -> Result<WalletView, CqrsError> { /* … 
 // generated: register_open_wallet(&bus);  register_get_wallet(&bus);
 ```
 
-Lumen calls each generated helper in one `register(&bus)` fn. Because free fns
-cannot capture wiring state, the resolved `Ledger` + `ReadModel` are published
-once through a `bind` / `OnceLock` and reached from the handlers — the pattern
-chapter 9 introduced.
+Beyond the helper, each `#[command_handler]` / `#[query_handler]` submits a
+`HandlerRegistration` into a compile-time `inventory` registry, and
+`FireflyApplication` drains it at boot with `register_discovered_handlers(&bus)`
+— so Lumen installs the four handlers by *declaring* them, calling neither the
+generated `register_<fn>` helpers nor a hand-written `register(&bus)` fn (that fn
+survives only for unit tests). Because free fns cannot capture wiring state, the
+resolved `Ledger` + `ReadModel` are published once through a `bind` / `OnceLock`
+and reached from the handlers — the pattern chapter 9 introduced.
 
 > **What it generates.** `#[derive(Command)]` / `#[derive(Query)]` emit the
 > `Message` impl; `#[command_handler]` / `#[query_handler]` emit a typed
-> `register_<fn>(bus)` helper that installs the handler. `#[firefly(cache_ttl)]`
-> exposes a TTL the query cache reads. The `Bus` is the command/query gateway
-> every dispatch flows through.
+> `register_<fn>(bus)` helper *and* a `HandlerRegistration` the framework drains
+> from inventory. `#[firefly(cache_ttl)]` exposes a TTL the query cache reads. The
+> `Bus` is the command/query gateway every dispatch flows through.
 
 ### Event sourcing — domain events and the aggregate (`domain.rs`)
 
@@ -210,13 +217,17 @@ pub async fn project_wallet_event(ev: Event) -> FireflyResult<()> {
 // generated: subscribe_project_wallet_event(broker)
 ```
 
-The composition root calls `ledger::subscribe_project_wallet_event(broker)` after
-binding, closing the CQRS loop.
+The macro also registers a `ListenerRegistration` in inventory, and
+`FireflyApplication` drains it at boot with
+`subscribe_discovered_listeners(broker)` — so the subscription that closes the
+CQRS loop is wired by the framework, not by a composition-root call to
+`subscribe_project_wallet_event`.
 
 > **What it generates.** `#[event_listener(topic = "…")]` emits a
-> `subscribe_<fn>(broker)` helper that subscribes the function to the topic on
-> whatever broker transport is wired in. You write only the handler body; the
-> subscription wiring is generated.
+> `subscribe_<fn>(broker)` helper *and* a `ListenerRegistration` the framework
+> drains, subscribing the function to the topic on whatever broker transport is
+> wired in. You write only the handler body; the subscription wiring is generated
+> and drained for you.
 
 ### Web — the controller (`web.rs`)
 
@@ -240,15 +251,18 @@ impl WalletApi {
 // generated: WalletApi::routes(state) -> axum::Router
 ```
 
-The macro also submits each route into a link-time table, so the OpenAPI
-generator and the actuator `/mappings` endpoint can enumerate Lumen's routes
-without re-parsing the source.
+The macro also submits a `ControllerMount` and a route descriptor into link-time
+tables, so `FireflyApplication` **auto-mounts** the controller (resolving its
+autowired state from the container) and the OpenAPI generator and the actuator
+`/mappings` endpoint can enumerate Lumen's routes without re-parsing the source.
+Lumen never hands `WalletApi::routes(state)` to the web stack — declaring the
+controller bean is the entire wiring.
 
 > **What it generates.** `#[rest_controller]` + `#[get]`/`#[post]` emit a
-> `WalletApi::routes(state) -> axum::Router` plus a link-time mapping-table entry
-> per route. `WebResult<T>` renders any handler error as an
-> `application/problem+json` body (RFC 9457), so error shaping is uniform across
-> every endpoint without per-handler code.
+> `WalletApi::routes(state) -> axum::Router`, a `ControllerMount` the framework
+> auto-mounts, and a link-time mapping-table entry per route. `WebResult<T>`
+> renders any handler error as an `application/problem+json` body (RFC 9457), so
+> error shaping is uniform across every endpoint without per-handler code.
 
 ### Scheduling — the heartbeat (`housekeeping.rs`)
 
@@ -262,9 +276,10 @@ pub async fn ledger_heartbeat() -> Result<(), std::io::Error> { /* … */ }
 ```
 
 > **What it generates.** `#[scheduled(...)]` emits a `schedule_<fn>(scheduler)`
-> helper that registers a zero-argument `async fn` on a `Scheduler`. Use
-> `fixed_rate = "60s"` for a fixed cadence (with an optional `initial_delay`), or
-> `cron = "…"` for a cron expression.
+> helper *and* a `ScheduledRegistration` the framework drains
+> (`register_discovered_scheduled(&scheduler)`), registering a zero-argument
+> `async fn` on a `Scheduler`. Use `fixed_rate = "60s"` for a fixed cadence (with
+> an optional `initial_delay`), or `cron = "…"` for a cron expression.
 
 ### Construction — the fluent builder (`#[derive(Builder)]`)
 
@@ -532,12 +547,18 @@ whatever a macro expands to without listing the underlying `firefly-*` crates.
 You never write `__rt` yourself. If you rename or shim the facade, pass
 `#[firefly(crate = "my_firefly")]` to any macro to override the leading segment.
 
-Rust has no reflective autowiring, so the declarative layer removes the
-*mechanical* boilerplate, not the explicitness: Lumen still calls
-`register(&bus)`, still calls `subscribe_project_wallet_event(broker)`, still
-hands `WalletApi::routes(state)` to the web stack. The macros generate the
-`impl`s, the routers, and the helper functions — the wiring you would otherwise
-hand-write.
+The declarative layer goes further than generating helpers: each handler,
+listener, scheduled task, and controller also submits a registration into a
+compile-time `inventory` registry, and `FireflyApplication` **drains** those
+registries at boot. So Lumen calls *none* of the generated wiring by hand — no
+`register(&bus)`, no `subscribe_project_wallet_event(broker)`, no
+`WalletApi::routes(state)` handed to the web stack. It declares the handlers,
+listener, task, and controller, and the framework finds and installs them
+(`register_discovered_handlers` / `subscribe_discovered_listeners` /
+`register_discovered_scheduled` / `mount_controllers`). The generated
+`register_<fn>` / `subscribe_<fn>` / `schedule_<fn>` / `routes(state)` helpers
+remain as the explicit fallback an app can call directly — Lumen's unit tests use
+them — but the running service is wired entirely by the inventory drain.
 
 ## The whole crate, declaratively
 
@@ -576,12 +597,14 @@ cargo test   -p firefly-sample-lumen --features streaming  # + 3 streaming tests
 cargo clippy -p firefly-sample-lumen --all-targets -- -D warnings
 ```
 
-The HTTP tests drive the macro-generated `WalletApi::routes(...)` router
-in-process through `tower::ServiceExt::oneshot` (no socket bound), proving the
-generated routes, the CQRS handlers, validation (422), the not-found path (404),
-the auth boundary (401), the transfer saga (happy + compensation), and the
-projection convergence all work end to end — every prose listing in this book is
-a slice of that running crate.
+The HTTP tests drive the framework-assembled router in-process — `build_router()`
+bootstraps a `FireflyApplication` (auto-mounting the controller, draining the
+handlers/listener, layering security) and returns its public router — through
+`tower::ServiceExt::oneshot` (no socket bound), proving the auto-mounted routes,
+the CQRS handlers, validation (422), the not-found path (404), the auth boundary
+(401), the transfer saga (happy + compensation), and the projection convergence
+all work end to end — every prose listing in this book is a slice of that running
+crate.
 
 ## What changed in Lumen
 
@@ -605,10 +628,11 @@ through one dependency and one prelude glob.
    `commands.rs`). Change the TTL to `"5s"` and re-run the tests.
 2. **Add a verb.** Add a `#[get("/wallets/:id/events")]`-style read method to the
    `#[rest_controller]` impl (non-streaming: return the event list as JSON) and
-   confirm `WalletApi::routes` picks it up with no other change.
+   confirm the auto-mounted controller serves it with no other change.
 3. **Add a scheduled task.** Write a second `#[scheduled(cron = "0 0 * * *")]`
-   function in `housekeeping.rs`, register it in `build_scheduler`, and assert it
-   appears in `scheduler.tasks()`.
+   function in `housekeeping.rs` and assert it appears in `scheduler.tasks()` —
+   the framework drains the new `ScheduledRegistration` from inventory, so you add
+   no registration call.
 4. **Count the wiring you didn't write.** For each macro in the catalogue, name
    the helper or impl it generated (`register_*`, `subscribe_*`, `schedule_*`,
    `routes`, `EVENT_TYPE`, `AGGREGATE_TYPE`). That list is the boilerplate the

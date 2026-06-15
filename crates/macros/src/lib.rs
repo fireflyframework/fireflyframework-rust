@@ -70,6 +70,7 @@ mod method_security;
 mod orchestration;
 mod repository_query;
 mod scheduling;
+mod schema;
 mod transactional;
 mod validate;
 mod web;
@@ -498,6 +499,28 @@ pub fn derive_mapper(input: TokenStream) -> TokenStream {
     emit(mapper::derive_mapper(input))
 }
 
+/// Registers a type's **OpenAPI component schema** so the generated document
+/// (and Swagger-UI's *Schemas* panel) describes it — the Rust analog of
+/// springdoc's `@Schema` model reflection, computed at compile time since Rust
+/// has no runtime reflection.
+///
+/// Derive it on the request/response DTOs your controllers consume and return,
+/// then reference them from a route with `#[post(request = OpenWallet,
+/// response = WalletView)]`. Each field's Rust type maps to a JSON Schema
+/// fragment (`String` → `string`, `Option<T>` → non-required `T`, `Vec<T>` →
+/// `array`, `Uuid`/`DateTime` → a typed `format`, a nested DTO → a `$ref` to
+/// its own component schema, which should also `#[derive(Schema)]`).
+///
+/// ```ignore
+/// #[derive(serde::Serialize, Schema)]
+/// struct WalletView { id: String, balance: u64, frozen: bool, note: Option<String> }
+/// ```
+#[proc_macro_derive(Schema, attributes(firefly, schema))]
+pub fn derive_schema(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    emit(schema::derive_schema(input))
+}
+
 /// Generates Spring-Data **derived-query** method bodies on an `impl` block —
 /// declare a typed `find_by_…` / `count_by_…` / `exists_by_…` / `delete_by_…`
 /// method and get a working, compiler-checked implementation over the tested
@@ -612,17 +635,31 @@ pub fn async_method(args: TokenStream, item: TokenStream) -> TokenStream {
 /// `firefly_web::WebResult<T>` so errors render as RFC 7807 problems.
 ///
 /// ```ignore
-/// #[rest_controller(path = "/api/v1/orders")]
+/// #[rest_controller(path = "/api/v1/orders", tag = "Orders")]
 /// impl OrderApi {
-///     #[get("/:id")]
+///     #[get("/:id", summary = "Fetch an order")]
 ///     async fn get_order(State(api): State<OrderApi>, Path(id): Path<String>)
 ///         -> WebResult<Json<OrderView>> { /* … */ }
 /// }
 /// // generated: fn OrderApi::routes(state: OrderApi) -> axum::Router
 /// ```
 ///
-/// Accepts `#[rest_controller(path = "...", state = "MyState", crate = "...")]`.
-/// The `state` type defaults to the controller (`Self`).
+/// Accepts `#[rest_controller(path = "...", state = "MyState", tag = "...",
+/// crate = "...")]`. The `state` type defaults to the controller (`Self`); `tag`
+/// is the OpenAPI group tag (else derived from the type name).
+///
+/// ## OpenAPI metadata
+///
+/// Each verb attribute also feeds the auto-generated OpenAPI document. The
+/// operation's **request and response models are inferred** from the handler
+/// signature — the `Json<T>` parameter is the request body, the `Json<T>` in the
+/// `WebResult<…>` / tuple return is the response — so you rarely name them. Add
+/// per-operation metadata inline:
+/// `#[get("/x", summary = "…", description = "…", tags = ["A", "B"],
+/// status = 200, deprecated, request = T, response = T)]`, where `request` /
+/// `response` override the inference (naming a `#[derive(Schema)]` type) and the
+/// rest are optional. A `$ref` is only emitted for a registered `Schema`, so an
+/// unannotated body never dangles.
 #[proc_macro_attribute]
 pub fn rest_controller(args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemImpl);

@@ -2,121 +2,86 @@
 
 Lumen has grown from a bare scaffold into a secure, observable, event-sourced
 CQRS service with a saga and a scheduled task. This last chapter of the build arc
-wires the **process entry point** — the thing that boots Lumen and keeps it
-running reliably — and turns on the optional **reactive streaming endpoint**. It
-also covers everything between "it works on my machine" and a service in
-production: graceful shutdown, the management split, configuration, packaging,
-and the swap from in-memory infrastructure to real Postgres + Kafka.
+looks at how the **one-line `main`** boots and runs reliably in production, and
+turns on the optional **reactive streaming endpoint**. It also covers everything
+between "it works on my machine" and a service in production: graceful shutdown,
+the management split, configuration, packaging, and the swap from in-memory
+infrastructure to real Postgres + Kafka.
 
-By the end of this chapter you will have read Lumen's `main.rs` end to end: a
-banner, two servers (public API + actuator) wired through the lifecycle
-`Application`, graceful SIGINT/SIGTERM shutdown, and the streaming endpoint
-(`GET /api/v1/wallets/:id/events` → NDJSON / SSE) behind the `streaming` feature.
+By the end of this chapter you will understand Lumen's boot pipeline end to end:
+two servers (public API + management) with graceful SIGINT/SIGTERM shutdown, and
+the streaming endpoint (`GET /api/v1/wallets/:id/events` → NDJSON / SSE) wired as
+a `RouteContributor` bean behind the `streaming` feature.
 
-> **The lifecycle Application.** `firefly-lifecycle`'s `Application` is the
-> process supervisor: it traps SIGINT/SIGTERM, gives each server task its own
-> drain signal, runs lifecycle hooks, and exits cleanly once in-flight work
-> drains. Running the actuator on a second listener keeps the management surface
-> off the public network. A streaming endpoint returns a `Flux<T>` as NDJSON or
-> SSE.
+> **The one-line `main`.** Lumen's whole entry point is
+> `firefly::FireflyApplication::new("lumen").run().await`. `run()` is the process
+> supervisor: it builds and serves the public + management ports, traps
+> SIGINT/SIGTERM, gives each server its own drain signal, and exits cleanly once
+> in-flight work drains. A streaming endpoint returns a `Flux<T>` as NDJSON or SSE.
 
-## The lifecycle and graceful shutdown
+## The boot pipeline and graceful shutdown
 
-`firefly-lifecycle`'s `Application` traps SIGINT/SIGTERM, gives each server task
-its own drain signal, and grants a drain budget before exiting.
-`Core::new_application()` (reachable through the `WebStack`'s `Deref`) builds one
-named after the app. This is the spine of Lumen's `src/main.rs`:
+There is no hand-written lifecycle wiring in Lumen — `run()` does it all. Under
+the hood, `FireflyApplication::bootstrap()` assembles the app and
+`Bootstrapped::serve()` runs it on the lifecycle `Application`, which traps
+SIGINT/SIGTERM, gives each server task its own drain signal, and grants a drain
+budget before exiting. The pipeline, in order:
 
-```rust,ignore
-let api_addr = std::env::var("LUMEN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_owned());
-let admin_addr =
-    std::env::var("LUMEN_ADMIN_ADDR").unwrap_or_else(|_| DEFAULT_ADMIN_ADDR.to_owned());
+1. **Build the web stack** and tee logging into the admin capture buffer.
+2. **Component-scan the container** — auto-register the framework's infra beans,
+   then discover Lumen's `#[derive(Configuration)]`/`#[bean]`,
+   `#[derive(Controller)]`, and `#[autowired]` beans.
+3. **Auto-configure the CQRS bus** — correlation always; the read-cache
+   middleware because Lumen declares a `QueryCache` bean.
+4. **Auto-discover security** — the `FilterChain` + `BearerLayer` beans
+   (Chapter 14), layered onto the API with no `.security(...)` call.
+5. **Auto-mount controllers** — every `#[rest_controller]` and every
+   `RouteContributor` bean (including the streaming endpoint below), then apply
+   the middleware chain + W3C trace origination.
+6. **Drain the discovered handlers** — the CQRS handlers, the EDA listener, and
+   the `#[scheduled]` housekeeping task, from the inventory registries.
+7. **Self-host the admin dashboard** on the management port and auto-serve the
+   OpenAPI docs.
+8. **Print the startup report**, then **serve both ports** with graceful drain.
 
-let application = app
-    .web
-    .new_application()
-    .on_server("api", move |shutdown| async move {
-        let listener = tokio::net::TcpListener::bind(&api_addr).await?;
-        axum::serve(listener, api)
-            .with_graceful_shutdown(shutdown.wait())
-            .await?;
-        Ok(())
-    })
-    .on_server("admin", move |shutdown| async move {
-        let listener = tokio::net::TcpListener::bind(&admin_addr).await?;
-        axum::serve(listener, admin)
-            .with_graceful_shutdown(shutdown.wait())
-            .await?;
-        Ok(())
-    });
+The two servers and the drain are the part that matters for production:
 
-if let Err(err) = application.run().await {
-    if !err.is_cancelled() {
-        eprintln!("application failed: {err}");
-        std::process::exit(1);
-    }
-}
-```
-
-The key moves:
-
-- **Two servers, two drains.** `on_server("api", ..)` and `on_server("admin", ..)`
-  register the public API on `:8080` and the actuator on `:8081`. Each closure
-  receives its own `shutdown` handle; passing `shutdown.wait()` to
-  `axum::serve(...).with_graceful_shutdown` drains that listener when the signal
-  arrives. Multiple servers are allowed, each on its own task.
+- **Two servers, two drains.** The public API serves on `:8080` and the
+  management surface (`/actuator/*` + the self-hosted `/admin` dashboard) on
+  `:8081`. Each runs on its own task with its own `shutdown` handle, so a signal
+  drains both listeners independently.
 - **`run()` blocks until a signal.** It returns when SIGINT/SIGTERM is received
-  and the drain completes. A clean shutdown surfaces as a *cancelled* error —
-  `err.is_cancelled()` — which Lumen treats as success; any other error exits
-  non-zero. (`on_start` / `on_stop` hooks and `app.shutdown_handle()` for
-  programmatic shutdown round out the API; Lumen needs neither.)
-- **Env-overridable binds.** `LUMEN_ADDR` and `LUMEN_ADMIN_ADDR` override the
-  defaults, so a container reads its ports from the environment.
+  and the drain completes. A clean shutdown surfaces as a *cancelled* error,
+  which `run()` itself maps to `Ok(())`; any other error propagates out of `main`.
+- **Env-overridable binds.** `FIREFLY_SERVER_ADDR` and `FIREFLY_MANAGEMENT_ADDR`
+  override the defaults (`0.0.0.0:8080` / `0.0.0.0:8081`), so a container reads
+  its ports from the environment.
 
 ## The full boot sequence
 
-Read top to bottom, `main()` does exactly six things — build, log, assemble the
-two routers, start the scheduler, print the banner, run:
+Read top to bottom, `main()` is one line — the framework does the six-step boot
+for you:
 
 ```rust,ignore
+// src/main.rs
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let app = build_app().await;
-    // Best-effort: a test harness may already own the global subscriber.
-    let _ = app.web.init_logging();
-
-    let api = app.router();
-    let contributor: InfoContributor = Box::new(|| {
-        let mut info = serde_json::Map::new();
-        info.insert(
-            "sample".into(),
-            serde_json::json!({ "name": APP_NAME, "store": "in-memory", "eventBus": "in-memory" }),
-        );
-        info
-    });
-    let admin = app.web.actuator_router(vec![contributor]);
-
-    // Register and start the scheduled housekeeping task on a background task.
-    let scheduler = build_scheduler();
-    tokio::spawn(async move { scheduler.start().await });
-
-    app.web.print_banner();
-    println!(":: {APP_NAME} :: digital-wallet & ledger (v{VERSION})");
-
-    // ... the lifecycle Application from the previous section ...
+async fn main() -> Result<(), firefly::BoxError> {
+    firefly::FireflyApplication::new("lumen").run().await
 }
 ```
 
-`build_app()` is the composition root from Chapter 4 — it wires the
-`WebStack`, the CQRS bus, the event-sourced ledger, the read model, the
-projection, and the security chain over in-memory infrastructure.
-`app.router()` (Chapter 14) adds the JWT bearer + RBAC layers. `print_banner()`
-emits the ASCII Firefly banner and the version tagline. Everything else you have
-already seen, chapter by chapter — `main.rs` just assembles it.
+That single `run()` call component-scans Lumen's beans — the CQRS bus, the
+event-sourced ledger, the read model, the projection (seeded inside the `ledger`
+`#[bean]`), and the security chain over in-memory infrastructure — auto-mounts
+the controllers, drains the discovered handlers/listener/`#[scheduled]` task,
+self-hosts the admin dashboard, prints the banner and the line-by-line startup
+report, and serves both ports. Everything you have seen chapter by chapter is
+*declared as a bean*; `main` just hands the crate to the framework.
 
 > **Teaching code runs with no dependencies.** Lumen's binary boots with an
 > in-memory event store and broker, so `cargo run --bin lumen` needs nothing
-> external. The tests drive `build_router()` in-process rather than this binary.
+> external. The tests drive `build_router()` (which calls
+> `FireflyApplication::bootstrap()`) in-process rather than this binary.
 
 ## The reactive streaming endpoint (feature `streaming`)
 
@@ -130,11 +95,35 @@ default = []
 streaming = []
 ```
 
-The handler lives on a separate, feature-gated sub-router merged into
-`LumenApp::router`, so the macro-generated `routes()` never references a method
-that is compiled out. It loads the wallet's persisted events, maps them to the
-view shape, wraps them in a `Flux`, and returns NDJSON by default or SSE when
-`?format=sse` is passed:
+The endpoint is wired by **declaring a bean**, not by editing an entry point. A
+`#[derive(Service)]` that `provides = "dyn firefly::web::RouteContributor"`
+contributes the sub-router; `FireflyApplication` resolves it as the
+`dyn RouteContributor` port and merges its routes, so a feature-gated endpoint
+appears purely because its crate compiled it in:
+
+```rust,ignore
+/// (feature `streaming`) A `RouteContributor` bean adding the reactive
+/// `GET /api/v1/wallets/:id/events` endpoint. The framework discovers it and
+/// merges its routes — no composition-root step.
+#[cfg(feature = "streaming")]
+#[derive(Service)]
+#[firefly(provides = "dyn firefly::web::RouteContributor")]
+struct StreamingRoutes {
+    #[autowired]
+    api: Arc<WalletApi>,
+}
+
+#[cfg(feature = "streaming")]
+impl firefly::web::RouteContributor for StreamingRoutes {
+    fn routes(&self) -> axum::Router {
+        streaming_router((*self.api).clone())
+    }
+}
+```
+
+The handler itself lives on the sub-router `streaming_router` builds. It loads
+the wallet's persisted events, maps them to the view shape, wraps them in a
+`Flux`, and returns NDJSON by default or SSE when `?format=sse` is passed:
 
 ```rust,ignore
 async fn stream_events(
@@ -203,10 +192,11 @@ health sub-paths feed your orchestrator's probes:
 
 ## Production hardening middleware
 
-Lumen's `WebStack::new` already turns on CORS, OWASP security headers, request
-metrics, and the access log (the web-tier batteries). The remaining
-production middleware is opt-in through `CoreConfig`, weaving in at the correct
-filter order:
+The framework already turns on CORS, OWASP security headers, request metrics,
+and the access log (the web-tier batteries) when `FireflyApplication` builds the
+web stack. The remaining production middleware is opt-in through `CoreConfig` —
+tuned via `FireflyApplication::configure(|cfg| { … })` — weaving in at the
+correct filter order:
 
 | Knob               | Adds                                                  |
 |--------------------|-------------------------------------------------------|
@@ -231,8 +221,8 @@ bind addresses are already env-driven:
 
 ```bash
 FIREFLY_PROFILE=prod \
-LUMEN_ADDR=0.0.0.0:8080 \
-LUMEN_ADMIN_ADDR=0.0.0.0:8081 \
+FIREFLY_SERVER_ADDR=0.0.0.0:8080 \
+FIREFLY_MANAGEMENT_ADDR=0.0.0.0:8081 \
   ./lumen
 ```
 
@@ -243,24 +233,30 @@ key (Chapter 14) is the obvious thing to inject this way rather than inline.
 ## From in-memory to real infrastructure
 
 This is the payoff of the whole architecture: Lumen swaps its in-memory defaults
-for real backends **at the composition root**, and nothing downstream changes.
-`build_app` constructs a `MemoryEventStore` and reads the `WebStack`'s in-memory
-broker; production replaces those two lines:
+for real backends by **changing a `#[bean]` factory in `LumenBeans`**, and
+nothing downstream changes. The `event_store` bean returns a `MemoryEventStore`
+today; production returns a durable store instead, and (where Lumen overrides
+the broker) a `#[bean]` returns a Kafka adapter behind the `Broker` port:
 
 ```rust,ignore
-// build_app() today:
-let store: Arc<dyn firefly::eventsourcing::EventStore> = Arc::new(MemoryEventStore::new());
-let broker = Arc::clone(&web.broker);
+#[bean]
+impl LumenBeans {
+    // today:
+    #[bean]
+    fn event_store(&self) -> MemoryEventStore { MemoryEventStore::new() }
 
-// production: a Postgres-backed event store and a Kafka broker, same ports.
-// let store: Arc<dyn EventStore> = Arc::new(postgres_event_store);  // firefly-eda-postgres
-// let broker = Arc::new(kafka_broker);                              // firefly-eda-kafka
+    // production: a Postgres-backed event store behind the EventStore port.
+    // #[bean]
+    // fn event_store(&self) -> PostgresEventStore { PostgresEventStore::connect(...) }
+}
 ```
 
-The `Ledger`, the projection, the CQRS handlers, the saga, and every test are
-written against the `EventStore` and `Broker` *ports* — so the wallet domain
-never learns it moved from a `HashMap` to Postgres + Kafka. That is "swap the
-adapter, keep the code," applied to the storage and messaging tiers.
+The `ledger` factory depends on the `EventStore` *port*, and the `Ledger`, the
+projection, the CQRS handlers, the saga, and every test are written against the
+`EventStore` and `Broker` ports — so the wallet domain never learns it moved
+from a `HashMap` to Postgres + Kafka. That is "swap the adapter, keep the code,"
+applied to the storage and messaging tiers, with the swap localized to one bean
+factory.
 
 ## Container packaging
 
@@ -278,9 +274,9 @@ EXPOSE 8080 8081
 ENTRYPOINT ["/usr/local/bin/lumen"]
 ```
 
-Because the lifecycle `Application` traps SIGTERM and drains, the container stops
-cleanly when the orchestrator sends a termination signal — no `--init` shim or
-signal-forwarding wrapper required.
+Because `run()` traps SIGTERM and drains, the container stops cleanly when the
+orchestrator sends a termination signal — no `--init` shim or signal-forwarding
+wrapper required.
 
 ## A deployment checklist
 
@@ -291,43 +287,46 @@ signal-forwarding wrapper required.
       from `/actuator/prometheus`.
 - [ ] Correlation propagation verified end-to-end across services.
 - [ ] JWT signing key injected from the environment / a secret store, not inline.
-- [ ] In-memory event store + broker swapped for Postgres + Kafka at `build_app`.
+- [ ] In-memory event store + broker swapped for Postgres + Kafka in the
+      `LumenBeans` `#[bean]` factories.
 - [ ] Graceful-shutdown drain budget tuned for the slowest in-flight transfer.
 - [ ] The verification gate green: `cargo test -p firefly-sample-lumen` and
       `--features streaming`, plus `clippy -D warnings` and `fmt --check`.
 
 ## What changed in Lumen
 
-This chapter wired the entry point and the optional stream — the last code the
-arc adds:
+This chapter looked at the boot pipeline and added the optional stream — the
+last code the arc adds:
 
-- **`src/main.rs`** boots the whole service: `build_app` → `init_logging` →
-  assemble the API router and the actuator router (with the info contributor) →
-  start the scheduler on a background task → `print_banner` → run the lifecycle
-  `Application` with two `on_server` listeners and graceful SIGINT/SIGTERM drain.
-  A clean shutdown is a *cancelled* error and exits zero.
+- **`src/main.rs`** is one line: `FireflyApplication::new("lumen").run().await`.
+  `run()` component-scans the beans, auto-mounts the controllers, drains the
+  discovered handlers/listener/`#[scheduled]` task, self-hosts the admin
+  dashboard, prints the startup report, and serves the public + management ports
+  with graceful SIGINT/SIGTERM drain. A clean shutdown is a *cancelled* error
+  that `run()` maps to `Ok(())`.
 - **`Cargo.toml`** declares the `streaming` feature; **`src/web.rs`** adds the
-  feature-gated `streaming_router` / `stream_events` handler that returns a
-  `Flux<WalletEvent>` as NDJSON (default) or SSE (`?format=sse`), with the 404
-  resolved before the response head.
+  feature-gated `StreamingRoutes` `RouteContributor` bean (and its
+  `stream_events` handler) that returns a `Flux<WalletEvent>` as NDJSON (default)
+  or SSE (`?format=sse`), with the 404 resolved before the response head — wired
+  purely by declaring the bean.
 - **`tests/streaming.rs`** proves the NDJSON default, the SSE switch, and the
   404, all behind the `streaming` feature.
-- The chapter showed the one-line **in-memory → Postgres + Kafka** swap at
-  `build_app`, proving the port-and-adapter design end to end.
+- The chapter showed the **in-memory → Postgres + Kafka** swap as a one-bean
+  change in `LumenBeans`, proving the port-and-adapter design end to end.
 
 ## Exercises
 
 1. **Run and drain.** `cargo run --bin lumen`, open a wallet, then Ctrl-C and
    watch the graceful drain. Confirm the process exits zero.
-2. **Override the ports.** Start Lumen with `LUMEN_ADDR=0.0.0.0:9000
-   LUMEN_ADMIN_ADDR=0.0.0.0:9001 cargo run --bin lumen` and confirm the API and
-   actuator move.
+2. **Override the ports.** Start Lumen with `FIREFLY_SERVER_ADDR=0.0.0.0:9000
+   FIREFLY_MANAGEMENT_ADDR=0.0.0.0:9001 cargo run --bin lumen` and confirm the API
+   and management surfaces move.
 3. **Stream the history.** Build with `--features streaming`, open a wallet and
    deposit, then `curl http://127.0.0.1:8080/api/v1/wallets/<id>/events` (NDJSON)
    and `...?format=sse` (SSE). Compare the two content types.
-4. **Sketch the Postgres swap.** Write the two lines in `build_app` that would
-   replace `MemoryEventStore` with a Postgres-backed `EventStore`, and explain in
-   one sentence why `Ledger`, the projection, and the tests need no change.
+4. **Sketch the Postgres swap.** Write the `event_store` `#[bean]` in `LumenBeans`
+   that would return a Postgres-backed `EventStore`, and explain in one sentence
+   why the `ledger` factory, the projection, and the tests need no change.
 
 That completes the guided tour of Lumen. The remaining chapters revisit the
 declarative macros as a capstone and provide reference material: the

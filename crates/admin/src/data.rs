@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::deps::AdminDeps;
+use crate::env::EnvironmentSnapshot;
 
 /// Process start instant, captured at first reference, for uptime reporting.
 static START: OnceLock<Instant> = OnceLock::new();
@@ -254,7 +255,7 @@ fn bean_to_json(bean: &BeanDescriptor) -> Value {
         "order": Value::Null,
         "profile": Value::Null,
         "conditions": [],
-        "dependencies": [],
+        "dependencies": bean.dependencies,
         "initialized": bean.initialized,
         "creation_time_ms": Value::Null,
         "resolution_count": bean.resolution_count,
@@ -309,7 +310,7 @@ pub fn bean_detail(container: Option<&Arc<Container>>, name: &str) -> Option<Val
     obj.insert("bean_method_origin".into(), Value::Null);
     obj.insert("post_construct".into(), json!([]));
     obj.insert("pre_destroy".into(), json!([]));
-    obj.insert("autowired_fields".into(), json!([]));
+    obj.insert("autowired_fields".into(), json!(bean.dependencies));
     Some(detail)
 }
 
@@ -320,33 +321,62 @@ pub fn bean_detail(container: Option<&Arc<Container>>, name: &str) -> Option<Val
 /// empty (best-effort nodes-only graph, per the gap report). A missing
 /// container yields an empty graph.
 pub fn bean_graph(container: Option<&Arc<Container>>) -> Value {
-    let nodes: Vec<Value> = container
-        .map(|c| {
-            c.beans()
-                .iter()
-                .map(|b| {
-                    let stereotype = b.stereotype.clone().unwrap_or_else(|| "none".to_string());
-                    let category = b
-                        .stereotype
-                        .clone()
-                        .unwrap_or_else(|| "component".to_string());
-                    json!({
-                        "id": b.name,
-                        "name": b.name,
-                        "type": b.type_name,
-                        "stereotype": stereotype,
-                        "category": category,
-                        "scope": b.scope,
-                        "initialized": b.initialized,
-                        "order": Value::Null,
-                        "resolution_count": b.resolution_count,
-                        "creation_time_ms": Value::Null,
-                    })
-                })
-                .collect()
+    let beans = container.map(|c| c.beans()).unwrap_or_default();
+
+    // Resolve dependency edges: deps are recorded as short type names (e.g.
+    // `Bus`), so map each bean's short type name to its node id.
+    let mut short_to_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for b in &beans {
+        let short = b
+            .type_name
+            .rsplit("::")
+            .next()
+            .unwrap_or(b.type_name.as_str())
+            .to_string();
+        short_to_id.entry(short).or_insert_with(|| b.name.clone());
+    }
+
+    let nodes: Vec<Value> = beans
+        .iter()
+        .map(|b| {
+            let stereotype = b.stereotype.clone().unwrap_or_else(|| "none".to_string());
+            let category = b
+                .stereotype
+                .clone()
+                .unwrap_or_else(|| "component".to_string());
+            json!({
+                "id": b.name,
+                "name": b.name,
+                "type": b.type_name,
+                "stereotype": stereotype,
+                "category": category,
+                "scope": b.scope,
+                "initialized": b.initialized,
+                "order": Value::Null,
+                "resolution_count": b.resolution_count,
+                "creation_time_ms": Value::Null,
+            })
         })
-        .unwrap_or_default();
-    json!({ "nodes": nodes, "edges": [] })
+        .collect();
+
+    // One directed edge per autowired dependency that resolves to a known bean.
+    let mut edges: Vec<Value> = Vec::new();
+    for b in &beans {
+        for dep in &b.dependencies {
+            if let Some(target) = short_to_id.get(dep) {
+                if target != &b.name {
+                    edges.push(json!({
+                        "source": b.name,
+                        "target": target,
+                        "type": "autowired",
+                    }));
+                }
+            }
+        }
+    }
+
+    json!({ "nodes": nodes, "edges": edges })
 }
 
 /// A snapshot of every bean's current `resolution_count`, keyed by bean name —
@@ -464,6 +494,173 @@ pub fn server() -> Value {
         },
         "timestamp": chrono::Utc::now().timestamp_millis(),
     })
+}
+
+/// Renders the `/admin/api/env` body — active profiles plus the ordered,
+/// origin-attributed property sources (Spring Boot `/actuator/env` shape).
+/// When no [`EnvironmentSnapshot`] was wired, the active profiles still come
+/// from `FIREFLY_PROFILES_ACTIVE` and the source list is empty — real, never a
+/// fabricated stub.
+pub fn env(deps: &AdminDeps) -> Value {
+    let profiles = Value::from(active_profiles(deps.environment.as_ref()));
+    let snapshot = deps.environment.as_ref();
+
+    // Rich, ordered property sources (the "Property Sources" card).
+    let sources: Vec<Value> = snapshot
+        .map(|snap| {
+            snap.property_sources
+                .iter()
+                .map(|src| {
+                    let props: serde_json::Map<String, Value> = src
+                        .properties
+                        .iter()
+                        .map(|(k, v)| {
+                            (k.clone(), json!({ "value": v.value, "origin": v.origin }))
+                        })
+                        .collect();
+                    json!({ "name": src.name, "properties": props })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Effective value + origin per key (highest-precedence source wins) — the
+    // flat `properties`/`origins` maps the env view's properties table renders.
+    let mut properties = serde_json::Map::new();
+    let mut origins = serde_json::Map::new();
+    if let Some(snap) = snapshot {
+        for src in &snap.property_sources {
+            for (key, entry) in &src.properties {
+                if !properties.contains_key(key) {
+                    properties.insert(key.clone(), Value::from(entry.value.clone()));
+                    origins.insert(key.clone(), Value::from(entry.origin.clone()));
+                }
+            }
+        }
+    }
+
+    json!({
+        "activeProfiles": profiles,
+        "active_profiles": profiles,
+        "properties": properties,
+        "origins": origins,
+        "propertySources": sources,
+        "app": { "name": deps.app_name, "version": deps.app_version },
+    })
+}
+
+/// Renders the `/admin/api/config` body — the resolved application
+/// configuration grouped by dotted prefix (Spring Boot `/actuator/configprops`
+/// analog). Each group maps directly to its `{ key: {value, origin} }`
+/// properties (the exact shape the SPA's config accordion iterates). The raw
+/// `systemEnvironment` source is excluded here — those variables are shown
+/// verbatim in the Environment view — so config stays focused on namespaced
+/// `firefly.*`-style application properties.
+pub fn config(deps: &AdminDeps) -> Value {
+    let Some(snapshot) = deps.environment.as_ref() else {
+        return json!({ "groups": {}, "groupCount": 0, "propertyCount": 0, "sourceCount": 0 });
+    };
+    // Effective {value, origin} per key, highest-precedence source first,
+    // excluding the verbatim process environment.
+    let mut effective: std::collections::BTreeMap<String, (String, String)> =
+        std::collections::BTreeMap::new();
+    let mut config_sources = 0usize;
+    for source in &snapshot.property_sources {
+        if source.name == SYSTEM_ENVIRONMENT_SOURCE {
+            continue;
+        }
+        config_sources += 1;
+        for (key, entry) in &source.properties {
+            effective
+                .entry(key.clone())
+                .or_insert_with(|| (entry.value.clone(), entry.origin.clone()));
+        }
+    }
+    // groups[prefix] IS the properties map (key -> {value, origin}); the SPA
+    // iterates `Object.entries(groups[prefix])` directly.
+    let mut groups: std::collections::BTreeMap<String, serde_json::Map<String, Value>> =
+        std::collections::BTreeMap::new();
+    for (key, (value, origin)) in &effective {
+        groups
+            .entry(group_prefix(key))
+            .or_default()
+            .insert(key.clone(), json!({ "value": value, "origin": origin }));
+    }
+    let group_objs: serde_json::Map<String, Value> = groups
+        .into_iter()
+        .map(|(prefix, props)| (prefix, Value::Object(props)))
+        .collect();
+    let group_count = group_objs.len();
+    json!({
+        "groups": group_objs,
+        "groupCount": group_count,
+        "propertyCount": effective.len(),
+        "sourceCount": config_sources,
+    })
+}
+
+/// The synthetic property-source name carrying the raw process environment
+/// (matches `firefly_config::introspect::SYSTEM_ENVIRONMENT_SOURCE`).
+const SYSTEM_ENVIRONMENT_SOURCE: &str = "systemEnvironment";
+
+/// Renders the `/admin/api/mappings` body — the live HTTP route table from the
+/// compile-time `#[rest_controller]` registry (`firefly_container::routes()`),
+/// the Rust analog of Spring's `RequestMappingHandlerMapping` / actuator
+/// `/mappings`.
+pub fn mappings() -> Value {
+    let mut routes: Vec<Value> = firefly_container::routes()
+        .map(|r| {
+            json!({
+                "method": r.method,
+                "path": r.path,
+                "handler": r.handler,
+                "controller": r.controller,
+            })
+        })
+        .collect();
+    routes.sort_by(|a, b| {
+        let key = |v: &Value| {
+            (
+                v["path"].as_str().unwrap_or_default().to_string(),
+                v["method"].as_str().unwrap_or_default().to_string(),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+    let total = routes.len();
+    json!({ "mappings": routes, "total": total })
+}
+
+/// Active profiles for the env/config panels: the snapshot's when present,
+/// else the comma-split `FIREFLY_PROFILES_ACTIVE` process variable.
+fn active_profiles(snapshot: Option<&EnvironmentSnapshot>) -> Vec<String> {
+    if let Some(snap) = snapshot {
+        if !snap.active_profiles.is_empty() {
+            return snap.active_profiles.clone();
+        }
+    }
+    std::env::var("FIREFLY_PROFILES_ACTIVE")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Groups a dotted config key by its first two segments (`firefly.web`,
+/// `firefly.admin`, …), or its single segment when there is no dot — the
+/// configprops grouping prefix.
+fn group_prefix(key: &str) -> String {
+    let mut segments = key.split('.');
+    match (segments.next(), segments.next()) {
+        (Some(a), Some(b)) => format!("{a}.{b}"),
+        (Some(a), None) => a.to_string(),
+        _ => "default".to_string(),
+    }
 }
 
 /// Renders the `/admin/api/settings` body (pyfly's `_handle_settings`).

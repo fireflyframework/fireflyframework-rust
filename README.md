@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-  <a href="CHANGELOG.md"><img alt="Version 26.6.5" src="https://img.shields.io/badge/version-26.6.5-orange.svg"></a>
+  <a href="CHANGELOG.md"><img alt="Version 26.7.0" src="https://img.shields.io/badge/version-26.7.0-orange.svg"></a>
   <a href="https://www.rust-lang.org"><img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-93450a.svg"></a>
   <a href="docs/book/src/05-reactive-model.md"><img alt="Reactive: Mono / Flux" src="https://img.shields.io/badge/reactive-Mono%20%2F%20Flux-success.svg"></a>
   <a href="crates/firefly/README.md"><img alt="One dependency: firefly" src="https://img.shields.io/badge/one%20dep-firefly%20%2B%20macros-success.svg"></a>
@@ -67,7 +67,11 @@ envelopes, idempotency, correlation propagation, CQRS, event-driven
 messaging, event sourcing, sagas, configuration servers, identity
 adapters, document management, notifications, callbacks, webhooks —
 behind a single, opinionated composition pattern. On top of that core it
-ships a **full application layer**: a domain-driven kernel, an opt-in
+ships a **full application layer**: a turnkey
+[`FireflyApplication`](crates/firefly/README.md) bootstrap (the
+`SpringApplication.run` analog — one line of `main`, component-scanned,
+auto-mounted, self-hosting its admin dashboard and serving auto-generated
+OpenAPI 3.1 + Swagger UI + ReDoc), a domain-driven kernel, an opt-in
 DI container, aspect-oriented advice, server-side HTTP sessions, a
 shell-style CLI framework, WebSocket server support, an admin
 dashboard, a `firefly` developer CLI, and
@@ -120,7 +124,7 @@ orchestration — is in scope, alongside every macro from
 
 ```toml
 [dependencies]
-firefly = "26.6.5"            # the whole framework + every macro
+firefly = "26.7.0"            # the whole framework + every macro
 axum    = "0.7"               # you author axum handlers
 serde   = { version = "1", features = ["derive"] }
 tokio   = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -209,11 +213,17 @@ Firefly Framework treats those concerns as solved problems on Rust too:
   `application/x-ndjson` or SSE with **true backpressure** — a million
   rows never land in memory). The same two types back the repositories,
   the `WebClient`, EDA subscriptions, and the CQRS bus.
-- **Composed, not constructed.** A single `Core::new(CoreConfig { .. })`
-  call wires the whole infrastructure tier — middleware chain, cache,
-  CQRS bus, event broker, health composite, metrics, scheduler,
-  lifecycle. Authors write commands, queries, handlers, and routes —
-  nothing more.
+- **Composed, not constructed.** A single
+  `FireflyApplication::new("orders").run().await` — the
+  `SpringApplication.run` analog — is the whole `main`. It component-scans
+  the DI container, auto-mounts every `#[rest_controller]`, drains the
+  discovered CQRS handlers / EDA listeners / `#[scheduled]` tasks,
+  auto-discovers security, wires the whole infrastructure tier (middleware
+  chain, cache, CQRS bus, event broker, health composite, metrics,
+  scheduler, lifecycle), self-hosts the admin dashboard, serves
+  auto-generated OpenAPI docs, prints a line-by-line startup report, and
+  serves the public + management ports with graceful shutdown. Authors
+  write commands, queries, handlers, and controllers — nothing more.
 - **Stable wire contracts.** The wire contract, the
   `application/problem+json` shape, the `Idempotency-Key` semantics, the
   saga step definitions, the event envelopes, the HMAC webhook
@@ -244,6 +254,8 @@ Firefly Framework treats those concerns as solved problems on Rust too:
 | Capability | Crate(s) | Spring / Reactor analog | Status |
 |------------|----------|-------------------------|:------:|
 | **One-dependency facade + prelude** | `firefly` | `spring-boot-starter` | Full |
+| **Turnkey bootstrap** (`FireflyApplication::new("orders").run().await` — one-line `main`: component-scan, auto-mount controllers, drain handlers/listeners/scheduled, self-host admin, originate W3C trace context, startup report, public + management ports with graceful shutdown) | `firefly` | `SpringApplication.run` | Full |
+| **Auto-generated OpenAPI 3.1** (`/v3/api-docs` + `/openapi.json` spec, Swagger UI at `/swagger-ui`, ReDoc at `/redoc`, `#[derive(Schema)]` DTO models — auto-wired, no app code) | `firefly-openapi`, `firefly-macros` | springdoc-openapi | Full |
 | **Declarative macros** (`#[derive(Command)]`, `#[rest_controller]`, `#[command_handler]`, `#[scheduled]`, …) | `firefly-macros` | Spring annotations | Full |
 | **Declarative AOP aspects** (`#[aspect(pointcut, order)]` + `#[before]`/`#[after]`/`#[after_returning]`/`#[after_throwing]`/`#[around]`, woven at the explicit `advised(…)` call site) | `firefly-aop`, `firefly-macros` | Spring `@Aspect` / AspectJ advice | Full |
 | **Declarative caching** (`#[cacheable]` / `#[cache_put]` / `#[cache_evict(all_entries)]` over `async fn -> Result<V, E>`) | `firefly-macros`, `firefly-cache` | Spring `@Cacheable` / `@CachePut` / `@CacheEvict` | Full |
@@ -358,12 +370,12 @@ fireflyframework-rust/
 ├── docs/                         # ARCHITECTURE, CONFIGURATION, DESIGN
 ├── docs/book/                    # the mdBook guide (mdbook build docs/book) + dist/*.pdf,*.epub
 ├── docker-compose.yml            # real backing services for integration tests
-└── Cargo.toml                    # workspace root — version 26.6.5, edition 2021, MSRV 1.88
+└── Cargo.toml                    # workspace root — version 26.7.0, edition 2021, MSRV 1.88
 ```
 
 ### Choosing your tier / optional adapters
 
-The fastest path is the **one-dependency facade** — `firefly = "26.6.5"`
+The fastest path is the **one-dependency facade** — `firefly = "26.7.0"`
 brings the whole framework and every macro in via `use firefly::prelude::*;`,
 with heavy adapters as opt-in cargo features
 (`features = ["data-sqlx", "eda-kafka", …]`). Prefer the individual crates when
@@ -409,7 +421,7 @@ macro. Add it plus the ecosystem crates you author against:
 
 ```toml
 [dependencies]
-firefly = "26.6.5"            # the whole framework + every macro
+firefly = "26.7.0"            # the whole framework + every macro
 axum    = "0.7"               # you author axum handlers
 serde   = { version = "1", features = ["derive"] }
 tokio   = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
@@ -423,14 +435,16 @@ empty `Mono` becomes a `404 problem+json`), `NdJson` to a backpressured
 
 ```rust
 use axum::extract::{Path, State};
-use firefly::prelude::*;   // Core, CoreConfig, Mono, Flux, MonoJson, NdJson, Sse, rest_controller, ...
+use firefly::prelude::*;   // FireflyApplication, Mono, Flux, MonoJson, NdJson, Sse, rest_controller, Controller, ...
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]
 struct Order { id: String, customer: String }
 
-/// The controller's fields are its shared state; this demo keeps none.
-#[derive(Clone)]
+/// A `#[derive(Controller)]` DI bean — `FireflyApplication` component-scans it,
+/// resolves its state from the container, and auto-mounts its routes. This demo
+/// keeps no fields; a real controller `#[autowired]`s its collaborators.
+#[derive(Clone, Controller)]
 struct OrderApi;
 
 #[rest_controller(path = "/orders")]
@@ -459,21 +473,17 @@ impl OrderApi {
     }
 }
 
+// The whole `main` — the `SpringApplication.run` analog. `FireflyApplication`
+// component-scans the DI container, auto-mounts every `#[rest_controller]`,
+// drains the discovered CQRS handlers / EDA listeners / `#[scheduled]` tasks,
+// auto-discovers security, wires the problem renderer / correlation / idempotency
+// / cache / CQRS bus / event broker / health / metrics / scheduler, self-hosts
+// the admin dashboard + auto-generated OpenAPI docs, prints a startup report, and
+// serves the public (`:8080`) + management (`:8081`) ports with graceful
+// shutdown. No `Core::new`, no `apply_middleware`, no `OrderApi::routes(...)`.
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // One Core wires the problem renderer, correlation propagation, idempotency
-    // replay, cache, the CQRS bus, the event broker, health, metrics, and the
-    // scheduler.
-    let core = Core::new(CoreConfig { app_name: "orders".into(), ..CoreConfig::default() });
-    core.init_logging()?;
-    core.print_banner();
-
-    // `#[rest_controller]` generated `OrderApi::routes(state)`; mount it under Core.
-    let app = core.apply_middleware(OrderApi::routes(OrderApi));
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-    axum::serve(listener, app).await?;
-    Ok(())
+async fn main() -> Result<(), firefly::BoxError> {
+    firefly::FireflyApplication::new("orders").run().await
 }
 ```
 
@@ -485,18 +495,22 @@ curl -N localhost:8080/orders/live    # text/event-stream Server-Sent Events
 
 Every response echoes an `X-Correlation-Id`; every `POST`/`PUT`/`PATCH` carrying an
 `Idempotency-Key` header replays its stored response with `Idempotent-Replay: true`;
-any handler error renders as `application/problem+json`. Add `core.actuator_router(..)`
-on a second listener for the `/actuator/{health,info,metrics,env,tasks,version}`
-surface, and `core.new_application()` for signal-aware graceful shutdown — see
-[`crates/starter-core/README.md`](crates/starter-core/README.md) and the
+any handler error renders as `application/problem+json`. The management port
+(`:8081`) already serves the `/actuator/{health,info,metrics,env,tasks,version}`
+surface and the self-hosted `/admin` dashboard, and the public port serves
+auto-generated API docs — Swagger UI at `/swagger-ui`, ReDoc at `/redoc`, and the
+OpenAPI 3.1 spec at `/v3/api-docs` (+ `/openapi.json`) — with no extra app code.
+Override the binds with `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR`. See
+[`crates/firefly/README.md`](crates/firefly/README.md) and the
 [Reactive Model](docs/book/src/05-reactive-model.md) chapter. The same reactive
 controller, end to end, is [`samples/macro-quickstart`](samples/macro-quickstart).
 
-> **Not using the facade or the controller macro?** The reactive responders are
-> plain `firefly-web` types: return `MonoJson`/`NdJson`/`Sse` from any `async fn`
-> and mount it with `Router::new().route("/orders/stream", get(stream))` — no
-> macro required. Depend on `firefly-starter-core` + `firefly-web` +
-> `firefly-reactive` directly if you prefer naming the crates.
+> **Need to drive the assembled router in-process (tests) or compose the
+> stack by hand?** `FireflyApplication::bootstrap()` returns the
+> assembled-but-not-served `Bootstrapped` (its `api_router` is the public
+> router), and the lower-level `firefly-starter-core` `Core` / `firefly-web`
+> building blocks are still public if you prefer naming the crates and
+> mounting routes yourself.
 
 Four reference services ship in the workspace: a minimal idempotent
 [`samples/orders/`](samples/orders); the end-to-end reactive

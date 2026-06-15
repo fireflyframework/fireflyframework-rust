@@ -1,19 +1,18 @@
-# Dependency Injection — the Container
+# Dependency Injection &amp; Auto-Configuration
 
-The [previous chapter](./04-dependency-wiring.md) wired Lumen the idiomatic-Rust
-way: an explicit composition root (`build_app`) that constructs each
-collaborator and hands it to the controller. That style is the default, and
-Lumen keeps it for teachability — the dependency graph is visible in code and
-checked by the compiler. But Firefly also ships the *other* style: a
-**dependency-injection container** where beans declare what they need with
-`#[autowired]`, and the container resolves the graph for you.
+The [previous chapter](./04-dependency-wiring.md) showed how Lumen is wired: it
+**declares beans** and `FireflyApplication`'s component scan discovers and
+connects them at boot. This chapter is the full reference for that container —
+the engine that turns a crate full of `#[derive(...)]` and `#[bean]`
+declarations into a wired object graph.
 
-By the end of this chapter you will know how Lumen's exact collaborators —
-`ReadModel`, `Ledger`, `WalletApi` — would be expressed as **beans**: declared
-with stereotype derives, wired by constructor injection, disambiguated with
+By the end of it you will know how Lumen's exact collaborators — `ReadModel`,
+`Ledger`, `WalletApi` — are expressed as **beans**: declared with stereotype
+derives, wired by constructor injection, disambiguated with
 `#[firefly(primary)]`, gated by profiles and conditions, bracketed by lifecycle
-hooks, and discovered by component scanning. This is the full Firefly DI
-surface, told against Lumen's own collaborators.
+hooks, auto-configured with sensible defaults, and discovered by component
+scanning. This is the full Firefly DI surface, told against Lumen's own
+collaborators.
 
 > **Design note.** Firefly's container offers a declarative DI model —
 > stereotype derives, `#[autowired]`, `#[bean]` factories, `primary`, profiles,
@@ -25,9 +24,10 @@ surface, told against Lumen's own collaborators.
 > you've used a batteries-included framework, but the link-time mechanism is
 > Firefly's own.
 
-## Two styles, one mental model
+## Inversion of control, the Rust way
 
-Lumen's `build_app` (chapter 4) is constructor injection written by hand:
+The container inverts the *who calls whom*. Rather than a function calling each
+constructor in turn:
 
 ```rust,ignore
 let read_model = Arc::new(ReadModel::default());
@@ -35,16 +35,12 @@ let ledger = Ledger::new(Arc::clone(&store), Arc::clone(&broker));
 // ... hand the collaborators to the controller state.
 ```
 
-The container inverts the *who calls whom*: instead of `build_app` calling each
-constructor, every bean declares its dependencies and the container calls the
-constructors in dependency order. The collaborators are the same; only the
-wiring moves from a function into declarations next to each type.
-
-> **Tip.** Prefer explicit construction (chapter 4) for a small service like
-> Lumen — it compiles faster and the graph is right there in `build_app`. Reach
-> for the container when the graph grows large, when you want a central registry
-> the admin dashboard can introspect (`/beans`), or when you prefer declarative,
-> scan-driven wiring over a hand-written root.
+every bean *declares* its dependencies and the container calls the constructors
+in dependency order. The wiring lives in declarations next to each type, and
+`FireflyApplication`'s component scan turns those declarations into the wired
+graph at boot. The result is a central registry the admin dashboard introspects
+(`/beans`) and the startup report logs line-by-line — and a failure surfaces as
+a clear resolution error at startup, not a panic deep in the first request.
 
 ## Stereotypes: declaring your beans
 
@@ -113,10 +109,10 @@ pub struct WalletApi {
 ```
 
 When the container builds `WalletApi`, it builds `Ledger` first (recursively
-resolving its store and broker), exactly as `build_app` does by hand — but the
-order is derived from the field types, not written out. A field with no
-attribute is built with `Default::default()`; a `#[firefly(value = "${...}")]`
-field is bound from config (see *Config-driven injection* below).
+resolving its store and broker) — and the order is derived from the field types,
+not written out. A field with no attribute is built with `Default::default()`; a
+`#[firefly(value = "${...}")]` field is bound from config (see *Config-driven
+injection* below).
 
 > **Note.** `#[autowired]` is constructor injection: a missing required
 > dependency is a loud `ContainerError::NoSuchBean` at resolve time, with fuzzy
@@ -673,26 +669,26 @@ idioms rather than ported — each is a deliberate choice, not a missing feature
 
 ## What changed in Lumen
 
-Nothing in `samples/lumen` — Lumen deliberately keeps the explicit composition
-root from chapter 4 for teachability. What this chapter showed is the *other
-valid wiring*, told against Lumen's real collaborators: `ReadModel` as a
-`#[derive(Repository)]`, `Ledger`/`WalletApi` autowiring their dependencies,
-`MemoryEventStore` vs. a hypothetical `PostgresEventStore` disambiguated by
-`#[firefly(primary)]` and gated by `profile` / `condition_on_missing_bean`, a
-`#[derive(Configuration)]` + `#[bean]` factory producing the broker, lifecycle
-hooks bracketing the projection, eager warm-up at `ApplicationContext::build()`,
-and `Container::scan()` / `register_all!` discovering it all. Every attribute
-shown — `autowired`, `primary`, `order`, `qualifier`, `scope`, `lazy`, `profile`,
-the `condition_on_*` family, `post_construct`, `pre_destroy`, `provides`,
-`value`, and `prefix` (on `#[derive(ConfigProperties)]`) — is a real option on
-the stereotype derives.
+This chapter is reference, not a code step — the wiring it documents is already
+how `samples/lumen` works. It told the full DI surface against Lumen's real
+collaborators: `ReadModel` as a `#[derive(Repository)]`, `Ledger`/`WalletApi`
+autowiring their dependencies, `MemoryEventStore` vs. a hypothetical
+`PostgresEventStore` disambiguated by `#[firefly(primary)]` and gated by
+`profile` / `condition_on_missing_bean`, the `#[derive(Configuration)]` +
+`#[bean]` factories that produce Lumen's beans, lifecycle hooks bracketing a
+projection, eager warm-up at `ApplicationContext::build()`, and
+`Container::scan()` (the scan `FireflyApplication` runs at boot) / `register_all!`
+discovering it all. Every attribute shown — `autowired`, `primary`, `order`,
+`qualifier`, `scope`, `lazy`, `profile`, the `condition_on_*` family,
+`post_construct`, `pre_destroy`, `provides`, `value`, and `prefix` (on
+`#[derive(ConfigProperties)]`) — is a real option on the stereotype derives.
 
 ## Exercises
 
-1. **Express Lumen as beans.** Take `ReadModel`, `Ledger`, and `WalletApi` and
-   add the stereotype derives + `#[autowired]` fields shown above. Wire them with
-   `register_all!(&c, [ReadModel, Ledger, WalletApi])` and `resolve::<WalletApi>()`.
-   Confirm the container builds the graph in dependency order.
+1. **Resolve the graph by hand.** Take `ReadModel`, `Ledger`, and `WalletApi`,
+   wire them with `register_all!(&c, [ReadModel, Ledger, WalletApi])` and
+   `resolve::<WalletApi>()`, and confirm the container builds the graph in
+   dependency order — the same graph `FireflyApplication`'s scan builds at boot.
 2. **Default-with-override.** Give `MemoryEventStore`
    `#[firefly(condition_on_missing_bean = "EventStore")]` and `PostgresEventStore`
    `#[firefly(condition_on_property = "lumen.store.postgres=true")]`. Scan with
@@ -704,7 +700,7 @@ the stereotype derives.
    where one depends on the other; call `ApplicationContext::close()` and confirm
    the dependent is torn down first.
 
-You now have both wiring styles in hand: explicit construction (the default Lumen
-uses) and the full Firefly DI container. The reactive
-model underpins everything that follows — continue to
+You now have the full Firefly DI container in hand — the engine that wires every
+bean in Lumen, from the `#[bean]` factories to the autowired controller. The
+reactive model underpins everything that follows — continue to
 [The Reactive Model](./05-reactive-model.md).

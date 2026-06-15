@@ -106,6 +106,7 @@
 //! `firefly-sse`'s wire format). See the module docs for details.
 
 mod content_negotiation;
+mod controllers;
 mod correlation;
 mod cors;
 mod csrf;
@@ -122,10 +123,19 @@ mod request_log;
 pub mod server;
 mod valid;
 
+// Re-export the DI container's `inventory` registry + `Container` so the
+// `#[rest_controller]` macro's generated `ControllerMount` thunks resolve
+// through `firefly_web` (and, via the facade, `firefly::web`).
+pub use firefly_container::{inventory, Container};
+
 pub use content_negotiation::{
     default_message_converters, parse_accept, value_to_xml, xml_to_value, ContentNegotiationLayer,
     ContentNegotiationService, JsonMessageConverter, MessageConverter, MessageConverterRegistry,
     NegotiablePayload, Negotiate, XmlMessageConverter,
+};
+pub use controllers::{
+    controller_count, mount_controllers, mount_route_contributors, ControllerMount,
+    RouteContributor,
 };
 pub use correlation::{
     current_correlation_context, with_correlation_context, CorrelationContext, CorrelationId,
@@ -137,7 +147,9 @@ pub use csrf::{
     generate_csrf_token, validate_csrf_token, CsrfLayer, CsrfService, CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME, CSRF_SAFE_METHODS,
 };
-pub use exception_handler::ExceptionHandlerRegistry;
+pub use exception_handler::{
+    ExceptionAdviceLayer, ExceptionAdviceService, ExceptionHandlerRegistry,
+};
 pub use headers::{SecurityHeadersConfig, SecurityHeadersLayer, SecurityHeadersService};
 pub use idempotency::{
     IdempotencyConfig, IdempotencyLayer, IdempotencyRecord, IdempotencyService, IdempotencyStore,

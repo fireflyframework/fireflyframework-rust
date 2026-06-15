@@ -22,8 +22,9 @@ path = "src/main.rs"
 # The one-dependency story: the `firefly` facade re-exports the whole
 # framework AND every `#[derive(...)]` / `#[...]` macro. Generated code
 # resolves runtime types through the facade's `__rt` contract, so Lumen
-# never lists the underlying `firefly-*` crates.
-firefly = { workspace = true }
+# never lists the underlying `firefly-*` crates. The `admin` feature pulls in
+# the self-hosted admin dashboard (`firefly::admin`) the management port mounts.
+firefly = { workspace = true, features = ["admin"] }
 
 # The two ecosystem crates a Firefly service still writes against directly:
 # axum (you author the controller handlers) and serde (your messages and

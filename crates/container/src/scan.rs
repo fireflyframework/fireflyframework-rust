@@ -143,6 +143,10 @@ pub struct BeanDescriptor {
     pub initialized: bool,
     /// How many times the bean has been resolved.
     pub resolution_count: u64,
+    /// Short type names of this bean's `#[autowired]` dependencies (e.g.
+    /// `Bus`), for the admin dependency graph's edges. Empty for
+    /// hand-registered instances.
+    pub dependencies: Vec<String>,
 }
 
 /// Aggregate counts for the admin overview (`beans.total` + `stereotypes`).
@@ -173,6 +177,25 @@ pub struct RouteDescriptor {
     pub path: &'static str,
     /// The handler method name (`get_order`).
     pub handler: &'static str,
+    /// The OpenAPI operation `summary` (`#[get(summary = "...")]`), or `""`.
+    pub summary: &'static str,
+    /// The OpenAPI operation `description` (`#[get(description = "...")]`), or `""`.
+    pub description: &'static str,
+    /// Operation `tags` overriding the controller-derived grouping
+    /// (`#[get(tags = ["Wallets"])]` or `#[rest_controller(tag = "...")]`);
+    /// empty means "derive the tag from the controller type name".
+    pub tags: &'static [&'static str],
+    /// Whether the operation is marked `deprecated: true` (`#[get(deprecated)]`).
+    pub deprecated: bool,
+    /// The request-body component-schema name (`#[post(request = Foo)]`), or
+    /// `""`. Resolves to a `$ref` into a [`SchemaDescriptor`]-registered schema.
+    pub request_schema: &'static str,
+    /// The success-response component-schema name (`#[get(response = Foo)]`),
+    /// or `""`. Resolves to a `$ref` into a registered schema.
+    pub response_schema: &'static str,
+    /// The success status code (`#[post(status = 202)]`); `0` defaults to 201
+    /// for `POST` and 200 otherwise.
+    pub status: u16,
 }
 
 inventory::collect!(RouteDescriptor);
@@ -182,4 +205,29 @@ inventory::collect!(RouteDescriptor);
 /// Used by the OpenAPI generator to build a spec from the live route table.
 pub fn routes() -> impl Iterator<Item = &'static RouteDescriptor> {
     inventory::iter::<RouteDescriptor>.into_iter()
+}
+
+/// Compile-time metadata for one `#[derive(Schema)]` type — its OpenAPI
+/// component-schema name and the JSON Schema object describing it.
+///
+/// Emitted by the `#[derive(Schema)]` macro as an [`inventory::submit!`]. The
+/// OpenAPI generator collects every descriptor into `#/components/schemas/*`
+/// (the Rust analog of springdoc reflecting over `@Schema` model classes) so a
+/// service's request/response DTOs appear in the generated document and in
+/// Swagger-UI's *Schemas* panel — without runtime reflection.
+#[derive(Debug, Clone, Copy)]
+pub struct SchemaDescriptor {
+    /// The component schema name (`#/components/schemas/{name}`), the type's ident.
+    pub name: &'static str,
+    /// The JSON Schema object for the type, as a compile-time JSON string
+    /// (`{"type":"object","properties":{…},"required":[…]}`).
+    pub schema: &'static str,
+}
+
+inventory::collect!(SchemaDescriptor);
+
+/// Iterate every `#[derive(Schema)]` component schema discovered across the
+/// crate graph. Fed into the OpenAPI document's `components.schemas`.
+pub fn schemas() -> impl Iterator<Item = &'static SchemaDescriptor> {
+    inventory::iter::<SchemaDescriptor>.into_iter()
 }

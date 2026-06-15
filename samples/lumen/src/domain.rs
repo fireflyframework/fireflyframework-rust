@@ -303,7 +303,7 @@ impl Wallet {
 /// It is a flat, query-optimised view rebuilt from the event stream by the
 /// [`ledger`](crate::ledger) projection; the [`Wallet`] aggregate is the
 /// write model, this is the read model (CQRS, book chapter 7).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
 pub struct WalletView {
     /// The wallet id.
     pub id: String,

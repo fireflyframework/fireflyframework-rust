@@ -146,6 +146,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::Router;
+use firefly_container::Container;
 
 pub use firefly_actuator::{
     ActuatorConfig, HealthComposite, HealthIndicator, HealthResult, HealthStatus,
@@ -156,7 +157,9 @@ pub use firefly_cache::{Adapter, MemoryAdapter};
 pub use firefly_cqrs::{Bus, ValidationMiddleware};
 pub use firefly_eda::{Broker, InMemoryBroker};
 pub use firefly_lifecycle::{Application, ShutdownHandle, ShutdownSignal};
-pub use firefly_observability::{Indicator, LogConfig, LogFormat, RedactionConfig};
+pub use firefly_observability::{
+    DynLogLayer, Indicator, LevelHandle, LogConfig, LogFormat, RedactionConfig,
+};
 pub use firefly_scheduling::Scheduler;
 pub use firefly_web::{
     ContentNegotiationLayer, CorrelationLayer, CorsConfig, CorsLayer, CsrfLayer, IdempotencyConfig,
@@ -518,6 +521,14 @@ impl Core {
         // every access-log / metric / exchange sees the correlation id.
         router = router.layer(CorrelationLayer::new());
 
+        // W3C Trace Context (always) sits just outside Correlation: it validates
+        // the inbound `traceparent`/`tracestate`, ORIGINATES a root span when
+        // none arrives (so logs + downstream hops get a trace id), and scopes the
+        // trace task-locals so `tracing` records carry `trace_id`/`span_id`. It
+        // inserts the (inbound or minted) `traceparent` into the request so the
+        // inner correlation layer echoes it on the response.
+        router = router.layer(firefly_observability::TraceContextLayer::new());
+
         // SecurityHeaders sits just outside Correlation (so it decorates
         // every response) but inside Problem (so it also decorates the
         // recovered 500 body).
@@ -601,6 +612,36 @@ impl Core {
         Arc::clone(&self.metrics)
     }
 
+    /// Auto-registers this core's **framework infrastructure singletons** into a
+    /// DI [`Container`] — the CQRS [`Bus`], the task [`Scheduler`], the
+    /// [`MetricRegistry`], and the [`HealthComposite`] — each tagged
+    /// `component`, so application beans can `#[autowired]` them and the admin
+    /// `/beans` view shows the full wiring.
+    ///
+    /// This is the framework's job, not the product's: every service that builds
+    /// a `Core`/`WebStack` gets the same infrastructure beans **without
+    /// hand-registering any** (a [`FireflyApplication`] calls this for you).
+    /// Applications then declare only their *own* domain beans (`#[derive(Service)]`
+    /// / `#[derive(Repository)]` + `container.scan()`, or `register_arc` for a
+    /// hand-built singleton).
+    pub fn register_beans(&self, container: &Container) {
+        container.register_arc::<Bus>(Arc::clone(&self.bus));
+        container.set_stereotype::<Bus>("component");
+        container.register_arc::<Scheduler>(Arc::clone(&self.scheduler));
+        container.set_stereotype::<Scheduler>("component");
+        container.register_arc::<MetricRegistry>(Arc::clone(&self.metrics));
+        container.set_stereotype::<MetricRegistry>("component");
+        container.register_arc::<HealthComposite>(Arc::clone(&self.health));
+        container.set_stereotype::<HealthComposite>("component");
+        // Trait-object infrastructure PORTS (the event broker, the cache
+        // adapter) — registered via `register_port` so application beans can
+        // `#[autowired] field: Arc<dyn Broker>` / `Arc<dyn Adapter>` them.
+        container.register_port::<dyn Broker>(Arc::clone(&self.broker));
+        container.set_stereotype::<dyn Broker>("component");
+        container.register_port::<dyn Adapter>(Arc::clone(&self.cache));
+        container.set_stereotype::<dyn Adapter>("component");
+    }
+
     /// Returns a [`Application`] named after the app — Go's
     /// `NewApplication()`. Service authors append start/stop hooks and
     /// servers, then call `.run().await`. (Where the Go application
@@ -617,6 +658,20 @@ impl Core {
     /// was already installed.
     pub fn init_logging(&self) -> Result<(), tracing::subscriber::SetGlobalDefaultError> {
         firefly_observability::init_logging(self.log.clone())
+    }
+
+    /// Like [`init_logging`](Self::init_logging) but also installs additional
+    /// `tracing` [`Layer`](tracing_subscriber::Layer)s over the correlation
+    /// layer before setting the global default — the hook a self-hosted admin
+    /// dashboard uses to tee every log record into its in-memory capture buffer
+    /// (`/admin/api/logfile`) while the console JSON stream stays on. Returns
+    /// the [`LevelHandle`] so a `/loggers` surface can change levels at
+    /// runtime. Fails if a global subscriber was already installed.
+    pub fn init_logging_with_layers(
+        &self,
+        extra: Vec<DynLogLayer>,
+    ) -> Result<LevelHandle, tracing::subscriber::SetGlobalDefaultError> {
+        firefly_observability::init_logging_with_layers(self.log.clone(), extra)
     }
 
     /// Registers an observability [`Indicator`] on this core's actuator
