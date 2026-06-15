@@ -227,11 +227,23 @@ impl ApplicationContextBuilder {
 /// resolve by their concrete type; resolving by name is the only generic-free
 /// hook the container exposes, so we drive it through the bean descriptors.
 fn warm_singletons(container: &Arc<Container>) {
+    // Beans marked `#[firefly(lazy)]` (Spring `@Lazy`) opt out of eager warm-up;
+    // collect their effective names from the scan registry so we skip them.
+    let lazy: std::collections::HashSet<String> = firefly_container::discovered()
+        .filter(|reg| reg.lazy)
+        .map(|reg| {
+            if reg.bean_name.is_empty() {
+                reg.type_name.to_string()
+            } else {
+                reg.bean_name.to_string()
+            }
+        })
+        .collect();
     for bean in container.beans() {
         // Resolve by name when the bean carries one; anonymous beans are warmed
         // lazily on first use (their type is not statically known here). This
         // mirrors pyfly's eager loop, which fail-fast-resolves each singleton.
-        if !bean.name.is_empty() {
+        if !bean.name.is_empty() && !lazy.contains(&bean.name) {
             let _ = container.resolve_named_erased(&bean.name);
         }
     }

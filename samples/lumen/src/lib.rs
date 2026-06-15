@@ -38,7 +38,9 @@
 //! | [`Wallet`](domain::Wallet) aggregate (open / deposit / withdraw) | [`domain`] | `#[derive(AggregateRoot)]`, `#[derive(DomainEvent)]` |
 //! | Event-sourced [`Ledger`](ledger::Ledger) + read-model projection | [`ledger`] | `EventStore`, `Broker`, `#[event_listener]` |
 //! | CQRS commands / queries + handlers | [`commands`] | `#[derive(Command)]` / `#[derive(Query)]`, `#[command_handler]` / `#[query_handler]` |
-//! | [Transfer saga](transfer::run_transfer) (debit→credit + compensation) | [`transfer`] | `Saga`, `Step` |
+//! | [Transfer saga](transfer::run_transfer) (debit→credit + compensation) | [`transfer`] | `#[saga]` / `#[saga_step]` |
+//! | [Compliance workflow](compliance::run_compliance) (parallel checks → approve) | [`compliance`] | `#[workflow]` / `#[workflow_step]` |
+//! | [Two-phase transfer](tcc_transfer::run_tcc_transfer) (reserve → capture / release) | [`tcc_transfer`] | `#[tcc]` / `#[participant]` |
 //! | JWT-secured endpoints | [`security`] | `JwtService`, `BearerLayer`, `FilterChain` |
 //! | HTTP surface + composition root | [`web`] | `#[rest_controller]`, `WebStack`, actuator |
 //! | Scheduled housekeeping | [`housekeeping`] | `#[scheduled]` |
@@ -50,11 +52,13 @@
 //! root the HTTP tests drive with `tower::oneshot`.
 
 pub mod commands;
+pub mod compliance;
 pub mod domain;
 pub mod housekeeping;
 pub mod ledger;
 pub mod money;
 pub mod security;
+pub mod tcc_transfer;
 pub mod transfer;
 pub mod web;
 

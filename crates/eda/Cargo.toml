@@ -12,6 +12,10 @@ description = "Firefly Framework for Rust — Event envelope, Publisher/Subscrib
 firefly-kernel = { workspace = true }
 firefly-observability = { workspace = true }
 firefly-reactive = { workspace = true }
+# Bridges in-process @TransactionalEventListener events to the broker
+# (after-commit externalization); transactional does not depend on eda, so this
+# is acyclic.
+firefly-transactional = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

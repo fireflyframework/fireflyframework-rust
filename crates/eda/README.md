@@ -1,20 +1,24 @@
 # `firefly-eda`
 
-> **Tier:** Platform · **Status:** Partial (in-memory full; Kafka/RabbitMQ scaffolds)
+> **Tier:** Platform · **Status:** Stable (in-memory broker; dedicated Kafka/RabbitMQ/Redis/Postgres transport crates ship)
 
 ## Overview
 
 `firefly-eda` is the framework's **event-driven architecture layer**. It
 defines the `Event` envelope every Firefly event flows through, the
 `Publisher` / `Subscriber` / `Broker` ports, and an in-process fan-out
-`InMemoryBroker`. Production transports — Kafka and RabbitMQ — share
-the same ports and slot in via `new_kafka_broker(cfg)` /
-`new_rabbitmq_broker(cfg)` once the dedicated transport crates ship.
+`InMemoryBroker`. Production transports share the same ports and ship in
+dedicated crates: `firefly-eda-kafka`, `firefly-eda-rabbitmq` (Stable),
+`firefly-eda-redis` (Stable), and `firefly-eda-postgres`. Each provides
+its own factory (e.g. `firefly_eda_kafka::new_kafka_broker`) and the
+`firefly` facade feature-gates all four.
 
-Until those land, `new_kafka_broker` and `new_rabbitmq_broker` return
-the typed sentinels `EdaError::KafkaUnavailable` /
-`EdaError::RabbitMqUnavailable` so a misconfigured deployment fails
-loud at startup rather than silently falling back to in-memory.
+The in-crate `new_kafka_broker` / `new_rabbitmq_broker` are intentional
+sentinels: they return the typed errors `EdaError::KafkaUnavailable` /
+`EdaError::RabbitMqUnavailable` so a deployment that wires the abstract
+crate without selecting a real transport fails loud at startup rather
+than silently falling back to in-memory. Reach for each transport
+crate's own factory to get a live broker.
 
 `Event` has a stable, language-neutral wire format: fixed JSON field
 names (`id`, `type`, `source`, `topic`, `correlationId`, `time`,
@@ -340,6 +344,101 @@ let broker = new_kafka_broker(KafkaConfig {
 // and Subscriber once a Kafka-backed crate is registered; today it is
 // Err(EdaError::KafkaUnavailable).
 ```
+
+## Bridge to the in-process event system
+
+Firefly keeps two event layers distinct, exactly as Spring (and Spring
+Modulith) do:
+
+- **In-process application events** — `firefly::publish_event(e)` with
+  `#[firefly::application_event_listener]` /
+  `#[firefly::transactional_event_listener]` (the
+  [`firefly-transactional`](../transactional) crate). Synchronous,
+  in-VM, transaction-aware; never touches a broker.
+- **The message broker** — this crate. The
+  `#[event_listener("topic")]` macro is the **broker consumer** side: it
+  expands to a `Subscriber::subscribe` against the registered broker
+  (Spring's `@KafkaListener`), so it receives events that arrive *over
+  the wire*. It is **not** an in-process listener — do not confuse it
+  with `#[firefly::application_event_listener]`.
+
+The `registry` module is the bridge between the two: it lets a committed
+in-process event be forwarded to the broker, so a message is published
+for work that committed and never for work that rolled back (Spring
+Modulith's `@Externalized`).
+
+### Process-wide broker handle
+
+`register_broker(Arc<dyn Broker>)` installs a single process-wide broker;
+`broker()` returns it as `Option<Arc<dyn Broker>>`. First registration
+wins (it returns `false` if one was already set), mirroring the
+transaction manager and cache adapter, so a starter / auto-configuration
+wires it once at startup and any service or free-function listener can
+reach the broker without threading it through.
+
+```rust,ignore
+use std::sync::Arc;
+use firefly_eda::{register_broker, broker, Broker, InMemoryBroker};
+
+let b: Arc<dyn Broker> = Arc::new(InMemoryBroker::new());
+assert!(register_broker(b));        // first wins
+assert!(broker().is_some());
+```
+
+### Publish a payload to the broker
+
+`publish_to_broker(topic, event_type, source, &payload)` serializes a
+`Serialize` value to JSON and publishes it through the process-wide
+`broker()`. It errors with `EdaError::BrokerUnavailable` when no broker
+is registered. Call it from anywhere — an in-process listener body, a
+service method — to push a domain payload onto the broker.
+`publish_to_broker_on(&broker, …)` is the explicit-broker form for tests
+and multi-broker setups.
+
+```rust,ignore
+use serde::Serialize;
+use firefly_eda::publish_to_broker;
+
+#[derive(Serialize)]
+struct OrderPlaced { id: u32, total: u64 }
+
+publish_to_broker("orders", "order.placed", "orders-svc",
+    &OrderPlaced { id: 7, total: 350 }).await?;
+```
+
+### Externalize in-process events after commit
+
+`externalize_after_commit::<E>(topic, event_type)` registers an
+**after-commit** transactional listener that serializes every in-process
+event of type `E` (those published with `firefly::publish_event`) and
+forwards it to `topic`. Call it once at startup per externalized event
+type; thereafter a plain `publish_event(e)` reaches the broker when —
+and only when — the surrounding transaction commits.
+
+Because it rides the after-commit phase, a **rolled-back** transaction
+publishes nothing to the broker. With no active transaction the event is
+forwarded immediately (the no-transaction fallback). Forwarding is
+best-effort: a missing broker or a publish failure *after* commit is
+swallowed (it does not unwind the already-committed transaction); use a
+real outbox if you need at-least-once delivery.
+
+```rust,ignore
+use serde::Serialize;
+use firefly_eda::externalize_after_commit;
+
+#[derive(Serialize, Clone)]
+struct OrderPlaced { id: u32 }
+
+// once at startup: forward committed OrderPlaced events to the broker
+externalize_after_commit::<OrderPlaced>("orders", "order.placed");
+
+// later, inside a transaction:
+firefly::publish_event(OrderPlaced { id: 7 }).await; // broker sees it iff the tx commits
+```
+
+The full bridge is also re-exported through the facade as
+`firefly::eda::{register_broker, broker, publish_to_broker,
+externalize_after_commit}`.
 
 ## Reactive
 

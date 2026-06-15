@@ -39,7 +39,9 @@ use firefly_starter_data::{CoreConfig, Data};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The consumer owns the DB pool and migration timing.
     let conn = rusqlite::Connection::open(std::env::var("DATABASE_PATH")?)?;
-    migrations::Runner::new(migrations::DirSource::new("db")?).run(&conn)?;
+    let mut db = Sqlite(conn); // adapt your driver to the migrations Database port
+    let src = migrations::DirSource::new("db");
+    migrations::run(&mut db, &src)?;
 
     let data = Data::new(CoreConfig {
         app_name: "orders".into(),

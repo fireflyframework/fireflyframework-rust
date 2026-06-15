@@ -147,7 +147,8 @@ build a `ZonedCronTrigger`:
 use firefly::scheduling::{parse_cron, ZonedCronTrigger};
 
 // Lumen would run statements at 9am in the customer's region.
-let expr = parse_cron("0 9 * * MON-FRI").unwrap();
+// 1-5 is Monday through Friday (the dow domain is 0=Sunday .. 6=Saturday).
+let expr = parse_cron("0 9 * * 1-5").unwrap();
 let trigger = ZonedCronTrigger::in_zone(expr, "America/New_York").unwrap();
 ```
 

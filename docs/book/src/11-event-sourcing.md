@@ -79,21 +79,36 @@ evolution handled by **upcasters**). Both have first-class support below.
 
 ## The mental model
 
-```text
-            ┌────────────────────────┐
-            │  AggregateRoot::raise  │  record an event
-            └────────────────────────┘
-                       │
-                  uncommitted []
-                       │
-            ┌──────────┴──────────┐
-            │  EventStore::append │  optimistic concurrency
-            └──────────┬──────────┘
-                       │
-              ┌────────┴───────────┐
-              │  rehydrate / fold   │ → current state
-              └─────────────────────┘
-```
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 300" role="img"
+     aria-label="The event-sourcing cycle: AggregateRoot::raise records an event into the uncommitted list, EventStore::append persists it with optimistic concurrency, and rehydrate/fold replays the stream into the current state"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+  <rect x="100" y="14" width="220" height="48" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="210" y="36" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10"
+        font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">AggregateRoot::raise</text>
+  <text x="210" y="53" text-anchor="middle" font-size="10.5" fill="#7a6450">record an event</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="210" y1="62" x2="210" y2="84"/><polygon points="210,92 206,84 214,84"/>
+  </g>
+  <text x="210" y="80" text-anchor="middle" font-size="10.5" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">uncommitted []</text>
+  <rect x="100" y="94" width="220" height="48" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="210" y="116" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10"
+        font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">EventStore::append</text>
+  <text x="210" y="133" text-anchor="middle" font-size="10.5" fill="#7a6450">optimistic concurrency</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="210" y1="142" x2="210" y2="172"/><polygon points="210,180 206,172 214,172"/>
+  </g>
+  <rect x="100" y="182" width="220" height="48" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="210" y="204" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10"
+        font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">rehydrate / fold</text>
+  <text x="210" y="221" text-anchor="middle" font-size="10.5" fill="#7a6450">replay the stream</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="210" y1="230" x2="210" y2="252"/><polygon points="210,260 206,252 214,252"/>
+  </g>
+  <text x="210" y="282" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">current state</text>
+</svg>
+<figcaption>The event-sourcing cycle. <code>raise</code> stages an event on the aggregate, <code>EventStore::append</code> persists the uncommitted events under optimistic concurrency, and a later load rehydrates the aggregate by folding its stream back into the current state.</figcaption>
+</figure>
 
 ## The Wallet's domain events
 
@@ -509,8 +524,12 @@ publishes it — the same `to_envelope`-shaped bridge, but durable:
 use std::sync::Arc;
 use firefly_eventsourcing::{EdaSink, TransactionalOutbox};
 
-let outbox = TransactionalOutbox::new(Arc::new(EdaSink::new(broker)))
-    .with_max_attempts(5);
+let outbox = TransactionalOutbox::new(Arc::new(EdaSink::new(
+    broker,           // the Arc<dyn firefly_eda::Publisher>
+    "wallet.events",  // destination topic
+    "lumen",          // logical source stamped onto every Event::source
+)))
+.with_max_attempts(5);
 
 outbox.enqueue(some_event).await;       // a writer enqueues
 outbox.start().await;                   // background relay forwards + retries

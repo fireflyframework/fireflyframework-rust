@@ -232,6 +232,38 @@ pub fn transaction_manager() -> Option<Arc<dyn TransactionManager>> {
     MANAGER.get().cloned()
 }
 
+/// A transaction manager with no backing datasource: it runs the operation and
+/// honours the outcome's commit/rollback decision, driving transaction
+/// synchronization — the [`@TransactionalEventListener`](crate::events) commit
+/// phases — without a database. The Rust analog of Spring's
+/// `ResourcelessTransactionManager`.
+///
+/// Register it when you want transaction-bound event semantics (after-commit /
+/// after-rollback dispatch, [`externalize`](crate::events) bridging) but have no
+/// SQL datasource, and in tests that exercise those phases:
+///
+/// ```
+/// use std::sync::Arc;
+/// use firefly_transactional::{register_transaction_manager, LocalTransactionManager};
+///
+/// register_transaction_manager(Arc::new(LocalTransactionManager));
+/// ```
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LocalTransactionManager;
+
+#[async_trait]
+impl TransactionManager for LocalTransactionManager {
+    async fn execute<'a>(&self, _opts: TxOptions, op: BoxedTxOp<'a>) -> Result<TxOutcome, TxError> {
+        // No physical transaction: run the operation and let the orchestrator
+        // dispatch the commit/rollback phases from the returned outcome.
+        op.await
+    }
+
+    fn is_active(&self) -> bool {
+        true
+    }
+}
+
 /// Runs `f` inside a transaction governed by `opts` — the runtime entry point
 /// the `#[transactional]` macro expands to, and a fine programmatic API in its
 /// own right (Spring's `TransactionTemplate`).
@@ -311,24 +343,59 @@ where
     R: Send + 'static,
     E: Send + 'static + From<TxError>,
 {
-    let op: BoxedTxOp<'a> = Box::pin(async move {
-        let result: Result<R, E> = f().await;
-        let rolled_back = match &result {
-            Ok(_) => false,
-            Err(e) => should_rollback(e),
-        };
-        Ok(TxOutcome {
-            value: Box::new(result),
-            rolled_back,
-        })
-    });
+    // Bind transaction-event synchronization to the OUTERMOST transaction: a
+    // nested call reuses the outer buffer and lets the outer frame dispatch the
+    // phases (Spring's synchronization-per-physical-transaction, for the common
+    // `Propagation::Required` join).
+    let owns_scope = !crate::events::tx_scope_active();
 
-    match manager.execute(opts, op).await {
-        Ok(outcome) => *outcome
-            .value
-            .downcast::<Result<R, E>>()
-            .expect("transaction outcome carries the operation's Result<R, E>"),
-        Err(tx_err) => Err(E::from(tx_err)),
+    let run = async move {
+        let op: BoxedTxOp<'a> = Box::pin(async move {
+            let result: Result<R, E> = f().await;
+            let rolled_back = match &result {
+                Ok(_) => false,
+                Err(e) => should_rollback(e),
+            };
+            // BEFORE_COMMIT listeners run inside the transaction, just before the
+            // manager commits — only at the outermost frame, and only when the
+            // operation will actually commit.
+            if owns_scope && !rolled_back {
+                crate::events::dispatch_phase(crate::events::TransactionPhase::BeforeCommit).await;
+            }
+            Ok(TxOutcome {
+                value: Box::new(result),
+                rolled_back,
+            })
+        });
+
+        let executed = manager.execute(opts, op).await;
+
+        // Once the manager has committed or rolled back, dispatch the
+        // post-completion phases (outermost frame only). An infrastructure error
+        // is treated as a rollback.
+        if owns_scope {
+            let committed = matches!(&executed, Ok(outcome) if !outcome.rolled_back);
+            if committed {
+                crate::events::dispatch_phase(crate::events::TransactionPhase::AfterCommit).await;
+            } else {
+                crate::events::dispatch_phase(crate::events::TransactionPhase::AfterRollback).await;
+            }
+            crate::events::dispatch_phase(crate::events::TransactionPhase::AfterCompletion).await;
+        }
+
+        match executed {
+            Ok(outcome) => *outcome
+                .value
+                .downcast::<Result<R, E>>()
+                .expect("transaction outcome carries the operation's Result<R, E>"),
+            Err(tx_err) => Err(E::from(tx_err)),
+        }
+    };
+
+    if owns_scope {
+        crate::events::with_tx_scope(run).await
+    } else {
+        run.await
     }
 }
 

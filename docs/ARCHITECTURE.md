@@ -51,7 +51,7 @@ that bypasses the layering.
 
 ## Workspace of crates
 
-Firefly is a single Cargo workspace of **78 members**: **73
+Firefly is a single Cargo workspace of **79 members**: **74
 crates** under `crates/` (named `firefly-<dir>`), plus `tests/integration`
 and the four samples — `samples/lumen` (the canonical end-to-end service the
 book builds), `samples/orders`, `samples/reactive-banking`, and
@@ -64,7 +64,7 @@ infrastructure adapters — including the hexagonal database adapters
 `firefly-data-sqlx` / `firefly-data-mongodb` and the distributed session
 registries `firefly-session-redis` / `firefly-session-postgres` /
 `firefly-session-mongodb`). One
-version (`26.6.4`), one edition (2021), one MSRV (1.88) — set once in
+version (`26.6.5`), one edition (2021), one MSRV (1.88) — set once in
 `[workspace.package]` and inherited by every member.
 
 The runtime stack is deliberate and small:
@@ -125,7 +125,7 @@ The infrastructure layer.
 | `firefly-websocket`    | WebSocket server over axum: `WsSession`, `WebSocketHandler`, `ws_route`, topic `BroadcastHub` |
 | `firefly-transactional`| Async, declarative transactions: the object-safe `TransactionManager` port + `Propagation`/`Isolation`/`TxOptions` + the `transactional(...)` orchestrator (commit on `Ok`, rollback on `Err`); `with_tx` over pluggable `Database` / `Transaction` / `Executor` ports, nested-tx participation |
 | `firefly-testkit`      | HMAC signers (Stripe / GitHub / HMAC / Twilio), `SpyBroker`, JSON test helpers |
-| `firefly-container`    | Opt-in `TypeId`-keyed DI container (service locator): factory closures, scopes, trait-object bindings, providers |
+| `firefly-container`    | Opt-in `TypeId`-keyed dependency-injection container: stereotype scanning, factory closures, scopes, conditions/profiles, trait-object bindings, providers |
 | `firefly-aop`          | Aspect-oriented advice: `Pointcut` matcher, `JoinPoint`, `Aspect`, `intercept` chain with explicit call-site weaving |
 | `firefly-shell`        | Interactive CLI framework: `CommandSpec`, `StdShell` parser + REPL, `CommandLineRunner` / `ApplicationRunner` |
 
@@ -171,7 +171,21 @@ factories return typed `EdaError::{KafkaUnavailable, RabbitMqUnavailable}`
 sentinels when no transport crate is linked, so a misconfigured
 deployment fails loud rather than silently using in-memory. The
 `Event` JSON envelope is byte-identical across every transport, so
-producers and consumers interoperate regardless of broker. The same
+producers and consumers interoperate regardless of broker.
+
+`firefly-eda` also bridges the in-process application-event bus (the
+`firefly-transactional` events surface) to the broker — the Spring
+Modulith `@Externalized` analog. `register_broker(Arc<dyn Broker>)` /
+`broker()` hold the process-wide broker, `publish_to_broker(topic,
+event_type, source, &payload).await` serializes a `Serialize` payload to
+the `Event` JSON envelope and publishes it, and
+`externalize_after_commit::<E>(topic, event_type)` registers an
+after-commit listener that forwards in-process events of type `E` to the
+broker: a committed transaction publishes to the broker, a rolled-back one
+does not. This keeps domain logic publishing plain in-process events while
+externalization stays a registration-time, transaction-safe concern.
+
+The same
 pattern backs `firefly-cache` →
 `firefly-cache-redis` and the `firefly-notifications` `Channel` →
 `firefly-notifications-smtp`. Because each adapter is a leaf crate, its
@@ -358,12 +372,22 @@ describe:
 |-------|----|-----------|
 | `#[derive(Command)]` / `#[derive(Query)]` | a message struct | `impl firefly_cqrs::Message` (`#[firefly(validate)]` / `#[firefly(cache_ttl)]`) |
 | `#[command_handler]` / `#[query_handler]` | `async fn(Msg) -> Result<R, CqrsError>` | a `register_<fn>(bus)` helper |
-| `#[derive(Component/Service/Repository)]` + `register_all!` | a struct with `#[autowired]` fields | a `firefly_register(container)` method |
+| `#[derive(Component/Service/Repository/Controller/Configuration)]` | a struct with `#[autowired]` / `#[firefly(value = "${…}")]` fields | a `firefly_register(container)` method **plus a link-time `inventory` thunk** so `Container::scan()` discovers it (Spring stereotype scanning); `register_all!` is the explicit fallback for generic beans |
+| `#[derive(AutoConfiguration)]` + `#[bean]` | a configuration holder + factory methods | default beans registered *last* that back off via `condition_on_missing_bean` — Spring-Boot auto-configuration |
+| `#[derive(ConfigProperties)]` | a `serde` struct | a prefix-bound, injectable config singleton (`@ConfigurationProperties`) |
 | `#[scheduled]` | a zero-arg `async fn` | a `schedule_<fn>(scheduler)` helper |
 | `#[rest_controller]` + `#[get/post/put/delete/patch]` | an `impl` block | a `routes(state) -> axum::Router` |
+| `#[pre_authorize]` / `#[post_authorize]` | an `async fn -> Result<T, E>` (`E: From<SecurityError>`) | a guard against the ambient `Authentication` (Spring Security method security) |
+| `#[saga]` / `#[workflow]` / `#[tcc]` + `#[saga_step]`/`#[workflow_step]`/`#[participant]` | an `impl` block of `async fn(&self, …)` | a `saga()`/`workflow()`/`tcc()` builder + a `run(self: Arc<Self>, input)` runner — declarative orchestration with `depends_on` DAGs, compensation, and argument injection (`#[input]`/`#[from_step]`/`#[variable]`) |
 | `#[derive(DomainEvent)]` / `#[derive(AggregateRoot)]` | a struct | event-type / aggregate ergonomics |
-| `#[event_listener]` | `async fn(Event) -> FireflyResult<()>` | a `subscribe_<fn>(broker)` helper |
+| `#[event_listener]` | `async fn(Event) -> FireflyResult<()>` | a `subscribe_<fn>(broker)` helper — the **broker consumer** (Spring `@KafkaListener`-style topic subscription), distinct from the in-process listeners below |
+| `#[application_event_listener]` | a free `async fn on_x(event: &E)` | an in-process **application event** listener (Spring `@EventListener`) registered via `inventory`; runs (awaited) when a matching event is published with `firefly::publish_event(event).await` |
+| `#[transactional_event_listener(phase = "after_commit"\|"before_commit"\|"after_rollback"\|"after_completion")]` | a free `async fn on_x(event: &E)` | a transaction-phase-bound in-process listener (Spring `@TransactionalEventListener`, default `after_commit`); with no active transaction it falls back to running immediately |
 | `#[transactional]` | an `async fn -> Result<T, E>` (`E: From<TxError>`) | a body wrapped in `firefly_transactional::transactional` under the requested `propagation`/`isolation`/`read_only`/`timeout` |
+| `#[aspect(pointcut = "<glob>", order = <i32>)]` + `#[before]` / `#[after]` / `#[after_returning]` / `#[after_throwing]` / `#[around]` | an `impl` block of a `Default` aspect type | an `impl firefly_aop::Aspect` whose hooks delegate to the marked methods, plus an `inventory` registration against the pointcut so the aspect is discovered and woven by `firefly::advised` (explicit call-site weaving — Rust has no transparent runtime proxies) |
+| `#[cacheable(key = "…", ttl = "…")]` / `#[cache_put]` / `#[cache_evict(all_entries)]` | an `async fn -> Result<V, E>` | declarative caching over a registered `firefly_cache` adapter (Spring `@Cacheable`/`@CachePut`/`@CacheEvict`): read-through, write-through, and (prefix-)eviction; a plain call when no adapter is registered, and a cache read error falls through to recompute |
+| `#[derive(Validate)]` + `#[validate(email\|url\|not_empty\|length(min, max)\|range(min, max)\|pattern = "…"\|custom = "…")]` | a struct | `impl firefly_validators::bean::Validate` gathering *all* constraint failures into one `ValidationErrors`; pairs with the `firefly_web::Valid<T>` axum extractor (422 on a constraint failure, 400 on malformed JSON) — the JSR-380 / `@Valid` analog |
+| `#[async_method]` | an `async fn(self: Arc<Self>, …) -> R` | a method returning `firefly_scheduling::TaskHandle<R>` that spawns on a registered `TaskExecutor` (Spring `@Async`) |
 | `#[derive(Builder)]` | a struct | a fluent `T::builder()…build()` |
 | `#[derive(Mapper)]` | a struct with `#[firefly(from = "Source")]` | compile-time `From<Source>` conversions |
 | `#[repository]` | an `impl` block of `find_by_…`/`count_by_…`/`exists_by_…`/`delete_by_…` stubs | derived-query method bodies over `firefly-data`'s query engine |
@@ -371,10 +395,10 @@ describe:
 Because generated code addresses runtime types through `::firefly::__rt::…`
 (overridable per macro with `#[firefly(crate = "…")]`), a service that depends
 only on `firefly` — plus the `axum`/`serde` it writes against anyway — compiles
-whatever a macro expands to. There is no package scanning or reflective
-autowiring, so DI registration is explicit (`register_all!` lists the
-components) and free-fn handlers publish their wiring state explicitly; the
-macros remove the *mechanical* boilerplate, not the explicitness. The
+whatever a macro expands to. Stereotype components are discovered at startup by
+`Container::scan()` — a link-time `inventory` registry, the Rust analog of
+Spring's classpath component scan — with `register_all!` as the explicit
+fallback for generic beans; the macros remove the *mechanical* boilerplate. The
 `samples/macro-quickstart` service is the reference: the orders behaviour in
 376 source lines vs the builder-style `orders` sample's 1022.
 
@@ -415,34 +439,51 @@ call graph:
 
 ## Dependency injection (`firefly-container`)
 
-The framework's default composition idiom is **explicit construction** —
-`Arc<dyn Trait>` handles threaded through constructors, the same shape
-the rest of this document describes. `firefly-container` is an
-**opt-in** service-locator surface for teams that prefer that style,
-never a requirement: nothing in the core or the starters depends on it.
+`firefly-container` is a full **dependency-injection container** — the Rust
+analog of the Spring `ApplicationContext`. Explicit `Arc<dyn Trait>`
+construction through constructors (the shape the rest of this document uses)
+remains a perfectly good idiom, and the core and starters lean on it; the
+container is **opt-in** and nothing in the core *requires* it. But it is a
+complete DI engine, not a bare service locator:
 
-It is a `TypeId`-keyed registry behind `RwLock`s (so a `Container` is
-`Send + Sync` and shares as `Arc<Container>`). It provides
-`register_factory::<T>(scope, f)`, `resolve::<T>()`,
-`resolve_all::<T>()`, named beans, `Provider<T>` deferred handles,
-primary/order, and `Scope` (Singleton / Prototype / Request / Session /
-custom via the `ScopeHandler` SPI). Everything is explicit and
-type-safe:
+- **Stereotype components + scanning.** `#[derive(Component/Service/Repository/
+  Controller/Configuration/AutoConfiguration)]` register a bean and submit a
+  link-time `inventory` thunk, so `Container::scan()` / `scan_packages()`
+  discover every annotated type across the crate graph — the Rust analog of
+  Spring's classpath component scan. Generic beans, which can't be inventoried,
+  use the explicit `register_all!` fallback.
+- **Field autowiring.** `#[autowired]` injects by type — `Arc<T>`,
+  `Vec<Arc<T>>` (all candidates), `Option<Arc<T>>` (optional), and `Provider<T>`
+  (deferred) — with `#[firefly(qualifier = "…")]` for named beans and
+  `#[firefly(value = "${key:default}")]` for config injection (`@Value`).
+- **Bean factories.** `#[bean]` methods on a `#[derive(Configuration)]` holder
+  contribute beans keyed by return type, resolving their own arguments from the
+  container (`@Bean`).
+- **Conditions + profiles.** `#[firefly(profile = "…")]` (full Spring-Boot
+  2.4+ boolean grammar) and the `condition_on_property/class/bean/missing_bean/
+  single_candidate` family gate registration; a two-pass scan registers
+  unconditional beans first and then fills the gaps — so an
+  `#[derive(AutoConfiguration)]` bean backs off when the application defines its
+  own (`@ConditionalOnMissingBean`).
+- **Lifecycle.** Beans default to `Singleton` (lazily built, cached, and warmed
+  fail-fast at startup when run through `ApplicationContext`); `Transient`,
+  `Request`, `Session`, custom (`ScopeHandler` SPI), and a Spring-Cloud-style
+  `RefreshScope` are also supported. `#[firefly(post_construct = "…")]` runs
+  after injection; `#[firefly(pre_destroy = "…")]` runs in reverse construction
+  order on `Container::destroy()` / `ApplicationContext::close()`.
+- **Resolution.** `register_factory::<T>(scope, f)`, `resolve::<T>()`,
+  `resolve_all::<T>()`, named beans, `Provider<T>`, `primary`/`order` selection,
+  and trait-object bindings — `bind::<dyn Trait, Impl>(coerce)` keys an impl
+  under `TypeId::of::<dyn Trait>()`. A thread-local resolution stack catches
+  circular dependencies; the `/beans` actuator endpoint lists the graph.
 
-- **Autowiring is explicit.** A `register_factory` closure resolves its
-  own dependencies by calling `resolve` — there is no constructor
-  type-hint introspection.
-- **Registration is explicit.** There is no package scanning or
-  auto-discovery; components register themselves directly.
-- **Trait-object bindings** work because `TypeId::of::<dyn Trait>()` is a
-  valid key: `bind::<dyn Trait, Impl>(coerce)` registers an impl under
-  the trait's id with a caster, so `resolve::<dyn Trait>()` and
-  `resolve_all::<dyn Trait>()` return the bound implementation.
-- **Circular dependencies** are caught by a thread-local resolution
-  stack.
-
-This is deliberately the *explicit* end of the DI spectrum: no runtime
-magic, every wiring visible in source.
+Rust has no runtime reflection, so a few Spring seams take a different shape: a
+bean is built by one factory closure with no post-instantiation phase, so there
+is no `BeanPostProcessor`, `*Aware` callback, `FactoryBean`, or scoped-proxy —
+`Provider<T>` is the idiomatic substitute for deferred or shorter-scoped
+dependencies. Within that constraint the container is a faithful, declarative DI
+engine; the [Dependency Injection chapter](book/src/04a-dependency-injection.md)
+documents the full surface.
 
 ## Aspect-oriented programming (`firefly-aop`)
 
@@ -455,11 +496,21 @@ runs the advice chain around the captured original call.
 
 The key design decision is **explicit weaving at the call site**. The
 call site wraps the original call in an `Invocation` and routes it
-through `intercept`, rather than rewriting live methods at runtime.
-Non-matching methods cost nothing: if no binding matches the qualified
-name, `intercept` runs the invocation with zero advice overhead. Args
+through `intercept` (or its global front, `firefly::advised(type_name,
+method, args, call).await`), rather than rewriting live methods at
+runtime — Rust has no transparent runtime proxies, so weaving is always
+explicit at the call site. Non-matching methods cost nothing: if no
+binding matches the qualified name, the call runs with zero advice
+overhead. Args
 and results are type-erased to `Arc<dyn Any + Send + Sync>` and advice
-downcasts when it needs the concrete type. For HTTP-edge and
+downcasts when it needs the concrete type. Aspects are declared with the
+`#[firefly::aspect(pointcut = "…", order = …)]` macro over a `Default`
+`impl` block whose methods carry `#[before]` / `#[after]` /
+`#[after_returning]` / `#[after_throwing]` / `#[around]` markers; the
+macro generates an `impl firefly_aop::Aspect` and an `inventory`
+registration, so `register_discovered_aspects` / `matching_bindings`
+pick it up across the crate graph (`register_aspect` is the programmatic
+fallback). For HTTP-edge and
 bus-dispatch cross-cutting
 concerns, the framework still prefers `firefly-web`'s tower layers and
 `firefly-cqrs`'s `Middleware`; `firefly-aop` targets pattern-matched
@@ -535,7 +586,7 @@ Wave 1 ── zero internal deps:
   container, aop, shell, macros                 (stand-alone)
         │
 Wave 2 ── kernel-dependent:
-  web, observability, eda, client, session, websocket
+  reactive, web, observability, eda, client, session, websocket
         │
 Wave 3 ── adapters + aggregate:
   callbacks, webhooks            (→ client)
@@ -566,5 +617,5 @@ Wave 4 ── composition + front door:
 ## Versioning
 
 Calendar-versioned, expressed as valid semver (`YY.M.PATCH`). The
-current version is exposed as `firefly_kernel::VERSION = "26.6.4"` and
+current version is exposed as `firefly_kernel::VERSION = "26.6.5"` and
 set once in the workspace `Cargo.toml`.

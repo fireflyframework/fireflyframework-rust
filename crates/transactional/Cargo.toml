@@ -11,7 +11,10 @@ description = "Firefly Framework for Rust — with_tx transaction helper over a 
 [dependencies]
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+# `tokio::task_local!` carries the per-transaction event buffer that backs
+# `@TransactionalEventListener`; `inventory` discovers `#[event_listener]`s.
+tokio = { workspace = true }
+inventory = { workspace = true }
 
 [dev-dependencies]
 rusqlite = { workspace = true }
-tokio = { workspace = true }

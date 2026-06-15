@@ -30,6 +30,8 @@
 //! | `POST /api/v1/wallets/:id/deposit`     | [`WalletApi::deposit`]  | CQRS `Deposit`               |
 //! | `POST /api/v1/wallets/:id/withdraw`    | [`WalletApi::withdraw`] | CQRS `Withdraw`              |
 //! | `POST /api/v1/transfers`               | [`WalletApi::transfer`] | Saga (debit→credit)          |
+//! | `POST /api/v1/transfers/compliance`    | [`WalletApi::transfer_compliance`] | Workflow (parallel checks) |
+//! | `POST /api/v1/transfers/2pc`           | [`WalletApi::transfer_2pc`] | TCC (reserve→capture)    |
 //! | `GET  /api/v1/wallets/:id/events`      | `stream_events`        | reactive stream (feature `streaming`) |
 
 // `firefly::web::WebError` is a large enum by design; returning it from the
@@ -53,6 +55,8 @@ use serde::Deserialize;
 use crate::commands::{Deposit, GetWallet, OpenWallet, Withdraw};
 use crate::domain::{DomainError, WalletView};
 use crate::ledger::{self, Ledger, ReadModel};
+use crate::compliance::{run_compliance, ComplianceError};
+use crate::tcc_transfer::{run_tcc_transfer, TccTransferResult};
 use crate::transfer::{run_transfer, TransferError, TransferRequest, TransferResult};
 
 /// Lumen's application name (banner + `/actuator/info`).
@@ -266,6 +270,49 @@ impl WalletApi {
                 }
             })?;
         // A transfer touches both wallets' views; invalidate the family.
+        api.query_cache.invalidate_type::<GetWallet>();
+        Ok(Json(result))
+    }
+
+    /// `POST /api/v1/transfers/compliance` — gate a transfer through the
+    /// parallel compliance **workflow** (balance + limit checks → approve).
+    /// `200 OK` with the decision when approved; `422` carrying the reason when
+    /// rejected. A read-only pre-check, so it does not move funds.
+    #[post("/transfers/compliance")]
+    async fn transfer_compliance(
+        State(api): State<WalletApi>,
+        Json(body): Json<TransferRequest>,
+    ) -> WebResult<Json<serde_json::Value>> {
+        run_compliance(&api.ledger, &body).await.map_err(|e| match e {
+            // An unknown source wallet is a 404 (like GET /wallets/:id); a
+            // failed check is a 422.
+            ComplianceError::NotFound(detail) => WebError::from(FireflyError::not_found(detail)),
+            ComplianceError::Rejected(detail) => WebError::from(FireflyError::validation(detail)),
+        })?;
+        Ok(Json(serde_json::json!({
+            "decision": "approved",
+            "from": body.from,
+            "to": body.to,
+            "amount": body.amount,
+        })))
+    }
+
+    /// `POST /api/v1/transfers/2pc` — run a two-phase (Try/Confirm/Cancel)
+    /// transfer via the **TCC** coordinator. `200 OK` with the confirmed result,
+    /// or `422` if a reservation failed (the source hold is released).
+    #[post("/transfers/2pc")]
+    async fn transfer_2pc(
+        State(api): State<WalletApi>,
+        Json(body): Json<TransferRequest>,
+    ) -> WebResult<Json<TccTransferResult>> {
+        let result = run_tcc_transfer(&api.ledger, &body)
+            .await
+            .map_err(|e| match e {
+                TransferError::Invalid(detail) => WebError::from(FireflyError::validation(detail)),
+                TransferError::Compensated(detail) => {
+                    WebError::from(FireflyError::validation(detail))
+                }
+            })?;
         api.query_cache.invalidate_type::<GetWallet>();
         Ok(Json(result))
     }

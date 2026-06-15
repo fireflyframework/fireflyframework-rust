@@ -43,8 +43,13 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+pub mod bean;
+
+#[doc(inline)]
+pub use bean::{Validate, ValidationError as FieldError, ValidationErrors};
+
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.4";
+pub const VERSION: &str = "26.6.5";
 
 /// The canonical error returned by every validator when the input is
 /// malformed.
@@ -1130,6 +1135,6 @@ mod tests {
 
     #[test]
     fn version_stamp() {
-        assert_eq!(VERSION, "26.6.4");
+        assert_eq!(VERSION, "26.6.5");
     }
 }

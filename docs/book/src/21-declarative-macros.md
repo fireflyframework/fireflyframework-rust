@@ -76,10 +76,17 @@ the exact Lumen file it lands in:
 | `#[event_listener(topic = "…")]` | `ledger.rs` | a `subscribe_<fn>(broker)` helper |
 | `#[rest_controller]` + `#[get/post]` | `web.rs` | a `routes(state) -> axum::Router` |
 | `#[scheduled(fixed_rate = "…")]` | `housekeeping.rs` | a `schedule_<fn>(scheduler)` helper |
+| `#[firefly::saga]` + `#[saga_step]` | `transfer.rs` | `TransferSaga::saga()` + a `run`-style step graph with compensation |
+| `#[firefly::workflow]` + `#[workflow_step]` | `compliance.rs` | a workflow `run` over the DAG of steps |
+| `#[firefly::tcc]` + `#[participant]` | `tcc_transfer.rs` | a TCC `run` driving each participant's try / confirm / cancel |
 
-Four more macros round out the declarative set. Lumen is event-sourced, so it
-does not exercise the relational ones in its own source — they are shown here as
-focused standalone examples and noted against Lumen's event-sourced choices:
+Lumen also exercises the declarative orchestration macros above
+(`#[firefly::saga]` / `#[firefly::workflow]` / `#[firefly::tcc]`) in its own
+source. Several more macros round out the declarative set; Lumen does not
+exercise these in its own source — it is event-sourced (so the relational
+`#[firefly::repository]` / `#[firefly::transactional]` never appear) and handles
+the remaining cross-cutting concerns by other means — but each is a first-class
+part of the framework, shown here as a focused standalone example:
 
 | Macro | Purpose | Generates |
 |-------|---------|-----------|
@@ -88,6 +95,11 @@ focused standalone examples and noted against Lumen's event-sourced choices:
 | `#[firefly::repository]` | derived-query and custom-query method bodies | method bodies on a `SqlxReactiveRepository` impl from method names or `#[query(…)]` |
 | `#[firefly::transactional]` | a declared transaction boundary | a commit-on-`Ok` / rollback-on-`Err` boundary around an `async fn` body |
 | `#[firefly::pre_authorize]` / `#[firefly::post_authorize]` | method-level access control | an access check before the body, or a returnObject check after it |
+| `#[derive(Validate)]` (+ `Valid<T>`) | JSR-380 bean validation | `impl Validate` running the field `#[validate(email/url/not_empty/length/range/pattern/custom)]` checks; the `Valid<T>` web extractor rejects a constraint failure with 422 |
+| `#[cacheable]` / `#[cache_put]` / `#[cache_evict]` | declarative caching | a read-through / write-through / evict body around the process-registered cache adapter |
+| `#[async_method]` | fire-and-forget async | rewrites an `async fn(self: Arc<Self>, …) -> R` into a non-async `fn … -> TaskHandle<R>` that spawns the body on the registered executor |
+| `#[application_event_listener]` / `#[transactional_event_listener]` | in-process events | an `@EventListener` / `@TransactionalEventListener` discovered via `inventory` and fired by `publish_event` (the latter bound to a transaction commit phase) |
+| `#[aspect]` (+ `#[before]`/`#[after]`/`#[around]`/…) | aspect-oriented advice | `impl firefly_aop::Aspect` + an `inventory` registration; advice runs around the explicit `advised(…)` weave point |
 
 The DI stereotype derives (`#[derive(Component/Service/Repository/Configuration/
 AutoConfiguration/Controller)]`, `#[bean]`, `#[autowired]`, `register_all!`) and
@@ -537,18 +549,21 @@ Read top to bottom, the macros tell Lumen's story:
   ledger.rs       #[event_listener(topic = "wallets.events")]
   commands.rs     #[derive(Command)] x3   #[derive(Query)]
                   #[command_handler] x3   #[query_handler]
-  transfer.rs     (Saga / Step builder — orchestration is a runtime API, not a macro)
+  transfer.rs     #[firefly::saga] + #[saga_step] x2
+  compliance.rs   #[firefly::workflow] + #[workflow_step] x3
+  tcc_transfer.rs #[firefly::tcc] + #[participant] x2
   security.rs     (JwtService / BearerLayer / FilterChain — runtime APIs)
-  web.rs          #[rest_controller] + #[get] / #[post] x6
+  web.rs          #[rest_controller] + #[get] / #[post] x7
   housekeeping.rs #[scheduled(fixed_rate = "60s", initial_delay = "5s")]
 ```
 
-Note what is *not* a macro: the transfer saga and the security filter chain are
-built with runtime builders (`Saga::new(...).step(...)`,
-`FilterChain::new().require(...)`), because their shape is data, not a fixed
-declaration — and Lumen keeps them explicit so the control flow stays visible.
-Declarative where it collapses boilerplate, explicit where the graph is the
-point: that balance is the whole design.
+Note what is *not* a macro: the security filter chain is built with a runtime
+builder (`FilterChain::new().require(...)`), because its shape is data, not a
+fixed declaration — and Lumen keeps it explicit so the control flow stays
+visible. The saga, workflow, and TCC are now declarative macros
+(`#[firefly::saga]`, `#[firefly::workflow]`, `#[firefly::tcc]`); only the filter
+chain remains a runtime builder. Declarative where it collapses boilerplate,
+explicit where the graph is the point: that balance is the whole design.
 
 ## Verifying the crate
 
@@ -556,7 +571,7 @@ Everything above compiles and is tested. From the workspace root:
 
 ```bash
 cargo build  -p firefly-sample-lumen
-cargo test   -p firefly-sample-lumen                       # 34 unit + 7 HTTP + 1 doctest
+cargo test   -p firefly-sample-lumen                       # 42 unit + 12 HTTP + 1 doctest
 cargo test   -p firefly-sample-lumen --features streaming  # + 3 streaming tests
 cargo clippy -p firefly-sample-lumen --all-targets -- -D warnings
 ```
@@ -574,10 +589,13 @@ Nothing — this chapter is the retrospective, not a new feature. Re-read as a
 catalogue, Lumen's macros are: three `#[derive(DomainEvent)]` + one
 `#[derive(AggregateRoot)]` (`domain.rs`); one `#[event_listener]` (`ledger.rs`);
 three `#[derive(Command)]` + one `#[derive(Query)]` + three `#[command_handler]`
-+ one `#[query_handler]` (`commands.rs`); one `#[rest_controller]` with six verb
-methods (`web.rs`); and one `#[scheduled]` (`housekeeping.rs`). Each replaced a
-chunk of hand-written wiring with a declaration next to the code — and all of it
-arrived through one dependency and one prelude glob.
++ one `#[query_handler]` (`commands.rs`); the declarative orchestration set —
+`#[firefly::saga]` + `#[saga_step]` (`transfer.rs`), `#[firefly::workflow]` +
+`#[workflow_step]` (`compliance.rs`), and `#[firefly::tcc]` + `#[participant]`
+(`tcc_transfer.rs`); one `#[rest_controller]` with seven verb methods (`web.rs`);
+and one `#[scheduled]` (`housekeeping.rs`). Each replaced a chunk of
+hand-written wiring with a declaration next to the code — and all of it arrived
+through one dependency and one prelude glob.
 
 ## Exercises
 

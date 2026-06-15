@@ -91,7 +91,7 @@ impl WorkflowState {
 ```
 
 `Core`, `CoreConfig`, `WebStack`, `FilterChain`, the orchestration journey
-primitives (`Workflow`, `Node`, `SignalService` types, `WorkflowQueryError`,
+primitives (`Workflow`, `Node`, `SignalError`, `WorkflowQueryError`,
 `CompensationPolicy`, …), and the domain-SDK client surface (`DomainClient` =
 `RestClient`, `DomainClientBuilder` = `RestBuilder`, `ClientError`) are
 re-exported flat, so an experience service can depend on

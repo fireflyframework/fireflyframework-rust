@@ -111,7 +111,7 @@ are exported for cross-crate agreement.
 ### Version
 
 `firefly_kernel::VERSION` is the released framework version
-(`"26.6.1"` at the time of writing — CalVer expressed as valid semver)
+(`"26.6.5"` at the time of writing — CalVer expressed as valid semver)
 — embedded in the actuator `/version` payload and the startup banner.
 
 ## Domain building blocks and structured context
@@ -154,8 +154,7 @@ publication. The event-sourced variant (versioned, wire-formatted,
 `EventStore`-coupled) lives in `firefly-eventsourcing`. Value objects
 are expressed idiomatically with native `Clone` + struct-update syntax,
 and the repository abstraction lives in `firefly_data::Repository<T, K>`
-(`save`, `find_by_id`, `delete`, and `next_id`, which mints a fresh
-`Uuid::new_v4()`).
+(`find_by_id`, `find`, `find_page`, `save`, and `delete`).
 
 ### Domain error constructors
 

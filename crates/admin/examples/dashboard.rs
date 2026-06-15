@@ -230,7 +230,7 @@ async fn main() {
         container: Some(container),
         ..AdminDeps::new(
             "demo-service",
-            "26.6.4",
+            "26.6.5",
             health,
             Arc::clone(&metrics),
             Arc::clone(&traces),
@@ -271,7 +271,7 @@ fn seed_traces(traces: &TraceBuffer) {
             duration_ms: ms,
             client_host: Some("127.0.0.1".into()),
             content_type: Some("application/json".into()),
-            user_agent: "firefly-admin-demo/26.6.4".into(),
+            user_agent: "firefly-admin-demo/26.6.5".into(),
             content_length: Some(256),
         });
     }
@@ -339,7 +339,7 @@ async fn live_activity(metrics: Arc<MetricRegistry>, traces: Arc<TraceBuffer>, l
             duration_ms: 1.0 + (tick % 9) as f64,
             client_host: Some("127.0.0.1".into()),
             content_type: Some("application/json".into()),
-            user_agent: "firefly-admin-demo/26.6.4".into(),
+            user_agent: "firefly-admin-demo/26.6.5".into(),
             content_length: Some(256),
         });
 

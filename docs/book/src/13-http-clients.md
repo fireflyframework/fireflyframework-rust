@@ -266,7 +266,7 @@ A Lumen experience service registers its downstream clients up front, then
 composes them:
 
 ```rust,ignore
-use firefly::starter_experience::{ExperienceStack, DomainClients};
+use firefly_starter_experience::{ExperienceStack, DomainClients};
 use firefly::starter_web::CoreConfig;
 
 let bff = ExperienceStack::new(CoreConfig {
@@ -296,8 +296,8 @@ response.
 > the one-dependency facade — a domain service does not need it.
 
 > **The BFF pattern.** A BFF is a thin application that aggregates several
-> domain services into one journey-shaped API, server-side. `Mono::zip` (and the
-> concurrent fan-out above) launches the upstream calls together, so the
+> domain services into one journey-shaped API, server-side. `Mono::zip_with`
+> (and the concurrent fan-out above) launches the upstream calls together, so the
 > composite latency is bounded by the slower upstream rather than their sum, and
 > a circuit-open upstream degrades gracefully instead of failing the whole
 > response. The team-ownership model follows from the tier boundary: domain teams
@@ -309,8 +309,8 @@ response.
 The crate ships builders/scaffolds for the protocols a back-office platform
 needs — SOAP (CXF-style envelope), gRPC, GraphQL, and WebSocket — selected by
 feature so heavy dependencies stay out of services that do not use them. The
-REST and GraphQL surfaces are fully wired; SOAP and the streaming protocols are
-feature-gated.
+REST, GraphQL, and SOAP surfaces are fully wired; the streaming protocols (gRPC
+and WebSocket) are feature-gated.
 
 Outbound calls inherit the caller's correlation id automatically, so a request
 that fans out to three upstreams stitches together in your traces.

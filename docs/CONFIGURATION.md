@@ -23,7 +23,7 @@ struct Web { port: u16, host: String }
 struct Cache { adapter: String, ttl: i64 }
 
 #[derive(Deserialize)]
-struct AppCfg { web: Web, cache: Cache, tags: Vec<String> }
+struct AppCfg { name: String, web: Web, cache: Cache, tags: Vec<String> }
 
 let sources: Vec<Box<dyn Source>> = vec![
     Box::new(from_optional_yaml("application.yaml")),

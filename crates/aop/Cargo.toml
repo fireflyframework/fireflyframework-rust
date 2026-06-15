@@ -11,6 +11,10 @@ description = "Firefly Framework for Rust — Aspect-oriented advice: pointcut g
 [dependencies]
 regex = { workspace = true }
 async-trait = { workspace = true }
+# Crate-graph discovery of `#[aspect]`-declared aspects: each macro emits an
+# `inventory::submit!` thunk that the process-global registry drains once on
+# first use (the same pattern firefly-transactional uses for event listeners).
+inventory = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -58,6 +58,13 @@ pub enum EdaError {
     #[error("firefly/eda: broker closed")]
     Closed,
 
+    /// No process-wide [`Broker`](crate::Broker) was registered, so a
+    /// [`publish_to_broker`](crate::publish_to_broker) call or an externalized
+    /// event had nowhere to go. Register one at startup with
+    /// [`register_broker`](crate::register_broker).
+    #[error("firefly/eda: no broker registered (call register_broker at startup)")]
+    BrokerUnavailable,
+
     /// A subscriber handler failed during delivery. The wrapped
     /// [`FireflyError`] is the handler's error, returned to the
     /// publisher unchanged (display and source chain pass through

@@ -2,145 +2,141 @@
      width="750" height="925" viewBox="0 0 750 925"
      font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="300" y2="925" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#16110c"/>
-      <stop offset="0.55" stop-color="#1f160d"/>
-      <stop offset="1" stop-color="#0f0b07"/>
+    <!-- deep night sky: cool charcoal at the top warming toward the title -->
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="925" gradientUnits="userSpaceOnUse">
+      <stop offset="0"    stop-color="#0a0e13"/>
+      <stop offset="0.42" stop-color="#0c0f12"/>
+      <stop offset="0.72" stop-color="#120f0c"/>
+      <stop offset="1"    stop-color="#0b0907"/>
     </linearGradient>
-    <radialGradient id="glow" cx="375" cy="314" r="310" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#f6a821" stop-opacity="0.30"/>
-      <stop offset="0.55" stop-color="#d4793a" stop-opacity="0.10"/>
-      <stop offset="1" stop-color="#d4793a" stop-opacity="0"/>
+    <!-- ambient bioluminescence behind the swarm -->
+    <radialGradient id="ambient" cx="360" cy="300" r="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0"    stop-color="#f6a821" stop-opacity="0.20"/>
+      <stop offset="0.5"  stop-color="#e8881f" stop-opacity="0.07"/>
+      <stop offset="1"    stop-color="#e8881f" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="gear" x1="-92" y1="-92" x2="92" y2="92" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffbf3f"/>
-      <stop offset="1" stop-color="#d4793a"/>
-    </linearGradient>
+    <!-- a faint cool counter-glow, upper left, for depth -->
+    <radialGradient id="cool" cx="150" cy="170" r="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2b6a6a" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#2b6a6a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="dotGrad" cx="35%" cy="30%" r="75%">
+      <stop offset="0" stop-color="#FFF9C1"/>
+      <stop offset="1" stop-color="#F68000"/>
+    </radialGradient>
+
+    <!-- a gold firefly: stacked translucent halos + a hot core (no SVG filters,
+         which WeasyPrint renders unreliably) -->
+    <g id="ffg">
+      <circle r="13"  fill="#f6a821" opacity="0.07"/>
+      <circle r="7.5" fill="#ffc24a" opacity="0.16"/>
+      <circle r="3.6" fill="#ffd980" opacity="0.55"/>
+      <circle r="1.9" fill="#fff6e0"/>
+    </g>
+    <!-- a true-bioluminescent green-gold firefly (used sparingly) -->
+    <g id="ffgr">
+      <circle r="13"  fill="#9bd24a" opacity="0.07"/>
+      <circle r="7.5" fill="#c2e85f" opacity="0.15"/>
+      <circle r="3.6" fill="#dff58a" opacity="0.55"/>
+      <circle r="1.9" fill="#fbffe2"/>
+    </g>
   </defs>
 
   <!-- background -->
-  <rect width="750" height="925" fill="url(#bg)"/>
+  <rect width="750" height="925" fill="url(#sky)"/>
+  <rect width="750" height="925" fill="url(#cool)"/>
+  <rect width="750" height="925" fill="url(#ambient)"/>
 
-  <!-- faint hex texture -->
-  <g opacity="0.05" fill="none" stroke="#f6a821" stroke-width="0.7">
-    <g id="hx"><polygon points="0,-26 22.5,-13 22.5,13 0,26 -22.5,13 -22.5,-13"/></g>
-    <use xlink:href="#hx" x="60" y="60"/><use xlink:href="#hx" x="150" y="60"/>
-    <use xlink:href="#hx" x="240" y="60"/><use xlink:href="#hx" x="330" y="60"/>
-    <use xlink:href="#hx" x="420" y="60"/><use xlink:href="#hx" x="510" y="60"/>
-    <use xlink:href="#hx" x="600" y="60"/><use xlink:href="#hx" x="690" y="60"/>
-    <use xlink:href="#hx" x="105" y="100"/><use xlink:href="#hx" x="195" y="100"/>
-    <use xlink:href="#hx" x="285" y="100"/><use xlink:href="#hx" x="375" y="100"/>
-    <use xlink:href="#hx" x="465" y="100"/><use xlink:href="#hx" x="555" y="100"/>
-    <use xlink:href="#hx" x="645" y="100"/>
-    <use xlink:href="#hx" x="60" y="140"/><use xlink:href="#hx" x="150" y="140"/>
-    <use xlink:href="#hx" x="240" y="140"/><use xlink:href="#hx" x="330" y="140"/>
-    <use xlink:href="#hx" x="420" y="140"/><use xlink:href="#hx" x="510" y="140"/>
-    <use xlink:href="#hx" x="600" y="140"/><use xlink:href="#hx" x="690" y="140"/>
+  <!-- publisher eyebrow -->
+  <text x="375" y="80" text-anchor="middle" fill="#a89377" font-size="13.5"
+        font-weight="600" letter-spacing="6.5">FIREFLY SOFTWARE FOUNDATION</text>
+
+  <!-- ===================== the firefly swarm ===================== -->
+  <!-- faint background motes: distant fireflies, varied size + opacity -->
+  <g fill="#f6c061">
+    <circle cx="96"  cy="150" r="1.1" opacity="0.40"/>
+    <circle cx="168" cy="210" r="1.5" opacity="0.55"/>
+    <circle cx="250" cy="132" r="1.0" opacity="0.35"/>
+    <circle cx="328" cy="196" r="1.3" opacity="0.50"/>
+    <circle cx="120" cy="262" r="1.6" opacity="0.45"/>
+    <circle cx="214" cy="300" r="1.1" opacity="0.40"/>
+    <circle cx="392" cy="128" r="1.4" opacity="0.45"/>
+    <circle cx="468" cy="158" r="1.0" opacity="0.35"/>
+    <circle cx="556" cy="138" r="1.5" opacity="0.50"/>
+    <circle cx="624" cy="190" r="1.2" opacity="0.42"/>
+    <circle cx="676" cy="252" r="1.4" opacity="0.48"/>
+    <circle cx="600" cy="300" r="1.0" opacity="0.34"/>
+    <circle cx="512" cy="262" r="1.3" opacity="0.46"/>
+    <circle cx="440" cy="232" r="1.0" opacity="0.36"/>
+    <circle cx="160" cy="372" r="1.4" opacity="0.44"/>
+    <circle cx="266" cy="408" r="1.1" opacity="0.38"/>
+    <circle cx="360" cy="372" r="1.5" opacity="0.50"/>
+    <circle cx="470" cy="386" r="1.2" opacity="0.40"/>
+    <circle cx="566" cy="372" r="1.0" opacity="0.34"/>
+    <circle cx="636" cy="346" r="1.3" opacity="0.44"/>
+    <circle cx="92"  cy="356" r="1.1" opacity="0.36"/>
+    <circle cx="318" cy="300" r="0.9" opacity="0.30"/>
+    <circle cx="690" cy="150" r="1.0" opacity="0.32"/>
+    <circle cx="58"  cy="220" r="1.0" opacity="0.30"/>
+  </g>
+  <g fill="#bfe26a">
+    <circle cx="232" cy="168" r="1.2" opacity="0.45"/>
+    <circle cx="540" cy="216" r="1.1" opacity="0.42"/>
+    <circle cx="404" cy="332" r="1.0" opacity="0.38"/>
   </g>
 
-  <!-- glow behind the emblem -->
-  <rect width="750" height="925" fill="url(#glow)"/>
-
-  <!-- publisher -->
-  <text x="375" y="78" text-anchor="middle" fill="#a8917a" font-size="14"
-        font-weight="500" letter-spacing="6">FIREFLY SOFTWARE FOUNDATION</text>
-
-  <!-- ===== emblem: a Rust gear cradling a firefly + an event mesh ===== -->
-  <g transform="translate(375,300)">
-    <!-- event mesh: nodes around the gear, amber pulses on the spokes -->
-    <g fill="none" stroke="#6b4a1f" stroke-width="1.4" opacity="0.7">
-      <path d="M0,0 L-150,-78"/><path d="M0,0 L150,-70"/>
-      <path d="M0,0 L168,40"/><path d="M0,0 L-168,46"/>
-      <path d="M0,0 L-96,128"/><path d="M0,0 L104,124"/>
-    </g>
-    <g fill="#f6a821">
-      <circle cx="-75" cy="-39" r="4.2" opacity="0.9"/>
-      <circle cx="75" cy="-35" r="4.2" opacity="0.9"/>
-      <circle cx="84" cy="20" r="3.6" opacity="0.7"/>
-      <circle cx="-84" cy="23" r="3.6" opacity="0.7"/>
-      <circle cx="-48" cy="64" r="3.2" opacity="0.6"/>
-      <circle cx="52" cy="62" r="3.2" opacity="0.6"/>
-    </g>
-    <!-- satellite hex nodes -->
-    <g font-size="13" font-weight="700" fill="#e9d4b0" text-anchor="middle">
-      <g transform="translate(-150,-78)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">CQRS</text></g>
-      <g transform="translate(150,-70)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">EVT</text></g>
-      <g transform="translate(168,40)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">SAGA</text></g>
-      <g transform="translate(-168,46)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">HTTP</text></g>
-      <g transform="translate(-96,128)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">DATA</text></g>
-      <g transform="translate(104,124)"><polygon points="0,-20 17,-10 17,10 0,20 -17,10 -17,-10" fill="#2a1d10" stroke="#d4793a" stroke-width="1.8"/><text y="4">MSG</text></g>
-    </g>
-
-    <!-- the gear (Rust motif) -->
-    <g>
-      <circle r="92" fill="none" stroke="#f6a821" stroke-width="1.5" opacity="0.35"/>
-      <g fill="url(#gear)">
-        <!-- 12 gear teeth -->
-        <g id="tooth"><rect x="-9" y="-86" width="18" height="20" rx="3"/></g>
-        <use xlink:href="#tooth" transform="rotate(0)"/>
-        <use xlink:href="#tooth" transform="rotate(30)"/>
-        <use xlink:href="#tooth" transform="rotate(60)"/>
-        <use xlink:href="#tooth" transform="rotate(90)"/>
-        <use xlink:href="#tooth" transform="rotate(120)"/>
-        <use xlink:href="#tooth" transform="rotate(150)"/>
-        <use xlink:href="#tooth" transform="rotate(180)"/>
-        <use xlink:href="#tooth" transform="rotate(210)"/>
-        <use xlink:href="#tooth" transform="rotate(240)"/>
-        <use xlink:href="#tooth" transform="rotate(270)"/>
-        <use xlink:href="#tooth" transform="rotate(300)"/>
-        <use xlink:href="#tooth" transform="rotate(330)"/>
-      </g>
-      <circle r="74" fill="url(#gear)"/>
-      <circle r="60" fill="#16110c"/>
-    </g>
-
-    <!-- firefly in the hub: body + glowing tail -->
-    <g>
-      <ellipse cx="0" cy="20" rx="26" ry="26" fill="#ffbf3f" opacity="0.28"/>
-      <ellipse cx="0" cy="20" rx="20" ry="20" fill="#ffbf3f" opacity="0.6"/>
-      <ellipse cx="0" cy="-8" rx="12" ry="17" fill="#2a1d10" stroke="#f6a821" stroke-width="2"/>
-      <ellipse cx="0" cy="18" rx="13" ry="16" fill="#ffbf3f"/>
-      <ellipse cx="0" cy="18" rx="6.5" ry="9" fill="#fff2cf"/>
-      <!-- wings -->
-      <path d="M-3,-12 C-34,-30 -44,-6 -16,2 Z" fill="#e8a06a" opacity="0.55"/>
-      <path d="M3,-12 C34,-30 44,-6 16,2 Z" fill="#e8a06a" opacity="0.55"/>
-      <!-- antennae -->
-      <path d="M-4,-22 C-12,-34 -18,-36 -22,-40" fill="none" stroke="#f6a821" stroke-width="2" stroke-linecap="round"/>
-      <path d="M4,-22 C12,-34 18,-36 22,-40" fill="none" stroke="#f6a821" stroke-width="2" stroke-linecap="round"/>
-    </g>
+  <!-- light trails: thin tapering flight paths leading to the brighter fireflies -->
+  <g fill="none" stroke="#f6a821" stroke-linecap="round">
+    <path d="M118,470 C160,430 188,408 206,392" stroke-width="2.2" opacity="0.10"/>
+    <path d="M118,470 C160,430 188,408 206,392" stroke-width="0.9" opacity="0.22"/>
+    <path d="M384,452 C404,400 416,360 426,326" stroke-width="2.0" opacity="0.09"/>
+    <path d="M384,452 C404,400 416,360 426,326" stroke-width="0.8" opacity="0.20"/>
+    <path d="M612,398 C586,372 572,352 560,336" stroke-width="1.8" opacity="0.08"/>
+  </g>
+  <g fill="none" stroke="#bfe26a">
+    <path d="M286,418 C296,360 300,316 302,286" stroke-width="0.8" opacity="0.16"/>
   </g>
 
-  <!-- ===== amber + rust divider rules ===== -->
-  <rect x="60" y="500" width="630" height="4" rx="2" fill="#f6a821"/>
-  <rect x="60" y="510" width="630" height="1.4" rx="1" fill="#d4793a" opacity="0.5"/>
+  <!-- hero fireflies (foreground): an ascending, loosely-synchronized cluster -->
+  <use xlink:href="#ffg"  transform="translate(206,392) scale(1.9)"/>
+  <use xlink:href="#ffg"  transform="translate(322,356) scale(1.35)"/>
+  <use xlink:href="#ffgr" transform="translate(302,286) scale(1.15)"/>
+  <use xlink:href="#ffg"  transform="translate(426,326) scale(1.55)"/>
+  <use xlink:href="#ffg"  transform="translate(150,300) scale(1.05)"/>
+  <use xlink:href="#ffg"  transform="translate(506,214) scale(1.0)"/>
+  <use xlink:href="#ffgr" transform="translate(560,336) scale(0.92)"/>
+  <use xlink:href="#ffg"  transform="translate(404,182) scale(0.85)"/>
+  <use xlink:href="#ffg"  transform="translate(636,262) scale(0.8)"/>
 
-  <!-- ===== title block ===== -->
+  <!-- ===================== title block ===================== -->
+  <!-- amber divider rules -->
+  <rect x="60" y="500" width="630" height="3.5" rx="1.75" fill="#f6a821"/>
+  <rect x="60" y="509" width="630" height="1.4" rx="0.7" fill="#d4793a" opacity="0.55"/>
+
   <!-- official Firefly wordmark (exact vector lockup) + glowing amber dot -->
-  <g transform="translate(60,500) scale(0.62)">
-    <defs>
-      <radialGradient id="dotGrad" cx="35%" cy="30%" r="75%">
-        <stop offset="0" stop-color="#FFF9C1"/>
-        <stop offset="1" stop-color="#F68000"/>
-      </radialGradient>
-    </defs>
+  <g transform="translate(60,540) scale(0.64)">
     <path fill="#fffdf8" d="M14.85 145V87.55H4.05V68.95H15.15V67.6C15.15 62.8 15.6 58.65 16.5 55.15C17.5 51.55 18.85 48.55 20.55 46.15C22.25 43.75 24.35 41.85 26.85 40.45C29.35 39.05 32.1 38.05 35.1 37.45C38.2 36.85 41.55 36.55 45.15 36.55C46.75 36.55 48.55 36.7 50.55 37C52.65 37.2 54.35 37.55 55.65 38.05V59.95C54.55 58.75 53.45 57.8 52.35 57.1C51.25 56.3 49.65 55.9 47.55 55.9C46.35 55.9 45.25 56.1 44.25 56.5C43.35 56.8 42.55 57.3 41.85 58C41.25 58.6 40.75 59.45 40.35 60.55C40.05 61.65 39.9 62.9 39.9 64.3V68.95H55.65V87.55H39.6V145H14.85ZM69 145V70.15H93.9L94.05 145H69ZM68.7 59.2V40.75H94.2V59.2H68.7ZM113.161 145V77.35C114.661 75.95 117.211 74.45 120.811 72.85C124.411 71.15 128.511 69.7 133.111 68.5C137.811 67.2 142.411 66.55 146.911 66.55C152.411 66.55 156.711 66.95 159.811 67.75C162.911 68.55 165.261 69.55 166.861 70.75V88.6C165.261 88.2 163.161 87.85 160.561 87.55C157.961 87.25 155.211 87.05 152.311 86.95C149.411 86.85 146.661 86.85 144.061 86.95C141.561 87.05 139.511 87.2 137.911 87.4V145H113.161ZM212.128 147.25C204.328 147.25 197.428 145.7 191.428 142.6C185.528 139.4 180.928 134.9 177.628 129.1C174.328 123.2 172.678 116.25 172.678 108.25C172.678 94.95 176.028 84.6 182.728 77.2C189.428 69.8 199.078 66.1 211.678 66.1C220.078 66.1 226.878 67.9 232.078 71.5C237.278 75.1 241.128 80.45 243.628 87.55C246.128 94.65 247.328 103.35 247.228 113.65H189.928L186.928 98.5H226.228L223.228 106.6C223.128 98.5 222.078 92.85 220.078 89.65C218.178 86.35 214.978 84.7 210.478 84.7C208.078 84.7 205.878 85.4 203.878 86.8C201.878 88.1 200.278 90.25 199.078 93.25C197.978 96.25 197.428 100.3 197.428 105.4C197.428 112.3 199.028 117.6 202.228 121.3C205.528 124.9 210.928 126.7 218.428 126.7C221.128 126.7 223.828 126.4 226.528 125.8C229.228 125.1 231.728 124.3 234.028 123.4C236.328 122.5 238.278 121.8 239.878 121.3V142.3C236.378 143.6 232.378 144.75 227.878 145.75C223.478 146.75 218.228 147.25 212.128 147.25ZM267.243 145V87.55H256.443V68.95H267.543V67.6C267.543 62.8 267.993 58.65 268.893 55.15C269.893 51.55 271.243 48.55 272.943 46.15C274.643 43.75 276.743 41.85 279.243 40.45C281.743 39.05 284.493 38.05 287.493 37.45C290.593 36.85 293.943 36.55 297.543 36.55C299.143 36.55 300.943 36.7 302.943 37C305.043 37.2 306.743 37.55 308.043 38.05V59.95C306.943 58.75 305.843 57.8 304.743 57.1C303.643 56.3 302.043 55.9 299.943 55.9C298.743 55.9 297.643 56.1 296.643 56.5C295.743 56.8 294.943 57.3 294.243 58C293.643 58.6 293.143 59.45 292.743 60.55C292.443 61.65 292.293 62.9 292.293 64.3V68.95H308.043V87.55H291.993V145H267.243ZM345.693 145H321.093V40.3H345.693V145ZM382.828 174.4C380.128 174.4 377.428 174.15 374.728 173.65C372.128 173.15 369.828 172.45 367.828 171.55V151.6C369.728 152.2 371.378 152.65 372.778 152.95C374.278 153.25 375.778 153.4 377.278 153.4C379.578 153.4 381.628 152.85 383.428 151.75C385.228 150.75 386.728 148.95 387.928 146.35C389.128 143.75 389.978 140 390.478 135.1L391.078 149.5L358.378 68.95H386.728L402.478 119.95H400.228L415.678 68.95H442.378L413.128 144.85C410.328 152.05 407.328 157.8 404.128 162.1C400.928 166.5 397.528 169.65 393.928 171.55C390.328 173.45 386.628 174.4 382.828 174.4Z"/>
     <circle cx="454" cy="53" r="15" fill="url(#dotGrad)"/>
+    <circle cx="454" cy="53" r="27" fill="#f6a821" opacity="0.16"/>
   </g>
-  <text x="63" y="660" fill="#f6a821" font-size="46" font-weight="600" letter-spacing="-1">for Rust</text>
-  <text x="65" y="708" fill="#d4793a" font-size="40" font-weight="600">by Example</text>
+
+  <!-- title lockup -->
+  <text x="63" y="690" fill="#f6b43c" font-size="47" font-weight="600" letter-spacing="-1">for Rust</text>
+  <text x="63" y="738" fill="#d4793a" font-size="40" font-weight="600">by Example</text>
 
   <!-- thin amber rule under the title -->
-  <rect x="63" y="726" width="360" height="2.5" rx="1.25" fill="#f6a821" opacity="0.55"/>
+  <rect x="63" y="757" width="360" height="2.5" rx="1.25" fill="#f6a821" opacity="0.5"/>
 
   <!-- subtitle -->
-  <text x="63" y="770" fill="#c9b59c" font-size="21" font-weight="400">Event-Driven Rust Microservices</text>
-  <text x="63" y="798" fill="#c9b59c" font-size="21" font-weight="400">with the Firefly Framework</text>
+  <text x="63" y="800" fill="#c9b59c" font-size="20.5" font-weight="400">Event-Driven Rust Microservices</text>
+  <text x="63" y="828" fill="#c9b59c" font-size="20.5" font-weight="400">with the Firefly Framework</text>
 
-  <!-- footer wordmark -->
-  <g transform="translate(60,858)">
-    <circle cx="9" cy="0" r="9" fill="#f6a821"/>
-    <circle cx="9" cy="0" r="4" fill="#16110c"/>
-    <text x="28" y="6" fill="#a8917a" font-size="18" font-weight="700" letter-spacing="1">FIREFLY</text>
-    <text x="120" y="6" fill="#6b5b48" font-size="18" font-weight="400" letter-spacing="1">· tokio + axum · Rust 1.85+</text>
+  <!-- footer wordmark (version-agnostic, so the cover never dates) -->
+  <g transform="translate(63,876)">
+    <circle cx="8" cy="-4" r="8.5" fill="#f6a821"/>
+    <circle cx="8" cy="-4" r="15" fill="#f6a821" opacity="0.18"/>
+    <circle cx="8" cy="-4" r="3.4" fill="#0b0907"/>
+    <text x="28" y="2" fill="#a89377" font-size="17" font-weight="700" letter-spacing="1.5">FIREFLY</text>
+    <text x="116" y="2" fill="#6b5b48" font-size="17" font-weight="400" letter-spacing="1">· tokio + axum · async-native Rust</text>
   </g>
 </svg>

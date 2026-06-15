@@ -10,7 +10,8 @@ the [`models`](src/models.rs) module), parsed into an AST, and evaluated
 by a recursive walker that resolves fact-paths against a JSON-object
 fact.
 
-The crate is organized into five modules:
+The crate is organized into a core of five modules plus three additive
+layers — `actions`, `service`, `validation`:
 
 * `models` — AST: `Rule`, `RuleSet`, `Logic`, `Condition`, `Action`,
   `Op`.
@@ -18,6 +19,9 @@ The crate is organized into five modules:
 * `core` — `AstEvaluator`, the default `Evaluator`.
 * `web` — REST admin (axum router).
 * `sdk` — typed admin client.
+* `actions` — the `ActionHandler` SPI plus built-in handlers.
+* `service` — `RuleSetRepository` and `RuleEngineService`.
+* `validation` — `validate_ruleset` and `RuleSetValidator`.
 
 ## Rule shape
 

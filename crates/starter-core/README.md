@@ -29,12 +29,15 @@ Plus four convenience methods:
 * `print_banner()` — emits the ASCII banner identifying starter + app +
   runtime (`banner()` returns it as a `String` for tests).
 
-### Optional middleware batteries (all OFF by default)
+### Optional middleware batteries (off by default, except request metrics)
 
 `CoreConfig` carries `Option`-typed knobs that — when set — weave
 additional middleware surfaces into `apply_middleware` / `actuator_router`
-at their canonical filter order. Leaving every knob unset (the default)
-yields a Problem → Correlation → Idempotency chain and a minimal actuator
+at their canonical filter order. Request metrics are the exception: they are
+**on by default** (Spring-Boot-style auto-instrumentation) and `tune` via the
+`request_metrics` knob, with `disable_request_metrics` as the off switch.
+Leaving every other knob unset (the default) yields a
+Problem → Correlation → Metrics → Idempotency chain and a minimal actuator
 surface, so the simplest service stays lean.
 
 | Knob | Effect when `Some` |
@@ -43,7 +46,7 @@ surface, so the simplest service stays lean.
 | `security_headers` | `SecurityHeadersLayer` (OWASP response headers) |
 | `csrf` | `CsrfLayer` (double-submit cookie) |
 | `request_log` | `RequestLogLayer` (one structured access-log event per request) |
-| `request_metrics` | `MetricsLayer` bridged into the actuator `MetricRegistry` via `MetricRegistryObserver` |
+| `request_metrics` | tunes the always-on `MetricsLayer` bridged into the actuator `MetricRegistry` via `MetricRegistryObserver` (set `disable_request_metrics` to turn it off) |
 | `http_exchanges` | `HttpExchangesLayer` recording + `/actuator/httpexchanges` endpoint |
 | `loggers` | `/actuator/loggers[/{name}]` runtime log-level control |
 | `redaction` | PII scrubbing on the default log writer |
@@ -110,6 +113,8 @@ pub struct CoreConfig {
     pub idempotency: Option<IdempotencyConfig>, // default 24 h, POST/PUT/PATCH
     pub metrics: Option<Arc<MetricRegistry>>,   // default empty registry
     pub scheduler: Option<Arc<Scheduler>>,      // default Scheduler::new()
+
+    pub disable_request_metrics: bool,          // false (default) keeps request metrics on; true installs no MetricsLayer
 
     // optional middleware — all OFF (None) by default:
     pub cors: Option<CorsConfig>,                       // CorsLayer at the edge

@@ -82,7 +82,7 @@ in-memory infrastructure:
 ```jsonc
 // GET /actuator/info
 {
-  "app": { "name": "lumen", "version": "26.6.4" },
+  "app": { "name": "lumen", "version": "26.6.5" },
   "sample": { "name": "lumen", "store": "in-memory", "eventBus": "in-memory" }
 }
 ```
@@ -141,7 +141,7 @@ immediately:
 let metrics = app.web.metric_registry();
 
 // A domain counter, bumped each time the transfer saga completes.
-metrics.counter("lumen_transfers_total").increment(1.0);
+metrics.counter("lumen_transfers_total").inc(); // or .add(1) for an explicit count
 
 // A gauge sampling a live value (e.g. wallets currently held in the read model).
 metrics.gauge("lumen_wallets_active").set(wallet_count as f64);
@@ -185,10 +185,10 @@ config file. Bind the `firefly.logging.*` section into a `LogConfig` with
 ```yaml
 firefly:
   logging:
-    level: info                 # root level
     format: json                # json | text (logfmt) | console
-    level:
-      firefly_web: warn         # per-logger levels (like logging.level.<logger>)
+    level:                      # one level map (like logging.level.<logger>)
+      root: info                # root level
+      firefly_web: warn         # per-logger levels
       app::ledger: trace
     file:
       name: lumen.log           # enable the rolling file appender
@@ -292,7 +292,7 @@ trace capture so they never pollute the trace panel.
 ### The Beans view
 
 The newest view is **Beans** — the dashboard's window onto the dependency-injection
-container. When you pass `with_container(..)`, the dashboard serves:
+container. When you set `deps.container = Some(container)`, the dashboard serves:
 
 | Endpoint                  | Returns                                                  |
 |---------------------------|----------------------------------------------------------|
@@ -325,7 +325,7 @@ Lumen "Treasury" view surfaces the total custody balance across all wallets,
 queried from the read model:
 
 ```rust,ignore
-use firefly::admin::{AdminView, ViewMeta};
+use firefly::admin::AdminView;
 
 struct TreasuryView {
     read_model: Arc<WalletReadModel>,
@@ -333,11 +333,11 @@ struct TreasuryView {
 
 #[async_trait::async_trait]
 impl AdminView for TreasuryView {
-    fn meta(&self) -> ViewMeta {
-        ViewMeta { id: "treasury", title: "Treasury", section: "Infrastructure" }
-    }
+    fn view_id(&self) -> &str { "treasury" }
+    fn display_name(&self) -> &str { "Treasury" }
+    fn icon(&self) -> &str { "wallet" }
 
-    // Backs GET /admin/api/views/treasury.
+    // Backs GET /admin/api/views/treasury (keyed by view_id).
     async fn data(&self) -> serde_json::Value {
         let total: i64 = self.read_model.all().iter().map(|w| w.balance).sum();
         serde_json::json!({ "custodyTotal": total, "wallets": self.read_model.len() })
@@ -346,7 +346,7 @@ impl AdminView for TreasuryView {
 
 // Register it before mounting:
 let mut deps = AdminDeps::new(/* … */);
-deps.views.push(Box::new(TreasuryView { read_model: Arc::clone(&read_model) }));
+deps.views.push(Arc::new(TreasuryView { read_model: Arc::clone(&read_model) }));
 ```
 
 ## What changed in Lumen
@@ -382,7 +382,7 @@ admin surface:
    appears at `/actuator/metrics`. (Recall the housekeeping heartbeat in
    Chapter 16 keeps an `AtomicU64` you could surface the same way.)
 4. **Mount the dashboard.** Enable the facade's `admin` feature, mount the
-   dashboard with `with_container`, and open `/admin` — note how the Beans view
+   dashboard with the `container` field set, and open `/admin` — note how the Beans view
    is sparse for Lumen's explicit root, then convert one collaborator to
    `#[derive(Component)]` and watch it appear.
 

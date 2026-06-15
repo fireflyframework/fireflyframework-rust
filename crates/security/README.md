@@ -71,6 +71,7 @@ pub struct Authentication {
     pub principal: String,            // unique stable id (sub claim)
     pub username: String,
     pub roles: Vec<String>,
+    pub authorities: Vec<String>,     // fine-grained authorities/scopes (e.g. OAuth2 scopes/permissions), distinct from roles
     pub claims: HashMap<String, serde_json::Value>,
 }
 impl Authentication {

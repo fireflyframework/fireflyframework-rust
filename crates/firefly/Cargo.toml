@@ -19,6 +19,7 @@ categories = ["web-programming", "asynchronous", "rust-patterns"]
 # `firefly-macros`-generated code references.
 firefly-macros = { workspace = true }
 firefly-kernel = { workspace = true }
+firefly-aop = { workspace = true }
 firefly-reactive = { workspace = true }
 firefly-web = { workspace = true }
 firefly-cqrs = { workspace = true }
@@ -32,6 +33,7 @@ firefly-observability = { workspace = true }
 firefly-actuator = { workspace = true }
 firefly-scheduling = { workspace = true }
 firefly-transactional = { workspace = true }
+firefly-validators = { workspace = true }
 firefly-resilience = { workspace = true }
 firefly-security = { workspace = true }
 firefly-lifecycle = { workspace = true }

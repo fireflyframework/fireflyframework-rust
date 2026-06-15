@@ -98,12 +98,16 @@
 #![warn(missing_docs)]
 
 mod aspect;
+mod global;
 mod intercept;
 mod join_point;
 mod pointcut;
 mod registry;
 
 pub use aspect::{Aspect, NoopAspect};
+pub use global::{
+    advised, matching_bindings, register_aspect, register_discovered_aspects, AspectRegistration,
+};
 pub use intercept::{intercept, intercept_with_bindings, ok};
 pub use join_point::{
     invocation, AdviceError, AdviceFuture, AdviceKind, AdviceResult, AnyArc, Invocation, JoinPoint,
@@ -112,5 +116,17 @@ pub use join_point::{
 pub use pointcut::{matches_pointcut, Pointcut};
 pub use registry::{AdviceBinding, AspectRegistry};
 
+/// Re-export of [`async_trait`] so the declarative `#[aspect]` macro can emit the
+/// `#[async_trait]` attribute on the `impl Aspect` it generates in the user's
+/// crate (`#[firefly_aop::async_trait]`) without that crate depending on
+/// `async-trait` directly.
+pub use async_trait::async_trait;
+
+/// Re-export of [`inventory`] so the declarative `#[aspect]` macro's generated
+/// `inventory::submit!` thunks resolve through `firefly_aop::inventory` without
+/// the user's crate depending on `inventory` directly — mirroring
+/// `firefly_transactional`'s re-export for event listeners.
+pub use inventory;
+
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.4";
+pub const VERSION: &str = "26.6.5";

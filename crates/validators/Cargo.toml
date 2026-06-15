@@ -9,6 +9,12 @@ rust-version.workspace = true
 description = "Firefly Framework for Rust — IBAN, BIC, Luhn, currency, phone, password, sort code, VAT, Spanish IDs"
 
 [dependencies]
+# `firefly-kernel` supplies the canonical `FireflyError` / `ProblemDetail`
+# (RFC 7807) the declarative `Validate` failure converts into. The kernel is
+# dependency-light and does not depend on this crate, so the edge is acyclic.
+firefly-kernel = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
+# `serde_json` builds the structured `errors` array carried on the 422 problem.
+serde_json = { workspace = true }

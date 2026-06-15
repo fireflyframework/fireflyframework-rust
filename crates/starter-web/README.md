@@ -10,10 +10,12 @@ switched **on** and an optional [`firefly-security`](../security/) filter
 chain. It is the dedicated `WEB` starter — one of the five
 (`core` / `web` / `application` / `data` / `domain`).
 
-Where `Core` leaves every middleware knob **off** (so a
-non-HTTP worker / scheduler / CLI can opt out of the web stack entirely —
-the reason the web tier is split out of `core`), `WebStack::new` flips the
-HTTP batteries on by default:
+Where `Core` leaves the optional CORS / security-headers / access-log / CSRF
+batteries **off** (so a non-HTTP worker / scheduler / CLI can opt out of the
+web stack entirely — the reason the web tier is split out of `core`;
+request metrics are on by default in both `Core` and `WebStack`),
+`WebStack::new` additionally turns on CORS, security headers, and the
+access-log by default:
 
 | Battery | Wired by `WebStack::new` |
 |---------|--------------------------|

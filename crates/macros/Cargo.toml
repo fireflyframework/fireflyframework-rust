@@ -16,6 +16,10 @@ syn = { workspace = true }
 quote = { workspace = true }
 proc-macro2 = { workspace = true }
 darling = { workspace = true }
+# Compile-checks `#[validate(pattern = "...")]` regexes at macro-expansion time
+# (same crate the validators runtime re-exports), so an invalid pattern is a
+# clear attribute-site error rather than a runtime panic in the generated code.
+regex = { workspace = true }
 
 [dev-dependencies]
 # The macros are exercised end-to-end against the one-dependency facade, so a
@@ -23,6 +27,10 @@ darling = { workspace = true }
 # `data-sqlx` is enabled so the `#[repository]` derived-query macro can be
 # tested against a real SQLite repository.
 firefly = { workspace = true, features = ["data-sqlx"] }
+# `firefly-scheduling` is depended on directly (not via the facade) so the
+# `#[async_method]` macro test can route through a local `__rt` shim, exercising
+# the executor surface without compiling the heavy facade.
+firefly-scheduling = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

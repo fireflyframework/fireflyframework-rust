@@ -138,6 +138,7 @@ mod listener;
 mod ports;
 mod rabbitmq;
 mod reactive;
+mod registry;
 mod serializer;
 
 pub use dlq::{EdaDeadLetterEntry, EdaDeadLetterStore, InMemoryEdaDeadLetterStore};
@@ -153,10 +154,13 @@ pub use listener::{wrap_listener, ListenerPolicy, HEADER_EXCEPTION, HEADER_ORIGI
 pub use ports::{handler, Broker, Handler, HandlerFuture, Publisher, PublisherExt, Subscriber};
 pub use rabbitmq::{new_rabbitmq_broker, RabbitMqConfig};
 pub use reactive::DEFAULT_REACTIVE_BUFFER;
+pub use registry::{
+    broker, externalize_after_commit, publish_to_broker, publish_to_broker_on, register_broker,
+};
 pub use serializer::{
     serializer_for, AvroEventSerializer, EventSerializer, JsonEventSerializer,
     ProtobufEventSerializer,
 };
 
 /// The released framework version, shared across all Firefly crates.
-pub const VERSION: &str = "26.6.4";
+pub const VERSION: &str = "26.6.5";

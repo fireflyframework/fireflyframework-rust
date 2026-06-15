@@ -120,6 +120,7 @@ mod problem;
 pub mod reactive;
 mod request_log;
 pub mod server;
+mod valid;
 
 pub use content_negotiation::{
     default_message_converters, parse_accept, value_to_xml, xml_to_value, ContentNegotiationLayer,
@@ -153,6 +154,7 @@ pub use problem::{
 };
 pub use reactive::{MonoJson, NdJson, Sse, SseEvents, NDJSON_CONTENT_TYPE, SSE_CONTENT_TYPE};
 pub use request_log::{RequestLogLayer, RequestLogService, REQUEST_LOG_TARGET};
+pub use valid::Valid;
 
 /// The released framework version, mirroring [`firefly_kernel::VERSION`].
 pub const VERSION: &str = firefly_kernel::VERSION;

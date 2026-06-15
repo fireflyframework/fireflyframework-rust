@@ -80,15 +80,21 @@ let ev = Event::new(
 .with_key(b"customer-42".to_vec()); // partition / routing key
 ```
 
-The `key` is what Kafka uses for partitioning and RabbitMQ for routing; it is
-omitted from the wire when absent, so older events stay byte-for-byte identical.
+The `key` carries the intended partition/routing key per the `Event` contract;
+it is omitted from the wire when absent, so older events stay byte-for-byte
+identical. Note that the current adapters do not key off it yet: the Kafka
+adapter derives its record key from `correlation_id` (falling back to the event
+id), and the RabbitMQ adapter routes on the topic. Treating `key` as the
+partition/routing key is design intent rather than a guarantee of today's
+adapters.
 
 ### Lumen's domain-event-to-envelope bridge
 
 Lumen never builds an `Event` by hand in a handler. The ledger owns one mapping
 function that turns a persisted `DomainEvent` into the canonical envelope,
 carrying the JSON-encoded domain event as the payload and the wallet id as the
-partition key so a real broker keeps per-wallet events ordered:
+intended partition key — the `Event` contract's design for keeping per-wallet
+events ordered, once the adapters key off it:
 
 ```rust
 use firefly::eda::Event;
@@ -117,9 +123,12 @@ pub fn to_envelope(event: &DomainEvent) -> Event {
 
 Three design choices repay attention. The **topic** (`wallets.events`) is a
 shared constant — the publisher and the projection key off the same value, so
-the channel name can never drift. The **key** is the wallet id, so on a
-partitioned broker every event for one wallet lands on the same partition and
-stays in order. The **headers** (`aggregateId`, `version`) carry just enough
+the channel name can never drift. The **key** is the wallet id — the intended
+partition key so that, once a broker keys off it, every event for one wallet
+lands on the same partition and stays in order. (Today's Kafka adapter keys
+records on `correlation_id` and the RabbitMQ adapter routes on the topic, so
+this is the `Event` contract's design intent rather than a current guarantee.)
+The **headers** (`aggregateId`, `version`) carry just enough
 routing metadata for a subscriber to find and re-fold the affected aggregate
 without decoding the payload — which is exactly what Lumen's projection does
 below.
@@ -447,6 +456,89 @@ falls behind, the newest events are dropped (`onBackpressureDrop`) rather than
 blocking or failing the publisher — extending "a slow consumer never fails
 publishers" to the reactive surface. This is the same `Flux` Lumen's optional
 streaming endpoint composes over (see [Production & Deployment](./20-production.md)).
+
+## In-process events and after-commit externalization
+
+The broker carries events *between* services. Inside one service you often want
+the same decoupling without a network hop: one component raises a fact, others
+react, and none of them knows the others exist. That is Spring's
+`ApplicationEventPublisher` / `@EventListener`, and Firefly ships it as a
+thread-safe, async, in-process bus alongside the broker.
+
+Publish with `publish_event`, and listen with `#[application_event_listener]`
+on a free async function that takes the event by shared reference. Listeners are
+discovered across the crate graph (the same `inventory` scan that finds your
+components), so there is no manual registration:
+
+```rust,ignore
+use firefly::prelude::*;
+
+struct WalletOpened { id: String }
+
+#[firefly::application_event_listener]
+async fn audit_opening(event: &WalletOpened) {
+    tracing::info!(wallet = %event.id, "wallet opened");
+}
+
+// somewhere in a command handler:
+publish_event(WalletOpened { id: wallet_id }).await;
+```
+
+### Listening relative to a transaction
+
+A plain listener runs the instant you publish. Often that is too early: you do
+not want to send a "wallet opened" notification until the database transaction
+that opened it has actually committed. `#[transactional_event_listener]` binds
+the listener to a phase of the surrounding `#[transactional]` boundary —
+`after_commit` (the default), `before_commit`, `after_rollback`, or
+`after_completion`:
+
+```rust,ignore
+#[firefly::transactional_event_listener]               // after_commit
+async fn notify_owner(event: &WalletOpened) {
+    // Runs only once the opening transaction commits; never on a rollback.
+    mailer.send_welcome(&event.id).await;
+}
+```
+
+Events published inside a transaction are buffered and dispatched at the chosen
+phase; a rolled-back transaction fires the `after_rollback` listeners and never
+the `after_commit` ones, so a failed write can never leak a "success"
+side-effect. With no transaction active the listener falls back to running
+immediately (treating the work as already committed), so the same handler is
+useful in a unit test or a datasource-less path. If you want transactional event
+semantics without a SQL datasource at all, register the
+`LocalTransactionManager` (the Rust equivalent of Spring's
+`ResourcelessTransactionManager`).
+
+### Bridging in-process events to the broker
+
+The two layers compose into the pattern you almost always want: do the in-process
+work, and once it commits, publish an integration event to the broker — never a
+"ghost" message for a transaction that rolled back. That is Spring Modulith's
+event externalization, and `externalize_after_commit` wires it in one line:
+
+```rust,ignore
+// at startup, once per externalized event type:
+firefly::eda::externalize_after_commit::<WalletOpened>("wallet.events", "wallet.opened");
+
+// thereafter, an ordinary in-process publish inside a transaction...
+publish_event(WalletOpened { id: wallet_id }).await;
+// ...is serialized to JSON and published to the "wallet.events" topic on the
+// registered broker the moment the transaction commits.
+```
+
+`externalize_after_commit` simply registers an `after_commit` listener that
+forwards through `publish_to_broker` (which serializes the payload and publishes
+via the `register_broker`-registered `Broker`). A committed transaction reaches
+Kafka, RabbitMQ, or whichever transport you wired; a rolled-back one publishes
+nothing.
+
+Three distinct roles, easy to keep straight: `#[event_listener("topic")]`
+*consumes* from a broker topic (the `@KafkaListener` analog above);
+`#[application_event_listener]` / `#[transactional_event_listener]` handle
+*in-process* events; and `externalize_after_commit` is the bridge from the
+second to a broker producer.
 
 ## Production transports
 

@@ -12,8 +12,9 @@ ships a default `LocalStore` (filesystem-backed `ContentStore` on
 and single-instance deployments, with SHA-256 checksum support for
 content-integrity verification.
 
-Cloud storage adapters (`firefly-ecm-storage-aws`,
-`firefly-ecm-storage-azure`) live in dedicated crates as port-asserting stubs;
+Cloud storage adapters ship real REST integrations
+(`firefly-ecm-storage-aws` over S3 + a self-contained SigV4 signer;
+`firefly-ecm-storage-azure` over Azure Blob + a Shared Key signer);
 e-signature provider adapters (`firefly-ecm-esignature-docusign`,
 `firefly-ecm-esignature-adobe-sign`, `firefly-ecm-esignature-logalty`) ship
 real REST integrations.
@@ -140,7 +141,7 @@ async fn main() -> Result<(), firefly_ecm::EcmError> {
 ```
 
 For S3-backed content storage in production, swap the `LocalStore`
-for `firefly_ecm_storage_aws::Store` (once that adapter is wired).
+for `firefly_ecm_storage_aws::S3Store`.
 
 ## Versioning, folders, and metadata
 

@@ -427,11 +427,11 @@ use firefly_data_sqlx::DataSourceProperties;
 // Bound from `firefly.datasource.*` (e.g. an application.yaml / env overrides).
 pub struct DataSourceProperties {
     pub url: String,                  // scheme picks the backend (see below)
-    pub max_connections: Option<u32>,
-    pub min_connections: Option<u32>,
-    pub acquire_timeout_ms: Option<u64>,
-    pub idle_timeout_ms: Option<u64>,
-    pub max_lifetime_ms: Option<u64>,
+    pub max_connections: u32,         // `0` leaves the driver default
+    pub min_connections: u32,         // `0` leaves the driver default
+    pub acquire_timeout_ms: u64,      // `0` leaves the driver default
+    pub idle_timeout_ms: u64,         // `0` leaves the driver default
+    pub max_lifetime_ms: u64,         // `0` leaves the driver default
 }
 ```
 
@@ -457,7 +457,7 @@ The shape of a boot sequence is: load config → bind `DataSourceProperties` →
 
 ```rust,ignore
 use firefly_data::TableConfig;
-use firefly_data_sqlx::{data_sqlx, AnyRow, ColumnValue, DataSourceProperties, SqlxReactiveRepository};
+use firefly_data_sqlx::{auto_configure, AnyRow, ColumnValue, DataSourceProperties, SqlxReactiveRepository};
 use firefly_kernel::FireflyError;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -465,7 +465,7 @@ struct WalletView { id: String, owner: String, balance: i64 }
 
 # async fn boot(props: DataSourceProperties) -> Result<(), Box<dyn std::error::Error>> {
 // One awaited call: builds the pool AND registers the SqlxTransactionManager.
-let db = data_sqlx::auto_configure(&props).await?;
+let db = auto_configure(&props).await?;
 
 // The returned Db builds typed repositories — no DI container involved.
 let wallets: SqlxReactiveRepository<WalletView, String> = SqlxReactiveRepository::new(

@@ -122,7 +122,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.4";
+pub const VERSION: &str = "26.6.5";
 
 /// Errors produced by the OpenAPI generator.
 #[derive(Debug, thiserror::Error)]

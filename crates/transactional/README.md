@@ -127,6 +127,96 @@ Implement the three port traits once per driver. The integration tests
 in `tests/with_tx.rs` contain a complete reference implementation over
 `rusqlite`.
 
+## In-process application events
+
+The crate also ships a **thread-safe, async** in-process
+publish/subscribe — the Rust port of Spring's `@EventListener` and
+`@TransactionalEventListener`. It lives in the `events` module and is
+keyed on the concrete event [`TypeId`]; the event type only has to be
+`Any + Send + Sync + 'static`.
+
+Publish a domain event with `publish_event`:
+
+```rust,ignore
+firefly::publish_event(OrderPlaced { id }).await;
+```
+
+A listener is a free `async fn` that takes the event by shared
+reference. There are two flavours.
+
+**Immediate** (`@EventListener`): runs synchronously — awaited — at
+`publish_event` time, in registration order.
+
+```rust,ignore
+#[firefly::application_event_listener]
+async fn on_order_placed(event: &OrderPlaced) {
+    audit_log(event).await;
+}
+```
+
+**Transaction-bound** (`@TransactionalEventListener`): when the event is
+published inside an active transaction, it is buffered and dispatched at
+the surrounding transaction's phase. The phase is one of:
+
+* `after_commit` — once the transaction has committed (the default, and
+  the canonical phase: publish integration events, send notifications,
+  evict caches).
+* `before_commit` — just before the commit, still inside the
+  transaction.
+* `after_rollback` — once the transaction has rolled back.
+* `after_completion` — after either outcome.
+
+```rust,ignore
+#[firefly::transactional_event_listener]                       // after_commit
+async fn publish_integration_event(event: &WalletOpened) {
+    bus.send(event).await;   // only after the opening transaction commits
+}
+
+#[firefly::transactional_event_listener(phase = "after_rollback")]
+async fn release_reservation(event: &PaymentFailed) {
+    inventory.release(event).await;
+}
+```
+
+When a transaction-bound event is published with **no** active
+transaction — for example a service running without a registered
+transaction manager, the same graceful-degradation path the
+`#[transactional]` orchestrator itself takes — the listener falls back
+to running immediately, as if the work had already committed.
+`after_rollback` listeners do not fire on this path. This keeps a
+`@TransactionalEventListener` useful in unit tests and datasource-less
+setups instead of silently dropping the event.
+
+Listeners are discovered via `inventory`: each macro emits a registration
+thunk, and the first `publish_event` drains them once, so listeners
+defined anywhere in the crate graph are live without manual wiring.
+`register_event_listener` and `TransactionPhase` are the programmatic
+counterparts the macros expand to.
+
+> The pre-existing `#[event_listener("topic")]` macro is something else
+> entirely: it is the **broker consumer** (`@KafkaListener`-style topic
+> subscription) from `firefly-eda`. Use `#[application_event_listener]`
+> for the in-process bus described here.
+
+### `LocalTransactionManager`
+
+Transaction-bound dispatch is driven by the transaction's commit /
+rollback phases, which means it needs a registered
+[`TransactionManager`]. `LocalTransactionManager` is a transaction
+manager with **no backing datasource** — the Rust analog of Spring's
+`ResourcelessTransactionManager`. It runs the operation and honours the
+outcome's commit/rollback decision, driving the after-commit /
+after-rollback dispatch without a database. Register it when you want
+transaction-bound event semantics but have no SQL datasource, and in
+tests that exercise the phases:
+
+```rust
+use std::sync::Arc;
+use firefly_transactional::{register_transaction_manager, LocalTransactionManager};
+
+register_transaction_manager(Arc::new(LocalTransactionManager));
+```
+
 ## Testing
 
 ```bash

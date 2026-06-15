@@ -65,7 +65,7 @@ pub trait Trigger: Send {
     fn finished(&mut self, at: DateTime<Local>) {} // FixedDelay's lastRun hook
 }
 
-pub struct CronExpr { pub minute, hour, day_of_month, month, day_of_week: Vec<u32> }
+pub struct CronExpr { pub second, minute, hour, day_of_month, month, day_of_week: Vec<u32> }
 pub fn parse_cron(expr: &str) -> Result<CronExpr, CronError>;
 impl CronExpr { pub fn next<Tz: TimeZone>(&self, from: DateTime<Tz>) -> Option<DateTime<Tz>> }
 

@@ -65,6 +65,7 @@
 mod adapter;
 mod fallback;
 mod health;
+mod manager;
 mod memory;
 mod noop;
 mod typed;
@@ -72,9 +73,10 @@ mod typed;
 pub use adapter::{Adapter, CacheError, CacheStats};
 pub use fallback::FallbackAdapter;
 pub use health::CacheHealthIndicator;
+pub use manager::{cache_adapter, register_cache};
 pub use memory::MemoryAdapter;
 pub use noop::NoOpAdapter;
 pub use typed::Typed;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.4";
+pub const VERSION: &str = "26.6.5";

@@ -103,6 +103,44 @@ impl Facade {
         let rt = self.rt();
         quote!(#rt::serde_json)
     }
+
+    /// `#facade::__rt::firefly_orchestration` — the saga/workflow/TCC runtime the
+    /// declarative `#[saga]` / `#[workflow]` / `#[tcc]` macros expand against
+    /// (`Saga`/`Step`, `Workflow`/`Node`, `Tcc`/`TccParticipant`, `StepContext`,
+    /// `RetryPolicy`, and the `BoxError` step-action error alias).
+    pub(crate) fn orchestration(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::firefly_orchestration)
+    }
+
+    /// `#facade::__rt::firefly_cache` — the cache runtime the declarative
+    /// `#[cacheable]` / `#[cache_put]` / `#[cache_evict]` macros expand against
+    /// (the process-global `cache_adapter()` registry and the typed `Typed<V>`
+    /// read/write facade).
+    pub(crate) fn cache(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::firefly_cache)
+    }
+
+    /// `#facade::__rt::firefly_aop` — the aspect-oriented advice runtime the
+    /// declarative `#[aspect]` macro expands against (the process-global
+    /// `register_aspect` registry, the `Aspect` trait, `JoinPoint` / `Proceed`,
+    /// and the re-exported `async_trait` / `inventory` the generated `impl
+    /// Aspect` + discovery thunk resolve through).
+    pub(crate) fn aop(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::firefly_aop)
+    }
+
+    /// `#facade::__rt::firefly_validators` — the validation tier the
+    /// `#[derive(Validate)]` macro expands against (the `bean::Validate`
+    /// trait, the `bean::{ValidationError, ValidationErrors}` accumulator,
+    /// and the standalone predicate functions a constraint maps onto, e.g.
+    /// `validate_email`).
+    pub(crate) fn validators(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::firefly_validators)
+    }
 }
 
 /// Parses a `crate = "..."` argument out of a darling-collected attribute or a

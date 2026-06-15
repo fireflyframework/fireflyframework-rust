@@ -67,12 +67,13 @@ def _items_from_manifest(cfg: dict) -> list[dict]:
     src = _src_dir(cfg)
     items: list[dict] = []
 
-    # 1) front matter
+    # 1) front matter, collected first
+    front_items: list[dict] = []
     for fm in cfg.get("front", []):
         p = src / fm["file"]
         if not p.exists():
             continue
-        items.append({
+        front_items.append({
             "kind": "front",
             "id": fm["id"],
             "title": fm.get("title", fm["id"].title()),
@@ -81,8 +82,12 @@ def _items_from_manifest(cfg: dict) -> list[dict]:
             "in_nav": bool(fm.get("nav", True)) and "title" in fm,
         })
 
-    # 2) Contents page
+    # 2) Contents up front: only the cover-adjacent pages (title, copyright —
+    # not in the nav) precede it; the readable sections (preface, conventions,
+    # the Rust primer) follow it and are listed *in* it.
+    items.extend(f for f in front_items if not f["in_nav"])
     items.append({"kind": "toc", "id": "toc", "title": "Contents"})
+    items.extend(f for f in front_items if f["in_nav"])
 
     # 3) parts
     for part in cfg.get("parts", []):
@@ -138,6 +143,18 @@ def _chapter_body(it: dict) -> str:
 
 def _toc_html(items: list[dict], *, href_fmt: str) -> str:
     parts: list[str] = []
+    # Front matter (Preface, Conventions, the Rust primer) listed first, so the
+    # Contents reflects the whole book including the introductory material.
+    front = [it for it in items if it["kind"] == "front" and it.get("in_nav")]
+    if front:
+        parts.append('<div class="toc-part-group">'
+                     '<h2 class="toc-part-title">Front Matter</h2>'
+                     '<ol class="toc-chapters">')
+        for it in front:
+            href = href_fmt.format(cid=it["id"])
+            parts.append(f'<li><a class="toc-link" href="{escape(href)}">'
+                         f'{escape(it["title"])}</a></li>')
+        parts.append("</ol></div>")
     open_group = False
     for it in items:
         if it["kind"] == "divider":
@@ -160,19 +177,32 @@ def _toc_html(items: list[dict], *, href_fmt: str) -> str:
 
 def _divider_html(eyebrow: str, ptitle: str) -> str:
     eb = f'<span class="eyebrow part-eyebrow">{escape(eyebrow)}</span>' if eyebrow else ""
+    # A dark medallion holding the glowing firefly — the same motif as the
+    # cover and the chapter-opener panels, so the parts read as one family.
     glyph = ('<svg class="part-glyph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">'
-             '<defs><linearGradient id="pg" x1="0" y1="0" x2="120" y2="120" '
+             '<defs><linearGradient id="pgsky" x1="0" y1="0" x2="120" y2="120" '
              'gradientUnits="userSpaceOnUse">'
-             '<stop offset="0" stop-color="#f6a821"/><stop offset="1" stop-color="#d4793a"/>'
+             '<stop offset="0" stop-color="#0e1217"/><stop offset="1" stop-color="#16100b"/>'
              '</linearGradient></defs>'
-             '<circle cx="60" cy="60" r="50" fill="none" stroke="url(#pg)" stroke-width="2" opacity="0.5"/>'
-             '<g fill="url(#pg)"><g id="t"><rect x="54" y="6" width="12" height="14" rx="2"/></g>'
-             + "".join(f'<use href="#t" transform="rotate({a} 60 60)"/>' for a in range(0, 360, 30))
-             + '</g><circle cx="60" cy="60" r="36" fill="url(#pg)"/>'
-             '<circle cx="60" cy="60" r="28" fill="#fffdf8"/>'
-             '<ellipse cx="60" cy="70" rx="10" ry="11" fill="#f6a821"/>'
-             '<ellipse cx="60" cy="70" rx="5" ry="6" fill="#fff2cf"/>'
-             '<ellipse cx="60" cy="50" rx="7" ry="10" fill="#2a211a" stroke="#c97e10" stroke-width="1.4"/>'
+             '<circle cx="60" cy="60" r="54" fill="url(#pgsky)"/>'
+             '<circle cx="60" cy="60" r="54" fill="none" stroke="#f6a821" stroke-width="1.5" opacity="0.4"/>'
+             '<circle cx="60" cy="64" r="30" fill="#f6a821" opacity="0.12"/>'
+             '<path d="M32,90 C44,72 52,62 58,55" fill="none" stroke="#ffd980" '
+             'stroke-width="1.2" opacity="0.4" stroke-linecap="round"/>'
+             '<g transform="translate(60,56) rotate(-16)">'
+             '<circle cx="0" cy="20" r="15" fill="#f6a821" opacity="0.22"/>'
+             '<circle cx="0" cy="20" r="9" fill="#ffc24a" opacity="0.5"/>'
+             '<path d="M-2,-4 C-26,-20 -34,-1 -11,5 Z" fill="#ffd980" opacity="0.28"/>'
+             '<path d="M2,-4 C26,-20 34,-1 11,5 Z" fill="#ffd980" opacity="0.28"/>'
+             '<ellipse cx="0" cy="18" rx="7.5" ry="11" fill="#f6a821"/>'
+             '<ellipse cx="0" cy="19" rx="4" ry="6.5" fill="#fff2cf"/>'
+             '<ellipse cx="0" cy="1" rx="6" ry="9" fill="#1a130c" stroke="#c97e10" stroke-width="1.3"/>'
+             '<ellipse cx="0" cy="-9" rx="3.6" ry="4.4" fill="#1a130c" stroke="#c97e10" stroke-width="1.1"/>'
+             '<path d="M-2,-12 C-6,-19 -9,-20 -11,-22" fill="none" stroke="#c97e10" stroke-width="1.2" stroke-linecap="round"/>'
+             '<path d="M2,-12 C6,-19 9,-20 11,-22" fill="none" stroke="#c97e10" stroke-width="1.2" stroke-linecap="round"/>'
+             '</g>'
+             '<circle cx="88" cy="34" r="1.6" fill="#ffd980" opacity="0.7"/>'
+             '<circle cx="38" cy="40" r="1.3" fill="#bfe26a" opacity="0.7"/>'
              '</svg>')
     return (f'<div class="part-divider-inner">{glyph}{eb}'
             f'<h1 class="part-title">{escape(ptitle)}</h1></div>')

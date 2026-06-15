@@ -103,6 +103,8 @@ pub(crate) fn derive_config_properties(input: DeriveInput) -> syn::Result<TokenS
                     scope: #container::Scope::Singleton,
                     primary: false,
                     order: 0,
+                    // A config-properties bean is an eagerly warmed singleton.
+                    lazy: false,
                     register: <#ident>::firefly_register,
                     conditions: || ::std::vec::Vec::new(),
                 }

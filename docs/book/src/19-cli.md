@@ -19,7 +19,7 @@ built for a compiled Cargo workspace.
 ```bash
 cargo install --path crates/cli   # installs the `firefly` binary
 firefly --help                     # prints the banner + every command
-firefly --version                  # 26.6.4
+firefly --version                  # 26.6.5
 ```
 
 ## Command overview
@@ -76,7 +76,7 @@ aggregate, a saga:
 ```bash
 firefly generate command OpenWallet      # command + handler in src/cqrs/
 firefly generate query   GetWallet        # query  + handler
-firefly generate aggregate Wallet         # a #[derive(AggregateRoot)] skeleton
+firefly generate aggregate Wallet         # a struct embedding firefly_eventsourcing::AggregateRoot
 firefly generate saga    MoneyTransfer --dry-run
 firefly generate migration AddWallets     # V###__add_wallets.sql in migrations/
 firefly g handler Deposit                 # `g` is the alias
@@ -209,7 +209,7 @@ firefly license             # the framework + dependency license report
 
 `firefly doctor` is the first thing to run on a fresh machine: it reports your
 `rustc` / `cargo` versions and whether `git`, `clippy`, `rustfmt`, and `docker`
-are on the `PATH`, ending with "All checks passed!" or a list of what to fix.
+are on the `PATH`, ending with "All required checks passed!" or a list of what to fix.
 
 ## Running through cargo
 

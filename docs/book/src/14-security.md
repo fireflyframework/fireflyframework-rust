@@ -22,30 +22,48 @@ a `thiserror` derive.
 
 ## The mental model
 
-```text
-                    incoming request
-                            │
-                            ▼
-        ┌──────────────────────────────────────┐
-        │            BearerLayer                │
-        │  • reads Authorization: Bearer <tok>  │
-        │  • calls the Verifier (JwtService)    │
-        │  • stores Authentication on request   │
-        │  • allow_anonymous → pass empty ctx   │
-        └──────────────────────────────────────┘
-                            │
-                            ▼
-        ┌──────────────────────────────────────┐
-        │           FilterChain (RBAC)          │
-        │  permit_method("GET", "/api/v1/...")  │
-        │  permit("/actuator/")                 │
-        │  require("/api/v1/wallets", CUSTOMER) │
-        │  401 / 403 problem+json on a miss     │
-        └──────────────────────────────────────┘
-                            │
-                            ▼
-                  WalletApi handlers
-```
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 384" role="img"
+     aria-label="The security request pipeline: incoming request flows through the BearerLayer, then the RBAC FilterChain, then reaches the WalletApi handlers"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+  <!-- incoming request -->
+  <text x="235" y="20" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">incoming request</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="235" y1="28" x2="235" y2="46"/><polygon points="235,54 231,46 239,46"/>
+  </g>
+  <!-- BearerLayer -->
+  <rect x="55" y="56" width="360" height="104" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <path d="M55,66 a10,10 0 0 1 10,-10 h340 a10,10 0 0 1 10,10 v16 h-360 z" fill="#f6a821"/>
+  <text x="235" y="77" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">BearerLayer</text>
+  <g font-size="11" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+    <text x="72" y="100">reads Authorization: Bearer &lt;tok&gt;</text>
+    <text x="72" y="116">calls the Verifier (JwtService)</text>
+    <text x="72" y="132">stores Authentication on request</text>
+    <text x="72" y="148">allow_anonymous &#8594; pass empty ctx</text>
+  </g>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="235" y1="160" x2="235" y2="178"/><polygon points="235,186 231,178 239,178"/>
+  </g>
+  <!-- FilterChain (RBAC) -->
+  <rect x="55" y="188" width="360" height="104" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <path d="M55,198 a10,10 0 0 1 10,-10 h340 a10,10 0 0 1 10,10 v16 h-360 z" fill="#f6a821"/>
+  <text x="235" y="209" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">FilterChain (RBAC)</text>
+  <g font-size="11" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+    <text x="72" y="232">permit_method("GET", "/api/v1/...")</text>
+    <text x="72" y="248">permit("/actuator/")</text>
+    <text x="72" y="264">require("/api/v1/wallets", CUSTOMER)</text>
+    <text x="72" y="280">401 / 403 problem+json on a miss</text>
+  </g>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="235" y1="292" x2="235" y2="310"/><polygon points="235,318 231,310 239,310"/>
+  </g>
+  <!-- WalletApi handlers -->
+  <rect x="125" y="320" width="220" height="38" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="235" y="344" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c"
+        font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">WalletApi handlers</text>
+</svg>
+<figcaption>The security request pipeline. Every request passes the <code>BearerLayer</code> (authentication) and the RBAC <code>FilterChain</code> (authorization) before reaching the <code>WalletApi</code> handlers.</figcaption>
+</figure>
 
 `firefly-security` carries far more than Lumen uses — JWKS, OAuth2 (client +
 authorization server), `RoleHierarchy`, method-level `guards`,
@@ -388,17 +406,19 @@ pub struct SecurityProperties {
     pub bearer: BearerProperties,
 }
 
+// Both structs derive `Default, Deserialize` with `#[serde(default)]`, so a
+// missing field falls back to its zero value (empty `String`, `0`).
 pub struct JwtProperties {
-    pub jwk_set_uri: Option<String>,
-    pub issuer_uri: Option<String>,
-    pub audience: Option<String>,
-    pub secret: Option<String>,
-    pub algorithm: Option<String>,
-    pub expiration_seconds: Option<u64>,
+    pub jwk_set_uri: String,
+    pub issuer_uri: String,
+    pub audience: String,
+    pub secret: String,
+    pub algorithm: String,
+    pub expiration_seconds: u64,
 }
 
 pub struct BearerProperties {
-    pub header_name: Option<String>,
+    pub header_name: String,
     pub allow_anonymous: bool,
 }
 ```
@@ -476,9 +496,9 @@ surface you reach for as a real wallet service matures:
   predicates: `has_role("CUSTOMER").or(has_authority("wallet:approve"))`, then
   `guard.authorize(Some(&auth))?` — 401 with no principal, 403 if the predicate
   is false. For a declarative spelling, see [Method security](#method-security)
-  below.
-- **Role hierarchy.** `RoleHierarchy::new()` parses `"ADMIN > CUSTOMER"` specs;
-  attach it with `chain.with_role_hierarchy(..)` so granting `ADMIN` implies
+  above.
+- **Role hierarchy.** `RoleHierarchy::from_string("ADMIN > CUSTOMER")` parses the
+  spec; attach it with `chain.with_role_hierarchy(..)` so granting `ADMIN` implies
   `CUSTOMER`.
 - **Pattern rules.** Alongside the prefix rules Lumen uses, the chain offers an
   fnmatch-style glob DSL — `permit_pattern("/public/**")`,
@@ -501,7 +521,7 @@ surface you reach for as a real wallet service matures:
   `firefly-idp-internal-db` adapter and every other port.
 
 ```rust
-use firefly_security::BcryptPasswordEncoder;
+use firefly_security::{BcryptPasswordEncoder, PasswordEncoder};
 
 let enc = BcryptPasswordEncoder::new(); // work factor 12 (the default)
 let hash = enc.hash("s3cret").unwrap();

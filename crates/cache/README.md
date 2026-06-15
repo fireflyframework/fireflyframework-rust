@@ -10,8 +10,8 @@ exposes a single port — `Adapter` — and ships three implementations
 (`Typed<T>`) with `get_or_set` memoisation. Every consumer (CQRS query
 cache, idempotency middleware, custom service code) talks to the same
 `Adapter` regardless of whether it's running an in-process map during
-local dev or — once the Redis adapter ships in the next minor — a Redis
-cluster in production.
+local dev or a Redis cluster in production via the `firefly-cache-redis`
+adapter.
 
 ## Why a separate crate?
 
@@ -176,7 +176,7 @@ use firefly_cache::{CacheHealthIndicator, MemoryAdapter};
 use std::sync::Arc;
 
 let indicator = CacheHealthIndicator::new(Arc::new(MemoryAdapter::new()));
-// register with the actuator HealthRegistry; reports under "cache"
+// register with the observability `Composite` / actuator `HealthComposite`; reports under "cache"
 ```
 
 It writes a namespaced sentinel, reads it back, evicts it, and attaches

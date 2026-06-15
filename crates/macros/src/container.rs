@@ -194,10 +194,12 @@ pub(crate) fn derive_component(
     }
 
     let scope_tokens = scope_tokens(&container, opts.scope.as_deref(), ident)?;
-    // `#[firefly(lazy)]` is accepted for Spring parity but is a no-op in Rust:
-    // the container already creates singletons lazily on first resolve (there
-    // is no eager-init pass to opt out of). Touch it so the field is "used".
-    let _lazy = opts.lazy;
+    // `#[firefly(lazy)]` (Spring `@Lazy`): the container builds singletons
+    // lazily on first resolve anyway, but `ApplicationContext` eagerly *warms*
+    // every scanned singleton at startup — a lazy bean opts out of that warm
+    // pass (it is still built on first use). Carried into `ComponentRegistration`
+    // so `warm_singletons` can skip it.
+    let lazy = opts.lazy;
     let bean_name = opts.name.clone().unwrap_or_default();
     let primary = opts.primary;
     // Auto-configurations default to a late order so they register after user
@@ -307,6 +309,7 @@ pub(crate) fn derive_component(
                     scope: #scope_tokens,
                     primary: #primary,
                     order: #order,
+                    lazy: #lazy,
                     register: <#ident>::firefly_register,
                     conditions: || #conditions,
                 }

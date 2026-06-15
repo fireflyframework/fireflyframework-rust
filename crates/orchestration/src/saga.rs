@@ -102,6 +102,7 @@ pub struct Step {
     compensate: Option<Body>,
     retry: RetryPolicy,
     group: Option<String>,
+    depends_on: Vec<String>,
 }
 
 impl Step {
@@ -117,6 +118,7 @@ impl Step {
             compensate: None,
             retry: RetryPolicy::default(),
             group: None,
+            depends_on: Vec::new(),
         }
     }
 
@@ -137,6 +139,7 @@ impl Step {
             compensate: None,
             retry: RetryPolicy::default(),
             group: None,
+            depends_on: Vec::new(),
         }
     }
 
@@ -181,9 +184,33 @@ impl Step {
         self
     }
 
+    /// Declares the step ids this step **depends on** — the engine spelling of
+    /// the declarative `#[saga_step(depends_on = [...])]` / Java
+    /// `@SagaStep(dependsOn=...)` DAG edge. A step runs only after every step it
+    /// depends on has completed; independent steps share a topological layer.
+    ///
+    /// If **no** step in a saga declares dependencies the saga runs in strict
+    /// insertion order (the original behaviour, unchanged). As soon as any step
+    /// declares a dependency the saga executes its steps in dependency order;
+    /// an unknown dependency or a cycle fails the run with
+    /// [`SagaError::Definition`].
+    pub fn depends_on<I, S>(mut self, deps: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.depends_on = deps.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// The step name, as reported in [`Outcome`] and error messages.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The step ids this step depends on (its DAG predecessors).
+    pub fn dependencies(&self) -> &[String] {
+        &self.depends_on
     }
 
     /// The retry policy configured for this step.
@@ -273,6 +300,11 @@ pub enum SagaError {
     /// the next step.
     #[error("saga cancelled")]
     Cancelled,
+    /// The saga definition is invalid: a step declares a dependency on an
+    /// unknown step, or the `depends_on` edges form a cycle. Detected before
+    /// any step runs, so no step executes and nothing is compensated.
+    #[error("saga definition error: {0}")]
+    Definition(String),
 }
 
 impl SagaError {
@@ -460,6 +492,74 @@ impl Saga {
         self.run_inner(token, ctx, listener).await
     }
 
+    /// Computes the order in which steps execute.
+    ///
+    /// When no step declares a dependency the order is strict insertion order
+    /// (the original sequential behaviour, byte-for-byte). When any step
+    /// declares `depends_on`, the steps are ordered into topological layers
+    /// (Kahn's algorithm, ties broken by insertion order for determinism) and
+    /// flattened — a step always follows every step it depends on. Returns an
+    /// error message describing an unknown dependency, a duplicate step name,
+    /// or a cycle.
+    fn execution_order(&self) -> Result<Vec<usize>, String> {
+        let n = self.steps.len();
+        if self.steps.iter().all(|s| s.depends_on.is_empty()) {
+            return Ok((0..n).collect());
+        }
+        let mut index: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for (i, s) in self.steps.iter().enumerate() {
+            if index.insert(s.name.as_str(), i).is_some() {
+                return Err(format!(
+                    "saga {:?}: duplicate step name {:?} (step ids must be unique to use depends_on)",
+                    self.name, s.name
+                ));
+            }
+        }
+        let mut in_degree = vec![0usize; n];
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, s) in self.steps.iter().enumerate() {
+            for dep in &s.depends_on {
+                let Some(&di) = index.get(dep.as_str()) else {
+                    return Err(format!(
+                        "saga {:?}: step {:?} depends on unknown step {:?}",
+                        self.name, s.name, dep
+                    ));
+                };
+                if di == i {
+                    return Err(format!(
+                        "saga {:?}: step {:?} depends on itself",
+                        self.name, s.name
+                    ));
+                }
+                in_degree[i] += 1;
+                dependents[di].push(i);
+            }
+        }
+        let mut order = Vec::with_capacity(n);
+        let mut ready: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+        while !ready.is_empty() {
+            ready.sort_unstable(); // deterministic: insertion order within a layer
+            let mut next: Vec<usize> = Vec::new();
+            for &i in &ready {
+                order.push(i);
+                for &d in &dependents[i] {
+                    in_degree[d] -= 1;
+                    if in_degree[d] == 0 {
+                        next.push(d);
+                    }
+                }
+            }
+            ready = next;
+        }
+        if order.len() != n {
+            return Err(format!(
+                "saga {:?}: dependency cycle among steps (every step must be reachable from a root)",
+                self.name
+            ));
+        }
+        Ok(order)
+    }
+
     async fn run_inner(
         &self,
         token: &CancellationToken,
@@ -474,7 +574,40 @@ impl Saga {
         let mut steps_executed: Vec<String> = Vec::new();
         let mut executed: Vec<usize> = Vec::new();
 
-        for (i, step) in self.steps.iter().enumerate() {
+        // Resolve the execution order (insertion order, or topological when
+        // depends_on edges are present). A bad DAG fails before any step runs.
+        let order = match self.execution_order() {
+            Ok(order) => order,
+            Err(message) => {
+                let error = SagaError::Definition(message);
+                let finished_at = Utc::now();
+                let outcome = Outcome {
+                    saga: self.name.clone(),
+                    status: SagaStatus::Failed,
+                    steps_executed,
+                    steps_rolled: Vec::new(),
+                    error: Some(error.to_string()),
+                    started_at,
+                    finished_at,
+                };
+                listener
+                    .on_completed(
+                        &self.name,
+                        ExecutionPattern::Saga,
+                        &cid,
+                        false,
+                        duration_ms(started_at, finished_at),
+                    )
+                    .await;
+                return Err(SagaFailure {
+                    outcome: Box::new(outcome),
+                    error,
+                });
+            }
+        };
+
+        for i in order {
+            let step = &self.steps[i];
             if token.is_cancelled() {
                 let error = SagaError::Cancelled;
                 let outcome = Outcome {
@@ -1170,5 +1303,75 @@ mod tests {
             CIRCUIT_BREAKER_THRESHOLD,
             "the circuit opened after the threshold, halting further compensations"
         );
+    }
+
+    // ---- depends_on / DAG execution -------------------------------------
+
+    fn logging_step(name: &'static str, log: Log) -> Step {
+        Step::new(name, move || {
+            let log = log.clone();
+            async move {
+                log.lock().unwrap().push(name.to_string());
+                Ok(())
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn depends_on_runs_in_topological_order() {
+        // Steps are added out of natural order; depends_on must force
+        // a -> {b, d}, b -> c regardless of insertion order.
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let saga = Saga::new("dag")
+            .step(logging_step("c", log.clone()).depends_on(["b"]))
+            .step(logging_step("a", log.clone()))
+            .step(logging_step("b", log.clone()).depends_on(["a"]))
+            .step(logging_step("d", log.clone()).depends_on(["a"]));
+
+        let out = saga.run().await.expect("completes");
+        assert_eq!(out.status, SagaStatus::Completed);
+
+        let order = log.lock().unwrap().clone();
+        assert_eq!(order.len(), 4, "every step ran exactly once: {order:?}");
+        let pos = |n: &str| order.iter().position(|x| x == n).unwrap();
+        assert!(pos("a") < pos("b"), "a before b: {order:?}");
+        assert!(pos("a") < pos("d"), "a before d: {order:?}");
+        assert!(pos("b") < pos("c"), "b before c: {order:?}");
+    }
+
+    #[tokio::test]
+    async fn no_dependencies_preserves_strict_insertion_order() {
+        // With no depends_on anywhere the saga must run in insertion order.
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let saga = Saga::new("seq")
+            .step(logging_step("one", log.clone()))
+            .step(logging_step("two", log.clone()))
+            .step(logging_step("three", log.clone()));
+        saga.run().await.expect("completes");
+        assert_eq!(*log.lock().unwrap(), vec!["one", "two", "three"]);
+    }
+
+    #[tokio::test]
+    async fn unknown_dependency_fails_with_definition_error() {
+        let saga = Saga::new("bad")
+            .step(Step::new("a", || async { Ok(()) }))
+            .step(Step::new("b", || async { Ok(()) }).depends_on(["nope"]));
+        let failure = saga.run().await.expect_err("unknown dependency");
+        assert!(matches!(failure.error(), SagaError::Definition(_)));
+        assert_eq!(failure.outcome().status, SagaStatus::Failed);
+        assert!(
+            failure.outcome().steps_executed.is_empty(),
+            "a bad DAG is detected before any step runs"
+        );
+    }
+
+    #[tokio::test]
+    async fn dependency_cycle_fails_with_definition_error() {
+        let saga = Saga::new("cyc")
+            .step(Step::new("a", || async { Ok(()) }).depends_on(["b"]))
+            .step(Step::new("b", || async { Ok(()) }).depends_on(["a"]));
+        let failure = saga.run().await.expect_err("cycle");
+        assert!(matches!(failure.error(), SagaError::Definition(_)));
+        assert_eq!(failure.outcome().status, SagaStatus::Failed);
     }
 }

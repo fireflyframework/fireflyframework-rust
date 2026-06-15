@@ -53,6 +53,16 @@
 //! (`SET NX PX` + owner-token Lua release), and [`PostgresAdvisoryLock`]
 //! (`pg_try_advisory_lock` on a held session).
 //!
+//! # Async method execution (Spring `@Async`)
+//!
+//! [`TaskExecutor`] is the Rust rendering of Spring's `TaskExecutor` / `@Async`:
+//! [`TaskExecutor::spawn`] hands a `Send + 'static` future off to its own tokio
+//! task and returns an awaitable [`TaskHandle`], with concurrency optionally
+//! bounded by a semaphore (the pool size). A process-global registry
+//! ([`register_task_executor`] / [`task_executor`]) lets a starter install the
+//! application executor once, which the `#[async_method]` macro targets;
+//! unregistered, [`task_executor`] yields a default unbounded executor.
+//!
 //! # Quick start
 //!
 //! ```no_run
@@ -89,12 +99,16 @@
 //! ```
 
 mod cron;
+mod executor;
 mod lock;
 mod postgres_lock;
 mod redis_lock;
 mod scheduler;
 
 pub use cron::{parse_cron, CronError, CronExpr};
+pub use executor::{
+    register_task_executor, task_executor, TaskExecutor, TaskHandle, TaskJoinError,
+};
 pub use lock::{DistributedLock, InProcessLock, LocalLock, LockError};
 pub use postgres_lock::PostgresAdvisoryLock;
 pub use redis_lock::RedisLock;
@@ -105,4 +119,4 @@ pub use scheduler::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.4";
+pub const VERSION: &str = "26.6.5";

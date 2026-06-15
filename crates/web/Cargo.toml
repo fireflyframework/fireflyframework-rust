@@ -10,6 +10,9 @@ description = "Firefly Framework for Rust — Problem renderer, correlation, ide
 
 [dependencies]
 firefly-kernel = { workspace = true }
+# Supplies the `bean::Validate` trait + `ValidationErrors` the `Valid<T>`
+# extractor runs after JSON decoding (failure → 422 problem via FireflyError).
+firefly-validators = { workspace = true }
 # Reactive (WebFlux/Reactor-style) HTTP surface: Mono/Flux responders.
 firefly-reactive = { workspace = true }
 # Reused for the Flux→SSE responder's canonical wire format.

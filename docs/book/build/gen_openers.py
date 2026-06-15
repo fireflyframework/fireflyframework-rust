@@ -1,10 +1,11 @@
 """Generate on-brand chapter-opener SVGs for *Firefly for Rust by Example*.
 
-Each opener is a clean, geometric banner (720x300) sharing a common visual
-language — a warm cream-amber field, a Rust-orange gear/firefly emblem on the
-right, and a chapter-specific diagram on the left that previews the chapter's
-idea. The emblem and palette are constant so the set reads as a family; the
-left-hand glyph differs per chapter so each looks intentional, not stamped.
+Each opener is a 720x300 banner sharing one visual language with the cover:
+a warm cream diagram field on the left, and a deep night-sky panel on the
+right holding a glowing **firefly** emblem (the same bioluminescent motif as
+the cover, not a literal gear). The emblem + palette are constant so the set
+reads as a family; the left-hand glyph differs per chapter so each opener
+previews that chapter's idea.
 
 Run:  python build/gen_openers.py        (writes art/openers/*.svg)
 """
@@ -21,19 +22,26 @@ def esc(s: str) -> str:
     return _xml_escape(str(s))
 
 # ---- palette ---------------------------------------------------------------
-FIELD   = "#fbf3e4"   # warm cream banner field
-FIELD2  = "#f6ead3"   # slightly deeper cream for the right panel
+FIELD   = "#fdf6ea"   # warm cream banner field
+FIELD2  = "#f7ecd8"   # slightly deeper cream
+PANEL1  = "#0e1217"   # night-sky panel, cool top
+PANEL2  = "#16100b"   # night-sky panel, warm bottom
 AMBER   = "#f6a821"
+AMBER_B = "#ffc24a"   # bright amber
 AMBER_D = "#c97e10"
 RUST    = "#d4793a"
 RUST_D  = "#b5531f"
-INK     = "#3a2a1c"
+INK     = "#3a2a1c"   # dark text / dark fills on the cream field
 MUTED   = "#9a8163"
 GEAR    = "#e8923f"
-NODE    = "#fff7e6"
+NODE    = "#fffaf0"   # light card on the cream field
+CREAM   = "#f3e7cf"   # light text on the dark panel
 GREEN   = "#1f8a4c"
+GREEN_B = "#bfe26a"   # bioluminescent green-gold accent (matches the cover)
 
 W, H = 720, 300
+# the night-sky panel on the right
+PX, PY, PW, PH = 490, 14, 216, 272
 FONT = "Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif"
 MONO = "SF Mono,JetBrains Mono,Menlo,Consolas,monospace"
 
@@ -50,18 +58,17 @@ def defs() -> str:
     # NOTE: WeasyPrint's SVG engine drops gradients when a <marker>/<filter>
     # shares the <defs>, and resolves objectBoundingBox gradients unreliably.
     # So we use ONLY userSpaceOnUse gradients here, draw arrowheads as explicit
-    # triangles, and fake glows with translucent ellipses.
+    # triangles, and fake glows with stacked translucent circles.
     return (
         '<defs>'
         f'<linearGradient id="fld" x1="0" y1="0" x2="{W}" y2="{H}" gradientUnits="userSpaceOnUse">'
         f'<stop offset="0" stop-color="{FIELD}"/>'
         f'<stop offset="1" stop-color="{FIELD2}"/></linearGradient>'
-        # emblem-local gradient (the emblem <g> is translated to 600,150, so
-        # these coords are in the emblem's own space, centered on 0,0):
-        f'<linearGradient id="grg" x1="-70" y1="-70" x2="70" y2="70" gradientUnits="userSpaceOnUse">'
-        f'<stop offset="0" stop-color="{AMBER}"/>'
-        f'<stop offset="1" stop-color="{RUST}"/></linearGradient>'
-        # root-space horizontal gradient for cards, bars and chips:
+        # the night-sky panel gradient:
+        f'<linearGradient id="pnl" x1="{PX}" y1="{PY}" x2="{PX+PW}" y2="{PY+PH}" gradientUnits="userSpaceOnUse">'
+        f'<stop offset="0" stop-color="{PANEL1}"/>'
+        f'<stop offset="1" stop-color="{PANEL2}"/></linearGradient>'
+        # root-space horizontal gold gradient for cards, bars and chips:
         f'<linearGradient id="grh" x1="0" y1="0" x2="{W}" y2="0" gradientUnits="userSpaceOnUse">'
         f'<stop offset="0" stop-color="{AMBER}"/>'
         f'<stop offset="1" stop-color="{RUST}"/></linearGradient>'
@@ -70,50 +77,72 @@ def defs() -> str:
 
 
 def emblem() -> str:
-    """The constant Firefly-in-a-Rust-gear emblem, right side."""
-    cx, cy = 600, 150
-    teeth = "".join(
-        f'<use xlink:href="#et" transform="rotate({a})"/>' for a in range(0, 360, 30)
-    )
+    """The constant glowing-firefly emblem on the night-sky panel (right)."""
+    cx, cy = 601, 150
     return (
         f'<g transform="translate({cx},{cy})">'
-        # halo
-        f'<circle r="78" fill="{AMBER}" opacity="0.10"/>'
-        f'<circle r="66" fill="none" stroke="{AMBER}" stroke-width="1.2" opacity="0.45"/>'
-        # gear
-        f'<g fill="url(#grg)"><g id="et"><rect x="-7" y="-66" width="14" height="16" rx="2.5"/></g>{teeth}</g>'
-        f'<circle r="55" fill="url(#grg)"/>'
-        f'<circle r="44" fill="{FIELD}"/>'
-        # firefly
-        f'<ellipse cx="0" cy="14" rx="20" ry="20" fill="{AMBER}" opacity="0.25"/>'
-        f'<ellipse cx="0" cy="14" rx="15" ry="15" fill="{AMBER}" opacity="0.7"/>'
-        f'<ellipse cx="0" cy="-6" rx="9" ry="13" fill="{INK}" stroke="{AMBER_D}" stroke-width="1.6"/>'
-        f'<ellipse cx="0" cy="13" rx="10" ry="12" fill="{AMBER}"/>'
-        f'<ellipse cx="0" cy="13" rx="5" ry="7" fill="#fff2cf"/>'
-        f'<path d="M-2,-9 C-26,-23 -33,-4 -12,2 Z" fill="{RUST}" opacity="0.5"/>'
-        f'<path d="M2,-9 C26,-23 33,-4 12,2 Z" fill="{RUST}" opacity="0.5"/>'
-        f'<path d="M-3,-16 C-9,-26 -13,-27 -16,-30" fill="none" stroke="{AMBER_D}" stroke-width="1.6" stroke-linecap="round"/>'
-        f'<path d="M3,-16 C9,-26 13,-27 16,-30" fill="none" stroke="{AMBER_D}" stroke-width="1.6" stroke-linecap="round"/>'
+        # ambient bloom on the panel
+        f'<circle r="66" fill="{AMBER}" opacity="0.07"/>'
+        f'<circle r="40" fill="{AMBER_B}" opacity="0.10"/>'
+        # light trail curving in from lower-left (two strokes = a taper)
+        f'<path d="M-80,84 C-46,44 -24,18 -8,-2" fill="none" stroke="{AMBER}" '
+        f'stroke-width="2.4" opacity="0.10" stroke-linecap="round"/>'
+        f'<path d="M-80,84 C-46,44 -24,18 -8,-2" fill="none" stroke="#ffd980" '
+        f'stroke-width="1" opacity="0.22" stroke-linecap="round"/>'
+        # the firefly, gently tilted for life
+        '<g transform="rotate(-16)">'
+        f'<circle cx="0" cy="30" r="24" fill="{AMBER}" opacity="0.18"/>'
+        f'<circle cx="0" cy="30" r="14" fill="{AMBER_B}" opacity="0.45"/>'
+        # wings, swept back and translucent
+        f'<path d="M-3,-6 C-40,-30 -52,-2 -16,8 Z" fill="#ffd980" opacity="0.22"/>'
+        f'<path d="M3,-6 C40,-30 52,-2 16,8 Z" fill="#ffd980" opacity="0.22"/>'
+        # glowing abdomen
+        f'<ellipse cx="0" cy="26" rx="11" ry="16" fill="{AMBER}"/>'
+        f'<ellipse cx="0" cy="28" rx="6" ry="10" fill="#fff2cf"/>'
+        # dark thorax + head with an amber rim
+        f'<ellipse cx="0" cy="2" rx="9" ry="13" fill="#1a130c" stroke="{AMBER_D}" stroke-width="1.6"/>'
+        f'<ellipse cx="0" cy="-13" rx="5.5" ry="6.5" fill="#1a130c" stroke="{AMBER_D}" stroke-width="1.3"/>'
+        # antennae
+        f'<path d="M-3,-18 C-9,-28 -13,-30 -17,-33" fill="none" stroke="{AMBER_D}" stroke-width="1.5" stroke-linecap="round"/>'
+        f'<path d="M3,-18 C9,-28 13,-30 17,-33" fill="none" stroke="{AMBER_D}" stroke-width="1.5" stroke-linecap="round"/>'
+        '</g>'
+        # satellite motes (one bioluminescent green, matching the cover)
+        f'<circle cx="50" cy="-46" r="2" fill="#ffd980" opacity="0.7"/>'
+        f'<circle cx="62" cy="28" r="1.6" fill="{GREEN_B}" opacity="0.75"/>'
+        f'<circle cx="-54" cy="-40" r="1.6" fill="#ffd980" opacity="0.6"/>'
         '</g>'
     )
 
 
 def frame(num: str, kicker: str) -> str:
-    """Background field, left accent bar, chapter kicker text."""
+    """Cream field, gold accent bar, night-sky panel + motes, chapter kicker."""
     return (
         f'<rect width="{W}" height="{H}" fill="url(#fld)"/>'
         f'<rect x="0" y="0" width="8" height="{H}" fill="url(#grh)"/>'
-        f'<rect x="40" y="244" width="46" height="4" rx="2" fill="{RUST}"/>'
-        f'<text x="40" y="232" fill="{RUST_D}" font-size="15" font-weight="800" '
-        f'letter-spacing="3">{esc(num)}</text>'
-        f'<text x="40" y="272" fill="{MUTED}" font-size="13" font-weight="600" '
+        # night-sky panel on the right
+        f'<rect x="{PX}" y="{PY}" width="{PW}" height="{PH}" rx="16" fill="url(#pnl)"/>'
+        f'<rect x="{PX}" y="{PY}" width="{PW}" height="{PH}" rx="16" fill="none" '
+        f'stroke="{AMBER}" stroke-width="1" opacity="0.22"/>'
+        # a few distant motes inside the panel
+        f'<g fill="#ffd980"><circle cx="528" cy="56" r="1.4" opacity="0.6"/>'
+        f'<circle cx="678" cy="236" r="1.4" opacity="0.55"/>'
+        f'<circle cx="644" cy="66" r="1.1" opacity="0.5"/>'
+        f'<circle cx="512" cy="210" r="1.1" opacity="0.45"/></g>'
+        f'<circle cx="552" cy="246" r="1.3" fill="{GREEN_B}" opacity="0.6"/>'
+        # chapter number + kicker — a TOP-left header row, clear of the scene
+        # (scenes draw from y>=56 down, so the header never overlaps them).
+        f'<text x="40" y="40" fill="{RUST_D}" font-size="15" font-weight="800" '
+        f'letter-spacing="2.5">{esc(num)}</text>'
+        f'<text x="186" y="40" fill="{MUTED}" font-size="12.5" font-weight="600" '
         f'letter-spacing="1.5" font-family="{MONO}">{esc(kicker)}</text>'
+        f'<rect x="40" y="49" width="46" height="4" rx="2" fill="{RUST}"/>'
     )
 
 
 def card(x, y, w, label, fill=NODE, stroke=RUST, tcol=INK, fs=14):
     return (
         f'<g transform="translate({x},{y})">'
+        f'<rect x="0" y="2.5" width="{w}" height="40" rx="9" fill="#d9c4a3" opacity="0.30"/>'
         f'<rect x="0" y="0" width="{w}" height="40" rx="9" fill="{fill}" '
         f'stroke="{stroke}" stroke-width="1.8"/>'
         f'<text x="{w/2}" y="25" text-anchor="middle" fill="{tcol}" '
@@ -136,7 +165,6 @@ def arrow(x1, y1, x2, y2):
     break gradient rendering in WeasyPrint)."""
     import math
     ang = math.atan2(y2 - y1, x2 - x1)
-    # base of the arrowhead, 8px back from the tip
     bx = x2 - 8 * math.cos(ang)
     by = y2 - 8 * math.sin(ang)
     p1x, p1y = x2, y2
@@ -160,7 +188,8 @@ def spark(x, y, r=6, fill=AMBER, op=1.0):
 
 # ---------------------------------------------------------------------------
 # Per-chapter left-side scenes. Each returns an SVG fragment drawn over the
-# common frame; the constant emblem is appended by the assembler.
+# common frame; the constant emblem is appended by the assembler. Scenes draw
+# within x < 480 so they never collide with the night-sky panel.
 # ---------------------------------------------------------------------------
 def s_choice():  # why firefly — chaos -> cohesion
     cards = (card(60, 56, 96, "axum?", NODE, MUTED, MUTED, 13)
@@ -194,14 +223,14 @@ def s_config():
 
 
 def s_di():
-    hub = card(120, 124, 120, "Context", "url(#grh)", RUST_D, "#16110c", 14)
-    beans = (chip(40, 60, "#[component]") + chip(40, 200, "Arc<dyn Port>")
-             + chip(300, 64, "@autowired") + chip(300, 196, "lifecycle"))
+    hub = card(120, 120, 120, "Context", "url(#grh)", RUST_D, "#16110c", 14)
+    beans = (chip(40, 58, "#[component]") + chip(40, 188, "Arc<dyn Port>")
+             + chip(300, 60, "@autowired") + chip(300, 188, "lifecycle"))
     spokes = (f'<g stroke="{RUST}" stroke-width="2" opacity="0.5">'
-              f'<line x1="120" y1="92" x2="180" y2="124"/>'
-              f'<line x1="120" y1="210" x2="180" y2="164"/>'
-              f'<line x1="300" y1="80" x2="240" y2="130"/>'
-              f'<line x1="300" y1="206" x2="240" y2="158"/></g>')
+              f'<line x1="120" y1="88" x2="180" y2="120"/>'
+              f'<line x1="120" y1="196" x2="180" y2="160"/>'
+              f'<line x1="300" y1="76" x2="240" y2="126"/>'
+              f'<line x1="300" y1="196" x2="240" y2="154"/></g>')
     return spokes + beans + hub
 
 
@@ -253,9 +282,9 @@ def s_ddd():
 
 
 def s_cqrs():
-    return (card(48, 70, 150, "DepositCommand", NODE, RUST, INK, 13)
-            + card(48, 190, 150, "BalanceQuery", NODE, RUST, INK, 13)
-            + arrow(202, 90, 262, 130) + arrow(202, 210, 262, 150)
+    return (card(48, 64, 150, "DepositCommand", NODE, RUST, INK, 13)
+            + card(48, 172, 150, "BalanceQuery", NODE, RUST, INK, 13)
+            + arrow(202, 84, 262, 126) + arrow(202, 192, 262, 150)
             + card(272, 108, 110, "Bus", "url(#grh)", RUST_D, "#16110c", 15)
             + arrow(384, 130, 410, 130))
 
@@ -304,7 +333,6 @@ def s_saga():
         x += 110
     out.append(f'<path d="M370,140 C300,210 130,210 64,152" fill="none" '
                f'stroke="{RUST_D}" stroke-width="2.4" stroke-dasharray="6 5"/>')
-    # explicit arrowhead at the dashed path's end (pointing up-left into "debit")
     out.append(f'<polygon points="64,152 78,150 74,162" fill="{RUST_D}"/>')
     out.append(f'<text x="210" y="212" text-anchor="middle" fill="{RUST_D}" '
                f'font-size="13" font-weight="700">compensate</text>')
@@ -332,7 +360,7 @@ def s_cache():
     return (chip(48, 80, "request") + arrow(132, 94, 180, 94)
             + card(190, 72, 110, "Cache", "url(#grh)", RUST_D, "#16110c", 14)
             + card(190, 150, 110, "Resilience", NODE, RUST, INK, 13)
-            + chip(316, 80, "hit ⚡") + chip(316, 162, "retry · breaker"))
+            + chip(316, 80, "cache hit") + chip(316, 162, "retry · breaker"))
 
 
 def s_sched():
@@ -356,12 +384,12 @@ def s_testing():
     return (card(48, 116, 130, "StepVerifier", NODE, RUST, INK, 13)
             + arrow(182, 136, 244, 136)
             + card(254, 116, 120, "Testcontainers", "url(#grh)", RUST_D, "#16110c", 12)
-            + chip(60, 70, "green ✓", AMBER) + chip(60, 190, "real infra"))
+            + chip(60, 70, "all green", AMBER) + chip(60, 190, "real infra"))
 
 
 def s_cli():
     term = (f'<g transform="translate(48,80)"><rect x="0" y="0" width="280" height="140" rx="10" '
-            f'fill="{INK}"/><circle cx="18" cy="18" r="5" fill="{RUST}"/>'
+            f'fill="#16110c"/><circle cx="18" cy="18" r="5" fill="{RUST}"/>'
             f'<circle cx="36" cy="18" r="5" fill="{AMBER}"/><circle cx="54" cy="18" r="5" fill="{GREEN}"/>'
             f'<text x="18" y="62" fill="{AMBER}" font-size="16" font-family="{MONO}">$ firefly new</text>'
             f'<text x="18" y="92" fill="{NODE}" font-size="16" font-family="{MONO}">$ firefly run</text>'
@@ -417,13 +445,14 @@ SCENES = {
     "ch22": ("The firefly CLI", "THE CLI", s_cli),
     "ch23": ("Extending Firefly and going to production", "PRODUCTION", s_prod),
     "appa": ("Spring Boot to Firefly cheat-sheet", "APPENDIX A", s_appa),
-    "appb": ("Crate and module index", "APPENDIX B", s_appb),
+    "appb": ("Crate and module index", "MODULE INDEX", s_appb),
 }
 
 # kicker numbers shown top-left, keyed by opener id
 NUMS = {f"ch{i:02d}": f"CHAPTER {i}" for i in range(1, 24)}
 NUMS["appa"] = "APPENDIX A"
-NUMS["appb"] = "APPENDIX B"
+# book.yaml maps the module-index appendix (opener id appb) to "Appendix A".
+NUMS["appb"] = "APPENDIX A"
 
 
 def build_one(oid: str) -> str:

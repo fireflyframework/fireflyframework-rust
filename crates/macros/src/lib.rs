@@ -36,9 +36,16 @@
 //! | [`macro@Component`] / [`macro@Service`] / [`macro@Repository`] (derive) | a struct with `#[autowired]` fields | a `firefly_register(container)` method |
 //! | [`register_all!`] | `(container, [A, B, ...])` | calls each type's `firefly_register` |
 //! | [`macro@scheduled`] | a zero-arg `async fn` | a `schedule_<fn>(scheduler)` helper |
+//! | [`macro@async_method`] | an `async fn(self: Arc<Self>, …) -> R` | a non-async `fn … -> firefly_scheduling::TaskHandle<R>` that spawns the body |
 //! | [`macro@rest_controller`] | an `impl` block (`#[get]`/`#[post]`/… methods) | a `routes(state) -> axum::Router` |
 //! | [`macro@DomainEvent`] / [`macro@AggregateRoot`] (derive) | a struct | event-type/aggregate ergonomics |
-//! | [`macro@event_listener`] | an `async fn(Event) -> FireflyResult<()>` | a `subscribe_<fn>(broker)` helper |
+//! | [`macro@event_listener`] | an `async fn(Event) -> FireflyResult<()>` | a `subscribe_<fn>(broker)` helper (EDA broker consumer) |
+//! | [`macro@application_event_listener`] | a free `async fn(&E)` | an in-process `@EventListener` (discovered via `inventory`, fired by `publish_event`) |
+//! | [`macro@transactional_event_listener`] | a free `async fn(&E)` | a `@TransactionalEventListener` bound to a commit phase (`after_commit` by default) |
+//! | [`macro@saga`] / [`macro@workflow`] / [`macro@tcc`] | an `impl` block of `async fn` steps | a `saga()`/`workflow()`/`tcc()` builder + `run` over the step graph (declarative orchestration) |
+//! | [`macro@cacheable`] / [`macro@cache_put`] / [`macro@cache_evict`] | an `async fn(...) -> Result<V, E>` | a cache-aware body around the registered adapter |
+//! | [`macro@Validate`] (derive) | a struct with `#[validate(...)]` fields | `impl firefly_validators::bean::Validate` (JSR-380 constraints) |
+//! | [`macro@aspect`] | an `impl` block (`#[before]`/`#[around]`/… markers) | `impl firefly_aop::Aspect` + an `inventory` registration (declarative AOP) |
 //!
 //! See each macro's own documentation for the argument surface and an example.
 //! These are normally reached through the `firefly` facade
@@ -46,19 +53,25 @@
 
 #![forbid(unsafe_code)]
 
+mod aspect;
+mod async_exec;
 mod bean;
 mod builder;
+mod cache;
 mod common;
 mod config_properties;
 mod container;
 mod cqrs;
 mod eda;
+mod event_listener;
 mod eventsourcing;
 mod mapper;
 mod method_security;
+mod orchestration;
 mod repository_query;
 mod scheduling;
 mod transactional;
+mod validate;
 mod web;
 
 use proc_macro::TokenStream;
@@ -353,6 +366,55 @@ pub fn transactional(args: TokenStream, item: TokenStream) -> TokenStream {
     emit(transactional::transactional_impl(args.into(), item))
 }
 
+/// Registers a free `async fn` as an in-process application event listener —
+/// Spring's `@EventListener`.
+///
+/// The handler takes the event by shared reference and runs synchronously
+/// (awaited) when a matching event is published with
+/// [`publish_event`](firefly_transactional::publish_event). For a listener bound
+/// to a transaction phase, see [`transactional_event_listener`]; to subscribe to
+/// an EDA message-broker topic instead, see the separate [`macro@event_listener`]
+/// (the `@KafkaListener`-style broker subscription).
+///
+/// ```ignore
+/// #[firefly::application_event_listener]
+/// async fn on_order_placed(event: &OrderPlaced) {
+///     audit_log(event).await;
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn application_event_listener(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(event_listener::application_event_listener_attr(
+        args.into(),
+        item,
+    ))
+}
+
+/// Registers a free `async fn` as a transaction-bound event listener — Spring's
+/// `@TransactionalEventListener`.
+///
+/// The handler runs at a [`TransactionPhase`](firefly_transactional::TransactionPhase)
+/// of the surrounding transaction — `after_commit` by default, or
+/// `before_commit` / `after_rollback` / `after_completion` via `phase = "..."`.
+/// An event published with no active transaction falls back to running
+/// immediately (as if already committed).
+///
+/// ```ignore
+/// #[firefly::transactional_event_listener]                       // after_commit
+/// async fn publish_integration_event(event: &WalletOpened) {
+///     bus.send(event).await;   // only after the opening transaction commits
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn transactional_event_listener(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(event_listener::transactional_event_listener_attr(
+        args.into(),
+        item,
+    ))
+}
+
 /// Guards a method *before* it runs — Spring Security's `@PreAuthorize`.
 ///
 /// The rule is checked against the ambient
@@ -497,6 +559,46 @@ pub fn scheduled(args: TokenStream, item: TokenStream) -> TokenStream {
     emit(scheduling::scheduled_attr(args.into(), item))
 }
 
+/// Runs a method asynchronously, off the caller's task — Spring's `@Async`.
+///
+/// Rewrites an `async fn name(self: Arc<Self>, args…) -> R` into a **non-async**
+/// `fn name(self: Arc<Self>, args…) -> firefly_scheduling::TaskHandle<R>`: the
+/// call returns immediately and the original body runs on a
+/// [`TaskExecutor`](firefly_scheduling::TaskExecutor)-spawned tokio task. The
+/// caller `.await`s (or
+/// [`.join()`](firefly_scheduling::TaskHandle::join)s) the returned handle for
+/// the result.
+///
+/// The receiver **must** be `self: Arc<Self>` — the spawned future has to be
+/// `'static`, which a `&self`/`self`-by-value receiver cannot provide — so any
+/// other receiver is a compile error pointing at the fix.
+///
+/// By default the work is spawned on the process-global executor
+/// ([`firefly_scheduling::task_executor`], an unbounded default when none is
+/// registered); pass `executor = "expr"` to spawn on a specific one.
+///
+/// ```ignore
+/// use std::sync::Arc;
+///
+/// impl Reports {
+///     #[firefly::async_method]
+///     async fn rebuild(self: Arc<Self>, id: u64) -> u64 {
+///         self.heavy_recompute(id).await
+///     }
+/// }
+/// // generated: fn rebuild(self: Arc<Self>, id: u64) -> TaskHandle<u64>
+/// let handle = Arc::new(reports).rebuild(7);   // returns at once
+/// let total = handle.await.unwrap();           // joins the spawned task
+/// ```
+///
+/// Options: `executor` (a `TaskExecutor` expression to spawn on) and `crate`
+/// (facade override).
+#[proc_macro_attribute]
+pub fn async_method(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(async_exec::async_method_impl(args.into(), item))
+}
+
 // ===========================================================================
 // Web
 // ===========================================================================
@@ -573,4 +675,313 @@ pub fn derive_aggregate_root(input: TokenStream) -> TokenStream {
 pub fn event_listener(args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
     emit(eda::event_listener_attr(args.into(), item))
+}
+
+// ===========================================================================
+// Orchestration — declarative sagas, workflows, and TCC
+// ===========================================================================
+
+/// Turns an `impl` block into a declarative **saga** (Java/pyfly `@Saga`),
+/// generating `MyType::saga(self: Arc<Self>) -> firefly::orchestration::Saga`
+/// and a convenience `MyType::run(self: Arc<Self>, input) -> Result<Outcome, SagaFailure>`.
+///
+/// Each step is an `async fn(&self, ...) -> Result<T, E>` marked
+/// `#[saga_step(...)]`; its parameters are injected from the saga context with
+/// `#[input]` / `#[input("field")]`, `#[from_step("step-id")]`,
+/// `#[variable("key")]`, and `#[ctx]`. A step's `Ok(T)` is serialized and made
+/// available to later steps via `#[from_step]`; an `Err(E)` (where
+/// `E: std::error::Error + Send + Sync`) triggers compensation in reverse order.
+///
+/// ```ignore
+/// #[firefly::saga(name = "money-transfer", policy = "stop_on_error")]
+/// impl TransferSaga {
+///     #[saga_step(id = "reserve", compensate = "refund")]
+///     async fn reserve(&self, #[input] req: TransferReq) -> Result<Reserved, MyErr> { /* … */ }
+///     async fn refund(&self, #[from_step("reserve")] r: Reserved) -> Result<(), MyErr> { /* … */ }
+///     #[saga_step(id = "credit", depends_on = ["reserve"], retry = 3, backoff_ms = 100)]
+///     async fn credit(&self, #[from_step("reserve")] r: Reserved) -> Result<(), MyErr> { /* … */ }
+/// }
+/// // generated: TransferSaga::saga(self: Arc<Self>) -> Saga, and ::run(self, input)
+/// ```
+///
+/// `#[saga_step]` options: `id` (required), `depends_on = ["…"]`,
+/// `compensate = "method"`, `retry`, `backoff_ms`, `timeout_ms`, `jitter`.
+/// `#[saga(...)]` options: `name`, `policy` (best_effort | stop_on_error |
+/// retry_with_backoff | circuit_breaker | best_effort_parallel | grouped_parallel),
+/// and `crate`.
+#[proc_macro_attribute]
+pub fn saga(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemImpl);
+    emit(orchestration::saga_impl(args.into(), item))
+}
+
+/// Turns an `impl` block into a declarative **workflow** — a DAG of nodes with
+/// parallel layers, skip conditions, fire-and-forget, and compensation —
+/// generating `MyType::workflow(self: Arc<Self>) -> firefly::orchestration::Workflow`
+/// and `MyType::run(self: Arc<Self>, input) -> Result<(), WorkflowError>`.
+///
+/// Each node is an `async fn(&self, ...) -> Result<T, E>` marked
+/// `#[workflow_step(...)]`; parameters are injected exactly as for `#[saga]`
+/// (`#[input]` / `#[from_step]` / `#[variable]` / `#[ctx]`).
+///
+/// ```ignore
+/// #[firefly::workflow(name = "compliance")]
+/// impl Compliance {
+///     #[workflow_step(id = "balance-check")]
+///     async fn balance(&self, #[input] req: Req) -> Result<bool, MyErr> { /* … */ }
+///     #[workflow_step(id = "fraud-scan")]
+///     async fn fraud(&self, #[input] req: Req) -> Result<bool, MyErr> { /* … */ }
+///     #[workflow_step(id = "approve", depends_on = ["balance-check", "fraud-scan"])]
+///     async fn approve(&self, #[from_step("balance-check")] ok: bool) -> Result<(), MyErr> { /* … */ }
+/// }
+/// ```
+///
+/// `#[workflow_step]` options: `id` (required), `depends_on = ["…"]`,
+/// `compensate = "method"`, `when = "expr"` (skip condition), and
+/// `fire_and_forget`. `#[workflow(...)]` options: `name`, `crate`.
+#[proc_macro_attribute]
+pub fn workflow(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemImpl);
+    emit(orchestration::workflow_impl(args.into(), item))
+}
+
+/// Turns an `impl` block into a declarative **TCC** coordinator
+/// (Try / Confirm / Cancel), generating
+/// `MyType::tcc(self: Arc<Self>) -> firefly::orchestration::Tcc` and
+/// `MyType::run(self: Arc<Self>, input) -> Result<(), TccError>`.
+///
+/// Each *try* phase is an `async fn(&self, ...) -> Result<T, E>` marked
+/// `#[participant(name = "...", confirm = "...", cancel = "...")]`; the confirm
+/// and cancel methods are plain `async fn(&self, ...) -> Result<_, E>` referenced
+/// by name. The try result is published under the participant name, so confirm /
+/// cancel read it via `#[from_step("<name>")]`.
+///
+/// ```ignore
+/// #[firefly::tcc(name = "transfer-2pc")]
+/// impl Transfer2pc {
+///     #[participant(name = "source", confirm = "capture_source", cancel = "release_source")]
+///     async fn hold_source(&self, #[input] req: Req) -> Result<Hold, MyErr> { /* … */ }
+///     async fn capture_source(&self, #[from_step("source")] h: Hold) -> Result<(), MyErr> { /* … */ }
+///     async fn release_source(&self, #[from_step("source")] h: Hold) -> Result<(), MyErr> { /* … */ }
+/// }
+/// ```
+///
+/// `#[participant]` options: `name` + `confirm` (required), `cancel`, `retry`,
+/// `backoff_ms`, `timeout_ms`. `#[tcc(...)]` options: `name`, `crate`.
+#[proc_macro_attribute]
+pub fn tcc(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemImpl);
+    emit(orchestration::tcc_impl(args.into(), item))
+}
+
+// ===========================================================================
+// Aspect-oriented advice — #[aspect]
+// ===========================================================================
+
+/// Turns an `impl` block into a declarative **aspect** — Spring's `@Aspect`
+/// (pyfly's `@aspect`).
+///
+/// The block's methods carry advice markers — `#[before]`, `#[after]`,
+/// `#[after_returning]`, `#[after_throwing]`, `#[around]` — naming which
+/// [`Aspect`](firefly_aop::Aspect) hook each implements (at most one method per
+/// marker). The macro keeps the marked methods callable (it strips only the
+/// markers) and generates a `#[async_trait] impl firefly_aop::Aspect for Self`
+/// whose hooks delegate to them; only the present hooks are emitted, so the
+/// trait's no-op/pass-through defaults cover the rest. It also emits an
+/// `inventory` thunk that registers the aspect (built via `Default`) against the
+/// pointcut, so it is discovered across the crate graph and woven by
+/// [`firefly_aop::advised`] without manual wiring.
+///
+/// The aspect type must implement [`Default`] — Spring aspects are singletons,
+/// and the auto-registered aspect is a single instance constructed via
+/// `Default`. The marked method signatures must match the hook shapes
+/// (`before`/`after`/`after_returning`/`after_throwing`: `async fn(&self, &JoinPoint)`;
+/// `around`: `fn<'a>(&'a self, &'a JoinPoint, Proceed<'a>) -> AdviceFuture<'a>`);
+/// a mismatch is a compile error at the generated delegation.
+///
+/// ```ignore
+/// use firefly::prelude::*;
+///
+/// #[derive(Default)]
+/// struct AuditAspect;
+///
+/// #[firefly::aspect(pointcut = "service.*.*", order = 0)]
+/// impl AuditAspect {
+///     #[before]
+///     async fn log_call(&self, jp: &JoinPoint) {
+///         tracing::info!(target = %jp.qualified_name(), "entering");
+///     }
+///     #[around]
+///     fn time_it<'a>(&'a self, _jp: &'a JoinPoint, proceed: Proceed<'a>) -> AdviceFuture<'a> {
+///         Box::pin(async move { proceed.proceed().await })
+///     }
+/// }
+/// // Woven explicitly at the call site:
+/// // advised("service.OrderService", "create", args, || async { ok(out) }).await
+/// ```
+///
+/// Options: `pointcut` (required glob), `order` (optional `i32`, default `0`),
+/// and `crate` (facade override).
+#[proc_macro_attribute]
+pub fn aspect(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemImpl);
+    emit(aspect::aspect_impl(args.into(), item))
+}
+
+// ===========================================================================
+// Declarative caching — #[cacheable] / #[cache_put] / #[cache_evict]
+// ===========================================================================
+
+/// Read-through caches an `async fn`'s result — Spring's `@Cacheable`
+/// (pyfly's `@cacheable`).
+///
+/// When a process-global cache adapter has been registered through
+/// [`firefly_cache::register_cache`], the method first looks the key up in the
+/// cache: on a hit it returns the cached value without running the body; on a
+/// miss it runs the body exactly once and stores the resulting `Ok(V)` for the
+/// configured `ttl` before returning it. A cache-write failure never masks the
+/// freshly computed value. When no adapter is registered the method runs its
+/// original body unchanged, so caching is a deploy-time concern, not a code
+/// change. The function must be `async` and return `Result<V, E>` where
+/// `V: serde::Serialize + serde::de::DeserializeOwned`.
+///
+/// ## Options
+/// - `key` (required): a Rust expression yielding a `ToString` value — usually a
+///   `format!(...)` over the method's parameters. Evaluated before the body, so
+///   a key that borrows a parameter is valid.
+/// - `ttl`: a duration literal (`"60s"`, `"500ms"`, `"5m"`, `"1h"`, or a bare
+///   integer of seconds); omit for no expiry.
+/// - `crate`: facade override for a renamed/shimmed `firefly`.
+///
+/// ```ignore
+/// #[firefly::cacheable(key = "format!(\"order:{}\", id)", ttl = "60s")]
+/// async fn load_order(&self, id: u64) -> Result<Order, MyError> {
+///     self.repo.fetch(id).await   // runs only on a cache miss
+/// }
+/// // generated: on hit, returns the cached Order; on miss, runs the body and
+/// // stores Order under "order:<id>" for 60s.
+/// ```
+#[proc_macro_attribute]
+pub fn cacheable(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(cache::cacheable_attr(args.into(), item))
+}
+
+/// Always runs an `async fn` and writes its result to the cache — Spring's
+/// `@CachePut` (pyfly's `@cache_put`).
+///
+/// Unlike [`macro@cacheable`], no read happens first: the body always executes,
+/// and on `Ok(V)` the value is written through under the key (overwriting any
+/// existing entry), keeping the cache warm after a mutation. A cache-write
+/// failure never masks the returned value. When no adapter is registered the
+/// method is a plain call. The function must be `async` and return
+/// `Result<V, E>` where `V: serde::Serialize + serde::de::DeserializeOwned`.
+///
+/// ## Options
+/// - `key` (required): a Rust expression yielding a `ToString` value.
+/// - `ttl`: a duration literal; omit for no expiry.
+/// - `crate`: facade override.
+///
+/// ```ignore
+/// #[firefly::cache_put(key = "format!(\"order:{}\", order.id)", ttl = "60s")]
+/// async fn save_order(&self, order: Order) -> Result<Order, MyError> {
+///     self.repo.upsert(order).await   // always runs, then refreshes the cache
+/// }
+/// // generated: runs the body, then stores the returned Order under
+/// // "order:<id>" for 60s.
+/// ```
+#[proc_macro_attribute]
+pub fn cache_put(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(cache::cache_put_attr(args.into(), item))
+}
+
+/// Evicts a cache entry after an `async fn` succeeds — Spring's `@CacheEvict`
+/// (pyfly's `@cache_evict`).
+///
+/// The body runs first; on `Ok` the keyed entry is removed (or, with
+/// `all_entries`, every entry whose key starts with `key` — prefix eviction via
+/// `delete_prefix`), so a mutation can invalidate the values a sibling
+/// [`macro@cacheable`] would otherwise serve stale. When no adapter is
+/// registered the method is a plain call. The function must be `async` and
+/// return `Result<V, E>`.
+///
+/// ## Options
+/// - `key` (required): a Rust expression yielding a `ToString` value — the exact
+///   key to delete, or the prefix to delete under when `all_entries` is set.
+/// - `all_entries`: evict every entry under the `key` prefix instead of a single
+///   exact key.
+/// - `crate`: facade override.
+///
+/// ```ignore
+/// #[firefly::cache_evict(key = "format!(\"order:{}\", id)")]
+/// async fn delete_order(&self, id: u64) -> Result<(), MyError> {
+///     self.repo.remove(id).await   // on success, "order:<id>" is evicted
+/// }
+///
+/// #[firefly::cache_evict(key = "\"order:\"", all_entries)]
+/// async fn purge_orders(&self) -> Result<(), MyError> { Ok(()) }
+/// // generated: runs the body, then evicts the key (or the "order:" prefix).
+/// ```
+#[proc_macro_attribute]
+pub fn cache_evict(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(cache::cache_evict_attr(args.into(), item))
+}
+
+// ===========================================================================
+// Declarative bean validation — #[derive(Validate)]
+// ===========================================================================
+
+/// Derives `firefly_validators::bean::Validate` from per-field
+/// `#[validate(...)]` constraints — the JSR-380 (`jakarta.validation`) /
+/// Spring `@Valid` analog.
+///
+/// The generated `validate(&self) -> Result<(), ValidationErrors>` runs
+/// *every* constraint and gathers all failures into one `ValidationErrors`
+/// (each a `{field, code, message}`), rather than short-circuiting on the
+/// first — so a caller (or the `firefly_web::Valid<T>` extractor, which
+/// renders the set as a 422 `application/problem+json`) sees the whole list.
+///
+/// ## Constraints
+/// - `email` — RFC 5322 address (reuses [`firefly_validators::validate_email`]).
+/// - `url` — `http`/`https` URL with a host.
+/// - `not_empty` — non-empty after trimming whitespace.
+/// - `length(min = .., max = ..)` — UTF-8 character-count bounds (either bound
+///   optional). Applies to any field whose value is `AsRef<str>`.
+/// - `range(min = .., max = ..)` — numeric bounds compared with the field's own
+///   type (either bound optional).
+/// - `pattern = "regex"` — the whole value must match the anchored regex.
+/// - `custom = "path::to::fn"` — a user predicate
+///   `fn(&FieldTy) -> Result<(), String>`; the returned `String` is the message.
+///
+/// Several constraints may sit on one field, comma-separated. An unknown
+/// constraint is a compile error. The string constraints (`email`, `url`,
+/// `not_empty`, `length`, `pattern`) require the field to be `AsRef<str>`
+/// (`String`, `&str`, …); `range` requires the field to be `PartialOrd` with
+/// the bound literals.
+///
+/// ```ignore
+/// use firefly::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize, Validate)]
+/// struct CreateUser {
+///     #[validate(not_empty, length(max = 80))]
+///     name: String,
+///     #[validate(email)]
+///     email: String,
+///     #[validate(range(min = 18, max = 120))]
+///     age: u32,
+///     #[validate(pattern = "[A-Z]{2}[0-9]+")]
+///     code: String,
+/// }
+/// ```
+///
+/// Accepts a container-level `#[validate(crate = "...")]` to override the
+/// facade segment for a renamed/shimmed `firefly`.
+#[proc_macro_derive(Validate, attributes(validate))]
+pub fn derive_validate(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    emit(validate::derive_validate(input))
 }

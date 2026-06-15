@@ -82,7 +82,7 @@ below.
 | `NotificationResult` | The send outcome (`id`, `provider`, `status`, `provider_id`, `error`). |
 | `DeliveryStatus` | Delivery-state enum (`QUEUED`/`SENT`/`DELIVERED`/`BOUNCED`/`FAILED`/`SUPPRESSED`). |
 | `FirebaseError` | `Transport(..)` and `Token(..)`. |
-| `VERSION` | Framework version stamp (`"26.6.1"`). |
+| `VERSION` | Framework version stamp (`"26.6.5"`). |
 
 ## Access-token source (no JWT/OAuth here)
 

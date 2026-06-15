@@ -170,7 +170,7 @@ first registered converter (JSON), so the negotiation never fails the request.
 > with no controller code. The `JsonMessageConverter` / `XmlMessageConverter` pair
 > ships in the registry, and `apply_middleware` installs the
 > `ContentNegotiationLayer` by default, so negotiation is on out of the box. Add a
-> converter — say CBOR — by implementing `MessageConverter` and registering it;
+> converter — say CBOR — by implementing `MessageConverter` and adding it;
 > user converters take priority over the built-ins.
 
 Firefly's field-level format contract is **serde**: the rules live in derives on
@@ -254,14 +254,15 @@ toward the wire and `apply_read(value) -> Value` renames back toward your struct
 > data, leave the global policy at `AsIs` and name that one type with
 > `#[serde(rename_all = "camelCase")]` — that is type-aware and never touches
 > data keys. (Field names with a trailing number round-trip cleanly when
-> written `opening_balance_2` rather than `openingBalance2`.)
+> written glued, `opening_balance2`, rather than with a separating underscore,
+> `opening_balance_2`, which normalises to `opening_balance2`.)
 
 ### Installing a global policy with `MappingJsonConverter`
 
 A free-standing `ObjectMapper` is useful, but the point is to make the *whole
 service* observe one policy without decorating every DTO. `MappingJsonConverter`
 wraps a mapper and implements `firefly_web::MessageConverter` for
-`application/json`. Register it on a `MessageConverterRegistry` and every
+`application/json`. Add it to a `MessageConverterRegistry` and every
 negotiated JSON request and response — the `Negotiate(dto)` responses from the
 previous section, and any JSON body the framework reads — flows through your
 naming and inclusion policy:
@@ -276,7 +277,7 @@ let mapper = ObjectMapper::new()
 
 // Wrap it as the JSON converter and register it so every negotiated
 // application/json exchange observes the policy.
-registry.register(MappingJsonConverter::new(mapper));
+registry.add(std::sync::Arc::new(MappingJsonConverter::new(mapper)));
 ```
 
 Because it registers as a user converter, `MappingJsonConverter` takes priority

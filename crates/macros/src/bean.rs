@@ -218,6 +218,9 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
                         scope: #scope_tokens,
                         primary: #primary,
                         order: #order,
+                        // A `#[bean]` factory bean is eagerly warmed like any
+                        // other singleton (it is not `@Lazy`).
+                        lazy: false,
                         register: <#self_ty>::#registrar_ident,
                         conditions: || #conditions,
                     }

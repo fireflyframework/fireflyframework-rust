@@ -2,6 +2,66 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.5 — 2026-06-15
+
+The **declarative-services milestone**. A complete declarative layer lands on top
+of the standalone framework: annotation-style orchestration, in-process events
+with a transactional/broker bridge, aspect-oriented advice, caching, validation,
+and async methods — each a thin macro over a real, tested engine. The book and
+all reference docs are brought current.
+
+### Added
+
+- **Declarative orchestration** — `#[saga]` + `#[saga_step]` (DAG `depends_on`,
+  compensation, retry/backoff/timeout, argument injection via
+  `#[input]`/`#[from_step]`/`#[variable]`/`#[ctx]`), `#[workflow]` +
+  `#[workflow_step]` (parallel DAG), and `#[tcc]` + `#[participant]`
+  (try/confirm/cancel). The `Saga` engine gained layered topological execution
+  (`Step::depends_on`); the Lumen sample now drives its transfer (saga),
+  compliance (workflow), and two-phase transfer (TCC) declaratively.
+- **In-process application events** — `#[application_event_listener]`
+  (Spring `@EventListener`) and `#[transactional_event_listener]`
+  (`@TransactionalEventListener`, phases `before_commit` / `after_commit` /
+  `after_rollback` / `after_completion`), `publish_event`, an `inventory`-based
+  listener registry, and `LocalTransactionManager` (Spring's
+  `ResourcelessTransactionManager`) for transactional event semantics without a
+  datasource.
+- **EDA bridge** — `register_broker` / `broker()`, `publish_to_broker`, and
+  `externalize_after_commit::<E>(topic, type)` (Spring Modulith event
+  externalization): an in-process event published inside a committed transaction
+  is forwarded to the message broker; a rolled-back one publishes nothing.
+- **Declarative AOP** — `#[aspect(pointcut, order)]` with `#[before]` /
+  `#[after]` / `#[after_returning]` / `#[after_throwing]` / `#[around]` advice
+  markers (over the existing `firefly-aop` engine), an `inventory`-discovered
+  process-global `AspectRegistry`, and the explicit `advised(...)` weave point.
+- **Declarative caching** — `#[cacheable]` / `#[cache_put]` / `#[cache_evict]`
+  over `async fn -> Result<V, E>`, around a process-registered cache adapter.
+- **JSR-380 bean validation** — `#[derive(Validate)]`
+  (`email`/`url`/`not_empty`/`length`/`range`/`pattern`/`custom`, with the
+  `pattern` regex compile-checked at macro-expansion) and the `Valid<T>` axum
+  extractor (422 on a constraint failure, 400 on malformed JSON).
+- **Async methods** — `#[async_method]` rewrites an
+  `async fn(self: Arc<Self>, …) -> R` into a non-async `fn -> TaskHandle<R>`
+  spawned on a registered `TaskExecutor`.
+
+### Changed
+
+- The book gains an in-process-events + after-commit-externalization section
+  (EDA chapter) and declarative catalogue entries for the new macros; ARCHITECTURE,
+  the README, and the `transactional` / `eda` / `aop` crate READMEs document the
+  new surfaces.
+- Content-freshness pass: 69 confirmed documentation corrections across the book,
+  top-level docs, and crate READMEs (stale counts, versions, and out-of-date code
+  snippets brought in line with the code).
+
+### Fixed
+
+- `#[firefly(lazy)]` beans are no longer eagerly constructed during singleton
+  warm-up.
+- Declarative orchestration now propagates a step result-encoding failure instead
+  of silently substituting null.
+- Lumen's compliance endpoint answers 404 for an unknown source wallet (was 422).
+
 ## v26.6.4 — 2026-06-14
 
 The **standalone-framework milestone**. New first-class capabilities —

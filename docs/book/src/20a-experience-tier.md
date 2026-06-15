@@ -61,7 +61,7 @@ let bff = ExperienceStack::new(CoreConfig {
 });
 ```
 
-The stack exposes five public fields (`Bff` is an alias for `ExperienceStack`):
+The stack adds five experience-tier public fields on top of the embedded `web: WebStack` (`Bff` is an alias for `ExperienceStack`):
 
 | Field | Type | Role |
 |-------|------|------|
@@ -237,15 +237,40 @@ advances the workflow off-task, and the final status flips to `COMPLETED`.
 
 Drawn as the full estate, Lumen is one of the domain services a BFF composes:
 
-```text
- [ web / mobile app ]            ← channel tier
-          │
- [ lumen-bff (experience) ]      ← this chapter: DomainClients + signals + state
-          │  Experience → Domain only
- [ lumen (domain) ]              ← the service the book built (ledger, CQRS, saga)
-          │
- [ accounts (core) ]             ← owns the database
-```
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 300" role="img"
+     aria-label="The estate around Lumen, top to bottom: web/mobile app on the channel tier, lumen-bff on the experience tier, lumen on the domain tier, accounts on the core tier; calls flow downward, experience to domain only"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+  <rect x="24" y="14" width="320" height="44" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="184" y="41" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">web / mobile app</text>
+  <text x="360" y="41" font-size="11.5" fill="#7a6450">channel tier</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="184" y1="58" x2="184" y2="78"/><polygon points="184,86 180,78 188,78"/>
+  </g>
+  <rect x="24" y="88" width="320" height="44" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="184" y="115" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">lumen-bff
+    <tspan font-size="11" fill="#7a6450"> (experience)</tspan></text>
+  <text x="360" y="106" font-size="11.5" fill="#7a6450">this chapter:</text>
+  <text x="360" y="121" font-size="10.5" fill="#7a6450">DomainClients + signals + state</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="184" y1="132" x2="184" y2="152"/><polygon points="184,160 180,152 188,152"/>
+  </g>
+  <text x="200" y="150" font-size="11" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">Experience &#8594; Domain only</text>
+  <rect x="24" y="162" width="320" height="44" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="184" y="189" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">lumen
+    <tspan font-size="11" fill="#7a6450"> (domain)</tspan></text>
+  <text x="360" y="180" font-size="11.5" fill="#7a6450">the service the book built</text>
+  <text x="360" y="195" font-size="10.5" fill="#7a6450">(ledger, CQRS, saga)</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="184" y1="206" x2="184" y2="226"/><polygon points="184,234 180,226 188,226"/>
+  </g>
+  <rect x="24" y="236" width="320" height="44" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="184" y="263" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">accounts
+    <tspan font-size="11" fill="#7a6450"> (core)</tspan></text>
+  <text x="360" y="263" font-size="11.5" fill="#7a6450">owns the database</text>
+</svg>
+<figcaption>Lumen as one service in the estate. Calls flow strictly downward; the BFF on the experience tier composes Lumen on the domain tier, which owns its logic, while the core service owns the database.</figcaption>
+</figure>
 
 The BFF never reaches into Lumen's event store or bus — it speaks to Lumen's
 public HTTP API through the registered `"wallets"` SDK, exactly as any external

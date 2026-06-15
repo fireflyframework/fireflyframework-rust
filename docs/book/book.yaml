@@ -21,6 +21,7 @@ front:
   - {id: copyright,   file: 00-front/00-copyright.md,   nav: false}
   - {id: preface,     file: 00-front/00-preface.md,     title: "Preface"}
   - {id: conventions, file: 00-front/00-conventions.md, title: "Conventions"}
+  - {id: primer,      file: 00-front/00-rust-primer.md, title: "A Rust Primer"}
 
 parts:
   - title: "Part I — Foundations"

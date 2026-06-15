@@ -689,9 +689,11 @@ checks.
 The reactive surface adds full-CRUD coverage of
 `ReactiveMemoryRepository` (driven via `block` / `collect_list`) and the
 streaming specification/paging query. The `PostgresReactiveRepository`
-round-trip is `#[ignore = "requires postgres"]` and reads
-`DATABASE_URL` / `POSTGRES_URL`:
+round-trip is **env-gated** (not `#[ignore]`): it runs when
+`FIREFLY_TEST_POSTGRES_URL` (fallbacks `DATABASE_URL` / `POSTGRES_URL`)
+is set, and skips cleanly otherwise so `cargo test` stays green on a bare
+machine.
 
 ```bash
-DATABASE_URL=postgres://localhost/app cargo test -p firefly-data -- --ignored
+FIREFLY_TEST_POSTGRES_URL=postgres://localhost/app cargo test -p firefly-data
 ```

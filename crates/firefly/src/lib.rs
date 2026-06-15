@@ -122,6 +122,11 @@ pub fn scan(container: &firefly_container::Container) -> usize {
 #[doc(hidden)]
 pub mod __rt {
     pub use ::firefly_actuator;
+    // `firefly_aop` re-exports `inventory` (and `async_trait`), so a
+    // macro-generated `firefly_aop::inventory::submit!` aspect-discovery thunk
+    // and the `#[firefly_aop::async_trait] impl Aspect` resolve through the
+    // facade contract without the user crate depending on either directly.
+    pub use ::firefly_aop;
     pub use ::firefly_cache;
     pub use ::firefly_client;
     pub use ::firefly_config;
@@ -145,6 +150,11 @@ pub mod __rt {
     pub use ::firefly_starter_core;
     pub use ::firefly_starter_web;
     pub use ::firefly_transactional;
+    // `firefly_validators` re-exports `regex` + `LazyLock` under
+    // `bean::__rt`, so a macro-generated `#[validate(pattern = "...")]` check
+    // resolves them through the facade contract without the user crate
+    // depending on `regex`.
+    pub use ::firefly_validators;
     pub use ::firefly_web;
 
     // Third-party crate re-exported under the same contract so generated code
@@ -182,6 +192,7 @@ pub mod __rt {
 // ---------------------------------------------------------------------------
 
 pub use firefly_actuator as actuator;
+pub use firefly_aop as aop;
 pub use firefly_cache as cache;
 pub use firefly_client as client;
 pub use firefly_config as config;
@@ -201,6 +212,7 @@ pub use firefly_security as security;
 pub use firefly_starter_core as starter_core;
 pub use firefly_starter_web as starter_web;
 pub use firefly_transactional as transactional;
+pub use firefly_validators as validators;
 pub use firefly_web as web;
 
 // Optional adapter aliases (feature-gated).
@@ -280,8 +292,38 @@ pub mod prelude {
     pub use firefly_scheduling::Scheduler;
 
     // ---- Orchestration --------------------------------------------------
-    /// Saga orchestration with compensation.
-    pub use firefly_orchestration::{Saga, Step};
+    /// Saga / workflow / TCC orchestration with compensation — the engine the
+    /// declarative `#[saga]` / `#[workflow]` / `#[tcc]` macros build on, plus the
+    /// `StepContext` blackboard and the result/policy types.
+    pub use firefly_orchestration::{
+        CompensationPolicy, Node, Outcome, RetryPolicy, Saga, SagaFailure, SagaStatus, Step,
+        StepContext, Tcc, TccParticipant, Workflow,
+    };
+
+    // ---- Aspect-oriented advice -----------------------------------------
+    /// Declarative aspects (the runtime behind `#[aspect]`): register an aspect
+    /// into the process-global registry, run discovery, weave a call through it
+    /// with [`advised`](firefly_aop::advised), and the advice surface the
+    /// `#[aspect]`-marked methods are written against ([`Aspect`](firefly_aop::Aspect),
+    /// [`JoinPoint`](firefly_aop::JoinPoint), [`Proceed`](firefly_aop::Proceed),
+    /// [`AdviceFuture`](firefly_aop::AdviceFuture), [`ok`](firefly_aop::ok)) plus
+    /// the in-hand [`AspectRegistry`](firefly_aop::AspectRegistry).
+    pub use firefly_aop::{
+        advised, ok, register_aspect, register_discovered_aspects, AdviceFuture, Aspect,
+        AspectRegistry, JoinPoint, Proceed,
+    };
+
+    // ---- Transactional / in-process events ------------------------------
+    /// Publish an in-process domain event, and bind listeners to a
+    /// transaction's commit phase — the runtime behind `#[event_listener]` and
+    /// `#[transactional_event_listener]`.
+    pub use firefly_transactional::{
+        publish_event, register_event_listener, LocalTransactionManager, TransactionPhase,
+    };
+    /// The bridge from in-process events to the EDA broker: register the
+    /// process broker, forward an in-process event type to it after commit
+    /// (Spring-Modulith-style externalization), or publish a payload directly.
+    pub use firefly_eda::{externalize_after_commit, publish_to_broker, register_broker};
 
     // ---- Lifecycle ------------------------------------------------------
     /// The application runner and its programmatic shutdown handle.
@@ -292,8 +334,14 @@ pub mod prelude {
     pub use firefly_starter_core::{Core, CoreConfig};
 
     // ---- Web ------------------------------------------------------------
-    /// The web result/error types and the RFC 9457 problem-response helper.
-    pub use firefly_web::{problem_response, WebError, WebResult};
+    /// The web result/error types, the RFC 9457 problem-response helper, and
+    /// the auto-validating `Valid<T>` JSON extractor.
+    pub use firefly_web::{problem_response, Valid, WebError, WebResult};
+
+    // ---- Declarative bean validation -----------------------------------
+    /// The JSR-380-style `Validate` trait and its violation set — the target
+    /// of `#[derive(Validate)]`.
+    pub use firefly_validators::bean::{Validate, ValidationError, ValidationErrors};
 
     // ---- Kernel errors --------------------------------------------------
     /// The framework-wide error and result types.

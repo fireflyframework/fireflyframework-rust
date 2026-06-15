@@ -30,6 +30,7 @@ use axum::response::Response;
 use firefly_sample_lumen::build_router;
 use firefly_sample_lumen::domain::WalletView;
 use firefly_sample_lumen::security::{mint_token, CUSTOMER_ROLE};
+use firefly_sample_lumen::tcc_transfer::TccTransferResult;
 use firefly_sample_lumen::transfer::TransferResult;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -206,6 +207,152 @@ async fn transfer_saga_overdraft_compensates_and_is_422() {
 
     // Funds untouched: the debit was rejected up front, so the source keeps
     // its balance and the destination is unchanged.
+    let src_view: WalletView = body_json(
+        build_router()
+            .await
+            .oneshot(get(&format!("/api/v1/wallets/{}", src.id)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(src_view.balance, 100);
+}
+
+// ---------------------------------------------------------------------------
+// Declarative orchestration endpoints: the compliance *workflow* (parallel
+// balance + limit checks → approve) and the two-phase (TCC) transfer.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn compliance_workflow_approves_a_funded_in_limit_transfer() {
+    let src = open_wallet("grace", 1_000).await;
+    let dst = open_wallet("heidi", 0).await;
+
+    let res = build_router()
+        .await
+        .oneshot(post(
+            "/api/v1/transfers/compliance",
+            serde_json::json!({ "from": src.id, "to": dst.id, "amount": 300 }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let decision: serde_json::Value = body_json(res).await;
+    assert_eq!(decision["decision"], "approved");
+    assert_eq!(decision["amount"], 300);
+
+    // A read-only pre-check moves no funds.
+    let src_view: WalletView = body_json(
+        build_router()
+            .await
+            .oneshot(get(&format!("/api/v1/wallets/{}", src.id)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(src_view.balance, 1_000);
+}
+
+#[tokio::test]
+async fn compliance_workflow_rejects_overdraft_with_422() {
+    let src = open_wallet("ivan", 100).await;
+    let dst = open_wallet("judy", 0).await;
+
+    let res = build_router()
+        .await
+        .oneshot(post(
+            "/api/v1/transfers/compliance",
+            serde_json::json!({ "from": src.id, "to": dst.id, "amount": 500 }),
+            true,
+        ))
+        .await
+        .unwrap();
+    // Insufficient funds → the workflow's approve node rejects → 422 problem.
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(content_type(&res).contains("application/problem+json"));
+}
+
+#[tokio::test]
+async fn compliance_workflow_unknown_source_is_404() {
+    let dst = open_wallet("ken", 0).await;
+
+    let res = build_router()
+        .await
+        .oneshot(post(
+            "/api/v1/transfers/compliance",
+            serde_json::json!({ "from": "wlt_does_not_exist", "to": dst.id, "amount": 10 }),
+            true,
+        ))
+        .await
+        .unwrap();
+    // The balance-check node cannot load an unknown source → 404 problem.
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(content_type(&res).contains("application/problem+json"));
+}
+
+#[tokio::test]
+async fn tcc_transfer_confirms_and_moves_funds() {
+    let src = open_wallet("laura", 1_000).await;
+    let dst = open_wallet("mike", 0).await;
+
+    let res = build_router()
+        .await
+        .oneshot(post(
+            "/api/v1/transfers/2pc",
+            serde_json::json!({ "from": src.id, "to": dst.id, "amount": 250 }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let result: TccTransferResult = body_json(res).await;
+    assert_eq!(result.status, "confirmed");
+    assert_eq!(result.amount, 250);
+
+    // Both sides captured: the source was debited on try, the destination
+    // credited on confirm.
+    let src_view: WalletView = body_json(
+        build_router()
+            .await
+            .oneshot(get(&format!("/api/v1/wallets/{}", src.id)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let dst_view: WalletView = body_json(
+        build_router()
+            .await
+            .oneshot(get(&format!("/api/v1/wallets/{}", dst.id)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(src_view.balance, 750);
+    assert_eq!(dst_view.balance, 250);
+}
+
+#[tokio::test]
+async fn tcc_transfer_overdraft_releases_the_hold_and_is_422() {
+    let src = open_wallet("nina", 100).await;
+    let dst = open_wallet("oscar", 0).await;
+
+    let res = build_router()
+        .await
+        .oneshot(post(
+            "/api/v1/transfers/2pc",
+            serde_json::json!({ "from": src.id, "to": dst.id, "amount": 500 }),
+            true,
+        ))
+        .await
+        .unwrap();
+    // The source try (withdraw) fails up front → the coordinator cancels the
+    // tried participants → 422 problem.
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(content_type(&res).contains("application/problem+json"));
+
+    // No funds left the source: the failed hold moved nothing (and any partial
+    // hold is released), so the balance is unchanged.
     let src_view: WalletView = body_json(
         build_router()
             .await

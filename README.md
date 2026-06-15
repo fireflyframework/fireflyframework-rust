@@ -1,26 +1,34 @@
-```
-  _____.__                _____.__
-_/ ____\__|______   _____/ ____\  | ___.__.
-\   __\|  \_  __ \_/ __ \   __\|  |<   |  |
- |  |  |  ||  | \/\  ___/|  |  |  |_\___  |
- |__|  |__||__|    \___  >__|  |____/ ____|
-                       \/           \/   rs
-```
+<p align="center">
+  <img src="assets/banner.svg" alt="Firefly Framework for Rust" width="100%">
+</p>
 
-# Firefly Framework for Rust
+<h1 align="center">Firefly Framework for Rust</h1>
 
-**Spring Boot for Rust — a production-grade platform for building
-*reactive* (WebFlux-style), event-driven, resilient microservices on
-Rust 1.88+ (tokio + axum).**
+<p align="center">
+  <b>Spring Boot for Rust</b> — a production-grade platform for building
+  <i>reactive</i> (WebFlux-style), event-driven, resilient microservices on
+  Rust 1.88+ (<code>tokio</code> + <code>axum</code>).
+</p>
 
-[![Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version 26.6.4](https://img.shields.io/badge/version-26.6.4-orange.svg)](CHANGELOG.md)
-[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-93450a.svg)](https://www.rust-lang.org)
-[![Reactive: Mono / Flux](https://img.shields.io/badge/reactive-Mono%20%2F%20Flux-success.svg)](docs/book/src/05-reactive-model.md)
-[![One dependency: firefly](https://img.shields.io/badge/one%20dep-firefly%20%2B%20macros-success.svg)](crates/firefly/README.md)
-[![Real-infra tested](https://img.shields.io/badge/tests-real%20infra%20(Docker)-2496ed.svg)](#real-infrastructure-testing)
+<p align="center">
+  <a href="LICENSE"><img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <a href="CHANGELOG.md"><img alt="Version 26.6.5" src="https://img.shields.io/badge/version-26.6.5-orange.svg"></a>
+  <a href="https://www.rust-lang.org"><img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-93450a.svg"></a>
+  <a href="docs/book/src/05-reactive-model.md"><img alt="Reactive: Mono / Flux" src="https://img.shields.io/badge/reactive-Mono%20%2F%20Flux-success.svg"></a>
+  <a href="crates/firefly/README.md"><img alt="One dependency: firefly" src="https://img.shields.io/badge/one%20dep-firefly%20%2B%20macros-success.svg"></a>
+  <a href="#real-infrastructure-testing"><img alt="Real-infra tested" src="https://img.shields.io/badge/tests-real%20infra%20(Docker)-2496ed.svg"></a>
+</p>
 
-> 📖 **Read the book — [Firefly Framework for Rust](docs/book/)** — the canonical,
+<p align="center">
+  <a href="docs/book/"><b>The Book</b></a> &nbsp;·&nbsp;
+  <a href="#quickstart"><b>Quickstart</b></a> &nbsp;·&nbsp;
+  <a href="#feature-matrix">Features</a> &nbsp;·&nbsp;
+  <a href="#architecture-at-a-glance">Architecture</a> &nbsp;·&nbsp;
+  <a href="#workspace-layout">Crates</a> &nbsp;·&nbsp;
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+> **Read the book — [Firefly Framework for Rust](docs/book/)** — the canonical,
 > best-in-class guide: a punchy [Quickstart](docs/book/src/02-quickstart.md)
 > (zero to a running reactive endpoint in minutes), the keystone
 > [Reactive Model](docs/book/src/05-reactive-model.md) chapter (`Mono`/`Flux`),
@@ -32,7 +40,7 @@ Rust 1.88+ (tokio + axum).**
 > [`docs/book/dist/firefly-rust-by-example.pdf`](docs/book/dist/firefly-rust-by-example.pdf)
 > and [`.epub`](docs/book/dist/firefly-rust-by-example.epub).
 
-> 🚀 **New in 26.6.4 — two headline wins.** (1) A **Spring-Boot-for-Rust
+> **Two headline wins.** (1) A **Spring-Boot-for-Rust
 > developer experience**: add the one [`firefly`](crates/firefly/README.md)
 > dependency, `use firefly::prelude::*;`, and declare your service with
 > [`firefly-macros`](crates/macros/README.md) —
@@ -42,7 +50,7 @@ Rust 1.88+ (tokio + axum).**
 > **Postgres, MySQL, SQLite** ([`firefly-data-sqlx`](crates/data-sqlx/README.md))
 > and **MongoDB** ([`firefly-data-mongodb`](crates/data-mongodb/README.md)) — a
 > *new database is a new adapter, not a rewrite*. See
-> [The two 26.6.4 headlines](#the-two-2663-headlines) below.
+> [The two headlines](#the-two-headlines) below.
 
 At its heart is a **WebFlux-style reactive core** — [`firefly-reactive`](crates/reactive/README.md)
 gives you `Mono<T>` (0-or-1) and `Flux<T>` (0..N) over `tokio`
@@ -83,7 +91,23 @@ changing a single core wire format.
 
 ---
 
-## The two 26.6.4 headlines
+## Table of Contents
+
+- [The two headlines](#the-two-headlines)
+- [Why Rust](#why-rust)
+- [Feature matrix](#feature-matrix)
+- [Architecture at a glance](#architecture-at-a-glance)
+- [Workspace layout](#workspace-layout)
+- [Quickstart](#quickstart)
+- [Build, test, ship](#build-test-ship)
+- [Real-infrastructure testing](#real-infrastructure-testing)
+- [Status](#status)
+- [Documentation](#documentation)
+- [License &amp; contributing](#license--contributing)
+
+---
+
+## The two headlines
 
 ### 1 · Spring-Boot-for-Rust ergonomics — one dependency, declarative macros
 
@@ -96,7 +120,7 @@ orchestration — is in scope, alongside every macro from
 
 ```toml
 [dependencies]
-firefly = "26.6.4"            # the whole framework + every macro
+firefly = "26.6.5"            # the whole framework + every macro
 axum    = "0.7"               # you author axum handlers
 serde   = { version = "1", features = ["derive"] }
 tokio   = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -147,7 +171,7 @@ chapter.
 [`firefly-data`](crates/data/README.md) defines the storage-agnostic ports —
 the `Filter` DSL, the composable `Specification`, the `Repository` /
 `ReactiveCrudRepository` / `ReactiveSpecificationRepository` traits, plus
-auditing and soft-delete. 26.6.4 makes the data layer *truly hexagonal*: a
+auditing and soft-delete. Firefly makes the data layer *truly hexagonal*: a
 `SqlDialect` abstraction (`PostgresDialect` / `MySqlDialect` / `SqliteDialect`)
 renders the same query tree for any relational backend, and
 `Specification::to_mongo()` lowers it to a MongoDB `$`-operator filter. Two new
@@ -219,30 +243,36 @@ Firefly Framework treats those concerns as solved problems on Rust too:
 
 | Capability | Crate(s) | Spring / Reactor analog | Status |
 |------------|----------|-------------------------|:------:|
-| **One-dependency facade + prelude** | `firefly` | `spring-boot-starter` | ✅ Full |
-| **Declarative macros** (`#[derive(Command)]`, `#[rest_controller]`, `#[command_handler]`, `#[scheduled]`, …) | `firefly-macros` | Spring annotations | ✅ Full |
-| **Reactive core (`Mono` / `Flux`)** | `firefly-reactive` | Project Reactor | ✅ Full |
-| **Reactive HTTP responders** (NDJSON / SSE streaming, backpressure) | `firefly-web` | WebFlux `@RestController` returning `Mono`/`Flux` | ✅ Full |
-| **Pluggable hexagonal databases** (Postgres / MySQL / SQLite / MongoDB) | `firefly-data`, `-data-sqlx`, `-data-mongodb` | Spring Data ports + adapters | ✅ Full |
-| **Reactive repositories** (in-memory + real Postgres + sqlx + Mongo) | `firefly-data`, `-data-sqlx`, `-data-mongodb` | R2DBC `ReactiveCrudRepository` | ✅ Full |
-| **Reactive HTTP client** (`WebClient`, `body_to_mono`/`body_to_flux`) | `firefly-client` | WebFlux `WebClient` | ✅ Full |
-| **Reactive CQRS bus** (`send_mono` / `query_mono`) | `firefly-cqrs` | Axon / reactive command bus | ✅ Full |
-| **Reactive EDA** (`subscribe_reactive` → `Flux<Event>`) | `firefly-eda` | reactive Kafka/AMQP listener | ✅ Full |
-| RFC 7807 errors, correlation, idempotency, PII masking | `firefly-web`, `firefly-kernel` | `@ControllerAdvice` ProblemDetail | ✅ Full |
-| Typed config (YAML + env + flags + profiles, `${...}`, refresh) | `firefly-config` | `@ConfigurationProperties` | ✅ Full |
-| Event sourcing (aggregates, snapshots, projections, outbox, tenancy) | `firefly-eventsourcing` | Axon | ✅ Full |
-| Sagas / Workflows (DAG) / TCC, compensation, retry | `firefly-orchestration` | Temporal / Camunda | ✅ Full |
-| Security (JWT, JWKS, RBAC, OAuth2 login + authorization server, CSRF) | `firefly-security` | Spring Security | ✅ Full |
-| Actuator (`health`/`info`/`metrics`/`env`/`tasks`/`version`, probes) | `firefly-actuator` | spring-boot-actuator | ✅ Full |
-| Observability (`tracing`, W3C trace-context, metrics, banner) | `firefly-observability` | Micrometer + OTel | ✅ Full |
-| Cache (`Adapter` port + Memory / NoOp / Fallback / **Redis** / **Postgres**) | `firefly-cache`, `-redis`, `-postgres` | spring-data cache | ✅ Full |
-| Event transports (**Kafka / RabbitMQ / Postgres outbox / Redis Streams**) | `firefly-eda-*` | Spring Kafka / AMQP | ✅ Full |
-| Identity providers (**Keycloak / Azure AD / Cognito / internal-db**) | `firefly-idp-*` | Spring Security OIDC | ✅ Full |
-| Content + e-signature (**S3 / Blob / DocuSign / Adobe Sign / Logalty**) | `firefly-ecm-*` | — | ✅ Full |
-| Notifications (**SMTP / SendGrid / Resend / Twilio / Firebase**) | `firefly-notifications-*` | — | ✅ Full |
-| DI container / AOP / sessions / shell / WebSockets | `firefly-container`, `-aop`, `-session`, `-shell`, `-websocket` | Spring DI / AOP / Session / Shell | ✅ Full |
-| Distributed session registries (cluster-wide concurrency cap) | `firefly-session-redis`, `firefly-session-postgres` | Spring Session | ✅ Full |
-| Admin dashboard + `firefly` developer CLI (`completion`/`sbom`/`license`) | `firefly-admin`, `firefly-cli` | spring-boot-admin / Spring Boot CLI | ✅ Full |
+| **One-dependency facade + prelude** | `firefly` | `spring-boot-starter` | Full |
+| **Declarative macros** (`#[derive(Command)]`, `#[rest_controller]`, `#[command_handler]`, `#[scheduled]`, …) | `firefly-macros` | Spring annotations | Full |
+| **Declarative AOP aspects** (`#[aspect(pointcut, order)]` + `#[before]`/`#[after]`/`#[after_returning]`/`#[after_throwing]`/`#[around]`, woven at the explicit `advised(…)` call site) | `firefly-aop`, `firefly-macros` | Spring `@Aspect` / AspectJ advice | Full |
+| **Declarative caching** (`#[cacheable]` / `#[cache_put]` / `#[cache_evict(all_entries)]` over `async fn -> Result<V, E>`) | `firefly-macros`, `firefly-cache` | Spring `@Cacheable` / `@CachePut` / `@CacheEvict` | Full |
+| **Bean validation** (`#[derive(Validate)]` constraints `email`/`url`/`not_empty`/`length`/`range`/`pattern`/`custom` + the `Valid<T>` extractor: 422 on a constraint failure, 400 on malformed JSON) | `firefly-validators`, `firefly-web` | JSR-380 Bean Validation + `@Valid` | Full |
+| **Async methods** (`#[async_method]` on `async fn(self: Arc<Self>, …) -> R` → `TaskHandle<R>`) | `firefly-macros`, `firefly-scheduling` | Spring `@Async` | Full |
+| **Reactive core (`Mono` / `Flux`)** | `firefly-reactive` | Project Reactor | Full |
+| **Reactive HTTP responders** (NDJSON / SSE streaming, backpressure) | `firefly-web` | WebFlux `@RestController` returning `Mono`/`Flux` | Full |
+| **Pluggable hexagonal databases** (Postgres / MySQL / SQLite / MongoDB) | `firefly-data`, `-data-sqlx`, `-data-mongodb` | Spring Data ports + adapters | Full |
+| **Reactive repositories** (in-memory + real Postgres + sqlx + Mongo) | `firefly-data`, `-data-sqlx`, `-data-mongodb` | R2DBC `ReactiveCrudRepository` | Full |
+| **Reactive HTTP client** (`WebClient`, `body_to_mono`/`body_to_flux`) | `firefly-client` | WebFlux `WebClient` | Full |
+| **Reactive CQRS bus** (`send_mono` / `query_mono`) | `firefly-cqrs` | Axon / reactive command bus | Full |
+| **Reactive EDA** (`subscribe_reactive` → `Flux<Event>`) | `firefly-eda` | reactive Kafka/AMQP listener | Full |
+| **In-process application events** (`publish_event`, `#[application_event_listener]`, `#[transactional_event_listener(phase=…)]`, `LocalTransactionManager`) | `firefly-transactional` | Spring `@EventListener` / `@TransactionalEventListener` | Full |
+| **EDA after-commit externalization** (`externalize_after_commit::<E>`, `register_broker`/`publish_to_broker` — committed tx publishes to the broker, rolled-back does not) | `firefly-eda`, `firefly-transactional` | Spring Modulith `@Externalized` | Full |
+| RFC 7807 errors, correlation, idempotency, PII masking | `firefly-web`, `firefly-kernel` | `@ControllerAdvice` ProblemDetail | Full |
+| Typed config (YAML + env + flags + profiles, `${...}`, refresh) | `firefly-config` | `@ConfigurationProperties` | Full |
+| Event sourcing (aggregates, snapshots, projections, outbox, tenancy) | `firefly-eventsourcing` | Axon | Full |
+| Sagas / Workflows (DAG) / TCC, compensation, retry | `firefly-orchestration` | Temporal / Camunda | Full |
+| Security (JWT, JWKS, RBAC, OAuth2 login + authorization server, CSRF) | `firefly-security` | Spring Security | Full |
+| Actuator (`health`/`info`/`metrics`/`env`/`tasks`/`version`, probes) | `firefly-actuator` | spring-boot-actuator | Full |
+| Observability (`tracing`, W3C trace-context, metrics, banner) | `firefly-observability` | Micrometer + OTel | Full |
+| Cache (`Adapter` port + Memory / NoOp / Fallback / **Redis** / **Postgres**) | `firefly-cache`, `-redis`, `-postgres` | spring-data cache | Full |
+| Event transports (**Kafka / RabbitMQ / Postgres outbox / Redis Streams**) | `firefly-eda-*` | Spring Kafka / AMQP | Full |
+| Identity providers (**Keycloak / Azure AD / Cognito / internal-db**) | `firefly-idp-*` | Spring Security OIDC | Full |
+| Content + e-signature (**S3 / Blob / DocuSign / Adobe Sign / Logalty**) | `firefly-ecm-*` | — | Full |
+| Notifications (**SMTP / SendGrid / Resend / Twilio / Firebase**) | `firefly-notifications-*` | — | Full |
+| DI container / AOP / sessions / shell / WebSockets | `firefly-container`, `-aop`, `-session`, `-shell`, `-websocket` | Spring DI / AOP / Session / Shell | Full |
+| Distributed session registries (cluster-wide concurrency cap) | `firefly-session-redis`, `firefly-session-postgres` | Spring Session | Full |
+| Admin dashboard + `firefly` developer CLI (`completion`/`sbom`/`license`) | `firefly-admin`, `firefly-cli` | spring-boot-admin / Spring Boot CLI | Full |
 
 Every entry is real and wired — there are no stub adapters in this
 release.
@@ -314,14 +344,14 @@ See [`MODULES.md`](MODULES.md) for the full per-crate catalogue and
 
 ## Workspace layout
 
-One Cargo workspace, **76 members** — 72 framework crates plus the
-integration suite and three reference samples — spanning the
+One Cargo workspace, **79 members** — 74 framework crates plus the
+integration suite and four reference samples — spanning the
 core (foundational, platform, adapter, starter tiers) and the
 application layer:
 
 ```
 fireflyframework-rust/
-├── crates/                       # 72 framework crates (firefly-<name>)
+├── crates/                       # 74 framework crates (firefly-<name>)
 │   ├── firefly/                  #   the one-dependency facade (prelude + __rt + features)
 │   ├── macros/                   #   firefly-macros — derive/attribute declarative layer
 │   ├── reactive/                 #   the Mono/Flux reactive core (keystone)
@@ -335,26 +365,29 @@ fireflyframework-rust/
 │   │
 │   ├── data-sqlx/  data-mongodb/ #   adapters: relational (pg/mysql/sqlite) + document
 │   ├── session-redis/  session-postgres/  #   adapters: distributed session registries
+│   ├── session-mongodb/             #   adapter: document-store session registry
 │   ├── cache-redis/  cache-postgres/  #   adapters: Redis + Postgres cache
 │   ├── eda-kafka/  eda-rabbitmq/  #   adapter: event transports
 │   ├── eda-postgres/  eda-redis/  #     (Kafka / RabbitMQ / Postgres outbox / Redis Streams)
 │   ├── notifications-smtp/        #   adapter: SMTP e-mail
 │   ├── idp-*/  ecm-*/             #   adapters: identity + content vendors (all real)
 │   ├── starter-web/              #   starter: ready-made web-stack bundle
+│   ├── starter-experience/      #   starter: experience/BFF tier bundle
 │   └── backoffice/
 ├── tests/integration/            # cross-crate integration suite
 ├── samples/orders/               # reference service (firefly-sample-orders)
 ├── samples/reactive-banking/     # end-to-end reactive service (firefly-sample-reactive-banking)
 ├── samples/macro-quickstart/     # the declarative one-dependency DX (firefly-sample-macro-quickstart)
+├── samples/lumen/                # declarative orchestration / saga showcase (firefly-sample-lumen)
 ├── docs/                         # ARCHITECTURE, CONFIGURATION, DESIGN
 ├── docs/book/                    # the mdBook guide (mdbook build docs/book) + dist/*.pdf,*.epub
 ├── docker-compose.yml            # real backing services for integration tests
-└── Cargo.toml                    # workspace root — version 26.6.4, edition 2021, MSRV 1.88
+└── Cargo.toml                    # workspace root — version 26.6.5, edition 2021, MSRV 1.88
 ```
 
 ### Choosing your tier / optional adapters
 
-The fastest path is the **one-dependency facade** — `firefly = "26.6.4"`
+The fastest path is the **one-dependency facade** — `firefly = "26.6.5"`
 brings the whole framework and every macro in via `use firefly::prelude::*;`,
 with heavy adapters as opt-in cargo features
 (`features = ["data-sqlx", "eda-kafka", …]`). Prefer the individual crates when
@@ -399,16 +432,16 @@ Add the starter and the reactive core to a binary crate:
 
 ```toml
 [dependencies]
-firefly-starter-core = "26.6.4"
-firefly-reactive = "26.6.4"
-firefly-web = "26.6.4"
+firefly-starter-core = "26.6.5"
+firefly-reactive = "26.6.5"
+firefly-web = "26.6.5"
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 serde_json = "1"
 ```
 
 > Prefer the new **one-dependency** front door? Replace the three `firefly-*`
-> lines with a single `firefly = "26.6.4"` and `use firefly::prelude::*;` — see
+> lines with a single `firefly = "26.6.5"` and `use firefly::prelude::*;` — see
 > [the macro-quickstart sample](samples/macro-quickstart) and the
 > [Declarative Services with Macros](docs/book/src/21-declarative-macros.md)
 > chapter.
@@ -468,7 +501,7 @@ graceful shutdown — see
 [`crates/starter-core/README.md`](crates/starter-core/README.md) and the
 [Reactive Model](docs/book/src/05-reactive-model.md) chapter.
 
-Three reference services ship in the workspace: a minimal idempotent
+Four reference services ship in the workspace: a minimal idempotent
 [`samples/orders/`](samples/orders); the end-to-end reactive
 [`samples/reactive-banking/`](samples/reactive-banking) — reactive CQRS
 (`Bus::send_mono` / `query_mono`), event sourcing, a saga-backed money
@@ -476,7 +509,11 @@ transfer, a `Flux<AccountEvent>` NDJSON/SSE stream, and a `WebClient`
 SDK, running against in-memory defaults or real Postgres/Kafka; and
 [`samples/macro-quickstart/`](samples/macro-quickstart) — the same orders
 behaviour re-expressed through the declarative macros over the single
-`firefly` facade (376 source lines vs 1022, two modules vs seven).
+`firefly` facade (376 source lines vs 1022, two modules vs seven); and
+[`samples/lumen/`](samples/lumen) — the declarative orchestration showcase,
+a wallet/ledger service driving a `#[firefly::saga]` money transfer, a
+`#[firefly::workflow]` compliance check, and a `#[firefly::tcc]` two-phase
+transfer over the same `firefly` facade.
 
 ---
 
@@ -533,10 +570,10 @@ sample — end to end.
 
 ## Status
 
-The framework ships **76 workspace members** — **72 framework crates**
-under `crates/` plus the cross-crate integration suite and three reference
+The framework ships **79 workspace members** — **74 framework crates**
+under `crates/` plus the cross-crate integration suite and four reference
 samples (`samples/orders`, `samples/reactive-banking`,
-`samples/macro-quickstart`). The workspace quality gate is `make ci`:
+`samples/macro-quickstart`, `samples/lumen`). The workspace quality gate is `make ci`:
 `cargo fmt --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo build --workspace`, `cargo test --workspace`.

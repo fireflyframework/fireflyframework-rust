@@ -12,28 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The money-transfer **saga** — a two-step distributed transaction with
-//! compensation, built on [`firefly::orchestration`] (book chapter 12,
-//! "Sagas & Orchestration").
+//! The money-transfer **saga** — a distributed transaction with compensation,
+//! written **declaratively** with [`#[firefly::saga]`](firefly::saga) (book
+//! chapter "Sagas, Workflows & TCC").
 //!
 //! A transfer is *not* a single atomic command: it debits the source wallet,
 //! then credits the destination. If the credit leg fails (or the debit
 //! overdraws), the already-applied debit must be rolled back. That is exactly
-//! the saga pattern:
+//! the saga pattern, declared as annotated methods on [`TransferSaga`]:
 //!
 //! ```text
-//!   step "debit"  : withdraw(amount) from source   ── compensate ──► deposit(amount) back to source
-//!   step "credit" : deposit(amount)  to   destination
+//!   #[saga_step(id = "debit", compensate = "refund_debit")]  withdraw(amount) from source
+//!         └─ on rollback ─► refund_debit: deposit(amount) back to source
+//!   #[saga_step(id = "credit", depends_on = ["debit"])]      deposit(amount)  to   destination
 //! ```
 //!
-//! Each leg drives the same [`Ledger`] the CQRS handlers use, so a transfer
-//! produces real `MoneyWithdrawn` / `MoneyDeposited` events on both streams —
-//! and the compensation produces a real refund `MoneyDeposited` on the source
-//! stream, observable on the streaming events endpoint.
+//! `#[saga]` lowers these methods onto the `firefly-orchestration` `Saga`
+//! engine: `depends_on` orders the steps, `compensate` names the rollback
+//! method, and each parameter is injected from the saga context (here the
+//! request, via `#[input]`). Each leg drives the same [`Ledger`] the CQRS
+//! handlers use, so a transfer produces real `MoneyWithdrawn` / `MoneyDeposited`
+//! events on both streams — and the compensation produces a real refund
+//! `MoneyDeposited` on the source stream, observable on the streaming endpoint.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use firefly::orchestration::{Saga, SagaStatus, Step};
+use firefly::orchestration::SagaError;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::DomainError;
@@ -97,8 +101,41 @@ impl std::fmt::Display for TransferError {
 
 impl std::error::Error for TransferError {}
 
-/// Validates and runs a money transfer as a saga, returning the terminal
-/// [`TransferResult`].
+/// The money-transfer saga, declared with [`#[firefly::saga]`](firefly::saga):
+/// each leg is an annotated method driving the [`Ledger`]. The macro generates
+/// `TransferSaga::run` (used by [`run_transfer`]) and `TransferSaga::saga`.
+struct TransferSaga {
+    ledger: Ledger,
+}
+
+#[firefly::saga(name = "money-transfer")]
+impl TransferSaga {
+    /// Debit the source wallet (a real `MoneyWithdrawn` event). Rolled back by
+    /// [`refund_debit`](Self::refund_debit) when a later leg fails.
+    #[saga_step(id = "debit", compensate = "refund_debit")]
+    async fn debit(&self, #[input] req: TransferRequest) -> Result<(), DomainError> {
+        self.ledger.withdraw(&req.from, Money::cents(req.amount)).await?;
+        Ok(())
+    }
+
+    /// Compensation for `debit`: a refund is a normal deposit, so it raises a
+    /// real `MoneyDeposited` event on the source stream.
+    async fn refund_debit(&self, #[input] req: TransferRequest) -> Result<(), DomainError> {
+        self.ledger.deposit(&req.from, Money::cents(req.amount)).await?;
+        Ok(())
+    }
+
+    /// Credit the destination (a real `MoneyDeposited` event). The last leg, so
+    /// a failure here rolls back only the debit.
+    #[saga_step(id = "credit", depends_on = ["debit"])]
+    async fn credit(&self, #[input] req: TransferRequest) -> Result<(), DomainError> {
+        self.ledger.deposit(&req.to, Money::cents(req.amount)).await?;
+        Ok(())
+    }
+}
+
+/// Validates and runs a money transfer as a declarative saga, returning the
+/// terminal [`TransferResult`].
 ///
 /// On the happy path both legs commit and the result is `status: "completed"`.
 /// When the debit overdraws (or any leg errors), the saga compensates — the
@@ -116,68 +153,13 @@ pub async fn run_transfer(
     if req.from == req.to {
         return Err(TransferError::Invalid("from and to must differ".into()));
     }
-    let amount = Money::cents(req.amount);
 
-    // Captures the domain error of the failing leg so the saga's generic
-    // BoxError can be surfaced as a typed cause to the caller.
-    let cause: Arc<Mutex<Option<DomainError>>> = Arc::new(Mutex::new(None));
-
-    // Step 1 — debit the source; compensation refunds it.
-    let debit = {
-        let ledger = ledger.clone();
-        let from = req.from.clone();
-        let refund_ledger = ledger.clone();
-        let refund_from = req.from.clone();
-        let cause = Arc::clone(&cause);
-        Step::new("debit", move || {
-            let ledger = ledger.clone();
-            let from = from.clone();
-            let cause = Arc::clone(&cause);
-            async move {
-                ledger.withdraw(&from, amount).await.map_err(|e| {
-                    *cause.lock().expect("cause lock") = Some(e.clone());
-                    box_err(e)
-                })?;
-                Ok(())
-            }
-        })
-        .with_compensation(move || {
-            let ledger = refund_ledger.clone();
-            let from = refund_from.clone();
-            async move {
-                // A refund is a normal deposit, so it raises a real
-                // MoneyDeposited event on the source stream.
-                ledger.deposit(&from, amount).await.map_err(box_err)?;
-                Ok(())
-            }
-        })
-    };
-
-    // Step 2 — credit the destination (no compensation; it is the last leg,
-    // so a failure here rolls back only the debit).
-    let credit = {
-        let ledger = ledger.clone();
-        let to = req.to.clone();
-        let cause = Arc::clone(&cause);
-        Step::new("credit", move || {
-            let ledger = ledger.clone();
-            let to = to.clone();
-            let cause = Arc::clone(&cause);
-            async move {
-                ledger.deposit(&to, amount).await.map_err(|e| {
-                    *cause.lock().expect("cause lock") = Some(e.clone());
-                    box_err(e)
-                })?;
-                Ok(())
-            }
-        })
-    };
-
-    let saga = Saga::new("money-transfer").step(debit).step(credit);
-
-    match saga.run().await {
+    let saga = Arc::new(TransferSaga {
+        ledger: ledger.clone(),
+    });
+    match saga.run(req.clone()).await {
         Ok(outcome) => Ok(TransferResult {
-            status: SagaStatus::Completed.to_string(),
+            status: outcome.status.to_string(),
             from: req.from.clone(),
             to: req.to.clone(),
             amount: req.amount,
@@ -185,20 +167,15 @@ pub async fn run_transfer(
             steps_rolled_back: outcome.steps_rolled,
         }),
         Err(failure) => {
-            let detail = cause
-                .lock()
-                .expect("cause lock")
-                .clone()
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| failure.error().to_string());
+            // Surface the failing leg's typed domain error (e.g. "insufficient
+            // funds"), unwrapped from the saga's generic step error.
+            let detail = match failure.error() {
+                SagaError::Step { source, .. } => source.to_string(),
+                other => other.to_string(),
+            };
             Err(TransferError::Compensated(detail))
         }
     }
-}
-
-/// Boxes a [`DomainError`] as the saga engine's `BoxError`.
-fn box_err(e: DomainError) -> firefly::orchestration::BoxError {
-    Box::<dyn std::error::Error + Send + Sync>::from(e.to_string())
 }
 
 #[cfg(test)]

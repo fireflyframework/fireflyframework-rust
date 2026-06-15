@@ -116,11 +116,26 @@ When the container builds `WalletApi`, it builds `Ledger` first (recursively
 resolving its store and broker), exactly as `build_app` does by hand — but the
 order is derived from the field types, not written out. A field with no
 attribute is built with `Default::default()`; a `#[firefly(value = "${...}")]`
-field is bound from config (see *Config properties* below).
+field is bound from config (see *Config-driven injection* below).
 
 > **Note.** `#[autowired]` is constructor injection: a missing required
 > dependency is a loud `ContainerError::NoSuchBean` at resolve time, with fuzzy
 > "did you mean…" suggestions, rather than a `None` panic three frames deep.
+
+> **Note — the `Default` rule.** The generated factory constructs the struct as a
+> literal, filling `#[autowired]`/`#[firefly(value = ...)]` fields from the
+> container and **every other field** from `Default::default()`. So a stereotype
+> struct needs `#[derive(Default)]` if — and only if — it has at least one field
+> that is neither `#[autowired]` nor `#[firefly(value = ...)]` (like `ReadModel`'s
+> `rows` above). An all-autowired struct, or a unit/field-less holder like a
+> `#[derive(Configuration)]`, compiles without it.
+
+> **Note — `Provider<T>` in a hand-wired container.** Autowiring a `Provider<T>`
+> field needs the container to hold a handle to itself, which only a shared
+> container has. Build one with `Container::shared()` (or call
+> `install_shared_handle()` on an `Arc<Container>`); an `ApplicationContext`
+> already does this for you. Resolving a `Provider<T>` field against a bare
+> `Container::new()` panics with a message telling you to use `shared()`.
 
 ## Resolution rules, `#[firefly(primary)]`, and ports
 
@@ -257,8 +272,92 @@ pub struct TransferContext {            // a fresh scratch pad per transfer
 > **Note.** Firefly's scopes are `singleton` (default), `transient` (a fresh
 > instance per resolve), `request` (one per HTTP request), and `session` (one
 > per session). Almost every Lumen bean is a singleton; the `request` and
-> `session` scopes resolve through a `ScopeHandler` the web tier installs via
-> `register_request_scope`.
+> `session` scopes resolve through a `ScopeHandler` (see below). The scope name
+> is the lower-case variant: `Scope::{Singleton, Transient, Request, Session}`
+> in `crates/container/src/scope.rs`.
+
+### Request and session scopes: the `ScopeHandler` SPI
+
+Rust has no ambient request thread-local the way a reflective JVM container does,
+so the `request` and `session` scopes are **driven explicitly** by an
+implementation of the `ScopeHandler` SPI — the direct analog of Spring's
+`org.springframework...config.Scope`. A handler caches an instance per key
+(per request, per session) and evicts it when that key ends:
+
+```rust,ignore
+use firefly::prelude::*;
+use std::sync::Arc;
+
+// A host installs the handlers once at startup. Until one is installed,
+// resolving a request/session-scoped bean is a NoSuchBean ("no active
+// request context"), matching the Spring/pyfly behaviour.
+container.register_request_scope(Arc::new(my_request_handler));
+container.register_session_scope(Arc::new(my_session_handler));
+```
+
+`register_request_scope` / `register_session_scope` back the two built-in
+scopes; arbitrary custom scopes use `register_scope("name", handler)` (rejecting
+empty names and the four built-ins). All three live on `Container`
+(`crates/container/src/lib.rs`), and a `ScopeHandler` is just a `get(name,
+factory)` plus `remove(name)` (`crates/container/src/scope.rs`).
+
+> **Design note.** The request/session lifecycle is *installed*, not implicit: a
+> host registers a `ScopeHandler` via `register_request_scope` /
+> `register_session_scope`, and request/session-scoped beans resolve through it.
+> A bare `Container` with no handler installed reports `NoSuchBean` for those
+> scopes rather than silently leaking a singleton — the deferral is explicit, the
+> same trade described under *What Rust's model changes* below.
+
+### `RefreshScope` — Spring Cloud `@RefreshScope` parity
+
+A fourth, ready-made handler ships for config-reload: `RefreshScope`
+(`crates/container/src/scope.rs`). A refresh-scoped bean is cached like a
+singleton, but a `refresh()` call evicts **every** refresh-scoped instance so the
+next resolution rebuilds it against the new config — the hook a future
+`/actuator/refresh` calls on a config change. Register it under the conventional
+name `REFRESH_SCOPE_NAME` (`"refresh"`):
+
+```rust,ignore
+use firefly::prelude::*;
+use std::sync::Arc;
+
+let refresh = Arc::new(firefly::container::RefreshScope::new());
+container.register_scope(firefly::container::REFRESH_SCOPE_NAME, refresh.clone())?;
+
+// On a config-change event:
+let evicted: Vec<String> = refresh.refresh();   // rebuild on next resolve
+```
+
+For a single singleton there is a lighter hook: `container.reset_instance::<T>()`
+drops just `T`'s cached instance so it is rebuilt on next resolve (returns
+whether an instance was actually evicted). It is the per-bean form of the same
+refresh-on-config-change idea.
+
+> **Spring parity.** `RefreshScope` / `REFRESH_SCOPE_NAME` mirror Spring Cloud's
+> `@RefreshScope`, and `reset_instance::<T>()` is the per-bean refresh hook. Both
+> exist so a config reload can rebuild affected beans without restarting the
+> process.
+
+### `#[firefly(lazy)]` — opting out of the eager warm pass
+
+By default singletons are built **eagerly** when an `ApplicationContext` starts
+(see *Startup and eager initialization* below). `#[firefly(lazy)]` (Spring
+`@Lazy`) opts a singleton **out of that eager warm pass** — it is then built on
+first resolve instead:
+
+```rust,ignore
+#[derive(Service)]
+#[firefly(lazy)]                         // skipped at startup; built on first use
+pub struct ExpensiveReportEngine { /* … */ }
+```
+
+> **Spring parity.** `#[firefly(lazy)]` is `@Lazy`: it removes the bean from the
+> startup warm pass so an expensive or rarely-used singleton is constructed only
+> when something resolves it. (The macro carries the flag into the scan registry
+> so `warm_singletons` can skip it — `crates/macros/src/container.rs`,
+> `crates/firefly/src/context.rs`.) Unlike Spring it does **not** create a proxy
+> and so does not break a true construction-time dependency cycle; reach for
+> `Provider<T>` to defer a dependency (see *What Rust's model changes*).
 
 ## Lifecycle: post-construct and pre-destroy
 
@@ -287,6 +386,114 @@ listener that started after the read model is stopped before it.
 > construction order, so a listener started after the read model is stopped
 > before it. (Note these are *attribute keys on the struct*, not standalone
 > macros.)
+
+## Startup and eager initialization
+
+A bare `Container` builds singletons **lazily** — the first `resolve::<T>()`
+constructs `T` and caches it. The `ApplicationContext`, however, is **eager** by
+default, matching Spring's fail-fast startup: `ApplicationContext::build()` scans
+the crate graph, registers the survivors, then immediately **warms** every
+non-lazy singleton by resolving it once (`crates/firefly/src/context.rs`). Two
+things follow from that warm pass:
+
+- **Fail-fast.** A construction error — a missing required dependency, a panic in
+  a `#[post_construct]` — surfaces at *startup*, not deep into the first request.
+- **`#[post_construct]` runs at startup.** Because warming a bean constructs it,
+  each non-lazy singleton's `post_construct` hook fires during `build()`, before
+  the context hands you the container. (Lumen's projection subscribes to the
+  broker here, not on first request.)
+
+That puts the whole bean lifecycle in one line:
+
+> **scan → register → warm non-lazy singletons → `#[post_construct]` → (serve)
+> → `close()` → `#[pre_destroy]` in reverse order**
+
+You can opt the warm pass out entirely with `.eager(false)`, or opt a single
+bean out with `#[firefly(lazy)]` (above):
+
+```rust,ignore
+use firefly::prelude::*;
+
+let ctx = ApplicationContext::builder()
+    .profiles(["prod"])
+    .eager(false)            // skip the warm pass; everything builds lazily
+    .build();
+```
+
+> **Design note.** Eager warm-up at `build()` is where Firefly matches Spring's
+> "validate the wiring at startup" guarantee. It is a *context*-level policy: a
+> bare `Container` stays lazy. `.eager(false)` turns the whole warm pass off;
+> `#[firefly(lazy)]` excludes one bean from it. `close()` is the symmetric
+> shutdown — it runs every `#[pre_destroy]` in reverse construction order and
+> evicts the cached singletons (`crates/firefly/src/context.rs`).
+
+### The `ApplicationContext` builder surface
+
+`ApplicationContext::builder()` accepts more than `.profiles()` and
+`.property()`; the full surface (`crates/firefly/src/context.rs`):
+
+| Method | Purpose |
+|--------|---------|
+| `.profiles([...])` | active profiles (defaults to `FIREFLY_PROFILE`, then `"default"`) |
+| `.property(k, v)` / `.properties(map)` | add config properties for placeholders and conditions |
+| `.config_sources(vec![...])` | merge `firefly_config::Source` layers (env, YAML) into the property map |
+| `.class(label)` | mark a feature "label" present for `condition_on_class` checks |
+| `.eager(bool)` | warm non-lazy singletons at `build()` — default `true` |
+| `.build()` | construct the shared container, scan, then (by default) warm singletons |
+
+> **Note.** `.class(label)` is Firefly's stand-in for `@ConditionalOnClass`:
+> Rust has no classpath to probe, so a host declares which optional features are
+> "present" by label, and `condition_on_class = "label"` beans gate on it.
+
+## Config-driven injection
+
+Two stereotype attributes pull configuration straight into a bean, so a service
+never threads config through its constructor. They are covered in full in
+[Configuration](./03-configuration.md) §"Binding config straight into a bean";
+the DI-relevant summary:
+
+**Single value — `#[firefly(value = "${key:default}")]`.** Binds one resolved,
+placeholder-expanded scalar onto a field (parsed via `FromStr`); the `:default`
+tail supplies a fallback when the key is absent:
+
+```rust,ignore
+#[derive(Service)]
+pub struct WalletApi {
+    #[autowired] ledger: Arc<Ledger>,
+    #[firefly(value = "${lumen.web.addr:127.0.0.1:8080}")] addr: String,
+}
+```
+
+**Whole subtree — `#[derive(ConfigProperties)]`.** Binds a `serde` struct under a
+prefix and registers it as an injectable singleton (the
+`@EnableConfigurationProperties` equivalent); any bean can then autowire it:
+
+```rust,ignore
+use serde::Deserialize;
+
+#[derive(Deserialize, ConfigProperties, Default)]
+#[firefly(prefix = "lumen.web")]
+pub struct WebProperties {
+    pub addr: String,
+    #[serde(default)] pub admin_addr: String,
+}
+
+#[derive(Service)]
+pub struct ReportService {
+    #[autowired] props: Arc<WebProperties>,   // the bound subtree, injected
+}
+```
+
+`ConfigProperties` is the sixth container-aware derive alongside the five
+stereotypes: it generates a `firefly_register` that binds and registers the
+struct, and carries a `config_properties` stereotype label into `/beans`. Single
+values use `${...}` placeholders only — SpEL `#{...}` is out of scope (see *What
+Rust's model changes*).
+
+> **Spring parity.** `#[firefly(value = "${...}")]` is `@Value` (placeholder
+> form), and `#[derive(ConfigProperties)]` + `#[firefly(prefix = "...")]` is
+> `@ConfigurationProperties`. Both bind against the same merged,
+> profile-resolved, placeholder-expanded config map.
 
 ## Conditional beans and profiles
 
@@ -380,7 +587,7 @@ use firefly::prelude::*;
 let ctx = ApplicationContext::builder()
     .profiles(["prod"])
     .property("lumen.store.postgres", "true")
-    .build();                              // scans + warms singletons
+    .build();                              // scans, then (by default) warms singletons
 let store: Arc<dyn firefly::eventsourcing::EventStore> =
     ctx.resolve().unwrap();                // -> PostgresEventStore (prod)
 println!("{} beans registered", ctx.bean_count());
@@ -420,6 +627,50 @@ admin dashboard's `/beans` page renders, and what `firefly beans --url …` (the
 carry diagnostics too: `fuzzy_suggestions(name)` powers the "did you mean…"
 hints, and `CircularDependency` is caught with a per-thread resolution stack.
 
+## What Rust's model changes
+
+Firefly's container is deliberately *not* a line-for-line clone of Spring's. The
+single structural fact behind every difference is that **Rust has no runtime
+reflection**: a bean is built by a generated factory closure that resolves its
+own dependencies and constructs the struct in one shot, rather than Spring's
+"instantiate → populate → call init" phases. There is no post-instantiation seam
+to weave behaviour into, and there is no way to hand a bean a reflective handle
+to the container. The following Spring features are therefore replaced by Rust
+idioms rather than ported — each is a deliberate choice, not a missing feature:
+
+- **No `BeanPostProcessor` / `BeanFactoryPostProcessor`.** There is no
+  post-instantiation interception phase (the factory closure builds the bean in
+  one shot), and no definition-rewriting pass. Cross-cutting behaviour is instead
+  composed explicitly — wrap a collaborator, or use a `#[bean]` factory to build
+  the wired-up instance you want.
+- **No `*Aware` interfaces** (`ApplicationContextAware`, `EnvironmentAware`, …).
+  A bean is not handed the context by a callback. Autowire what you actually need
+  — `Arc<WebProperties>` for config, `Provider<T>` for a deferred dependency —
+  rather than reaching back into the container.
+- **No `FactoryBean`.** A `#[bean]` factory method (above) produces any type and
+  is keyed by its return type; that covers the "a bean whose job is to build
+  another bean" case without a distinct `FactoryBean` abstraction.
+- **No `@Scope(proxyMode)` scoped proxies.** A `request`/`session`-scoped bean is
+  resolved through its `ScopeHandler`, not injected into a singleton via a
+  transparent proxy. To pull a shorter-scoped (or deferred) dependency into a
+  longer-lived bean, hold a `Provider<T>` and call `.get()` at the point of use —
+  that is the idiomatic substitute for both `@Lazy` proxies and scoped proxies.
+- **No per-bean `SmartLifecycle` phases.** The container has `#[post_construct]` /
+  `#[pre_destroy]` (the `InitializingBean` / `DisposableBean` substitute), and
+  application-level start/stop ordering lives in the separate `firefly-lifecycle`
+  crate — there is no per-bean `start`/`stop`/`isRunning`/phase negotiation.
+- **No SpEL `#{...}`.** `#[firefly(value = "${...}")]` does placeholder
+  injection only. Expressions, method/bean references, and arithmetic in config
+  are intentionally out of scope for the typed-Rust idiom.
+
+> **Design note.** Read this list as *substitutions*, not gaps: `Provider<T>`
+> stands in for `@Lazy`/scoped proxies/`ObjectFactory` when you need to defer or
+> reach a shorter-scoped dependency; `#[post_construct]` / `#[pre_destroy]` stand
+> in for `InitializingBean` / `DisposableBean`; a `#[bean]` factory stands in for
+> `FactoryBean`; and explicit composition stands in for `BeanPostProcessor`
+> weaving. The reflective machinery is gone, but every job it did has a typed,
+> compile-checked counterpart.
+
 ## What changed in Lumen
 
 Nothing in `samples/lumen` — Lumen deliberately keeps the explicit composition
@@ -429,10 +680,12 @@ valid wiring*, told against Lumen's real collaborators: `ReadModel` as a
 `MemoryEventStore` vs. a hypothetical `PostgresEventStore` disambiguated by
 `#[firefly(primary)]` and gated by `profile` / `condition_on_missing_bean`, a
 `#[derive(Configuration)]` + `#[bean]` factory producing the broker, lifecycle
-hooks bracketing the projection, and `Container::scan()` / `register_all!`
-discovering it all. Every attribute shown — `autowired`, `primary`, `order`,
-`qualifier`, `scope`, `profile`, the `condition_on_*` family, `post_construct`,
-`pre_destroy`, `provides`, `value` — is a real option on the stereotype derives.
+hooks bracketing the projection, eager warm-up at `ApplicationContext::build()`,
+and `Container::scan()` / `register_all!` discovering it all. Every attribute
+shown — `autowired`, `primary`, `order`, `qualifier`, `scope`, `lazy`, `profile`,
+the `condition_on_*` family, `post_construct`, `pre_destroy`, `provides`,
+`value`, and `prefix` (on `#[derive(ConfigProperties)]`) — is a real option on
+the stereotype derives.
 
 ## Exercises
 

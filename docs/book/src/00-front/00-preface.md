@@ -18,7 +18,7 @@ The single most important property of Lumen is its dependency list:
 
 ```toml
 [dependencies]
-firefly = { version = "26.6.4" }   # the whole framework — and every macro
+firefly = { version = "26.6.5" }   # the whole framework — and every macro
 axum   = { version = "0.7" }       # you author the handler functions
 serde  = { version = "1", features = ["derive"] }
 ```

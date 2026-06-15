@@ -16,7 +16,7 @@
 Concrete provider adapters (`firefly-notifications-sendgrid`,
 `firefly-notifications-resend`, `firefly-notifications-twilio`,
 `firefly-notifications-firebase`) live in dedicated crates and
-currently ship as port-asserting stubs on the roadmap.
+perform real provider API calls.
 
 ## Design notes
 

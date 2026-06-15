@@ -103,6 +103,10 @@ pub struct ComponentRegistration {
     pub primary: bool,
     /// The bean's initialization / `resolve_all` ordering.
     pub order: i32,
+    /// `#[firefly(lazy)]` — opt out of eager singleton warm-up at
+    /// `ApplicationContext` startup (Spring `@Lazy`). The bean is still built on
+    /// first resolve.
+    pub lazy: bool,
     /// The thunk that performs registration (and auto-binding) on a container.
     pub register: fn(&Container),
     /// The conditions/profiles guarding this registration.

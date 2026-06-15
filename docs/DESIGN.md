@@ -7,7 +7,7 @@ Date: 2026-06-12 · Status: founding design record (historical / unmaintained)
 > since been substantially expanded — a full DI container, AOP, sessions, shell,
 > websockets, admin dashboard, real vendor integrations, and a reactive core
 > (`Mono`/`Flux`). The vendor adapters described below as "Stubs" are now **real
-> integrations**, and the workspace has 72 crates, not 52 — including the
+> integrations**, and the workspace has 74 crates, not 52 — including the
 > ergonomic `firefly` facade + `firefly-macros` declarative layer and the
 > hexagonal database adapters (`firefly-data-sqlx`, `firefly-data-mongodb`). This
 > document is no longer maintained; for the current design and scope see
@@ -43,7 +43,7 @@ Success criteria:
 ## Architecture
 
 > **Note:** the crate counts and version in this section are frozen at the original 52-member
-> milestone. The current workspace has 72 crates at `26.6.4`; see
+> milestone. The current workspace has 74 crates at `26.6.5`; see
 > [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`MODULES.md`](../MODULES.md) for the live layout.
 
 - **Single Cargo workspace** at the repo root; one crate per module: 50 crates under

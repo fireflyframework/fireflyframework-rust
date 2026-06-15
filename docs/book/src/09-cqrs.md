@@ -284,20 +284,45 @@ authorization, arrives with [Security](./14-security.md)):
 | `QueryCache::middleware()`  | memoises results for messages whose `cache_ttl` is `Some`     |
 | `ValidationMiddleware`      | calls `Message::validate` before dispatch, short-circuits on error |
 
-```text
-   send/query a message
-            │
-   ┌──────────────┐
-   │ msg ↦ TypeId  │   matched against registered handlers
-   └──────────────┘
-            │
-   middleware chain
-   ┌───┐ ┌───┐
-   │ Q │ │ V │   Q = QueryCache  V = ValidationMiddleware
-   └───┘ └───┘
-            │
-        your handler
-```
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 306" role="img"
+     aria-label="The CQRS bus dispatch: a message is matched to a handler by TypeId, passes the QueryCache and ValidationMiddleware chain, then reaches your handler"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+  <text x="190" y="20" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">send / query a message</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="190" y1="28" x2="190" y2="46"/><polygon points="190,54 186,46 194,46"/>
+  </g>
+  <rect x="100" y="56" width="180" height="40" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="190" y="76" text-anchor="middle" font-size="12" fill="#3a2a1c"
+        font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">msg &#8614; TypeId</text>
+  <text x="190" y="90" text-anchor="middle" font-size="10" fill="#7a6450">matched against registered handlers</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="190" y1="96" x2="190" y2="114"/><polygon points="190,122 186,114 194,114"/>
+  </g>
+  <text x="190" y="138" text-anchor="middle" font-size="11.5" font-weight="600" fill="#7a6450">middleware chain</text>
+  <g>
+    <rect x="118" y="148" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+    <text x="141" y="176" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
+          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">Q</text>
+    <rect x="216" y="148" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+    <text x="239" y="176" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
+          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">V</text>
+  </g>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="164" y1="170" x2="210" y2="170"/><polygon points="216,170 208,166 208,174"/>
+  </g>
+  <g font-size="10.5" fill="#7a6450">
+    <text x="120" y="208">Q = QueryCache</text>
+    <text x="120" y="222">V = ValidationMiddleware</text>
+  </g>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="190" y1="232" x2="190" y2="250"/><polygon points="190,258 186,250 194,250"/>
+  </g>
+  <rect x="120" y="260" width="140" height="38" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="190" y="284" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">your handler</text>
+</svg>
+<figcaption>A message is matched to its handler by <code>TypeId</code>, then runs the registered middleware chain (here <code>QueryCache</code> then <code>ValidationMiddleware</code>) before the handler executes.</figcaption>
+</figure>
 
 ## Command/query segregation
 
@@ -395,20 +420,47 @@ Register it first so it sits outermost in the chain shown earlier — the
 correlation scope must already be open before `QueryCache` and
 `ValidationMiddleware` run, so anything they log carries the id too:
 
-```text
-   send/query a message
-            │
-   ┌──────────────┐
-   │ msg ↦ TypeId  │
-   └──────────────┘
-            │
-   middleware chain
-   ┌───┐ ┌───┐ ┌───┐
-   │ C │ │ Q │ │ V │   C = Correlation  Q = QueryCache  V = ValidationMiddleware
-   └───┘ └───┘ └───┘
-            │
-        your handler
-```
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 320" role="img"
+     aria-label="The CQRS bus dispatch with correlation outermost: a message is matched by TypeId, passes the Correlation, QueryCache and ValidationMiddleware chain, then reaches your handler"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+  <text x="210" y="20" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">send / query a message</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="210" y1="28" x2="210" y2="46"/><polygon points="210,54 206,46 214,46"/>
+  </g>
+  <rect x="130" y="56" width="160" height="38" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="210" y="80" text-anchor="middle" font-size="12" fill="#3a2a1c"
+        font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">msg &#8614; TypeId</text>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="210" y1="94" x2="210" y2="112"/><polygon points="210,120 206,112 214,112"/>
+  </g>
+  <text x="210" y="136" text-anchor="middle" font-size="11.5" font-weight="600" fill="#7a6450">middleware chain</text>
+  <g>
+    <rect x="80" y="146" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+    <text x="103" y="174" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
+          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">C</text>
+    <rect x="187" y="146" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+    <text x="210" y="174" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
+          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">Q</text>
+    <rect x="294" y="146" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+    <text x="317" y="174" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
+          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">V</text>
+  </g>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="126" y1="168" x2="181" y2="168"/><polygon points="187,168 179,164 179,172"/>
+    <line x1="233" y1="168" x2="288" y2="168"/><polygon points="294,168 286,164 286,172"/>
+  </g>
+  <g font-size="10.5" fill="#7a6450">
+    <text x="80" y="208">C = Correlation   Q = QueryCache   V = ValidationMiddleware</text>
+  </g>
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="210" y1="222" x2="210" y2="264"/><polygon points="210,272 206,264 214,264"/>
+  </g>
+  <rect x="140" y="274" width="140" height="38" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <text x="210" y="298" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">your handler</text>
+</svg>
+<figcaption>Registering <code>CorrelationMiddleware</code> first puts it outermost: the correlation scope opens before <code>QueryCache</code> and <code>ValidationMiddleware</code> run, so everything they log carries the id.</figcaption>
+</figure>
 
 > **Design note.** `CorrelationMiddleware` ensures one logical request keeps one
 > correlation id across the command boundary and any saga or `tokio::spawn`ed

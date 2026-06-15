@@ -82,7 +82,7 @@ exactly one Firefly dependency. This is its real `Cargo.toml`:
 ```toml
 [dependencies]
 # The whole framework AND every `#[derive(...)]` / `#[...]` macro.
-firefly = { version = "26.6.4" }
+firefly = { version = "26.6.5" }
 
 # The two ecosystem crates a Firefly service still writes against directly:
 # axum (you author the controller handlers) and serde (your messages and
@@ -95,6 +95,9 @@ serde_json = "1"
 tokio  = { version = "1" }
 uuid   = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+# Backs the `async fn` trait methods the domain ports implement.
+async-trait = { version = "0.1" }
 ```
 
 The `firefly` crate is a **facade**: it re-exports every `firefly-*` crate behind
@@ -129,20 +132,59 @@ its left, never to its right; the Cargo crate graph enforces the layering. You
 rarely name these crates directly — the facade re-exports them — but knowing the
 shape tells you where each capability lives.
 
-```text
-┌──────────────┐   ┌────────────────┐   ┌──────────────┐   ┌──────────────────────┐
-│ FOUNDATIONAL │ → │    PLATFORM    │ → │   ADAPTERS   │ → │       STARTERS       │
-│              │   │                │   │              │   │                      │
-│  kernel      │   │  cache         │   │  client      │   │  starter-core        │
-│  reactive    │   │  observability │   │  idp-*       │   │  starter-web         │
-│  web         │   │  cqrs          │   │  ecm-*       │   │  starter-domain      │
-│  config      │   │  eda · eda-*   │   │  notif.-*    │   │  starter-data        │
-│  validators  │   │  eventsourcing │   │  cache-redis │   │  starter-experience  │
-│  i18n        │   │  orchestration │   │  eda-kafka   │   │  admin               │
-│  container   │   │  scheduling    │   │  eda-rabbitmq│   │  cli                 │
-│              │   │  security · …  │   │  data-sqlx   │   │                      │
-└──────────────┘   └────────────────┘   └──────────────┘   └──────────────────────┘
-```
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 244" role="img"
+     aria-label="The four framework tiers, left to right: Foundational, Platform, Adapters, Starters"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+  <!-- Foundational -->
+  <rect x="8" y="20" width="150" height="216" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <path d="M8,30 a10,10 0 0 1 10,-10 h130 a10,10 0 0 1 10,10 v22 h-150 z" fill="#f6a821"/>
+  <text x="83" y="41" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">FOUNDATIONAL</text>
+  <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+    <text x="22" y="74">kernel</text><text x="22" y="95">reactive</text>
+    <text x="22" y="116">web</text><text x="22" y="137">config</text>
+    <text x="22" y="158">validators</text><text x="22" y="179">i18n</text>
+    <text x="22" y="200">container</text>
+  </g>
+  <!-- Platform -->
+  <rect x="186" y="20" width="150" height="216" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <path d="M186,30 a10,10 0 0 1 10,-10 h130 a10,10 0 0 1 10,10 v22 h-150 z" fill="#f6a821"/>
+  <text x="261" y="41" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">PLATFORM</text>
+  <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+    <text x="200" y="74">cache</text><text x="200" y="95">observability</text>
+    <text x="200" y="116">cqrs</text><text x="200" y="137">eda</text>
+    <text x="200" y="158">eventsourcing</text><text x="200" y="179">orchestration</text>
+    <text x="200" y="200">scheduling</text><text x="200" y="221">security</text>
+  </g>
+  <!-- Adapters -->
+  <rect x="364" y="20" width="150" height="216" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <path d="M364,30 a10,10 0 0 1 10,-10 h130 a10,10 0 0 1 10,10 v22 h-150 z" fill="#f6a821"/>
+  <text x="439" y="41" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">ADAPTERS</text>
+  <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+    <text x="378" y="74">client</text><text x="378" y="95">idp-*</text>
+    <text x="378" y="116">ecm-*</text><text x="378" y="137">notifications-*</text>
+    <text x="378" y="158">cache-redis</text><text x="378" y="179">eda-kafka</text>
+    <text x="378" y="200">data-sqlx</text><text x="378" y="221">data-mongodb</text>
+  </g>
+  <!-- Starters -->
+  <rect x="542" y="20" width="150" height="216" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
+  <path d="M542,30 a10,10 0 0 1 10,-10 h130 a10,10 0 0 1 10,10 v22 h-150 z" fill="#f6a821"/>
+  <text x="617" y="41" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10">STARTERS</text>
+  <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+    <text x="556" y="74">starter-core</text><text x="556" y="95">starter-web</text>
+    <text x="556" y="116">starter-domain</text><text x="556" y="137">starter-data</text>
+    <text x="556" y="158">starter-experience</text><text x="556" y="179">admin</text>
+    <text x="556" y="200">cli</text>
+  </g>
+  <!-- left-to-right "builds on" arrows -->
+  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
+    <line x1="160" y1="128" x2="178" y2="128"/><polygon points="186,128 178,124 178,132"/>
+    <line x1="338" y1="128" x2="356" y2="128"/><polygon points="364,128 356,124 356,132"/>
+    <line x1="516" y1="128" x2="534" y2="128"/><polygon points="542,128 534,124 534,132"/>
+  </g>
+</svg>
+<figcaption>The framework's four tiers. Each tier may depend only on the tiers to its left; the Cargo crate graph enforces the layering.</figcaption>
+</figure>
 
 - **Foundational** crates are the vocabulary: `firefly-kernel` (errors, clock,
   correlation scopes, DDD kit), `firefly-reactive` (`Mono`/`Flux`),
@@ -228,11 +270,12 @@ Nothing in code yet. This chapter framed the journey:
 ## Exercises
 
 1. Open `samples/lumen/Cargo.toml` and confirm the dependency list: one
-   `firefly`, plus `axum`/`serde`/`serde_json`/`tokio`/`uuid`/`chrono`. Note
-   that no `firefly-*` sub-crate is listed directly.
-2. Skim `samples/lumen/src/lib.rs`. List the eight modules it declares
-   (`money`, `domain`, `ledger`, `commands`, `transfer`, `security`, `web`,
-   `housekeeping`) and predict which book part introduces each.
+   `firefly`, plus `axum`/`serde`/`serde_json`/`tokio`/`uuid`/`chrono`/`async-trait`.
+   Note that no `firefly-*` sub-crate is listed directly.
+2. Skim `samples/lumen/src/lib.rs`. List the ten modules it declares
+   (`money`, `domain`, `ledger`, `commands`, `transfer`, `tcc_transfer`,
+   `security`, `compliance`, `web`, `housekeeping`) and predict which book part
+   introduces each.
 3. Run `cargo doc -p firefly-sample-lumen --open` and read the crate-level
    documentation. It contains the same "building block → module → Firefly
    surface" table the book is organized around.

@@ -15,6 +15,8 @@ in the style of mature AOP frameworks. It provides
 | `AspectRegistry` / `AdviceBinding` | ordered pointcut→aspect bindings |
 | `intercept` / `intercept_with_bindings` | the advice-chain executor |
 | `Invocation` / `Proceed` | the captured original call + the `around` continuation |
+| `#[firefly::aspect(pointcut, order)]` + `#[before]`/`#[after]`/`#[after_returning]`/`#[after_throwing]`/`#[around]` | the declarative aspect macro (Spring's `@Aspect`) |
+| `advised` / `register_aspect` / `register_discovered_aspects` / `matching_bindings` | the process-global registry + the explicit weave point |
 
 ## Pointcut language
 
@@ -86,6 +88,106 @@ let out = intercept(
 assert_eq!(out.downcast_ref::<String>().unwrap(), "order-42");
 # }
 ```
+
+## Declarative aspects (`#[firefly::aspect]`)
+
+The `intercept` quick start above uses the in-hand `AspectRegistry` you own and
+pass explicitly. For Spring's `@Aspect` ergonomics there is a declarative layer
+on top of the same engine: a **process-global** registry, `inventory`-based
+discovery, and the `#[firefly::aspect]` macro.
+
+Apply `#[firefly::aspect(pointcut = "<glob>", order = <i32>)]` to an `impl`
+block. Its methods carry argument-less advice markers — `#[before]`, `#[after]`,
+`#[after_returning]`, `#[after_throwing]`, `#[around]` (at most one of each) —
+naming which `Aspect` hook each implements. The macro keeps the marked methods
+callable (it strips only the markers), generates a `#[async_trait] impl Aspect`
+that delegates to them (only the present hooks are emitted; the trait's
+no-op/pass-through defaults cover the rest), and emits an `inventory` thunk that
+registers the aspect against the pointcut. The aspect type must be `Default` —
+the auto-registered aspect is a single instance built once via `Default`
+(Spring aspects are singletons).
+
+```rust,ignore
+use firefly::prelude::*;
+
+#[derive(Default)]
+struct AuditAspect;
+
+#[firefly::aspect(pointcut = "service.*.*", order = 0)]
+impl AuditAspect {
+    #[before]
+    async fn log_call(&self, jp: &JoinPoint) {
+        tracing::info!(target = %jp.qualified_name(), "entering");
+    }
+
+    #[around]
+    fn time_it<'a>(&'a self, _jp: &'a JoinPoint, proceed: Proceed<'a>) -> AdviceFuture<'a> {
+        Box::pin(async move { proceed.proceed().await })
+    }
+}
+```
+
+`before` / `after` / `after_returning` / `after_throwing` are
+`async fn(&self, &JoinPoint)`; `around` is
+`fn<'a>(&'a self, &'a JoinPoint, Proceed<'a>) -> AdviceFuture<'a>` (non-`async`,
+like the trait hook). A mismatched signature is a compile error at the generated
+delegation.
+
+### Weaving stays call-site explicit
+
+Registering an aspect — declaratively or programmatically — does **not** by
+itself intercept anything. Rust has no transparent runtime proxies, so weaving
+is explicit at the call site through `advised`, the honest analogue of Spring's
+proxy weaving: the cross-cutting concern runs because the call site routed
+through it, not because a proxy silently replaced the method.
+
+```rust
+use std::sync::{Arc, Mutex};
+use async_trait::async_trait;
+use firefly_aop::{advised, ok, register_aspect, Aspect, JoinPoint};
+
+struct Audit(Arc<Mutex<Vec<String>>>);
+
+#[async_trait]
+impl Aspect for Audit {
+    async fn before(&self, jp: &JoinPoint) {
+        self.0.lock().unwrap().push(format!("call {}", jp.qualified_name()));
+    }
+}
+
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+register_aspect(Arc::new(Audit(Arc::new(Mutex::new(Vec::new())))), "svc.Audited.*", 0);
+
+let out = advised("svc.Audited", "run", Arc::new(()), || async {
+    ok(7u32)
+})
+.await
+.unwrap();
+
+assert_eq!(*out.downcast_ref::<u32>().unwrap(), 7);
+# }
+```
+
+`advised(type_name, method, args, call)` forms the qualified name
+`"{type_name}.{method}"`, finds the matching process-global bindings, and runs
+the call through the same `intercept` ordering. When no declared aspect matches,
+the call runs with zero advice overhead.
+
+* `register_aspect(aspect, pointcut, order)` registers an aspect into the
+  process-global registry (the macro calls this from its `inventory` thunk; tests
+  and programmatic setups call it directly).
+* `register_discovered_aspects()` drains the `inventory`-submitted registrations
+  exactly once — idempotent, and called lazily by `matching_bindings` /
+  `advised`, so a `#[firefly::aspect]`-declared aspect is live without explicit
+  startup wiring.
+* `matching_bindings(qualified_name)` returns the matching bindings in global
+  order (running discovery first); the registry lock is dropped before it
+  returns, so the result can be `.await`-ed without holding the lock across a
+  suspension point.
+
+> The pre-existing `intercept` / `AspectRegistry` engine is unchanged; the
+> declarative layer is a thin process-global front over it.
 
 ## Design notes
 

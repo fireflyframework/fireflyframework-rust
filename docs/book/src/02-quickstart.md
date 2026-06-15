@@ -72,7 +72,7 @@ saga orchestration, scheduling, security, observability — and *every*
 # The one-dependency front door: the `firefly` facade re-exports the whole
 # framework AND every macro. Generated code resolves runtime types through the
 # facade, so Lumen never lists the underlying `firefly-*` crates.
-firefly = "26.6.4"
+firefly = "26.6.5"
 
 # The two ecosystem crates a Firefly service still writes against directly:
 # axum (you author the controller handlers) and serde (your messages and event
@@ -239,7 +239,7 @@ cargo run
 You will see the Firefly banner, then Lumen's own line:
 
 ```text
-:: lumen :: digital-wallet & ledger (v26.6.4)
+:: lumen :: digital-wallet & ledger (v26.6.5)
 ```
 
 Even with no business routes yet, the actuator is live on the admin port:
@@ -251,7 +251,7 @@ curl localhost:8081/actuator/health
 
 # Build metadata — note app_name and app_version flow straight from CoreConfig.
 curl localhost:8081/actuator/info
-# {"app":{"name":"lumen","version":"26.6.4"}, ...}
+# {"app":{"name":"lumen","version":"26.6.5"}, ...}
 ```
 
 ## What you got for free

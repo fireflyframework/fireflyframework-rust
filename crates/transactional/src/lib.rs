@@ -104,14 +104,26 @@ use std::fmt;
 mod manager;
 pub use manager::{
     register_transaction_manager, transaction_manager, transactional, transactional_on,
-    transactional_with, transactional_with_on, BoxedTxOp, Isolation, Propagation,
-    TransactionManager, TxOptions, TxOutcome,
+    transactional_with, transactional_with_on, BoxedTxOp, Isolation, LocalTransactionManager,
+    Propagation, TransactionManager, TxOptions, TxOutcome,
 };
+
+pub mod events;
+pub use events::{
+    publish_event, register_discovered_listeners, register_event_listener, EventDispatcher,
+    EventListenerRegistration, TransactionPhase,
+};
+
+// Re-exported so `firefly-macros`-generated `#[event_listener]` thunks resolve
+// `firefly_transactional::inventory::submit!` without the user crate depending on
+// `inventory` directly (mirrors `firefly_container::inventory`).
+#[doc(hidden)]
+pub use inventory;
 
 /// The released framework version. Calendar-versioned (`YY.M.PATCH`)
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to
-/// `26.6.4` in the June 2026 release window.
-pub const VERSION: &str = "26.6.4";
+/// `26.6.5` in the June 2026 release window.
+pub const VERSION: &str = "26.6.5";
 
 /// Errors produced by the transaction helper and the database port.
 ///
@@ -720,6 +732,6 @@ mod tests {
 
     #[test]
     fn version_is_stamped() {
-        assert_eq!(VERSION, "26.6.4");
+        assert_eq!(VERSION, "26.6.5");
     }
 }

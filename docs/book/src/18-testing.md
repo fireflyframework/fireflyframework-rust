@@ -10,7 +10,7 @@ unit tests with no I/O, in-process HTTP tests that drive the *real* router
 through `tower::oneshot`, and the `firefly-testkit` helpers (`TestClient`,
 `Slice`, `assert_event_published`) that make all of it terse — and how the same
 crate scales up to real-infrastructure integration tests when you need a live
-Postgres or Kafka. Lumen's gate is **34 unit tests + 7 HTTP tests + 1 doctest**,
+Postgres or Kafka. Lumen's gate is **42 unit tests + 12 HTTP tests + 1 doctest**,
 all hermetic; the streaming feature adds 3 more.
 
 > **Design note.** Firefly's testing surface is built as three deliberate tiers
@@ -223,8 +223,9 @@ concrete type to a trait object; and `eager` forces construction at build time.
 
 `SpyBroker` records what a handler published; `assert_event_published(&spy,
 "Type")` asserts an event of that type was recorded and returns it (the
-`_with` variant also checks the payload contains a substring;
-`assert_no_events_published` asserts none). `must_encode` / `must_decode` are
+`_with` variant also checks the payload, parsed as a JSON object, contains the
+given key/value pairs (a subset match); `assert_no_events_published` asserts
+none). `must_encode` / `must_decode` are
 panic-on-failure JSON helpers. A Lumen-flavored example — proving an open emits a
 `WalletOpened`:
 
@@ -320,7 +321,7 @@ From the workspace root (with `export PATH="/opt/homebrew/bin:$PATH"`):
 
 ```bash
 cargo build  -p firefly-sample-lumen
-cargo test   -p firefly-sample-lumen                      # 34 unit + 7 HTTP + 1 doctest
+cargo test   -p firefly-sample-lumen                      # 42 unit + 12 HTTP + 1 doctest
 cargo test   -p firefly-sample-lumen --features streaming # + 3 streaming tests
 cargo clippy -p firefly-sample-lumen --all-targets -- -D warnings
 cargo fmt    -p firefly-sample-lumen -- --check
@@ -356,7 +357,8 @@ alongside every feature:
    assert `find` returns the view — all without the bus or the router.
 3. **Event assertion on the ledger.** Wire a `SpyBroker` into a `Ledger` in a
    test, commit a deposit, and use `assert_event_published_with(&spy,
-   "MoneyDeposited", "50")` to prove the amount is on the wire.
+   "MoneyDeposited", &serde_json::json!({ "amount": 50 }))` to prove the
+   payload's `amount` field equals 50.
 4. **A skipping integration test.** Write an `#[ignore]`d test that reads
    `DATABASE_URL`, returns early when unset, and otherwise opens a wallet against
    a Postgres-backed event store. Confirm it skips with a plain `cargo test` and

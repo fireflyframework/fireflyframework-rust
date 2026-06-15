@@ -23,9 +23,10 @@ files are drawn verbatim from `samples/lumen`.
 
 > **Design note.** This chapter builds Lumen's domain core with the classic DDD
 > building blocks — value objects, aggregates, aggregate roots, domain events —
-> as idiomatic Rust. `#[derive(AggregateRoot)]` generates the
-> uncommitted-event-buffer plumbing and the `AGGREGATE_TYPE` constant, so your
-> code holds only the rules.
+> as idiomatic Rust. `#[derive(AggregateRoot)]` generates the `AGGREGATE_TYPE`
+> constant and the `aggregate()` / `aggregate_mut()` accessors over the embedded
+> `AggregateRoot` (which itself carries the uncommitted-event buffer and
+> version), so your code holds only the rules.
 
 ## The `Money` value object
 

@@ -126,7 +126,7 @@ assert_eq!(view.version, 3);
 ## The cache port
 
 Everything above runs on `MemoryAdapter` by default, but the `QueryCache` — like
-every other consumer (session store, OAuth2 token store) — depends on the
+every other consumer (the session store) — depends on the
 abstract `Adapter` port, never on a concrete client. That is what lets you move
 Lumen's cache to Redis without touching a handler. The port:
 
@@ -137,7 +137,7 @@ pub trait Adapter: Send + Sync {
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<(), CacheError>;
     async fn delete(&self, key: &str) -> Result<(), CacheError>;
     async fn clear(&self) -> Result<(), CacheError>;
-    async fn set_if_absent(&self, key, value, ttl) -> Result<bool, CacheError>;
+    async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<bool, CacheError>;
     async fn exists(&self, key: &str) -> Result<bool, CacheError>;
     async fn delete_prefix(&self, prefix: &str) -> Result<u64, CacheError>;
     async fn health_check(&self) -> Result<(), CacheError>;

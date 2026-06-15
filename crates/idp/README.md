@@ -19,9 +19,9 @@ Concrete implementations live in dedicated crates:
 | Adapter                   | Backing tech                              | Status                      |
 |---------------------------|-------------------------------------------|-----------------------------|
 | `firefly-idp-internal-db` | bcrypt + HS256 JWT, in-memory user store  | **Full**                    |
-| `firefly-idp-keycloak`    | Keycloak OIDC + admin REST                | Stub (sentinel-error guard) |
-| `firefly-idp-azure-ad`    | MSAL + Microsoft Graph                    | Stub (sentinel-error guard) |
-| `firefly-idp-aws-cognito` | AWS Cognito SDK                           | Stub (sentinel-error guard) |
+| `firefly-idp-keycloak`    | Keycloak OIDC + admin REST over reqwest   | **Stable**                  |
+| `firefly-idp-azure-ad`    | Microsoft Graph v1.0 + login.microsoftonline.com over reqwest (no MSAL) | **Stable** |
+| `firefly-idp-aws-cognito` | Cognito Identity Provider JSON API + SigV4 over reqwest (no AWS SDK)     | **Full**   |
 
 ## Public surface
 
