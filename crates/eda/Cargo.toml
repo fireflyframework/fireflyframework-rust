@@ -9,6 +9,10 @@ rust-version.workspace = true
 description = "Firefly Framework for Rust — Event envelope, Publisher/Subscriber, in-memory broker, Kafka/RabbitMQ scaffolds"
 
 [dependencies]
+# Bean-based listener discovery resolves the listener bean from the DI container,
+# so the registration thunk references `firefly_container::Container` (container
+# does not depend on eda, so this is acyclic).
+firefly-container = { workspace = true }
 firefly-kernel = { workspace = true }
 firefly-observability = { workspace = true }
 firefly-reactive = { workspace = true }

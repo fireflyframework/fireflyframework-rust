@@ -9,6 +9,10 @@ rust-version.workspace = true
 description = "Firefly Framework for Rust — Cron + FixedRate + FixedDelay scheduler"
 
 [dependencies]
+# Bean-based scheduled-task discovery resolves the bean from the DI container, so
+# the registration thunk references `firefly_container::Container` (container does
+# not depend on scheduling, so this is acyclic).
+firefly-container = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }

@@ -288,10 +288,16 @@ impl FireflyApplication {
             routes = routes.merge(extra(&container));
         }
 
-        // 8. Drain the discovered handlers / listeners / scheduled tasks.
+        // 8. Drain the discovered handlers / listeners / scheduled tasks — both
+        //    the free-`fn` registrations and the **bean** registrations
+        //    (`#[handlers]` methods that autowire their collaborators from the
+        //    container, resolved here exactly like a Spring handler component).
         firefly_cqrs::register_discovered_handlers(&bus);
+        firefly_cqrs::register_discovered_handler_beans(&bus, &container);
         firefly_eda::subscribe_discovered_listeners(broker.as_ref()).await?;
+        firefly_eda::subscribe_discovered_listener_beans(broker.as_ref(), &container).await?;
         firefly_scheduling::register_discovered_scheduled(&scheduler);
+        firefly_scheduling::register_discovered_scheduled_beans(&scheduler, &container);
 
         // 9. Assemble the public router and wrap EVERY request in the
         //    observability edge. Security (the filter chain + bearer) is layered
@@ -333,16 +339,15 @@ impl FireflyApplication {
             .merge(openapi.docs_router(&firefly_openapi::DocsConfig::default()))
             .fallback(not_found_fallback);
 
-        let mut api = web.apply_middleware(combined);
+        let api = web.apply_middleware(combined);
 
         // 9d. Admin trace capture at the outermost edge so EVERY request — app,
-        //     docs, and 404 — appears in the dashboard's Traces view.
+        //     docs, and 404 — appears in the dashboard's Traces view. (Shadowed
+        //     under the feature so the binding stays immutable without `admin`.)
         #[cfg(feature = "admin")]
         let trace_buffer = Arc::new(firefly_admin::TraceBuffer::new());
         #[cfg(feature = "admin")]
-        {
-            api = api.layer(firefly_admin::TraceLayer::new(Arc::clone(&trace_buffer)));
-        }
+        let api = api.layer(firefly_admin::TraceLayer::new(Arc::clone(&trace_buffer)));
 
         // 7. Management router: actuator + the self-hosted admin dashboard,
         //    wired to the live components (health, metrics, bus, scheduler,
@@ -505,9 +510,10 @@ fn log_startup_report(container: &Container) {
 
     println!(
         ":: cqrs handlers: {} | event listeners: {} | scheduled tasks: {} | controllers: {} ::",
-        firefly_cqrs::discovered_handler_count(),
-        firefly_eda::discovered_listener_count(),
-        firefly_scheduling::discovered_scheduled_count(),
+        firefly_cqrs::discovered_handler_count() + firefly_cqrs::discovered_handler_bean_count(),
+        firefly_eda::discovered_listener_count() + firefly_eda::discovered_listener_bean_count(),
+        firefly_scheduling::discovered_scheduled_count()
+            + firefly_scheduling::discovered_scheduled_bean_count(),
         firefly_web::controller_count(),
     );
 

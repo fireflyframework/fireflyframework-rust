@@ -115,26 +115,15 @@ impl LumenBeans {
         crate::security::security_layers().0
     }
 
-    /// The ledger application service — autowires the event store, the
-    /// **framework-provided** `Broker` port, and the read model. Routed through
-    /// [`commands::bind`](crate::commands::bind) so every build shares the
-    /// *effective* (first build's) ledger, and **seeds the event-sourcing
-    /// projection on construction** so the framework wires it with no
-    /// composition-root step.
+    /// The ledger application service (`@Bean`) — autowires the event store and
+    /// the **framework-provided** `Broker` port. A pure factory: the CQRS
+    /// handlers and the read-model projection are now their own autowired beans
+    /// ([`WalletHandlers`](crate::commands) / `WalletProjection`), so there is no
+    /// `bind`/projection-seeding side effect here.
     #[bean]
-    fn ledger(
-        &self,
-        store: Arc<MemoryEventStore>,
-        broker: Arc<dyn Broker>,
-        read_model: Arc<ReadModel>,
-    ) -> Ledger {
+    fn ledger(&self, store: Arc<MemoryEventStore>, broker: Arc<dyn Broker>) -> Ledger {
         let store: Arc<dyn EventStore> = store;
-        let ledger = crate::commands::bind(Ledger::new(store, broker), read_model).0;
-        crate::ledger::bind_projection(
-            Arc::clone(ledger.store()),
-            crate::commands::effective_read_model(),
-        );
-        ledger
+        Ledger::new(store, broker)
     }
 }
 
@@ -162,11 +151,12 @@ impl firefly::web::RouteContributor for StreamingRoutes {
 /// framework exactly as `main()` does — used by the HTTP tests.
 ///
 /// There is **no hand-written composition root and no builder**: every bean in
-/// this file is auto-registered by `container.scan()`, every `#[rest_controller]`
-/// is auto-mounted, security (`FilterChain` + `BearerLayer` beans) and the
+/// this file (and the `WalletHandlers` / `WalletProjection` handler beans) is
+/// auto-registered by `container.scan()`, every `#[rest_controller]` is
+/// auto-mounted, security (`FilterChain` + `BearerLayer` beans) and the
 /// read-cache bus middleware are auto-discovered, the streaming endpoint is a
-/// `RouteContributor` bean, the projection is seeded inside the `ledger` `#[bean]`,
-/// and the CQRS handlers / listener / `#[scheduled]` task are drained from the
+/// `RouteContributor` bean, and the CQRS handler bean / projection listener bean
+/// / `#[scheduled]` task are all resolved from the container and drained from the
 /// inventory registries. The whole app boots from a single
 /// [`FireflyApplication`](firefly::FireflyApplication) line.
 #[cfg(test)]

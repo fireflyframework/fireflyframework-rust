@@ -19,9 +19,9 @@ query serves had to be repaired on the fly by re-folding the event stream.
 
 By the end of *this* chapter, Lumen closes the loop. Every event the ledger
 persists is also **published** to a `Broker`, and a read-model **projection** —
-declared with one `#[event_listener]` attribute — consumes those events and
-keeps the query side current without the write side knowing it exists. That is
-event-driven architecture: a fact is published once, and any number of
+a `#[derive(Service)]` bean whose `#[event_listener]` method consumes those
+events — keeps the query side current without the write side knowing it exists.
+That is event-driven architecture: a fact is published once, and any number of
 independent reactions subscribe to it. The audit trail, the welcome
 notification, the balance read model — each becomes a subscriber you can add
 months later without touching a single command handler.
@@ -221,41 +221,59 @@ async fn main() {
 publisher's task; the first handler error short-circuits and is returned to the
 publisher. After `close()`, publish and subscribe fail with `EdaError::Closed`.
 
-## The read-model projection — `#[event_listener]`
+## The read-model projection — a `#[event_listener]` bean
 
-Here is where Lumen closes the CQRS loop. The **projection** is a free `async fn`
-carrying one attribute. The `#[event_listener(topic = "wallets.events")]` macro
-generates a `subscribe_project_wallet_event(broker)` helper **and** submits a
-`ListenerRegistration` into a compile-time `inventory` registry, so the framework
-subscribes the function to the topic for you — Lumen never calls the generated
-helper. For each delivered event the listener reloads the affected wallet's
-stream, folds it into a `WalletView`, and upserts it into the read model:
+Here is where Lumen closes the CQRS loop. The **projection** is a DI bean — the
+Rust analog of a Spring `@Component @EventListener`. `WalletProjection` is a
+`#[derive(Service)]` whose collaborators are `#[autowired]` from the container:
+the `Ledger` (for the event store it replays) and the `ReadModel` it feeds — the
+*same* `ReadModel` the `GetWallet` query reads. The `#[handlers]` impl marks its
+method with `#[event_listener(topic = "wallets.events")]`, so for each delivered
+event it reaches its collaborators through `self`, reloads the affected wallet's
+stream, folds it into a `WalletView`, and upserts it:
 
 ```rust
+use std::sync::Arc;
+
 use firefly::eda::Event;
 use firefly::prelude::*;
 
 use crate::domain::Wallet;
+use crate::ledger::{Ledger, ReadModel};
 
-/// The read-model projection. `#[event_listener]` generates
-/// `subscribe_project_wallet_event(broker)`, which subscribes this fn to
-/// `EVENTS_TOPIC`. For each event it reloads the wallet's stream, folds it into
-/// a `WalletView`, and upserts it — the idempotent rebuild-from-stream pattern.
-#[event_listener(topic = "wallets.events")]
-pub async fn project_wallet_event(ev: Event) -> FireflyResult<()> {
-    let Some(state) = projection_state() else {
-        return Ok(());
-    };
-    let Some(wallet_id) = ev.headers.get("aggregateId") else {
-        return Ok(());
-    };
-    // A transient store miss is swallowed so one poison message never stalls
-    // the projection — the EDA at-least-once contract.
-    if let Ok(events) = state.store.load(wallet_id).await {
-        let view = Wallet::rehydrate(wallet_id, &events).view();
-        state.read_model.upsert(view);
+/// The read-model **projection bean** — Spring's `@Component @EventListener`. It
+/// `#[autowired]`s the `Ledger` (for the event store it replays) and the
+/// `ReadModel` it feeds; `#[handlers]` subscribes its `project` method to
+/// `EVENTS_TOPIC`. The idempotent rebuild-from-stream projection that closes the
+/// CQRS loop, wired entirely through the DI container with no process-global.
+#[derive(Service)]
+struct WalletProjection {
+    /// The application service whose event store the projection replays
+    /// (autowired).
+    #[autowired]
+    ledger: Arc<Ledger>,
+    /// The read model the projection upserts (autowired) — the same instance the
+    /// `GetWallet` query reads.
+    #[autowired]
+    read_model: Arc<ReadModel>,
+}
+
+#[handlers]
+impl WalletProjection {
+    /// Projects one delivered wallet event into the read model.
+    #[event_listener(topic = "wallets.events")]
+    async fn project(&self, ev: Event) -> FireflyResult<()> {
+        let Some(wallet_id) = ev.headers.get("aggregateId") else {
+            return Ok(());
+        };
+        // A transient store miss is swallowed so one poison message never stalls
+        // the projection — the EDA at-least-once contract.
+        if let Ok(events) = self.ledger.store().load(wallet_id).await {
+            let view = Wallet::rehydrate(wallet_id, &events).view();
+            self.read_model.upsert(view);
+        }
+        Ok(())
     }
-    Ok(())
 }
 ```
 
@@ -269,87 +287,47 @@ same stream converges on the same `WalletView` no matter how many times the
 event arrives. The header carries the `aggregateId`; that is all the projection
 needs to find the stream.
 
-It is **decoupled.** `project_wallet_event` imports no command, calls no handler,
+It is **decoupled.** `WalletProjection` imports no command, calls no handler,
 and has no idea a deposit was processed. It reacts purely to the published fact.
 You can add a `FraudDetector` or a `WelcomeNotifier` subscriber next to it
 without touching a line of the command path.
 
-> **Note.** `#[event_listener(topic = "wallets.events")]` generates
-> `subscribe_project_wallet_event(broker)` *and* registers the listener in the
-> `inventory` registry the framework drains
-> (`subscribe_discovered_listeners(broker)`): the subscription is wired for you;
-> you write only the reaction.
+> **Note.** `#[event_listener(topic = "wallets.events")]` on a `#[handlers]` bean
+> method submits a `BeanListenerRegistration` into the `inventory` registry the
+> framework drains (`subscribe_discovered_listener_beans(broker, container)`): at
+> boot `FireflyApplication` resolves `WalletProjection` from the container —
+> autowiring its `Ledger` + `ReadModel` — and subscribes its `project` method to
+> the topic. The subscription is wired for you; you write only the reaction.
 
-### Wiring state into a free-fn listener
+### How the projection reaches its collaborators
 
-A Rust free fn cannot capture wiring state, so Lumen uses the same
-publish-collaborators-once pattern its CQRS handlers use: the resolved
-collaborators are placed in a process-global `OnceLock` at startup, and the
-listener reads them back through a small accessor. (When you would rather have the
-collaborators injected, the [dependency-injection chapter](./04a-dependency-injection.md)'s
-`#[derive(Component)]` listener is the constructor-injection alternative.)
+Because the projection is a regular container bean, its collaborators arrive by
+**constructor injection** through `#[autowired]` fields — no process-global to
+seed, no `bind` step. The container hands `WalletProjection` the same `Ledger`
+(hence the same event store) and the same `ReadModel` it hands the CQRS handlers,
+so the events the handlers publish are exactly the events the projection consumes
+and projects into the read the `GetWallet` query serves. (When a listener needs
+*no* injected collaborators, the simpler free-`fn` form — a bare
+`#[event_listener(topic = "…")] async fn(ev: Event) -> FireflyResult<()>` — is
+the alternative, discovered the same way via `subscribe_discovered_listeners`.)
 
-```rust
-use std::sync::{Arc, OnceLock};
-use firefly::eventsourcing::EventStore;
-
-use crate::ledger::ReadModel;
-
-/// The collaborators the free-fn projection needs.
-struct ProjectionState {
-    store: Arc<dyn EventStore>,
-    read_model: Arc<ReadModel>,
-}
-
-static PROJECTION: OnceLock<ProjectionState> = OnceLock::new();
-
-/// Publishes the projection's collaborators and returns the *effective* state
-/// (the first call wins, so repeated builds in one test binary share one state).
-pub fn bind_projection(
-    store: Arc<dyn EventStore>,
-    read_model: Arc<ReadModel>,
-) -> (Arc<dyn EventStore>, Arc<ReadModel>) {
-    let effective = PROJECTION.get_or_init(|| ProjectionState { store, read_model });
-    (
-        Arc::clone(&effective.store),
-        Arc::clone(&effective.read_model),
-    )
-}
-
-fn projection_state() -> Option<&'static ProjectionState> {
-    PROJECTION.get()
-}
-```
-
-The `ledger` `#[bean]` factory seeds the projection on construction — it binds
-the projection's collaborators to the *same* store and read model the command
-handlers use — and the framework drains the discovered listener at boot, so the
-events the handlers publish are exactly the events the projection consumes:
+That is why the `ledger` `#[bean]` factory is now a **pure factory** — it builds
+the `Ledger` and returns it, with no projection-seeding side effect:
 
 ```rust,ignore
 // samples/lumen/src/web.rs — the `ledger` #[bean] factory.
 #[bean]
-fn ledger(
-    &self,
-    store: Arc<MemoryEventStore>,
-    broker: Arc<dyn Broker>,
-    read_model: Arc<ReadModel>,
-) -> Ledger {
+fn ledger(&self, store: Arc<MemoryEventStore>, broker: Arc<dyn Broker>) -> Ledger {
     let store: Arc<dyn EventStore> = store;
-    let ledger = crate::commands::bind(Ledger::new(store, broker), read_model).0;
-    // Seed the event-sourcing projection on the *effective* store + read model.
-    crate::ledger::bind_projection(
-        Arc::clone(ledger.store()),
-        crate::commands::effective_read_model(),
-    );
-    ledger
+    Ledger::new(store, broker)
 }
 ```
 
 The subscription itself is wired by `FireflyApplication` —
-`subscribe_discovered_listeners(broker)` drains the `inventory` registry the
-`#[event_listener]` macro populated — so neither the `ledger` factory nor any
-composition root calls `subscribe_project_wallet_event` by hand. With that, every
+`subscribe_discovered_listener_beans(broker, container)` resolves the projection
+bean and drains its `#[event_listener]` method onto the broker (alongside the
+free-`fn` `subscribe_discovered_listeners`) — so neither the `ledger` factory nor
+any composition root calls a subscribe helper by hand. With that, every
 `POST /api/v1/wallets/:id/deposit` flows command → ledger → store → broker →
 projection → read model, and the next `GET /api/v1/wallets/:id` is served from the
 projected view. The HTTP test suite proves the loop converges: it deposits,
@@ -647,9 +625,9 @@ and projects it back automatically.
 | `EVENTS_TOPIC` / `EVENT_SOURCE` | Shared constants the publisher and listener agree on |
 | `to_envelope(&DomainEvent)` | Bridges a persisted domain event to the wire `Event` (key = wallet id, headers carry routing) |
 | `Ledger::commit` | Appends, **then** publishes each event — save before you publish |
-| `#[event_listener(topic = "wallets.events")]` | Generates `subscribe_project_wallet_event(broker)` and registers a `ListenerRegistration` the framework drains |
-| `project_wallet_event` | The idempotent rebuild-from-stream projection that feeds the read model |
-| `bind_projection` / `projection_state` | Publish-once wiring so the free-fn listener reaches its collaborators (seeded inside the `ledger` `#[bean]`) |
+| `WalletProjection` (`#[derive(Service)]` + `#[handlers]`) | The projection **bean**: `#[autowired]`s the `Ledger` + `ReadModel`, its `#[event_listener]` method rebuilds the read model from the stream |
+| `#[event_listener(topic = "wallets.events")]` | Marks the bean method; submits a `BeanListenerRegistration` the framework drains (`subscribe_discovered_listener_beans`) — resolving the bean and subscribing the method |
+| Constructor injection | The projection reaches its collaborators through `#[autowired]` fields — no `OnceLock`, no `bind`; the `ledger` `#[bean]` is a pure factory |
 | framework `Broker` (`InMemoryBroker`) | The default transport — swap the adapter for Kafka/RabbitMQ/Redis, keep the listener |
 
 Three principles carry forward: **save before you publish** so a subscriber
@@ -665,8 +643,9 @@ recomputed.
 
 ## Exercises
 
-1. **Add a `WelcomeNotifier` listener.** Write a second
-   `#[event_listener(topic = "wallets.events")]` free fn that reacts only to
+1. **Add a `WelcomeNotifier` listener.** Because the notifier needs no injected
+   collaborators, reach for the simpler free-`fn` form: write a
+   `#[event_listener(topic = "wallets.events")] async fn` that reacts only to
    `WalletOpened` (check `ev.event_type`) and logs a welcome line carrying the
    `aggregateId` header. The framework drains the new listener automatically —
    you add no subscribe call. Confirm — via an `InMemoryBroker` unit test that

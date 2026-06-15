@@ -65,6 +65,7 @@ mod cqrs;
 mod eda;
 mod event_listener;
 mod eventsourcing;
+mod handlers;
 mod mapper;
 mod method_security;
 mod orchestration;
@@ -664,6 +665,43 @@ pub fn async_method(args: TokenStream, item: TokenStream) -> TokenStream {
 pub fn rest_controller(args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemImpl);
     emit(web::rest_controller(args.into(), item))
+}
+
+/// Registers a DI bean's CQRS / EDA / scheduled handler methods — the Rust
+/// analog of Spring scanning a `@Component`'s `@CommandHandler` /
+/// `@QueryHandler` / `@EventListener` / `@Scheduled` methods.
+///
+/// Apply to the `impl` block of a registered bean (e.g. a `#[derive(Service)]`
+/// whose collaborators are `#[autowired]`). Mark each method with
+/// `#[command_handler]` / `#[query_handler]` (a CQRS message handler, takes
+/// `&self` + the message), `#[event_listener("topic")]` (an EDA listener, takes
+/// `&self` + the `Event`), or `#[scheduled(fixed_rate = "..")]` / `cron` /
+/// `fixed_delay` (a periodic task, takes `&self` only). `FireflyApplication`
+/// resolves the bean from the container and installs each one — so a handler
+/// reaches its collaborators through ordinary `#[autowired]` fields instead of a
+/// process-global, exactly like a Spring handler component.
+///
+/// ```ignore
+/// #[derive(Service)]
+/// struct WalletHandlers {
+///     #[autowired] ledger: Arc<Ledger>,
+///     #[autowired] read_model: Arc<ReadModel>,
+/// }
+///
+/// #[handlers]
+/// impl WalletHandlers {
+///     #[command_handler]
+///     async fn open(&self, cmd: OpenWallet) -> Result<WalletView, CqrsError> { /* self.ledger… */ }
+///     #[query_handler]
+///     async fn get(&self, q: GetWallet) -> Result<WalletView, CqrsError> { /* self.read_model… */ }
+///     #[event_listener("wallets.events")]
+///     async fn project(&self, ev: Event) -> FireflyResult<()> { /* self.read_model.upsert… */ }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn handlers(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemImpl);
+    emit(handlers::handlers(args.into(), item))
 }
 
 // ===========================================================================

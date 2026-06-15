@@ -20,6 +20,8 @@
 //! registers each task on a [`Scheduler`] — so a service never hand-maintains a
 //! list of `schedule_<fn>(&scheduler)` calls.
 
+use firefly_container::Container;
+
 use crate::Scheduler;
 
 /// One link-time scheduled-task thunk, `inventory::submit!`-ted once per
@@ -31,6 +33,21 @@ pub struct ScheduledRegistration {
 }
 
 inventory::collect!(ScheduledRegistration);
+
+/// One link-time **bean** scheduled-task thunk, `inventory::submit!`-ted once per
+/// `#[scheduled]` method inside a `#[handlers]` bean impl — the Rust analog of
+/// Spring scanning a `@Component`'s `@Scheduled` methods.
+///
+/// Unlike [`ScheduledRegistration`], [`schedule`](Self::schedule) resolves the
+/// task's **bean** from the DI container and registers a closure that captures
+/// it, so the task reaches its collaborators through ordinary `#[autowired]`
+/// fields instead of a process-global.
+pub struct BeanScheduledRegistration {
+    /// Resolves the task's bean from `container` and registers it on `scheduler`.
+    pub schedule: fn(&Scheduler, &Container),
+}
+
+inventory::collect!(BeanScheduledRegistration);
 
 /// Registers every discovered (`inventory`-submitted) `#[scheduled]` task on
 /// `scheduler` — the turnkey replacement for hand-calling each generated
@@ -49,4 +66,25 @@ pub fn register_discovered_scheduled(scheduler: &Scheduler) -> usize {
 #[must_use]
 pub fn discovered_scheduled_count() -> usize {
     inventory::iter::<ScheduledRegistration>.into_iter().count()
+}
+
+/// Registers every discovered **bean** scheduled task on `scheduler`, resolving
+/// each task's bean from `container` — the turnkey wiring `FireflyApplication`
+/// runs for `#[handlers]` beans. Returns the number registered.
+pub fn register_discovered_scheduled_beans(scheduler: &Scheduler, container: &Container) -> usize {
+    let mut count = 0;
+    for reg in inventory::iter::<BeanScheduledRegistration> {
+        (reg.schedule)(scheduler, container);
+        count += 1;
+    }
+    count
+}
+
+/// The number of `#[handlers]`-bean scheduled tasks discovered across the crate
+/// graph — for the startup report and tests.
+#[must_use]
+pub fn discovered_scheduled_bean_count() -> usize {
+    inventory::iter::<BeanScheduledRegistration>
+        .into_iter()
+        .count()
 }

@@ -111,4 +111,4 @@ pub use broker::{new_kafka_broker, KafkaBroker};
 pub use config::KafkaConfig;
 
 /// The released framework version, shared across all Firefly crates.
-pub const VERSION: &str = "26.6.6";
+pub const VERSION: &str = "26.6.7";

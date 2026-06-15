@@ -2,4 +2,4 @@ error: #[scheduled] needs exactly one trigger: cron, fixed_rate, or fixed_delay
  --> tests/ui/fail/scheduled_two_triggers.rs:6:1
   |
 6 | async fn two_triggers() -> Result<(), std::io::Error> {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  | ^^^^^

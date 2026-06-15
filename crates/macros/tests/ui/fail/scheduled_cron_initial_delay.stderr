@@ -2,4 +2,4 @@ error: #[scheduled(initial_delay = ...)] is only valid with `fixed_rate` or `fix
  --> tests/ui/fail/scheduled_cron_initial_delay.rs:9:1
   |
 9 | async fn cron_with_initial_delay() -> Result<(), std::io::Error> {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  | ^^^^^

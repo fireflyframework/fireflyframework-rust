@@ -24,16 +24,17 @@
 //! 2. runs the domain command,
 //! 3. appends the new events with **optimistic concurrency**, and
 //! 4. publishes each event to the EDA [`Broker`](firefly::eda::Broker) so the
-//!    [`project_wallet_event`] projection updates the read model.
+//!    [`WalletProjection`] projection updates the read model.
 //!
-//! The projection (a `#[event_listener]`) closes the CQRS loop: it consumes a
-//! published event, rebuilds the wallet view from its full stream, and upserts
-//! it into the [`ReadModel`]. Rebuilding from the stream (rather than mutating
-//! the row from the single event) keeps the projection **idempotent** — an
-//! at-least-once redelivery converges on the same view.
+//! The projection is a `#[derive(Service)]` bean whose `#[event_listener]`
+//! method closes the CQRS loop: it consumes a published event, rebuilds the
+//! wallet view from its full stream, and upserts it into the [`ReadModel`].
+//! Rebuilding from the stream (rather than mutating the row from the single
+//! event) keeps the projection **idempotent** — an at-least-once redelivery
+//! converges on the same view.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use firefly::eda::{Broker, Event};
 use firefly::eventsourcing::{DomainEvent, EventSourcingError, EventStore};
@@ -219,59 +220,47 @@ pub fn new_wallet_id() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Projection — the EDA `#[event_listener]` that feeds the read model.
+// Projection — the EDA listener **bean** that feeds the read model.
 // ---------------------------------------------------------------------------
 
-/// The collaborators the free-fn projection needs. Rust free fns cannot
-/// capture wiring state, so the resolved store + read model are published here
-/// once at startup (the macro-quickstart pattern), and the
-/// `#[event_listener]` reads them through [`projection_state`].
-struct ProjectionState {
-    store: Arc<dyn EventStore>,
+/// The read-model **projection bean** — Spring's `@Component @EventListener`. It
+/// `#[autowired]`s the [`Ledger`] (for the event store it replays) and the
+/// [`ReadModel`] it feeds, and `#[handlers]` subscribes its [`project`] method
+/// to [`EVENTS_TOPIC`] on the very broker the ledger publishes to. For each
+/// delivered event it reloads the affected wallet's stream, folds it into a
+/// [`WalletView`], and upserts it — the idempotent rebuild-from-stream
+/// projection that closes the CQRS loop, wired entirely through the DI container
+/// with no process-global.
+///
+/// [`project`]: WalletProjection::project
+#[derive(Service)]
+struct WalletProjection {
+    /// The application service whose event store the projection replays
+    /// (autowired).
+    #[autowired]
+    ledger: Arc<Ledger>,
+    /// The read model the projection upserts (autowired) — the same instance the
+    /// `GetWallet` query reads.
+    #[autowired]
     read_model: Arc<ReadModel>,
 }
 
-static PROJECTION: OnceLock<ProjectionState> = OnceLock::new();
-
-/// Publishes the projection's collaborators for the `#[event_listener]` to use,
-/// returning the **effective** state held by the process-global `OnceLock`
-/// (the first call wins; see [`crate::commands::bind`] for why this matters
-/// across repeated builds in one test binary).
-pub fn bind_projection(
-    store: Arc<dyn EventStore>,
-    read_model: Arc<ReadModel>,
-) -> (Arc<dyn EventStore>, Arc<ReadModel>) {
-    let effective = PROJECTION.get_or_init(|| ProjectionState { store, read_model });
-    (
-        Arc::clone(&effective.store),
-        Arc::clone(&effective.read_model),
-    )
-}
-
-fn projection_state() -> Option<&'static ProjectionState> {
-    PROJECTION.get()
-}
-
-/// The read-model **projection**, declared with `#[event_listener]`: the macro
-/// generates `subscribe_project_wallet_event(broker)`, which subscribes this fn
-/// to [`EVENTS_TOPIC`]. For each delivered event it reloads the affected
-/// wallet's stream, folds it into a [`WalletView`], and upserts it — the
-/// idempotent rebuild-from-stream projection.
-#[event_listener(topic = "wallets.events")]
-pub async fn project_wallet_event(ev: Event) -> FireflyResult<()> {
-    let Some(state) = projection_state() else {
-        return Ok(());
-    };
-    let Some(wallet_id) = ev.headers.get("aggregateId") else {
-        return Ok(());
-    };
-    // A transient store miss is swallowed so one poison message never stalls
-    // the projection — the EDA at-least-once contract.
-    if let Ok(events) = state.store.load(wallet_id).await {
-        let view = Wallet::rehydrate(wallet_id, &events).view();
-        state.read_model.upsert(view);
+#[handlers]
+impl WalletProjection {
+    /// Projects one delivered wallet event into the read model.
+    #[event_listener(topic = "wallets.events")]
+    async fn project(&self, ev: Event) -> FireflyResult<()> {
+        let Some(wallet_id) = ev.headers.get("aggregateId") else {
+            return Ok(());
+        };
+        // A transient store miss is swallowed so one poison message never stalls
+        // the projection — the EDA at-least-once contract.
+        if let Ok(events) = self.ledger.store().load(wallet_id).await {
+            let view = Wallet::rehydrate(wallet_id, &events).view();
+            self.read_model.upsert(view);
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]

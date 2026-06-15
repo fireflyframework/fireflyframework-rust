@@ -165,7 +165,7 @@ Enable the `actuator` feature to get a database health component and per-query
 metrics:
 
 ```toml
-firefly-data-sqlx = { version = "26.6.6", features = ["actuator"] }
+firefly-data-sqlx = { version = "26.6.7", features = ["actuator"] }
 ```
 
 - `SqlxHealthIndicator` implements `firefly_actuator::HealthIndicator`: it
@@ -184,7 +184,7 @@ All three backends are enabled by default. Disable the ones you do not need
 for a smaller build, e.g. a SQLite-only repository:
 
 ```toml
-firefly-data-sqlx = { version = "26.6.6", default-features = false, features = ["sqlite"] }
+firefly-data-sqlx = { version = "26.6.7", default-features = false, features = ["sqlite"] }
 ```
 
 The `actuator` feature (off by default) adds the health/metrics integration

@@ -22,6 +22,8 @@
 //! [`Bus::register`](crate::Bus::register) overwrites, calling the drain after
 //! (or instead of) the generated `register_<fn>` helpers is always safe.
 
+use firefly_container::Container;
+
 use crate::Bus;
 
 /// One link-time handler-registration thunk, `inventory::submit!`-ted once per
@@ -33,6 +35,23 @@ pub struct HandlerRegistration {
 }
 
 inventory::collect!(HandlerRegistration);
+
+/// One link-time **bean** handler-registration thunk, `inventory::submit!`-ted
+/// once per `#[command_handler]` / `#[query_handler]` method inside a
+/// `#[handlers]` bean impl — the Rust analog of Spring scanning a `@Component`'s
+/// `@CommandHandler` methods.
+///
+/// Unlike [`HandlerRegistration`] (a free `fn(&Bus)`), this resolves the handler
+/// **bean** from the DI container and installs a closure that captures the bean,
+/// so the handler reaches its collaborators through ordinary `#[autowired]`
+/// fields instead of a process-global.
+pub struct BeanHandlerRegistration {
+    /// Resolves the handler bean from `container` and installs its handler on
+    /// `bus`.
+    pub register: fn(&Bus, &Container),
+}
+
+inventory::collect!(BeanHandlerRegistration);
 
 /// Installs every discovered (`inventory`-submitted) command/query handler on
 /// `bus` — the turnkey replacement for hand-calling each generated
@@ -51,4 +70,25 @@ pub fn register_discovered_handlers(bus: &Bus) -> usize {
 #[must_use]
 pub fn discovered_handler_count() -> usize {
     inventory::iter::<HandlerRegistration>.into_iter().count()
+}
+
+/// Installs every discovered **bean** handler on `bus`, resolving each handler
+/// bean from `container` — the turnkey wiring `FireflyApplication` runs for
+/// `#[handlers]` beans. Returns the number registered.
+pub fn register_discovered_handler_beans(bus: &Bus, container: &Container) -> usize {
+    let mut count = 0;
+    for reg in inventory::iter::<BeanHandlerRegistration> {
+        (reg.register)(bus, container);
+        count += 1;
+    }
+    count
+}
+
+/// The number of `#[handlers]`-bean command/query handlers discovered across the
+/// crate graph — for the startup report and tests.
+#[must_use]
+pub fn discovered_handler_bean_count() -> usize {
+    inventory::iter::<BeanHandlerRegistration>
+        .into_iter()
+        .count()
 }

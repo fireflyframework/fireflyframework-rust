@@ -30,18 +30,17 @@
 //! |-------------|-------|------------------|
 //! | [`PlaceOrder`] | `#[derive(Command)]` | `impl Message` (with `#[firefly(validate)]` checks) |
 //! | [`GetOrder`] | `#[derive(Query)]` | `impl Message` (with `cache_ttl`) |
-//! | [`place_order`] | `#[command_handler]` | `register_place_order(bus)` |
-//! | [`get_order`] | `#[query_handler]` | `register_get_order(bus)` |
+//! | `OrderHandlers` | `#[derive(Service)]` + `#[handlers]` | a handler **bean** whose `#[command_handler]` / `#[query_handler]` / `#[scheduled]` methods autowire the `OrderStore` and are drained from the container |
 //! | [`OrderApi`] impl | `#[rest_controller]` | `OrderApi::routes(state) -> axum::Router` |
 //! | [`OrderStore`] | `#[derive(Component)]` | `OrderStore::firefly_register(container)` |
-//! | [`sweep_stale_orders`] | `#[scheduled]` | `schedule_sweep_stale_orders(scheduler)` |
 //!
-//! [`build_router`] is the testable composition root: it resolves the store
-//! from the DI [`Container`], registers the handlers on a [`Bus`], and returns
-//! the macro-generated [`OrderApi`] router — exactly the building blocks
-//! `main()` reuses.
+//! [`build_router`] is the testable composition root: it registers the
+//! `OrderStore` + `OrderHandlers` beans on a DI [`Container`], drains the bean
+//! handlers onto a [`Bus`], and returns the macro-generated [`OrderApi`] router
+//! over the resolved store — exactly the building blocks `main()` reuses. Every
+//! component is a container-managed bean; there is no process-global.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::Json;
@@ -118,20 +117,6 @@ impl OrderStore {
     }
 }
 
-/// The store the `#[command_handler]` / `#[query_handler]` / `#[scheduled]`
-/// free fns operate on. Rust free fns cannot capture wiring state, so the
-/// resolved [`OrderStore`] bean is published here once at startup — the
-/// macros then call straight through it.
-static STORE: OnceLock<Arc<OrderStore>> = OnceLock::new();
-
-/// Returns the wired store, or a fresh empty one if `build_router` has not run
-/// yet (keeps the scheduled task and handlers total).
-fn store() -> Arc<OrderStore> {
-    STORE
-        .get_or_init(|| Arc::new(OrderStore::default()))
-        .clone()
-}
-
 // ===========================================================================
 // CQRS messages — `#[derive(Command)]` / `#[derive(Query)]`.
 // ===========================================================================
@@ -188,39 +173,49 @@ impl From<Order> for OrderView {
 }
 
 // ===========================================================================
-// CQRS handlers — `#[command_handler]` / `#[query_handler]`.
+// Handler bean — a `#[derive(Service)]` whose methods are the CQRS handlers and
+// the `#[scheduled]` task, autowiring the `OrderStore` from the DI container.
 // ===========================================================================
 
-/// Handles [`PlaceOrder`]. `#[command_handler]` generates
-/// `register_place_order(bus)`; dispatching a `PlaceOrder` routes here.
-#[command_handler]
-pub async fn place_order(cmd: PlaceOrder) -> Result<OrderView, CqrsError> {
-    let order = store().insert(cmd.customer, cmd.sku, cmd.quantity);
-    Ok(order.into())
+/// The **handler bean** — Spring's `@Component` carrying the command / query
+/// handlers and the `@Scheduled` task. Its only collaborator, the
+/// [`OrderStore`], is `#[autowired]` from the container, and `#[handlers]`
+/// registers each method on the bus / scheduler — so a handler reaches the store
+/// through `self`, with no process-global.
+#[derive(Service)]
+struct OrderHandlers {
+    /// The orders store every handler operates on (autowired).
+    #[autowired]
+    store: Arc<OrderStore>,
 }
 
-/// Handles [`GetOrder`]. `#[query_handler]` generates `register_get_order(bus)`;
-/// a missing id is a `CqrsError::Handler`, which the controller renders as a
-/// 404 problem.
-#[query_handler]
-pub async fn get_order(q: GetOrder) -> Result<OrderView, CqrsError> {
-    store()
-        .get(&q.id)
-        .map(OrderView::from)
-        .ok_or_else(|| CqrsError::handler(format!("order {} not found", q.id)))
-}
+#[handlers]
+impl OrderHandlers {
+    /// Handles [`PlaceOrder`].
+    #[command_handler]
+    async fn place_order(&self, cmd: PlaceOrder) -> Result<OrderView, CqrsError> {
+        let order = self.store.insert(cmd.customer, cmd.sku, cmd.quantity);
+        Ok(order.into())
+    }
 
-// ===========================================================================
-// Scheduled task — `#[scheduled]`.
-// ===========================================================================
+    /// Handles [`GetOrder`]; a missing id is a `CqrsError::Handler`, which the
+    /// controller renders as a 404 problem.
+    #[query_handler]
+    async fn get_order(&self, q: GetOrder) -> Result<OrderView, CqrsError> {
+        self.store
+            .get(&q.id)
+            .map(OrderView::from)
+            .ok_or_else(|| CqrsError::handler(format!("order {} not found", q.id)))
+    }
 
-/// A housekeeping task. `#[scheduled(fixed_rate = "60s")]` generates
-/// `schedule_sweep_stale_orders(scheduler)`; the framework calls it on a tick.
-/// (Here it just observes the store; a real one would evict stale entries.)
-#[scheduled(fixed_rate = "60s", initial_delay = "5s")]
-pub async fn sweep_stale_orders() -> Result<(), std::io::Error> {
-    let _kept = store().len();
-    Ok(())
+    /// A housekeeping task — `#[scheduled]` on a bean method (Spring's
+    /// `@Scheduled` on a `@Component`). Here it just observes the store; a real
+    /// one would evict stale entries.
+    #[scheduled(fixed_rate = "60s", initial_delay = "5s")]
+    async fn sweep_stale_orders(&self) -> Result<(), std::io::Error> {
+        let _kept = self.store.len();
+        Ok(())
+    }
 }
 
 // ===========================================================================
@@ -234,6 +229,9 @@ pub async fn sweep_stale_orders() -> Result<(), std::io::Error> {
 pub struct OrderApi {
     /// The command/query bus the controller dispatches through.
     pub bus: Arc<Bus>,
+    /// The orders store the reactive read endpoints stream from (resolved from
+    /// the DI container in [`build_router`]).
+    pub store: Arc<OrderStore>,
 }
 
 /// `#[rest_controller(path = "...")]` turns this `impl` block into a generated
@@ -277,10 +275,10 @@ impl OrderApi {
     /// return).
     #[get("/:id/reactive")]
     async fn fetch_reactive(
-        State(_api): State<OrderApi>,
+        State(api): State<OrderApi>,
         Path(id): Path<String>,
     ) -> MonoJson<OrderView> {
-        match store().get(&id) {
+        match api.store.get(&id) {
             Some(order) => MonoJson(Mono::just(OrderView::from(order))),
             None => MonoJson(Mono::empty()),
         }
@@ -290,18 +288,18 @@ impl OrderApi {
     /// `application/x-ndjson` stream from a `Flux<OrderView>` (Spring WebFlux's
     /// streaming `Flux<T>` return).
     #[get("/stream")]
-    async fn stream(State(_api): State<OrderApi>) -> NdJson<OrderView> {
+    async fn stream(State(api): State<OrderApi>) -> NdJson<OrderView> {
         NdJson(Flux::from_iter(
-            store().all().into_iter().map(OrderView::from),
+            api.store.all().into_iter().map(OrderView::from),
         ))
     }
 
     /// `GET /api/v1/orders/live` — the same orders as a `text/event-stream` of
     /// Server-Sent Events from a `Flux<OrderView>`.
     #[get("/live")]
-    async fn live(State(_api): State<OrderApi>) -> Sse<OrderView> {
+    async fn live(State(api): State<OrderApi>) -> Sse<OrderView> {
         Sse(Flux::from_iter(
-            store().all().into_iter().map(OrderView::from),
+            api.store.all().into_iter().map(OrderView::from),
         ))
     }
 }
@@ -312,21 +310,22 @@ impl OrderApi {
 
 /// Wires the service end to end and returns the macro-generated router.
 ///
-/// 1. resolve the [`OrderStore`] bean from the DI [`Container`] (its
-///    `firefly_register` was generated by `#[derive(Component)]`),
-/// 2. publish it for the free-fn handlers / scheduled task,
-/// 3. install a [`QueryCache`] and register the generated handlers on a
-///    [`Bus`] (`register_place_order` / `register_get_order`),
-/// 4. return [`OrderApi::routes`] — the router `#[rest_controller]` generated.
+/// 1. register the [`OrderStore`] + [`OrderHandlers`] beans on a DI
+///    [`Container`] (their `firefly_register`s are generated by
+///    `#[derive(Component)]` / `#[derive(Service)]`),
+/// 2. install a [`QueryCache`] and drain the **bean** command/query handlers
+///    onto a [`Bus`] (the framework resolves `OrderHandlers` from the container
+///    and registers its `#[command_handler]` / `#[query_handler]` methods),
+/// 3. return [`OrderApi::routes`] over the bus + the resolved store.
 ///
-/// The same building blocks back `main()`; tests call this directly.
+/// The same building blocks back `main()`; tests call this directly. Every
+/// component is a container-managed bean — no process-global.
 pub fn build_router() -> axum::Router {
     let container = Container::new();
-    firefly::register_all!(&container, [OrderStore]);
+    firefly::register_all!(&container, [OrderStore, OrderHandlers]);
     let store = container
         .resolve::<OrderStore>()
         .expect("OrderStore bean resolves");
-    let _ = STORE.set(store);
 
     let bus = Arc::new(Bus::new());
     // The `#[firefly(validate)]` declarations on `PlaceOrder` run here; the
@@ -334,16 +333,19 @@ pub fn build_router() -> axum::Router {
     bus.use_middleware(firefly::cqrs::ValidationMiddleware::new());
     let cache = firefly::cqrs::QueryCache::new();
     bus.use_middleware(cache.middleware());
-    register_place_order(&bus);
-    register_get_order(&bus);
+    firefly::cqrs::register_discovered_handler_beans(&bus, &container);
 
-    OrderApi::routes(OrderApi { bus })
+    OrderApi::routes(OrderApi { bus, store })
 }
 
-/// Registers the [`sweep_stale_orders`] task on a fresh scheduler and returns
-/// it — `main()` starts it; tests assert it registered.
+/// Registers the bean `#[scheduled]` task on a fresh scheduler and returns it —
+/// `main()` starts it; tests assert it registered. The framework resolves
+/// [`OrderHandlers`] from the container and schedules its `sweep_stale_orders`
+/// method.
 pub fn build_scheduler() -> Arc<Scheduler> {
+    let container = Container::new();
+    firefly::register_all!(&container, [OrderStore, OrderHandlers]);
     let scheduler = Arc::new(Scheduler::new());
-    schedule_sweep_stale_orders(&scheduler);
+    firefly::scheduling::register_discovered_scheduled_beans(&scheduler, &container);
     scheduler
 }

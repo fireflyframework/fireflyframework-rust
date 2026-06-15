@@ -2,6 +2,42 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.7 — 2026-06-15
+
+The **everything-under-DI milestone**. CQRS handlers and EDA listeners can now be
+methods on a `@Component`-style bean that autowires its collaborators — the last
+piece that lets a service wire *every* component through the DI container, exactly
+like Spring Boot, with no process-globals.
+
+### Added
+
+- **`#[handlers]` — bean-based CQRS / EDA handlers.** Apply it to the `impl`
+  block of a registered bean (e.g. a `#[derive(Service)]` whose collaborators are
+  `#[autowired]`); each `#[command_handler]` / `#[query_handler]` (a CQRS message
+  handler) or `#[event_listener("topic")]` (an EDA listener) method takes `&self`
+  plus one message / event. `FireflyApplication` resolves the bean from the
+  container and installs each handler, so a handler reaches its collaborators
+  through ordinary `#[autowired]` fields — the Rust analog of Spring scanning a
+  `@Component`'s `@CommandHandler` / `@EventListener` methods.
+- **Bean handler/listener discovery** — `firefly_cqrs::{BeanHandlerRegistration,
+  register_discovered_handler_beans}` and `firefly_eda::{BeanListenerRegistration,
+  subscribe_discovered_listener_beans}`, drained by `FireflyApplication` after the
+  container is scanned (alongside the existing free-`fn` discovery). The startup
+  report counts bean handlers / listeners too.
+
+### Changed
+
+- **Lumen is now fully DI-wired.** The CQRS handlers are a `WalletHandlers`
+  `#[derive(Service)]` bean and the read-model projection is a `WalletProjection`
+  `#[derive(Service)]` bean, each `#[autowired]`-ing the `Ledger` + `ReadModel`.
+  The `OnceLock` process-globals (`commands::bind` / `effective_read_model` /
+  `bind_projection`) and the free-`fn` handlers / projection are gone, and the
+  `ledger` `#[bean]` is a pure factory. The HTTP tests boot **one** app context
+  per test (Spring Boot's `@SpringBootTest` model) and drive every request against
+  it, so one container's singletons stay consistent.
+- The free-`fn` `#[command_handler]` / `#[query_handler]` / `#[event_listener]`
+  macros are unchanged and still supported for simple, collaborator-free handlers.
+
 ## v26.6.6 — 2026-06-15
 
 The **turnkey-bootstrap & auto-generated-API-docs milestone**. A service now
