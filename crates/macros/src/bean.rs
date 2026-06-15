@@ -47,6 +47,10 @@ use crate::common::facade_from_override;
 struct BeanMethod {
     ident: syn::Ident,
     return_ty: syn::Type,
+    /// `true` when the factory method is `async fn` — registered as an async
+    /// bean (awaited during `Container::init_async_beans`) rather than a
+    /// synchronous factory.
+    is_async: bool,
     /// Resolve expressions for each method argument (constructor injection).
     arg_resolvers: Vec<TokenStream>,
     /// Short type names of each `Arc<Dep>` argument, for the admin dependency
@@ -149,6 +153,7 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
         methods.push(BeanMethod {
             ident: method.sig.ident.clone(),
             return_ty,
+            is_async: method.sig.asyncness.is_some(),
             arg_resolvers,
             dep_names,
             args: bean_args,
@@ -180,23 +185,52 @@ pub(crate) fn bean_impl(args: TokenStream, item: ItemImpl) -> syn::Result<TokenS
         let registrar_ident = format_ident!("__firefly_register_bean_{}", mident);
 
         // The raw registration body (no condition checks — those are evaluated
-        // by `Container::scan()` via the inventory thunk's `conditions`).
-        let registrar_fn = quote! {
-            #[doc(hidden)]
-            #[allow(non_snake_case)]
-            pub fn #registrar_ident(__container: &#container::Container) {
-                __container.register_factory_with::<#return_ty, _>(
-                    #scope_tokens,
-                    #name,
-                    #primary,
-                    #order,
-                    |__c: &#container::Container| {
-                        let __cfg = #container::Container::resolve::<#self_ty>(__c)?;
-                        ::core::result::Result::Ok(<#self_ty>::#mident(&__cfg, #(#resolvers),*))
-                    },
-                );
-                __container.set_stereotype::<#return_ty>("bean");
-                __container.set_dependencies::<#return_ty>(&[#(#dep_names),*]);
+        // by `Container::scan()` via the inventory thunk's `conditions`). An
+        // `async fn` factory registers an async bean (awaited as a batch by
+        // `Container::init_async_beans` after the scan); a plain `fn` registers a
+        // synchronous factory resolved on demand.
+        let registrar_fn = if m.is_async {
+            quote! {
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub fn #registrar_ident(__container: &#container::Container) {
+                    // The stereotype + dependency labels are recorded by
+                    // `register_async_factory` once the bean is built, so they
+                    // are not set here (the bean does not exist yet).
+                    __container.register_async_factory::<#return_ty, _, _>(
+                        #scope_tokens,
+                        #name,
+                        #primary,
+                        #order,
+                        &[#(#dep_names),*],
+                        move |__carc: ::std::sync::Arc<#container::Container>| async move {
+                            let __c: &#container::Container = &*__carc;
+                            let __cfg = #container::Container::resolve::<#self_ty>(__c)?;
+                            ::core::result::Result::Ok(
+                                <#self_ty>::#mident(&__cfg, #(#resolvers),*).await
+                            )
+                        },
+                    );
+                }
+            }
+        } else {
+            quote! {
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub fn #registrar_ident(__container: &#container::Container) {
+                    __container.register_factory_with::<#return_ty, _>(
+                        #scope_tokens,
+                        #name,
+                        #primary,
+                        #order,
+                        |__c: &#container::Container| {
+                            let __cfg = #container::Container::resolve::<#self_ty>(__c)?;
+                            ::core::result::Result::Ok(<#self_ty>::#mident(&__cfg, #(#resolvers),*))
+                        },
+                    );
+                    __container.set_stereotype::<#return_ty>("bean");
+                    __container.set_dependencies::<#return_ty>(&[#(#dep_names),*]);
+                }
             }
         };
         registrar_fns.push(registrar_fn);

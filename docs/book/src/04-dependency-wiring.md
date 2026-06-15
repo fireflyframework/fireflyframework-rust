@@ -277,7 +277,14 @@ let api = c.resolve::<WalletApi>().expect("scan registered the controller");
 > every stereotype-derived type in the linked crate graph and register it,
 > subject to its conditions and the active profiles. Because Rust has no runtime
 > reflection, discovery is link-time (via `inventory`): a bean is discoverable
-> exactly when its crate is compiled into the binary. The one Rust-specific note:
+> exactly when its crate's registrations are **linked into the binary**. For a
+> crate the binary actually names (a single-crate app, or a library whose types
+> it `use`s), that is automatic. But a *layer* crate the binary only depends on
+> transitively — e.g. a `-models` or `-core` crate in a multi-crate service whose
+> beans are never named directly — can be **dead-stripped** by the linker, beans
+> and all. Force-link those with [`firefly::link!`](./22-layered-microservices.md)
+> at the binary's crate root (`firefly::link!(my_core, my_models);`) and guard the
+> result with `firefly::assert_discovered(...)`. The other Rust-specific note:
 > generic types can't be inventoried (the monomorphization is chosen at the use
 > site), so you register those with the explicit `register_all!` fallback below.
 

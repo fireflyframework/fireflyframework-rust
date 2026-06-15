@@ -222,6 +222,14 @@ impl FireflyApplication {
         let container = Arc::new(Container::new());
         web.register_beans(&container);
         container.scan();
+        // Await every `async fn` `#[bean]` factory (DB pools, broker dials, …)
+        // now that the synchronous scan has registered every bean, so async
+        // beans are live before the controllers / handlers / eager singletons
+        // below resolve them. Fail-fast: a construction error aborts startup.
+        container
+            .init_async_beans()
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
 
         let bus = Arc::clone(&web.bus);
         let broker = Arc::clone(&web.broker);

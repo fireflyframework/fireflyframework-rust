@@ -81,6 +81,9 @@ pub enum Commands {
     Db(DbCommand),
     /// Export an OpenAPI 3.1 document for the current project.
     Openapi(OpenapiArgs),
+    /// Generate a typed Rust client from an OpenAPI document.
+    #[command(name = "openapi-client")]
+    OpenapiClient(OpenapiClientArgs),
     /// List HTTP route mappings of a running app (remote; --url -> /actuator/mappings).
     Routes(IntrospectArgs),
     /// List container beans (no Rust analog; see --help for details).
@@ -340,6 +343,20 @@ pub struct OpenapiArgs {
     pub output: Option<PathBuf>,
 }
 
+/// Arguments for `firefly openapi-client` — generate a typed Rust client.
+#[derive(Debug, clap::Args)]
+pub struct OpenapiClientArgs {
+    /// Path to the OpenAPI 3.x document (JSON).
+    #[arg(long)]
+    pub spec: PathBuf,
+    /// Write the generated client to a file instead of stdout.
+    #[arg(long, short = 'o')]
+    pub output: Option<PathBuf>,
+    /// The generated client struct's name.
+    #[arg(long, default_value = "ApiClient")]
+    pub client_name: String,
+}
+
 /// Arguments shared by the remote introspection commands
 /// (`routes`/`beans`/`conditions`/`env`/`health`).
 #[derive(Debug, clap::Args)]
@@ -404,6 +421,7 @@ pub fn run(cli: Cli) -> i32 {
         Commands::Actuator(cmd) => cmd_actuator(cmd),
         Commands::Db(cmd) => cmd_db(cmd),
         Commands::Openapi(args) => cmd_openapi(args),
+        Commands::OpenapiClient(args) => cmd_openapi_client(args),
         Commands::Routes(args) => cmd_introspect("routes", "mappings", args),
         Commands::Beans(args) => cmd_no_analog("beans", args),
         Commands::Conditions(args) => cmd_no_analog("conditions", args),
@@ -698,6 +716,33 @@ fn cmd_openapi(args: OpenapiArgs) -> Result<(), CliError> {
             println!("\u{2713} Wrote OpenAPI spec to {}", path.display());
         }
         None => println!("{text}"),
+    }
+    Ok(())
+}
+
+/// Generate a typed Rust client from an OpenAPI document (`firefly
+/// openapi-client`). Reads the spec JSON, walks it, and emits a self-contained
+/// client over `firefly_client::RestClient`.
+fn cmd_openapi_client(args: OpenapiClientArgs) -> Result<(), CliError> {
+    let text = std::fs::read_to_string(&args.spec).map_err(|source| CliError::Io {
+        path: args.spec.clone(),
+        source,
+    })?;
+    let spec: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| CliError::Template(format!("openapi-client: invalid JSON spec: {e}")))?;
+    let opts = crate::openapi_client::ClientGenOptions {
+        client_name: args.client_name,
+    };
+    let client = crate::openapi_client::generate_client(&spec, &opts)?;
+    match args.output {
+        Some(path) => {
+            std::fs::write(&path, &client).map_err(|source| CliError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            println!("\u{2713} Wrote generated client to {}", path.display());
+        }
+        None => println!("{client}"),
     }
     Ok(())
 }

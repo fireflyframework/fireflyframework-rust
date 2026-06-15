@@ -2,6 +2,55 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.8 — 2026-06-15
+
+The **layered-microservices milestone**. Firefly can now be built the way a
+firefly-oss core service is — split into `-interfaces` / `-models` / `-core` /
+`-web` / `-sdk` crates, one public type per file (Java-style) — with the
+framework gaining the pieces that real layered services need: async beans,
+unbounded repository keys, and an OpenAPI→client generator.
+
+### Added
+
+- **Async beans (`async fn #[bean]`).** A `#[bean]` factory may now be `async`:
+  the container parks it during the synchronous `scan()` and `await`s it during
+  the new `Container::init_async_beans()` (run by `FireflyApplication` right
+  after the scan), then publishes the result as a ready singleton. Async beans
+  are sequenced by `#[bean(order = N)]`, so one may autowire another initialised
+  earlier. This is Spring Boot's "a `@Bean` does I/O at context-refresh time",
+  with the I/O `await`ed rather than blocking a thread — the idiomatic way to
+  wire a connection pool, broker dial, or warmed cache.
+- **Unbounded repository keys (`SqlKey`).** `SqlxReactiveRepository<T, ID>` /
+  `SqlxRepository<T, K>` accept any `serde::Serialize` key through the new
+  blanket-implemented `SqlKey` trait, so `Uuid`, `i64`, `String`, an enum, or a
+  composite-key struct all work as the `ID` — matching the unbounded `ID` of a
+  Spring Data `CrudRepository<T, ID>` (the MongoDB adapter already accepted any
+  `Serialize` key; the two adapters are now consistent).
+- **`firefly openapi-client`.** A new CLI subcommand generates a self-contained
+  typed Rust client from an OpenAPI 3.x document — a model `struct`/`enum` per
+  `components.schemas` entry and one `async fn` per operation over
+  `firefly_client::RestClient`, with typed path/query parameters and JSON
+  bodies. The Rust analog of firefly-oss's OpenAPI-generated WebClient SDK.
+- **`#[derive(Schema)]` for enums.** Field-less enums now emit a JSON Schema
+  `string` enumeration into the OpenAPI document (honouring serde `rename_all` /
+  per-variant `rename`), so a DTO enum field is no longer an unresolved `$ref`.
+- **`lumen-ledger` sample.** A complete layered wallet/ledger microservice
+  (`samples/lumen-ledger/`): five crates, one public type per file under
+  `<domain>/v1` paths, a real sqlx repository published as an async bean
+  (in-memory SQLite by default, `DATABASE_URL=postgres://…` for PostgreSQL),
+  `@Service`/`@Mapper`/`@Component`/`@RestController`/`@Configuration` stereotypes,
+  a typed SDK, and a cross-crate `firefly::link!` integration test.
+- **Book.** New "Layered Microservices" chapter; the dependency-wiring chapter
+  now explains the `firefly::link!` dead-strip rule, and the DI chapter documents
+  async beans.
+
+### Fixed
+
+- **`#[derive(Validate)]` string constraints.** The derive emitted
+  `::core::format!`, which does not exist (`format!` needs `alloc`/`std`), so any
+  `#[validate(not_empty | length | email | …)]` failed to compile. Now emits
+  `::std::format!`.
+
 ## v26.6.7 — 2026-06-15
 
 The **everything-under-DI milestone**. CQRS handlers and EDA listeners can now be

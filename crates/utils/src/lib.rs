@@ -73,13 +73,13 @@ pub use template::{render_html, render_text, TemplateError};
 pub use tryfn::{try_of, try_run, TryError};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.7";
+pub const VERSION: &str = "26.6.8";
 
 #[cfg(test)]
 mod tests {
     /// The version stamp matches the workspace CalVer release.
     #[test]
     fn version_stamp() {
-        assert_eq!(super::VERSION, "26.6.7");
+        assert_eq!(super::VERSION, "26.6.8");
     }
 }

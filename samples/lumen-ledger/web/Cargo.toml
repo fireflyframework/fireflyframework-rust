@@ -1,0 +1,26 @@
+[package]
+name = "firefly-sample-lumen-ledger-web"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Lumen Ledger — @RestController + @SpringBootApplication entrypoint (firefly-oss -web module)"
+
+[[bin]]
+name = "lumen-ledger"
+path = "src/main.rs"
+
+[dependencies]
+firefly = { workspace = true, features = ["admin", "data-sqlx"] }
+firefly-sample-lumen-ledger-interfaces = { path = "../interfaces" }
+firefly-sample-lumen-ledger-models = { path = "../models" }
+firefly-sample-lumen-ledger-core = { path = "../core" }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+serde_json = { workspace = true }

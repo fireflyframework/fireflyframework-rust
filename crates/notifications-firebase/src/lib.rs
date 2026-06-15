@@ -93,7 +93,7 @@ pub use provider::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.7";
+pub const VERSION: &str = "26.6.8";
 
 /// Config carries the wiring needed by the adapter.
 ///
