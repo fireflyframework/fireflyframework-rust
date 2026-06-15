@@ -111,7 +111,7 @@ are exported for cross-crate agreement.
 ### Version
 
 `firefly_kernel::VERSION` is the released framework version
-(`"26.7.0"` at the time of writing — CalVer expressed as valid semver)
+(`"26.6.6"` at the time of writing — CalVer expressed as valid semver)
 — embedded in the actuator `/version` payload and the startup banner.
 
 ## Domain building blocks and structured context

@@ -127,4 +127,4 @@ pub use scheduler::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.7.0";
+pub const VERSION: &str = "26.6.6";

@@ -26,7 +26,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! firefly = "26.7"
+//! firefly = "26.6"
 //! ```
 //!
 //! A service boots from a **single line** over [`FireflyApplication`] — the Rust
@@ -67,7 +67,7 @@
 //! third-party drivers). Heavy adapters are opt-in cargo features:
 //!
 //! ```toml
-//! firefly = { version = "26.7", features = ["data-sqlx", "eda-kafka"] }
+//! firefly = { version = "26.6", features = ["data-sqlx", "eda-kafka"] }
 //! ```
 //!
 //! | Feature | Re-exports under | Pulls in |

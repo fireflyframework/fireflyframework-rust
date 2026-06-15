@@ -210,7 +210,7 @@ impl notifications::Channel for Channel {
 }
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.7.0";
+pub const VERSION: &str = "26.6.6";
 
 // Compile-time port assertion — the analog of Go's
 // `var _ notifications.Channel = (*Channel)(nil)`.
@@ -358,6 +358,6 @@ mod tests {
 
     #[test]
     fn version_stamp() {
-        assert_eq!(VERSION, "26.7.0");
+        assert_eq!(VERSION, "26.6.6");
     }
 }

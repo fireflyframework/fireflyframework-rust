@@ -109,7 +109,7 @@ pub use value::resolve_value;
 pub use inventory;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.7.0";
+pub const VERSION: &str = "26.6.6";
 
 /// Type-erased boxed `Arc<T>` — a sized fat pointer wrapped in `Box<dyn Any>`
 /// so resolution can return `Arc<T>` for both sized and `?Sized` (trait-object)
