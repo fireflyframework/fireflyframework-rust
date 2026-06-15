@@ -62,6 +62,7 @@ pub mod generate;
 pub mod license;
 pub mod naming;
 pub mod openapi;
+pub mod openapi_client;
 pub mod project;
 pub mod run;
 pub mod sbom;
@@ -72,4 +73,4 @@ pub use error::CliError;
 
 /// Framework version stamp (kept for backward compatibility with the prior
 /// placeholder crate; equals the workspace version).
-pub const VERSION: &str = "26.6.7";
+pub const VERSION: &str = "26.6.8";

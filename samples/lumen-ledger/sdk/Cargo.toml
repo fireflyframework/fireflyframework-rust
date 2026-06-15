@@ -1,0 +1,20 @@
+[package]
+name = "firefly-sample-lumen-ledger-sdk"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Lumen Ledger — typed outbound client over the wallet API (firefly-oss -sdk module)"
+
+[lib]
+name = "lumen_ledger_sdk"
+path = "src/lib.rs"
+
+[dependencies]
+firefly-client = { workspace = true }
+firefly-sample-lumen-ledger-interfaces = { path = "../interfaces" }
+http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

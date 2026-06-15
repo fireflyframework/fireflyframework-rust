@@ -58,6 +58,30 @@ use std::collections::BTreeMap;
 
 use crate::binding::timestamp_value;
 use crate::db::{Backend, Db};
+
+/// A type usable as a repository primary key.
+///
+/// Blanket-implemented for **every** `serde::Serialize` type, so the `ID`
+/// parameter of [`SqlxReactiveRepository`] / [`SqlxRepository`] is effectively
+/// unbounded — `Uuid`, `i64`, `String`, an enum, or a composite-key struct all
+/// qualify, exactly like the unbounded `ID` generic of a Spring Data
+/// `CrudRepository<T, ID>`. The key is bound into SQL as its serde-JSON
+/// representation (a `Uuid` binds as its canonical string, an integer as a
+/// number, a struct as a JSON object), so it matches the column the
+/// [`TableConfig`] designates as the id.
+pub trait SqlKey: Send + Sync + 'static {
+    /// This key's SQL bind value (its serde-JSON form).
+    fn to_key_value(&self) -> Value;
+}
+
+impl<T> SqlKey for T
+where
+    T: serde::Serialize + Send + Sync + 'static,
+{
+    fn to_key_value(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
 use crate::row::{AnyRow, SqlxRowMapper};
 use crate::sql;
 use crate::writer::{ColumnValue, RowWriter};
@@ -186,7 +210,7 @@ impl<T, ID> Clone for SqlxReactiveRepository<T, ID> {
 impl<T, ID> SqlxReactiveRepository<T, ID>
 where
     T: Send + Sync + 'static,
-    ID: Into<Value> + Clone + Send + Sync + 'static,
+    ID: SqlKey + Clone,
 {
     /// Builds a repository over `db`, a [`TableConfig`], a row `mapper`, and
     /// a `writer`. No auditing or soft-delete is applied; chain
@@ -294,7 +318,7 @@ where
     /// persisted row after an `UPSERT` (no `RETURNING`, for MySQL parity).
     fn read_by_id_mono(&self, id: ID) -> Mono<T> {
         let inner = Arc::clone(&self.inner);
-        let id_value: Value = id.into();
+        let id_value: Value = id.to_key_value();
         Mono::from_result_future(async move { fetch_one_by_id(inner, id_value).await })
             .on_error_resume(|e| {
                 if e.code == EMPTY_CODE {
@@ -817,7 +841,7 @@ async fn do_upsert<T: Send + 'static>(
 impl<T, ID> ReactiveCrudRepository<T, ID> for SqlxReactiveRepository<T, ID>
 where
     T: Send + Sync + 'static,
-    ID: Into<Value> + Clone + Send + Sync + 'static,
+    ID: SqlKey + Clone,
 {
     fn find_all(&self) -> Flux<T> {
         let dialect = self.inner.dialect();
@@ -837,7 +861,7 @@ where
         let dialect = self.inner.dialect();
         // Build an IN predicate over the id column via the Filter DSL so the
         // dialect handles array-vs-expanded binding for us.
-        let id_values: Vec<Value> = ids.into_iter().map(Into::into).collect();
+        let id_values: Vec<Value> = ids.iter().map(SqlKey::to_key_value).collect();
         let mut filter = Filter::new().add(firefly_data::Predicate::new(
             self.inner.config.id_column.clone(),
             firefly_data::Op::In,
@@ -861,7 +885,7 @@ where
 
     fn exists_by_id(&self, id: ID) -> Mono<bool> {
         let inner = Arc::clone(&self.inner);
-        let id_value: Value = id.into();
+        let id_value: Value = id.to_key_value();
         Mono::from_result_future(async move {
             let dialect = inner.dialect();
             let mut sql = sql::exists_by_id(&inner.config, dialect.as_ref());
@@ -905,7 +929,7 @@ where
 
     fn delete_by_id(&self, id: ID) -> Mono<()> {
         let inner = Arc::clone(&self.inner);
-        let id_value: Value = id.into();
+        let id_value: Value = id.to_key_value();
         Mono::from_result_future(async move {
             let dialect = inner.dialect();
             let (sql, args) = match &inner.soft_delete {
@@ -969,7 +993,7 @@ where
 impl<T, ID> SqlxReactiveRepository<T, ID>
 where
     T: Send + Sync + 'static,
-    ID: Into<Value> + Clone + Send + Sync + 'static,
+    ID: SqlKey + Clone,
 {
     /// `read_by_id_mono` keyed off an already-lowered id [`Value`] — used
     /// internally by `save` / `save_all` to re-read after an upsert.
@@ -1006,7 +1030,7 @@ fn map_query_err(msg: impl std::fmt::Display) -> FireflyError {
 impl<T, ID> SqlxReactiveRepository<T, ID>
 where
     T: Send + Sync + 'static,
-    ID: Into<Value> + Clone + Send + Sync + 'static,
+    ID: SqlKey + Clone,
 {
     /// Executes a Spring-Data **derived query method** end-to-end against
     /// the backend, the Rust analogue of pyfly's `RepositoryBeanPostProcessor`
@@ -1346,7 +1370,7 @@ fn id_value_from_cols(config: &TableConfig, cols: &[ColumnValue]) -> Result<Valu
 impl<T, ID> ReactiveSpecificationRepository<T> for SqlxReactiveRepository<T, ID>
 where
     T: Send + Sync + 'static,
-    ID: Into<Value> + Clone + Send + Sync + 'static,
+    ID: SqlKey + Clone,
 {
     fn find_by_spec(&self, spec: Specification) -> Flux<T> {
         let dialect = self.inner.dialect();
@@ -1403,7 +1427,7 @@ impl<T, K> Clone for SqlxRepository<T, K> {
 impl<T, K> SqlxRepository<T, K>
 where
     T: Send + Sync + 'static,
-    K: Into<Value> + Clone + Send + Sync + 'static,
+    K: SqlKey + Clone,
 {
     /// Builds a blocking repository over `db`, a [`TableConfig`], a row
     /// `mapper`, and a `writer`.
@@ -1482,11 +1506,11 @@ where
 impl<T, K> Repository<T, K> for SqlxRepository<T, K>
 where
     T: Send + Sync + 'static,
-    K: Into<Value> + Clone + Send + Sync + 'static,
+    K: SqlKey + Clone,
 {
     async fn find_by_id(&self, id: &K) -> Result<T, DataError> {
         let inner = Arc::clone(&self.inner);
-        let id_value: Value = id.clone().into();
+        let id_value: Value = id.to_key_value();
         match fetch_one_by_id(inner, id_value).await {
             Ok(v) => Ok(v),
             Err(e) if e.code == EMPTY_CODE => Err(DataError::NotFound),
@@ -1542,7 +1566,7 @@ where
 
     async fn delete(&self, id: &K) -> Result<(), DataError> {
         let inner = Arc::clone(&self.inner);
-        let id_value: Value = id.clone().into();
+        let id_value: Value = id.to_key_value();
         let dialect = inner.dialect();
         let (sql, args) = match &inner.soft_delete {
             Some(policy) => {

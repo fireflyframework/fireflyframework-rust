@@ -1,0 +1,23 @@
+[package]
+name = "firefly-sample-lumen-ledger-core"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Lumen Ledger — @Service business logic, @Mapper, @Component (firefly-oss -core module)"
+
+[lib]
+name = "lumen_ledger_core"
+path = "src/lib.rs"
+
+[dependencies]
+firefly = { workspace = true }
+firefly-sample-lumen-ledger-interfaces = { path = "../interfaces" }
+firefly-sample-lumen-ledger-models = { path = "../models" }
+serde = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

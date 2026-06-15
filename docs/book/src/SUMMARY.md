@@ -32,6 +32,7 @@
 - [Scheduling & Notifications](./16-scheduling-notifications.md)
 - [Caching](./17-caching.md)
 - [Declarative Services with Macros](./21-declarative-macros.md)
+- [Layered Microservices](./22-layered-microservices.md)
 
 # Shipping
 

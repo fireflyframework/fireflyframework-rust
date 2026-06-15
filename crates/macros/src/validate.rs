@@ -281,7 +281,7 @@ fn emit_check(
         Constraint::Email => {
             let body = push(
                 "email",
-                quote!(::core::format!("`{}` is not a valid email address", #fname)),
+                quote!(::std::format!("`{}` is not a valid email address", #fname)),
             );
             quote! {
                 if #validators::validate_email(::core::convert::AsRef::<str>::as_ref(&self.#fident)).is_err() {
@@ -292,7 +292,7 @@ fn emit_check(
         Constraint::Url => {
             let body = push(
                 "url",
-                quote!(::core::format!("`{}` is not a valid URL", #fname)),
+                quote!(::std::format!("`{}` is not a valid URL", #fname)),
             );
             // No standalone URL predicate in the validators crate; apply a
             // minimal scheme+host check inline (http/https with a non-empty
@@ -319,7 +319,7 @@ fn emit_check(
         Constraint::NotEmpty => {
             let body = push(
                 "not_empty",
-                quote!(::core::format!("`{}` must not be empty", #fname)),
+                quote!(::std::format!("`{}` must not be empty", #fname)),
             );
             quote! {
                 if ::core::convert::AsRef::<str>::as_ref(&self.#fident).trim().is_empty() {
@@ -332,7 +332,7 @@ fn emit_check(
             if let Some(min) = min {
                 let body = push(
                     "length",
-                    quote!(::core::format!("`{}` must be at least {} characters", #fname, #min)),
+                    quote!(::std::format!("`{}` must be at least {} characters", #fname, #min)),
                 );
                 clauses.push(quote! {
                     if __len < #min { #body }
@@ -341,7 +341,7 @@ fn emit_check(
             if let Some(max) = max {
                 let body = push(
                     "length",
-                    quote!(::core::format!("`{}` must be at most {} characters", #fname, #max)),
+                    quote!(::std::format!("`{}` must be at most {} characters", #fname, #max)),
                 );
                 clauses.push(quote! {
                     if __len > #max { #body }
@@ -360,7 +360,7 @@ fn emit_check(
             if let Some(min) = min {
                 let body = push(
                     "range",
-                    quote!(::core::format!("`{}` must be at least {}", #fname, #min)),
+                    quote!(::std::format!("`{}` must be at least {}", #fname, #min)),
                 );
                 clauses.push(quote! {
                     if self.#fident < #min { #body }
@@ -369,7 +369,7 @@ fn emit_check(
             if let Some(max) = max {
                 let body = push(
                     "range",
-                    quote!(::core::format!("`{}` must be at most {}", #fname, #max)),
+                    quote!(::std::format!("`{}` must be at most {}", #fname, #max)),
                 );
                 clauses.push(quote! {
                     if self.#fident > #max { #body }
@@ -380,7 +380,7 @@ fn emit_check(
         Constraint::Pattern(re) => {
             let body = push(
                 "pattern",
-                quote!(::core::format!("`{}` does not match the required pattern", #fname)),
+                quote!(::std::format!("`{}` does not match the required pattern", #fname)),
             );
             // Compile the regex once per check site with a thread-safe
             // `LazyLock`, resolved through the validators crate's re-exported

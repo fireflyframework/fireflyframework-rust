@@ -86,6 +86,8 @@ mod value;
 use std::any::{type_name, Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 use std::time::Instant;
 
@@ -109,7 +111,7 @@ pub use value::resolve_value;
 pub use inventory;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.7";
+pub const VERSION: &str = "26.6.8";
 
 /// Type-erased boxed `Arc<T>` — a sized fat pointer wrapped in `Box<dyn Any>`
 /// so resolution can return `Arc<T>` for both sized and `?Sized` (trait-object)
@@ -120,6 +122,20 @@ type ErasedArc = Box<dyn Any + Send + Sync>;
 /// Converts a registration's stored [`SharedInstance`] into the concrete `Arc<T>`
 /// expected under a particular query [`TypeId`], boxed as an [`ErasedArc`].
 type Caster = Box<dyn Fn(SharedInstance) -> Option<ErasedArc> + Send + Sync>;
+
+/// A boxed **async bean initializer**. Registered during [`Container::scan`] by
+/// an `async fn` `#[bean]` factory and awaited once — as a batch — by
+/// [`Container::init_async_beans`] after the synchronous scan completes. It
+/// receives the shared container so the factory can resolve its (already
+/// scanned, possibly already async-initialized) collaborators, builds the bean
+/// asynchronously (a DB pool, an HTTP client, a warmed cache, …), and installs
+/// it as a ready singleton. This is the Rust analog of a Spring bean whose
+/// `@Bean` factory performs blocking I/O at context-refresh time — here the I/O
+/// is `await`ed instead of blocking a thread.
+type AsyncInit = Box<
+    dyn FnOnce(Arc<Container>) -> Pin<Box<dyn Future<Output = Result<(), ContainerError>> + Send>>
+        + Send,
+>;
 
 /// One entry under a query type id: a shared registration plus the caster that
 /// views its instance as the queried type.
@@ -162,6 +178,17 @@ pub struct Container {
     /// closures (which receive `&Container`) build a [`Provider<T>`], which
     /// needs an `Arc<Container>`.
     me: OnceLock<Weak<Container>>,
+    /// Pending **async bean** initializers (`async fn` `#[bean]` factories),
+    /// registered during [`scan`](Container::scan) and awaited as a batch by
+    /// [`init_async_beans`](Container::init_async_beans) once the synchronous
+    /// scan has registered every bean. Each carries its `#[bean(order = …)]` so
+    /// the batch runs in precedence order (lower first), letting one async bean
+    /// depend on another initialized earlier.
+    ///
+    /// A `Mutex` (not an `RwLock`) because an [`AsyncInit`] closure is `Send` but
+    /// not `Sync` (it owns the `FnOnce` factory): `Mutex<T>` is `Sync` whenever
+    /// `T: Send`, which keeps `Container: Sync`.
+    async_inits: std::sync::Mutex<Vec<(i32, AsyncInit)>>,
 }
 
 impl Container {
@@ -417,6 +444,93 @@ impl Container {
             Ok(Arc::new(value) as SharedInstance)
         });
         self.install::<T>(ScopeSpec::Builtin(scope), name, primary, order, erased);
+    }
+
+    /// Install an already-constructed `Arc<T>` as a ready singleton under
+    /// `TypeId::of::<T>()` and `name`, pre-caching the instance so the first
+    /// `resolve` returns it without running a factory.
+    ///
+    /// Like [`register_arc`](Container::register_arc) but carries the
+    /// `scope` / `primary` / `order` flags, so it participates in
+    /// multi-candidate disambiguation exactly like a factory bean. Used by
+    /// [`register_async_factory`](Container::register_async_factory) to publish
+    /// an async bean once its future has resolved.
+    pub fn register_singleton_arc<T>(
+        &self,
+        instance: Arc<T>,
+        scope: Scope,
+        name: &str,
+        primary: bool,
+        order: i32,
+    ) where
+        T: Send + Sync + 'static,
+    {
+        let shared: SharedInstance = instance;
+        let cached = shared.clone();
+        let erased: Factory = Box::new(move |_| Ok(cached.clone()));
+        let reg = self.install::<T>(ScopeSpec::Builtin(scope), name, primary, order, erased);
+        *reg.instance.lock().expect("instance mutex poisoned") = Some(shared);
+    }
+
+    /// Register an **async bean** factory (`async fn` `#[bean]`).
+    ///
+    /// Unlike [`register_factory_with`](Container::register_factory_with), the
+    /// factory is a `FnOnce` returning a `Future`: it is not run now but parked
+    /// until [`init_async_beans`](Container::init_async_beans) awaits the whole
+    /// batch after the synchronous scan, then installs the resolved value as a
+    /// ready singleton (recording the `"bean"` stereotype and the given
+    /// `dependencies` for the admin graph). This lets a bean perform real
+    /// asynchronous construction — opening a connection pool, dialing a broker —
+    /// the Spring Boot way, without blocking the scan or a worker thread.
+    pub fn register_async_factory<T, F, Fut>(
+        &self,
+        scope: Scope,
+        name: &str,
+        primary: bool,
+        order: i32,
+        dependencies: &'static [&'static str],
+        factory: F,
+    ) where
+        T: Send + Sync + 'static,
+        F: FnOnce(Arc<Container>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, ContainerError>> + Send + 'static,
+    {
+        let name = name.to_string();
+        let init: AsyncInit = Box::new(move |c: Arc<Container>| {
+            Box::pin(async move {
+                let value = factory(Arc::clone(&c)).await?;
+                c.register_singleton_arc::<T>(Arc::new(value), scope, &name, primary, order);
+                c.set_stereotype::<T>("bean");
+                c.set_dependencies::<T>(dependencies);
+                Ok(())
+            })
+        });
+        self.async_inits
+            .lock()
+            .expect("async_inits lock poisoned")
+            .push((order, init));
+    }
+
+    /// Await every registered [async bean](Container::register_async_factory),
+    /// in `#[bean(order = …)]` precedence order (lower first), installing each as
+    /// a ready singleton.
+    ///
+    /// Called once by the bootstrap (`FireflyApplication`) immediately after
+    /// [`scan`](Container::scan), so async beans are live before controllers,
+    /// handlers, and eager singletons resolve them. Idempotent: the pending
+    /// list is drained, so a second call is a no-op. Any factory error aborts
+    /// the batch and propagates (fail-fast startup).
+    pub async fn init_async_beans(self: &Arc<Container>) -> Result<(), ContainerError> {
+        let mut inits: Vec<(i32, AsyncInit)> = {
+            let mut guard = self.async_inits.lock().expect("async_inits lock poisoned");
+            std::mem::take(&mut *guard)
+        };
+        // Stable sort by precedence so equal-order beans keep registration order.
+        inits.sort_by_key(|(order, _)| *order);
+        for (_, init) in inits {
+            init(Arc::clone(self)).await?;
+        }
+        Ok(())
     }
 
     /// Record the stereotype label of the most-recently-registered `T`.

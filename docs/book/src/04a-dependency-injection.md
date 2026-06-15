@@ -245,6 +245,29 @@ condition_on_single_candidate = "T")]`.
 > ledger: Arc<Ledger>` finds it. Swapping `InMemoryBroker` for a Kafka adapter
 > is one line in this holder; the rest of Lumen is untouched.
 
+### Async beans (`async fn #[bean]`)
+
+A bean that performs I/O to construct itself — opening a database pool, dialing
+a broker, warming a cache — declares its factory `async`:
+
+```rust,ignore
+#[firefly::bean]
+impl PersistenceConfig {
+    #[bean]
+    async fn wallet_repository(&self) -> WalletRepository {
+        WalletRepository::new(connect_and_migrate().await)
+    }
+}
+```
+
+The framework parks an `async` factory during the synchronous `container.scan()`
+and `await`s it during `Container::init_async_beans()` — run by the bootstrap
+immediately after the scan, before controllers, handlers, and eager singletons
+resolve — then installs the result as a ready singleton. Async beans are
+sequenced by `#[bean(order = N)]`, so one can autowire another initialised
+earlier. This is Spring Boot's "a `@Bean` does blocking I/O at context-refresh
+time", except the I/O is `await`ed instead of blocking a thread.
+
 ## Scopes
 
 Every bean has a **scope** controlling how long its instance lives. Pass it as

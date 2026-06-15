@@ -329,6 +329,70 @@ fn bean_factories_register_by_return_type_with_deps() {
 }
 
 // ===========================================================================
+// async fn #[bean] — asynchronously-constructed beans (DB pools, clients)
+// ===========================================================================
+
+#[derive(Configuration, Default)]
+struct AsyncConfig;
+
+struct AsyncPool {
+    dsn: String,
+}
+
+struct AsyncClient {
+    base: String,
+}
+
+#[firefly::bean]
+impl AsyncConfig {
+    // An `async fn` factory: simulates awaiting a connection handshake before
+    // the bean exists. Registered as an async bean — parked at scan, then built
+    // by `Container::init_async_beans`.
+    #[bean]
+    async fn async_pool(&self) -> AsyncPool {
+        tokio::task::yield_now().await;
+        AsyncPool {
+            dsn: "sqlite::memory:".into(),
+        }
+    }
+
+    // An async bean that autowires another bean built earlier in the same batch;
+    // `order` sequences it after `async_pool` so the sync `resolve` inside finds
+    // the pool already installed.
+    #[bean(order = 10)]
+    async fn async_client(&self, pool: Arc<AsyncPool>) -> AsyncClient {
+        tokio::task::yield_now().await;
+        AsyncClient {
+            base: format!("client@{}", pool.dsn),
+        }
+    }
+}
+
+#[tokio::test]
+async fn async_bean_factories_are_awaited_then_registered_in_order() {
+    let c = Arc::new(Container::new());
+    AsyncConfig::firefly_register(&c);
+    AsyncConfig::firefly_register_beans(&c);
+
+    // An async bean does not exist until the init batch awaits its factory.
+    assert!(
+        c.resolve::<AsyncPool>().is_err(),
+        "async bean must not be resolvable before init_async_beans"
+    );
+
+    // Exactly what `FireflyApplication::bootstrap` runs after `scan()`.
+    c.init_async_beans().await.expect("init async beans");
+
+    let pool = c.resolve::<AsyncPool>().expect("async pool bean built");
+    assert_eq!(pool.dsn, "sqlite::memory:");
+
+    // The dependent async bean resolved its `Arc<AsyncPool>` — proving the batch
+    // honoured `#[bean(order = …)]` so a later async bean sees an earlier one.
+    let client = c.resolve::<AsyncClient>().expect("async client bean built");
+    assert_eq!(client.base, "client@sqlite::memory:");
+}
+
+// ===========================================================================
 // #[post_construct] / #[pre_destroy] lifecycle ordering
 // ===========================================================================
 

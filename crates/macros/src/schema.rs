@@ -38,7 +38,7 @@ use crate::common::facade_from_override;
 
 /// `#[derive(Schema)]`'s `#[firefly(...)]` options — only the facade override.
 #[derive(FromDeriveInput, Default)]
-#[darling(attributes(firefly), supports(struct_named), default)]
+#[darling(attributes(firefly), supports(struct_named, enum_any), default)]
 struct SchemaOpts {
     /// Facade override (`#[firefly(crate = "...")]`).
     #[darling(rename = "crate")]
@@ -57,10 +57,40 @@ pub(crate) fn derive_schema(input: DeriveInput) -> syn::Result<TokenStream> {
     let facade = facade_from_override(&opts.krate)?;
     let container = facade.container();
 
+    // A field-less enum maps to a JSON Schema string enumeration (springdoc's
+    // treatment of a Java `enum`), honouring serde `rename_all` / per-variant
+    // `rename` so the allowed values match the wire shape.
+    if let Data::Enum(data) = &input.data {
+        let rename_all = serde_rename_all(&input.attrs);
+        let mut values: Vec<String> = Vec::new();
+        for variant in &data.variants {
+            if !matches!(variant.fields, Fields::Unit) {
+                return Err(syn::Error::new_spanned(
+                    variant,
+                    "#[derive(Schema)] supports only field-less (unit) enum variants",
+                ));
+            }
+            let serde = field_serde(&variant.attrs);
+            let json_name = serde.rename.unwrap_or_else(|| {
+                apply_rename_all(&variant.ident.to_string(), rename_all.as_deref())
+            });
+            values.push(json_string(&json_name));
+        }
+        let schema = format!(r#"{{"type":"string","enum":[{}]}}"#, values.join(","));
+        return Ok(quote! {
+            #container::inventory::submit! {
+                #container::SchemaDescriptor {
+                    name: #name,
+                    schema: #schema,
+                }
+            }
+        });
+    }
+
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new_spanned(
             ident,
-            "#[derive(Schema)] supports only structs with named fields",
+            "#[derive(Schema)] supports only structs with named fields or field-less enums",
         ));
     };
     let Fields::Named(fields) = &data.fields else {
