@@ -15,14 +15,14 @@
 //! # Lumen Ledger — `-core`
 //!
 //! The business layer (firefly-oss's `-core` Maven module): the
-//! [`WalletService`](services::wallet::v1::WalletService) (`@Service`) that
-//! orchestrates the use cases, the
-//! [`WalletMapper`](mappers::wallet::v1::WalletMapper) (`@Mapper`) that
-//! translates between the `-interfaces` DTOs and the `-models` entity, and a
-//! genuine [`WalletNumberGenerator`](components::WalletNumberGenerator)
+//! [`WalletService`] (`@Service`) that orchestrates the use cases, the
+//! [`WalletMapper`] (`@Mapper`) that translates between the `-interfaces` DTOs
+//! and the `-models` entity, and a genuine [`WalletNumberGenerator`]
 //! (`@Component`) collaborator. Every type here is a **DI bean** discovered by
 //! `container.scan()`; the service autowires its collaborators and programs
-//! against the repository's [`ReactiveCrudRepository`] trait + derived queries.
+//! against the repository's
+//! [`ReactiveCrudRepository`](firefly::data::ReactiveCrudRepository) trait +
+//! derived queries.
 
 #![forbid(unsafe_code)]
 
