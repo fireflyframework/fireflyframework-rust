@@ -8,8 +8,8 @@
 - [Quickstart](./02-quickstart.md)
 - [Bootstrapping with FireflyApplication](./04b-bootstrap.md)
 - [Configuration](./03-configuration.md)
-- [Dependency Injection & Auto-Configuration](./04a-dependency-injection.md)
 - [Dependency Wiring](./04-dependency-wiring.md)
+- [Dependency Injection & Auto-Configuration](./04a-dependency-injection.md)
 
 # The Reactive Model
 

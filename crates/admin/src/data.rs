@@ -316,10 +316,11 @@ pub fn bean_detail(container: Option<&Arc<Container>>, name: &str) -> Option<Val
 
 /// Renders the `/admin/api/beans/graph` body (pyfly's
 /// `BeansProvider.get_bean_graph`) — `{nodes, edges}`. Each registered bean
-/// becomes a node; edges (constructor/autowired dependencies) require
-/// type-hint reflection the Rust container does not retain, so the edge list is
-/// empty (best-effort nodes-only graph, per the gap report). A missing
-/// container yields an empty graph.
+/// becomes a node, and each `#[autowired]` dependency a stereotype derive
+/// recorded (via `Container::set_dependencies`) becomes a directed edge to the
+/// bean it injects — so the graph renders real dependency edges, not just nodes.
+/// (Edges are matched by short type name; a dependency that resolves to no
+/// registered bean is omitted.) A missing container yields an empty graph.
 pub fn bean_graph(container: Option<&Arc<Container>>) -> Value {
     let beans = container.map(|c| c.beans()).unwrap_or_default();
 
@@ -514,9 +515,7 @@ pub fn env(deps: &AdminDeps) -> Value {
                     let props: serde_json::Map<String, Value> = src
                         .properties
                         .iter()
-                        .map(|(k, v)| {
-                            (k.clone(), json!({ "value": v.value, "origin": v.origin }))
-                        })
+                        .map(|(k, v)| (k.clone(), json!({ "value": v.value, "origin": v.origin })))
                         .collect();
                     json!({ "name": src.name, "properties": props })
                 })

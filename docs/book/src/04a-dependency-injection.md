@@ -266,7 +266,24 @@ immediately after the scan, before controllers, handlers, and eager singletons
 resolve — then installs the result as a ready singleton. Async beans are
 sequenced by `#[bean(order = N)]`, so one can autowire another initialised
 earlier. This is Spring Boot's "a `@Bean` does blocking I/O at context-refresh
-time", except the I/O is `await`ed instead of blocking a thread.
+time", except the I/O is `await`ed instead of blocking a thread. A factory
+failure is reported as a `BeanCreation` error naming the bean — Spring's
+"Error creating bean named '…'".
+
+`FireflyApplication` drains async beans on its own bootstrap path. If you build
+an `ApplicationContext` directly, call **`build_async().await`** instead of
+`build()` — the synchronous `build()` cannot `await` a pending async bean and
+**panics** rather than silently leaving it uninitialized:
+
+```rust,ignore
+let ctx = ApplicationContext::builder().build_async().await?;   // awaits async beans
+```
+
+An async-constructed data-access bean still classifies as `@Repository` in the
+admin `/beans` view with `#[bean(stereotype = "repository")]`. The
+[`lumen-ledger`](./22-layered-microservices.md) service uses an `async fn #[bean]`
+for exactly this — its sqlx repository opens the pool and runs the migration with
+`await`.
 
 ## Scopes
 

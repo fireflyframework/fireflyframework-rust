@@ -15,7 +15,7 @@
 //! The [`WalletMapper`] `@Mapper`.
 
 use firefly::prelude::*;
-use lumen_ledger_interfaces::{WalletResponse, WalletStatus};
+use lumen_ledger_interfaces::WalletResponse;
 use lumen_ledger_models::entities::wallet::v1::Wallet;
 
 /// Translates the persistence [`Wallet`] entity into the public
@@ -31,8 +31,10 @@ use lumen_ledger_models::entities::wallet::v1::Wallet;
 pub struct WalletMapper;
 
 impl WalletMapper {
-    /// Entity → response DTO (the status token becomes the typed
-    /// [`WalletStatus`] enum; the UUID becomes a string).
+    /// Entity → response DTO. The status is already the typed
+    /// [`WalletStatus`](lumen_ledger_interfaces::WalletStatus) enum (the
+    /// token↔enum conversion happens once, at the repository's row boundary);
+    /// the UUID becomes a string.
     #[must_use]
     pub fn to_response(&self, wallet: &Wallet) -> WalletResponse {
         WalletResponse {
@@ -41,7 +43,7 @@ impl WalletMapper {
             owner: wallet.owner.clone(),
             balance: wallet.balance,
             currency: wallet.currency.clone(),
-            status: WalletStatus::from_token(&wallet.status),
+            status: wallet.status,
             version: wallet.version,
         }
     }

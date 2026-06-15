@@ -15,12 +15,16 @@
 //! The [`Wallet`] persistence entity.
 
 use chrono::{DateTime, Utc};
+use lumen_ledger_interfaces::WalletStatus;
 use uuid::Uuid;
 
 /// The persisted shape of a wallet — one row of the `wallets` table.
-/// `status` is stored as its lowercase token (`active`/…); the core
-/// layer's mapper translates it to the typed
-/// [`WalletStatus`](lumen_ledger_interfaces::WalletStatus) DTO enum.
+///
+/// `status` is the typed [`WalletStatus`] enum end-to-end; the token↔enum
+/// conversion happens exactly once, at the row boundary (the repository's
+/// `RowMapper`/`RowWriter`) — the `@Enumerated(STRING)` analog. `created_at` /
+/// `updated_at` and `version` are managed by the store (the framework `Auditor`
+/// and the `@Version` optimistic-locking column), not by the service.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wallet {
     /// Primary key.
@@ -33,12 +37,12 @@ pub struct Wallet {
     pub balance: i64,
     /// ISO-4217 currency code.
     pub currency: String,
-    /// Lifecycle status token (`active` / `frozen` / `closed`).
-    pub status: String,
-    /// Optimistic-locking version, bumped on every write.
+    /// Lifecycle status (`@Enumerated(STRING)`: stored as its lowercase token).
+    pub status: WalletStatus,
+    /// Optimistic-locking version (`@Version`) — bumped by the store on update.
     pub version: i64,
-    /// Creation timestamp.
+    /// Creation timestamp (`@CreatedDate`, stamped by the store on insert).
     pub created_at: DateTime<Utc>,
-    /// Last-update timestamp.
+    /// Last-update timestamp (`@LastModifiedDate`, stamped on every write).
     pub updated_at: DateTime<Utc>,
 }

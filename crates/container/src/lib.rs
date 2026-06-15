@@ -111,7 +111,7 @@ pub use value::resolve_value;
 pub use inventory;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.8";
+pub const VERSION: &str = "26.6.9";
 
 /// Type-erased boxed `Arc<T>` — a sized fat pointer wrapped in `Box<dyn Any>`
 /// so resolution can return `Arc<T>` for both sized and `?Sized` (trait-object)
@@ -478,16 +478,24 @@ impl Container {
     /// factory is a `FnOnce` returning a `Future`: it is not run now but parked
     /// until [`init_async_beans`](Container::init_async_beans) awaits the whole
     /// batch after the synchronous scan, then installs the resolved value as a
-    /// ready singleton (recording the `"bean"` stereotype and the given
+    /// ready singleton (recording the given `stereotype` label — `"bean"`, or
+    /// `"repository"`/… via `#[bean(stereotype = "…")]` — and the
     /// `dependencies` for the admin graph). This lets a bean perform real
     /// asynchronous construction — opening a connection pool, dialing a broker —
-    /// the Spring Boot way, without blocking the scan or a worker thread.
+    /// the Spring Boot way, without blocking the scan or a worker thread. A
+    /// factory failure is wrapped as [`ContainerError::BeanCreation`] carrying
+    /// the bean's name, so startup fails fast with "error creating bean '…'".
+    // The parameters mirror a bean's registration metadata (scope / name /
+    // primary / order / stereotype / dependencies) plus the factory — splitting
+    // them into a struct would only obscure the generated `#[bean]` call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_async_factory<T, F, Fut>(
         &self,
         scope: Scope,
         name: &str,
         primary: bool,
         order: i32,
+        stereotype: &'static str,
         dependencies: &'static [&'static str],
         factory: F,
     ) where
@@ -498,9 +506,14 @@ impl Container {
         let name = name.to_string();
         let init: AsyncInit = Box::new(move |c: Arc<Container>| {
             Box::pin(async move {
-                let value = factory(Arc::clone(&c)).await?;
+                // Wrap the factory's failure with the bean's identity so a
+                // missing dependency or async I/O error reads as Spring's
+                // "Error creating bean named '…': <cause>".
+                let value = factory(Arc::clone(&c))
+                    .await
+                    .map_err(|e| ContainerError::bean_creation(&name, e.to_string()))?;
                 c.register_singleton_arc::<T>(Arc::new(value), scope, &name, primary, order);
-                c.set_stereotype::<T>("bean");
+                c.set_stereotype::<T>(stereotype);
                 c.set_dependencies::<T>(dependencies);
                 Ok(())
             })
@@ -531,6 +544,23 @@ impl Container {
             init(Arc::clone(self)).await?;
         }
         Ok(())
+    }
+
+    /// Whether any `async fn` `#[bean]` factory is still parked — registered by
+    /// the scan but not yet awaited by
+    /// [`init_async_beans`](Container::init_async_beans).
+    ///
+    /// A synchronous build path (e.g. `ApplicationContextBuilder::build`) checks
+    /// this to **fail fast** rather than silently leaving async beans
+    /// uninitialized: the presence of any parked factory means the caller must
+    /// take an async build path that awaits them.
+    #[must_use]
+    pub fn has_pending_async_beans(&self) -> bool {
+        !self
+            .async_inits
+            .lock()
+            .expect("async_inits lock poisoned")
+            .is_empty()
     }
 
     /// Record the stereotype label of the most-recently-registered `T`.

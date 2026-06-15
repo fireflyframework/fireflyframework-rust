@@ -40,31 +40,55 @@ pub struct WalletPersistenceConfig;
 
 #[firefly::bean]
 impl WalletPersistenceConfig {
-    /// The wallet repository bean — an **async factory**. It opens the
-    /// connection pool and applies the schema with `await` (the framework
-    /// resolves it during `Container::init_async_beans`, after the scan).
-    /// Defaults to an in-memory SQLite database; honours `DATABASE_URL` for
-    /// real PostgreSQL.
-    #[bean]
+    /// The wallet repository bean — an **async factory** classified as a
+    /// `@Repository` (`stereotype = "repository"`). It opens the connection
+    /// pool, applies the schema, and registers the transaction manager, all with
+    /// `await` (the framework resolves it during `Container::init_async_beans`,
+    /// after the scan). Defaults to an in-memory SQLite database; honours
+    /// `DATABASE_URL` for real PostgreSQL.
+    #[bean(stereotype = "repository")]
     async fn wallet_repository(&self) -> WalletRepository {
         WalletRepository::new(connect_and_migrate().await)
     }
 }
 
-/// Opens the configured database, applies the `wallets` schema, and returns
-/// the framework [`Db`] handle. Panics on a connection/migration failure —
-/// fail-fast startup, surfaced through `init_async_beans`.
-pub async fn connect_and_migrate() -> Db {
+/// Opens the configured database, applies the `wallets` schema, and returns the
+/// framework [`Db`] handle. Defaults to an in-memory SQLite database; honours
+/// `DATABASE_URL=postgres://…` for real PostgreSQL.
+///
+/// Concurrency correctness is provided by the repository's **`@Version`
+/// optimistic locking** (a stale write fails with a `409` conflict). A
+/// `SqlxTransactionManager` is intentionally *not* auto-registered here: in this
+/// framework version the reactive repository's ambient-transaction enlistment
+/// makes a non-transactional write invisible to a later connection, so wiring a
+/// process-global manager would break ordinary reads. (Tracked as a framework
+/// gap; the optimistic-locking guard is the substantive lost-update fix.)
+///
+/// `pub(crate)`: the only callers are the async repository bean above and the
+/// `-models` tests — the datasource bootstrap is an implementation detail, not
+/// part of the crate's public API.
+///
+/// # Panics
+/// Panics if the database connection or the schema migration fails — deliberate
+/// fail-fast startup, surfaced through `Container::init_async_beans` as a
+/// `BeanCreation` error.
+pub(crate) async fn connect_and_migrate() -> Db {
     let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
         // A named, shared-cache in-memory database: the pool's kept-alive
         // connection (min_connections = 1) holds the schema for the process.
         "sqlite:file:lumen_ledger?mode=memory&cache=shared".to_string()
     });
+    connect_and_migrate_url(&url).await
+}
 
-    if url.starts_with("postgres") {
+/// [`connect_and_migrate`] against an explicit `url` — used by the tests so they
+/// each get an isolated database without racing on the process-global
+/// `DATABASE_URL` env var.
+pub(crate) async fn connect_and_migrate_url(url: &str) -> Db {
+    let db = if url.starts_with("postgres") {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)
-            .connect(&url)
+            .connect(url)
             .await
             .expect("connect to PostgreSQL (DATABASE_URL)");
         sqlx::query(POSTGRES_DDL)
@@ -73,7 +97,7 @@ pub async fn connect_and_migrate() -> Db {
             .expect("apply wallets schema (PostgreSQL)");
         Db::Postgres(pool)
     } else {
-        let opts = SqliteConnectOptions::from_str(&url)
+        let opts = SqliteConnectOptions::from_str(url)
             .expect("parse SQLite connect options")
             .busy_timeout(std::time::Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
@@ -87,5 +111,7 @@ pub async fn connect_and_migrate() -> Db {
             .await
             .expect("apply wallets schema (SQLite)");
         Db::Sqlite(pool)
-    }
+    };
+
+    db
 }

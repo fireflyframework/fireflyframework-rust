@@ -116,6 +116,26 @@ exact JSON the handler serializes — not the snake_case Rust idents. A
 struct-level `#[serde(rename_all = "camelCase")]` is applied to every field the
 same way, and a `#[serde(skip)]` field is omitted from the schema entirely.
 
+### Field-less enums → string enumerations
+
+A field-less (unit-variant) enum that derives `Schema` emits a JSON Schema
+`string` enumeration, the springdoc treatment of a Java `enum`. Serde renaming
+is honoured, so the allowed values match the wire shape:
+
+```rust,ignore
+#[derive(Serialize, Deserialize, Schema)]
+#[serde(rename_all = "lowercase")]
+pub enum WalletStatus { Active, Frozen, Closed }
+```
+
+```json
+"WalletStatus": { "type": "string", "enum": ["active", "frozen", "closed"] }
+```
+
+A DTO field of this type then `$ref`s the registered enum component rather than
+becoming an untyped string — the layered `lumen-ledger` sample uses exactly this
+for `WalletResponse.status`.
+
 ## Request/response inference from the handler signature
 
 You do **not** name request and response models on the attribute — the macro
@@ -285,6 +305,25 @@ by `from_inventory()`, *is* the live spec:
 cargo run --bin lumen &
 curl -s http://localhost:8080/v3/api-docs | jq .
 ```
+
+## Generating a client from the spec — `firefly openapi-client`
+
+The inverse direction: given an OpenAPI document, generate a typed Rust client
+over [`firefly_client::RestClient`] — the Rust analog of springdoc's
+OpenAPI-generated WebClient SDK.
+
+```bash
+# capture the live spec, then generate a client from it
+curl -s http://localhost:8080/v3/api-docs -o wallet-openapi.json
+firefly openapi-client --spec wallet-openapi.json -o src/generated.rs --client-name WalletClient
+```
+
+It emits a model `struct` per object schema (and an `enum` per string
+enumeration), with serde renames and optional fields preserved, plus one
+`async fn` per operation — typed path/query parameters, a JSON request body, and
+the success-response type — calling `RestClient::request`. The generated client
+is the same shape you would hand-write (see the `lumen-ledger` `-sdk` crate and
+[chapter 22](./22-layered-microservices.md)).
 
 ## What changed in Lumen
 

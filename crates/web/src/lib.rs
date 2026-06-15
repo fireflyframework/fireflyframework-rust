@@ -111,6 +111,7 @@ mod correlation;
 mod cors;
 mod csrf;
 mod exception_handler;
+mod extract;
 mod globs;
 mod headers;
 mod idempotency;
@@ -150,6 +151,7 @@ pub use csrf::{
 pub use exception_handler::{
     ExceptionAdviceLayer, ExceptionAdviceService, ExceptionHandlerRegistry,
 };
+pub use extract::{Path, Query};
 pub use headers::{SecurityHeadersConfig, SecurityHeadersLayer, SecurityHeadersService};
 pub use idempotency::{
     IdempotencyConfig, IdempotencyLayer, IdempotencyRecord, IdempotencyService, IdempotencyStore,

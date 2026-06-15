@@ -25,7 +25,6 @@
 //! against the repository's [`ReactiveCrudRepository`] trait + derived queries.
 
 #![forbid(unsafe_code)]
-#![allow(clippy::result_large_err)]
 
 pub mod components;
 pub mod mappers;

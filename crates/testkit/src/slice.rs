@@ -211,6 +211,35 @@ impl Slice {
             Err(err) => panic!("Slice::build: eager resolution failed: {err}"),
         }
     }
+
+    /// The async sibling of [`try_build`](Slice::try_build): also **awaits every
+    /// `async fn` `#[bean]`** on the slice's container (via
+    /// [`Container::init_async_beans`]) before eager resolution. Use it when a
+    /// slice under test wires an async bean (a DB pool, broker dial, …); the
+    /// synchronous [`try_build`](Slice::try_build) cannot await them.
+    ///
+    /// # Errors
+    /// Returns the first [`ContainerError`] from async-bean construction or
+    /// eager resolution.
+    pub async fn try_build_async(self) -> Result<BuiltSlice, ContainerError> {
+        let container = Arc::new(self.container);
+        container.init_async_beans().await?;
+        for resolve in self.eager {
+            resolve(&container)?;
+        }
+        Ok(BuiltSlice { container })
+    }
+
+    /// The async sibling of [`build`](Slice::build) (awaits async beans).
+    ///
+    /// # Panics
+    /// Panics if async-bean construction or eager resolution fails.
+    pub async fn build_async(self) -> BuiltSlice {
+        match self.try_build_async().await {
+            Ok(built) => built,
+            Err(err) => panic!("Slice::build_async: failed: {err}"),
+        }
+    }
 }
 
 impl std::fmt::Debug for Slice {

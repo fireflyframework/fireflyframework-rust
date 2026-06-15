@@ -15,7 +15,8 @@
 //! The [`WalletService`] `@Service` interface.
 
 use async_trait::async_trait;
-use lumen_ledger_interfaces::{CreateWalletRequest, WalletResponse};
+use firefly::data::Page;
+use lumen_ledger_interfaces::{CreateWalletRequest, WalletResponse, WalletStatus};
 use uuid::Uuid;
 
 use super::service_error::ServiceError;
@@ -34,9 +35,27 @@ pub trait WalletService: Send + Sync {
     /// Lists every wallet of one owner.
     async fn list_by_owner(&self, owner: &str) -> Result<Vec<WalletResponse>, ServiceError>;
 
-    /// Credits an active wallet.
+    /// A page of wallets in a given status (Spring Data `Page<T>`).
+    async fn list_by_status(
+        &self,
+        status: WalletStatus,
+        page: usize,
+        size: usize,
+    ) -> Result<Page<WalletResponse>, ServiceError>;
+
+    /// Credits an active wallet (atomically, within a transaction).
     async fn deposit(&self, id: Uuid, amount: i64) -> Result<WalletResponse, ServiceError>;
 
-    /// Debits an active wallet (rejects an overdraft).
+    /// Debits an active wallet (rejects an overdraft; atomic).
     async fn withdraw(&self, id: Uuid, amount: i64) -> Result<WalletResponse, ServiceError>;
+
+    /// Transitions a wallet's lifecycle status (`active` → `frozen` / `closed`).
+    async fn set_status(
+        &self,
+        id: Uuid,
+        status: WalletStatus,
+    ) -> Result<WalletResponse, ServiceError>;
+
+    /// Deletes a wallet (idempotent — deleting a missing wallet is not an error).
+    async fn delete(&self, id: Uuid) -> Result<(), ServiceError>;
 }

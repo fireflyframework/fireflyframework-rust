@@ -93,3 +93,47 @@ fn scan_free_function_matches_container_scan() {
     assert!(n >= 2);
     assert!(c.resolve::<CtxRepo>().is_ok());
 }
+
+// An async bean, gated behind the "async-ctx" profile so it is invisible to the
+// scans above (which run under "dev"/"default") and only exercised by the two
+// async-context tests below.
+struct AsyncResource {
+    ready: bool,
+}
+
+#[derive(Configuration, Default)]
+#[firefly(profile = "async-ctx")]
+struct AsyncCtxConfig;
+
+#[firefly::bean]
+impl AsyncCtxConfig {
+    #[bean(profile = "async-ctx")]
+    async fn async_resource(&self) -> AsyncResource {
+        tokio::task::yield_now().await;
+        AsyncResource { ready: true }
+    }
+}
+
+#[tokio::test]
+async fn build_async_awaits_async_beans() {
+    let ctx = ApplicationContext::builder()
+        .profiles(["async-ctx"])
+        .build_async()
+        .await
+        .expect("build_async");
+    let resource = ctx
+        .container()
+        .resolve::<AsyncResource>()
+        .expect("async bean initialized by build_async");
+    assert!(resource.ready);
+}
+
+#[test]
+#[should_panic(expected = "build_async")]
+fn sync_build_panics_when_async_beans_are_pending() {
+    // The synchronous build cannot await async beans; it must fail fast rather
+    // than silently dropping them.
+    let _ = ApplicationContext::builder()
+        .profiles(["async-ctx"])
+        .build();
+}

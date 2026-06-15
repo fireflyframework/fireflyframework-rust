@@ -16,9 +16,10 @@
 //!
 //! The deployable binary: the `@RestController` (in [`controllers`]) plus the
 //! one-line `FireflyApplication` boot. The whole layered service —
-//! `-interfaces` DTOs, the `-models` sqlx repository (an **async bean**), the
-//! `-core` `@Service` / `@Mapper` / `@Component` — is assembled by
-//! `container.scan()` + `init_async_beans()`; there is no composition root.
+//! `-interfaces` DTOs, the `-models` sqlx repository (an **async bean** with
+//! `@Version` optimistic locking + an `Auditor`), the `-core` `@Service` /
+//! `@Mapper` / `@Component` — is assembled by `container.scan()` +
+//! `init_async_beans()`; there is no composition root.
 //!
 //! The one piece of required wiring is [`firefly::link!`]: it force-links each
 //! layer crate so the linker keeps their `inventory` registrations (the
@@ -52,17 +53,34 @@ mod tests {
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
-    /// Boots the full layered service in-process (no socket) — exactly as
-    /// `main()` does — and returns the public router after asserting the
-    /// cross-crate discovery wired up.
-    async fn router() -> axum::Router {
-        let app = firefly::FireflyApplication::new("lumen-ledger")
-            .bootstrap()
-            .await
-            .expect("bootstrap");
-        // Guard: the force-linked layer crates contributed their beans (the async
-        // sqlx repository, the @Service/@Mapper/@Component, the @Configuration)
-        // and the @RestController mounted.
+    /// Serialises bootstrap across tests: each test points the repository bean at
+    /// its own in-memory database via the process-global `DATABASE_URL`, so the
+    /// set-env → bootstrap window must not overlap another test's.
+    fn boot_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    /// Boots the full layered service in-process against an isolated in-memory
+    /// database (`cache`), asserts the cross-crate discovery wired up, and
+    /// returns the public router. The router's controller state keeps the
+    /// repository (and its pool) alive after the `Bootstrapped` is dropped.
+    async fn router(cache: &str) -> axum::Router {
+        let app = {
+            let _guard = boot_lock().lock().await;
+            std::env::set_var(
+                "DATABASE_URL",
+                format!("sqlite:file:{cache}?mode=memory&cache=shared"),
+            );
+            let app = firefly::FireflyApplication::new("lumen-ledger")
+                .bootstrap()
+                .await
+                .expect("bootstrap");
+            std::env::remove_var("DATABASE_URL");
+            app
+        };
+        // The async sqlx repository, @Service/@Mapper/@Component, @Configuration,
+        // and the @RestController are all discovered cross-crate.
         firefly::assert_discovered(&app.container, 8, 1);
         app.api_router
     }
@@ -72,27 +90,28 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    fn post(uri: &str, body: Value) -> Request<Body> {
+        Request::post(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn get(uri: &str) -> Request<Body> {
+        Request::get(uri).body(Body::empty()).unwrap()
+    }
+
     #[tokio::test]
     async fn wallet_lifecycle_round_trips_through_every_layer() {
-        std::env::set_var(
-            "DATABASE_URL",
-            "sqlite:file:lumen_ledger_web_it?mode=memory&cache=shared",
-        );
-        let app = router().await;
-        std::env::remove_var("DATABASE_URL");
+        let app = router("lumen_ledger_web_lifecycle").await;
 
         // POST create — controller → service → mapper → repository (async sqlx).
         let res = app
             .clone()
-            .oneshot(
-                Request::post("/api/v1/wallets")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"owner": "ada", "currency": "EUR", "openingBalance": 1000})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(post(
+                "/api/v1/wallets",
+                json!({"owner": "ada", "currency": "EUR", "openingBalance": 1000}),
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
@@ -108,78 +127,155 @@ mod tests {
         // GET by id.
         let res = app
             .clone()
-            .oneshot(
-                Request::get(format!("/api/v1/wallets/{id}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(get(&format!("/api/v1/wallets/{id}")))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        // POST deposit → 1500.
+        // POST deposit → 1500 (transactional + auditor bumps version).
         let res = app
             .clone()
-            .oneshot(
-                Request::post(format!("/api/v1/wallets/{id}/deposit"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({"amount": 500}).to_string()))
-                    .unwrap(),
-            )
+            .oneshot(post(
+                &format!("/api/v1/wallets/{id}/deposit"),
+                json!({"amount": 500}),
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(body_json(res).await["balance"], 1500);
+        let after = body_json(res).await;
+        assert_eq!(after["balance"], 1500);
+        assert_eq!(after["version"], 2, "the store bumped @Version on update");
 
-        // Overdraft withdraw → 422 problem.
+        // Overdraft withdraw → 422.
         let res = app
             .clone()
-            .oneshot(
-                Request::post(format!("/api/v1/wallets/{id}/withdraw"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(json!({"amount": 100_000}).to_string()))
-                    .unwrap(),
-            )
+            .oneshot(post(
+                &format!("/api/v1/wallets/{id}/withdraw"),
+                json!({"amount": 100_000}),
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-        // List by owner — the derived query.
+        // List by owner — derived query.
         let res = app
             .clone()
-            .oneshot(
-                Request::get("/api/v1/wallets?owner=ada")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(get("/api/v1/wallets?owner=ada"))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(body_json(res).await.as_array().unwrap().len(), 1);
 
-        // Unknown id → 404 problem (default RFC 9457).
+        // Paged by status — the Pageable + Page<T> machinery.
+        let res = app
+            .clone()
+            .oneshot(get("/api/v1/wallets/page?status=active&page=1&size=10"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let page = body_json(res).await;
+        assert_eq!(page["totalElements"], 1);
+        assert_eq!(page["content"].as_array().unwrap().len(), 1);
+
+        // PATCH status → frozen; a frozen wallet then rejects a deposit (422).
         let res = app
             .clone()
             .oneshot(
-                Request::get(format!("/api/v1/wallets/{}", uuid::Uuid::new_v4()))
+                Request::patch(format!("/api/v1/wallets/{id}/status"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"status": "frozen"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await["status"], "frozen");
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{id}/deposit"),
+                json!({"amount": 1}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a frozen wallet cannot transact"
+        );
+
+        // DELETE → 204, then GET → 404.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::delete(format!("/api/v1/wallets/{id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-
-        // Blank owner → 422 (bean validation via Valid<…>).
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
         let res = app
             .clone()
-            .oneshot(
-                Request::post("/api/v1/wallets")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({"owner": "", "currency": "EUR"}).to_string(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(get(&format!("/api/v1/wallets/{id}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn edge_inputs_render_rfc9457_problems() {
+        let app = router("lumen_ledger_web_edges").await;
+
+        // Unknown but well-formed id → 404 problem.
+        let res = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/wallets/{}", uuid::Uuid::new_v4())))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        // Malformed UUID path → 400 problem (the firefly::web::Path extractor).
+        let res = app
+            .clone()
+            .oneshot(get("/api/v1/wallets/not-a-uuid"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Missing required ?owner= → 400 problem (the firefly::web::Query extractor).
+        let res = app.clone().oneshot(get("/api/v1/wallets")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Blank owner / bad currency → 422 (bean validation via Valid<…>).
+        let res = app
+            .clone()
+            .oneshot(post(
+                "/api/v1/wallets",
+                json!({"owner": "", "currency": "eur"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Non-positive deposit amount → 422 before the service runs.
+        let created = body_json(
+            app.clone()
+                .oneshot(post(
+                    "/api/v1/wallets",
+                    json!({"owner": "bob", "currency": "USD"}),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = created["id"].as_str().unwrap();
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{id}/deposit"),
+                json!({"amount": 0}),
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -187,24 +283,14 @@ mod tests {
 
     #[tokio::test]
     async fn openapi_document_lists_every_dto_schema() {
-        std::env::set_var(
-            "DATABASE_URL",
-            "sqlite:file:lumen_ledger_web_oas?mode=memory&cache=shared",
-        );
-        let app = router().await;
-        std::env::remove_var("DATABASE_URL");
-
-        let res = app
-            .oneshot(Request::get("/v3/api-docs").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let app = router("lumen_ledger_web_oas").await;
+        let res = app.oneshot(get("/v3/api-docs")).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let spec = body_json(res).await;
         let schemas = &spec["components"]["schemas"];
         assert!(schemas["WalletResponse"].is_object(), "response schema");
         assert!(schemas["CreateWalletRequest"].is_object(), "request schema");
         assert!(schemas["AmountRequest"].is_object(), "amount schema");
-        // The enum schema (from the extended #[derive(Schema)]).
         assert_eq!(schemas["WalletStatus"]["type"], "string");
         assert!(schemas["WalletStatus"]["enum"].is_array());
     }

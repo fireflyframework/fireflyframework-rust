@@ -14,18 +14,22 @@
 
 //! The [`ServiceError`] type.
 
-/// The failures a wallet use case can surface. The web layer maps
-/// these onto RFC 9457 problem responses (404 / 422 / 500).
+/// The failures a wallet use case can surface. The web layer maps these onto RFC
+/// 9457 problem responses (404 / 409 / 422 / 500).
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     /// No wallet with that id.
     #[error("wallet not found")]
     NotFound,
-    /// A business-rule violation (non-positive amount, insufficient
-    /// funds, inactive wallet).
+    /// A business-rule violation (non-positive amount, insufficient funds,
+    /// inactive wallet) — maps to `422`.
     #[error("{0}")]
     Validation(String),
-    /// A persistence failure.
+    /// A concurrency conflict — a stale `@Version` write lost the race
+    /// (Spring's `OptimisticLockingFailureException`); maps to `409`.
+    #[error("{0}")]
+    Conflict(String),
+    /// A persistence failure — maps to `500`.
     #[error("{0}")]
     Backend(String),
 }

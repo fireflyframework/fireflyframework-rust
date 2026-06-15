@@ -370,6 +370,21 @@ fn optimistic_lock_sentinel() -> FireflyError {
     )
 }
 
+/// Returns `true` if `err` is the **optimistic-lock conflict** a versioned
+/// repository (`with_version_column`) raises when a stale `@Version` write is
+/// rejected — Spring Data's `OptimisticLockingFailureException`.
+///
+/// The blocking [`SqlxRepository::save`] already maps this to
+/// [`DataError::OptimisticLock`](firefly_data::DataError::OptimisticLock); the
+/// **reactive** [`SqlxReactiveRepository::save`] surfaces it through its
+/// `Mono`/`Flux` [`FireflyError`] channel (a 409). Use this predicate to remap
+/// that error to a domain conflict (e.g. a 409 HTTP problem) instead of
+/// collapsing it into a generic backend/500.
+#[must_use]
+pub fn is_optimistic_lock(err: &FireflyError) -> bool {
+    err.code == OPTIMISTIC_LOCK_CODE
+}
+
 fn no_backend_err() -> FireflyError {
     FireflyError::internal("firefly/data-sqlx: no backend feature enabled")
 }

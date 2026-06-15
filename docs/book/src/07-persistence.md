@@ -270,6 +270,29 @@ collect-then-emit step anywhere in the path. (That is the same `Flux → NdJson`
 seam Lumen's events endpoint uses, only sourced from rows instead of an event
 store.)
 
+### Any key type, and optimistic locking
+
+The repository's `ID` is unbounded, like Spring Data's `CrudRepository<T, ID>`:
+the sqlx adapter accepts any `serde::Serialize` key through the `SqlKey` trait,
+so a `Uuid`, `i64`, `String`, an enum, or a composite-key struct all work — no
+newtype dance. The key binds as its serde-JSON form against the id column.
+
+For a versioned entity, enable **optimistic locking** (Spring's `@Version`) by
+naming the version column on the sqlx repository:
+
+```rust,ignore
+let repo = SqlxReactiveRepository::new(db, cfg, read, write)
+    .with_version_column("version");   // UPSERT guarded by `WHERE version = <loaded>`
+```
+
+A stale write — one whose loaded `version` no longer matches the row — is
+rejected instead of silently overwriting a concurrent update. The blocking
+`SqlxRepository::save` surfaces this as `DataError::OptimisticLock`; the reactive
+`save` surfaces it through its `FireflyError` channel (a 409), which
+`firefly_data_sqlx::is_optimistic_lock(&err)` detects so a service can map it to
+a domain conflict. The layered [`lumen-ledger`](./22-layered-microservices.md)
+service wires both `with_version_column` and store-side auditing.
+
 ### Reactive specification / paging
 
 `ReactiveSpecificationRepository` runs a composable `Specification` predicate

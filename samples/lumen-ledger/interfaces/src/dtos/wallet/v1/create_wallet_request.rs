@@ -17,18 +17,21 @@
 use firefly::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// `POST /api/v1/wallets` body — open a new wallet. `owner` and
-/// `currency` are required (`#[firefly(validate)]`): a blank value
-/// fails validation at the web edge and renders RFC 9457 `422`.
+/// `POST /api/v1/wallets` body — open a new wallet. Every field is validated at
+/// the web edge (through the `Valid<…>` extractor); a violation renders an RFC
+/// 9457 `422` before the service runs — the Spring `@Valid @RequestBody` analog.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Schema, Validate)]
 pub struct CreateWalletRequest {
     /// The wallet owner's display name — required, non-blank.
     #[validate(not_empty, length(max = 120))]
     pub owner: String,
-    /// The ISO-4217 currency code (e.g. `"EUR"`) — required, 3 chars.
-    #[validate(not_empty, length(min = 3, max = 3))]
+    /// The ISO-4217 currency code (e.g. `"EUR"`) — exactly three upper-case
+    /// letters (`@Pattern("[A-Z]{3}")`).
+    #[validate(not_empty, pattern = "[A-Z]{3}")]
     pub currency: String,
-    /// The opening balance in minor units (cents); defaults to `0`.
+    /// The opening balance in minor units (cents); defaults to `0`, must be
+    /// non-negative (`@Min(0)`).
+    #[validate(range(min = 0))]
     #[serde(default, rename = "openingBalance")]
     pub opening_balance: i64,
 }
