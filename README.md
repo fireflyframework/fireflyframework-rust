@@ -367,6 +367,7 @@ fireflyframework-rust/
 ├── samples/reactive-banking/     # end-to-end reactive service (firefly-sample-reactive-banking)
 ├── samples/macro-quickstart/     # the declarative one-dependency DX (firefly-sample-macro-quickstart)
 ├── samples/lumen/                # declarative orchestration / saga showcase (firefly-sample-lumen)
+├── samples/lumen-ledger/         # layered 5-crate microservice, file-per-class (firefly-sample-lumen-ledger-*)
 ├── docs/                         # ARCHITECTURE, CONFIGURATION, DESIGN
 ├── docs/book/                    # the mdBook guide (mdbook build docs/book) + dist/*.pdf,*.epub
 ├── docker-compose.yml            # real backing services for integration tests

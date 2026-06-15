@@ -17,8 +17,8 @@
 //! A `#[derive(Controller)]` DI bean that autowires the `dyn WalletService`
 //! port from the `-core` crate and is auto-mounted by `#[rest_controller]`.
 //! Every input is validated/extracted at the edge — `Valid<T>` for JSON bodies,
-//! the framework's problem-rendering [`Path`]/[`Query`] for path/query params —
-//! and each [`ServiceError`] becomes the precise RFC 9457 problem
+//! the framework's problem-rendering `Path` / `Query` extractors for path/query
+//! params — and each [`ServiceError`] becomes the precise RFC 9457 problem
 //! (`404` / `409` / `422` / `500`) via [`service_to_web`].
 
 // `firefly::web::WebError` is a large enum by design; returning it from these
