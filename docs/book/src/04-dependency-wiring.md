@@ -3,9 +3,10 @@
 > By the end of this chapter you will understand how Lumen is wired: it
 > **declares beans** and lets the framework's dependency-injection container
 > discover and connect them. There is no hand-written composition root — every
-> collaborator is a bean (`#[derive(Configuration)]` + `#[bean]` factories,
-> `#[derive(Controller)]` controllers), every dependency is `#[autowired]` by
-> type, and `FireflyApplication` component-scans the whole graph at boot. This
+> collaborator is a bean (`#[derive(Configuration)]` + `#[bean]` factories, a
+> `#[derive(Repository)]` read model, `#[derive(Controller)]` controllers), every
+> dependency is `#[autowired]` by type, and `FireflyApplication` component-scans
+> the whole graph at boot. This
 > is the best-in-class DI container that powers the framework, told against
 > Lumen's own collaborators.
 
@@ -43,11 +44,13 @@ methods declare the domain beans, and a `#[derive(Controller)]` whose
 ## Lumen's beans — `#[derive(Configuration)]` + `#[bean]`
 
 Not every collaborator is a type you can annotate directly: the event store, the
-read model, the query cache, the JWT service, and the ledger are all built by a
-factory. Lumen declares them on a `#[derive(Configuration)]` holder — the Spring
+query cache, the JWT service, and the ledger are all built by a factory. Lumen
+declares them on a `#[derive(Configuration)]` holder — the Spring
 `@Configuration` + `@Bean` analog. Each `#[bean]` method is keyed by its return
 type, and the container resolves each method's `Arc<Dep>` arguments from the
-container before calling it, so a factory can depend on other beans:
+container before calling it, so a factory can depend on other beans. (The read
+model is the exception: it carries `#[derive(Repository)]` on its own struct, so
+the scan registers it directly — no `#[bean]` factory, as you will see below.)
 
 ```rust,ignore
 // src/web.rs
@@ -70,12 +73,6 @@ impl LumenBeans {
     #[bean]
     fn event_store(&self) -> MemoryEventStore {
         MemoryEventStore::new()
-    }
-
-    /// The read model the projection feeds and `GetWallet` serves (`@Bean`).
-    #[bean]
-    fn read_model(&self) -> ReadModel {
-        ReadModel::default()
     }
 
     /// The read-side query cache honouring `GetWallet`'s 30s TTL (`@Bean`).
@@ -101,19 +98,34 @@ impl LumenBeans {
         crate::security::security_layers().0
     }
 
-    /// The ledger application service — its parameters are **autowired**: the
-    /// container resolves the event store, the framework-provided `Broker` port,
-    /// and the read model by type, then hands them to the factory.
+    /// The ledger application service — a **pure factory** whose parameters are
+    /// **autowired**: the container resolves the event store and the
+    /// framework-provided `Broker` port by type, then hands them to the factory.
     #[bean]
-    fn ledger(
-        &self,
-        store: Arc<MemoryEventStore>,
-        broker: Arc<dyn Broker>,
-        read_model: Arc<ReadModel>,
-    ) -> Ledger {
+    fn ledger(&self, store: Arc<MemoryEventStore>, broker: Arc<dyn Broker>) -> Ledger {
         let store: Arc<dyn EventStore> = store;
         Ledger::new(store, broker)
     }
+}
+```
+
+The read model is **not** declared here. `ReadModel` is a `#[derive(Repository)]`
+data-access bean (Spring's `@Repository`) annotated right on the struct, so
+`container.scan()` registers it as a singleton directly — autowired as
+`Arc<ReadModel>` into the handler and projection beans, and shown in the startup
+report as `[repository] ReadModel`:
+
+```rust,ignore
+// src/ledger.rs — the CQRS query side, a scanned data-access bean.
+use std::collections::HashMap;
+use std::sync::Mutex;
+use firefly::prelude::*;
+
+/// The in-memory read model — a `#[derive(Repository)]` bean (Spring's
+/// `@Repository`): the projection upserts it, `GetWallet` reads it.
+#[derive(Debug, Default, Repository)]
+pub struct ReadModel {
+    rows: Mutex<HashMap<String, WalletView>>,
 }
 ```
 
@@ -128,10 +140,10 @@ Three ideas carry the whole design:
   container supplies the framework's broker. Swap `MemoryEventStore` for a
   Postgres-backed store by changing *only this holder*; the ledger, the
   handlers, and the controller never notice.
-- **A bean can depend on a bean.** `ledger(&self, store, broker, read_model)`
-  pulls in three other beans by type. The container builds them first, then
-  calls the factory — the same dependency-ordered construction a hand-written
-  root would do, derived from the parameter types.
+- **A bean can depend on a bean.** `ledger(&self, store, broker)` pulls in two
+  other beans by type. The container builds them first, then calls the factory —
+  the same dependency-ordered construction a hand-written root would do, derived
+  from the parameter types.
 
 > **Tip** — Declarative wiring keeps each collaborator's dependencies *next to
 > the collaborator*, and the container resolves them by type. A missing
@@ -223,10 +235,10 @@ pub struct WalletApi {
 ```
 
 When the container constructs `WalletApi` it first resolves the `Bus`, the
-`Ledger` (recursively building *its* store, broker, and read model from the
-`#[bean]` factories above), and the `QueryCache`, then injects all three. A
-dependency that does not exist surfaces as a clear resolution error at startup —
-not a panic three frames deep at runtime.
+`Ledger` (recursively building *its* store and broker from the `#[bean]`
+factories above), and the `QueryCache`, then injects all three. A dependency
+that does not exist surfaces as a clear resolution error at startup — not a panic
+three frames deep at runtime.
 
 `#[autowired]` injects more than a single `Arc<T>`:
 
@@ -304,8 +316,10 @@ Not every dependency is a type you can annotate. Third-party clients need
 constructor arguments; some beans are clearest as a factory. This is the
 `LumenBeans` holder you already saw — a `#[derive(Configuration)]` with `#[bean]`
 methods that produce beans keyed by their **return type** — the way Lumen wires
-its event store, read model, query cache, JWT service, and ledger. A single
-factory can swap an implementation in one place:
+its event store, query cache, JWT service, and ledger. (The read model is the
+counter-example: a type you *can* annotate directly, so it carries
+`#[derive(Repository)]` instead of being produced by a factory.) A single factory
+can swap an implementation in one place:
 
 ```rust,ignore
 #[bean]
@@ -423,9 +437,10 @@ list for you from the link-time inventory.
 ## Exercises
 
 1. **Read the bean inventory.** Run Lumen and read the `:: beans (…) ::` block in
-   the startup report. Find `LumenBeans`, `WalletApi`, and the `ledger` /
-   `event_store` / `read_model` factories, grouped by stereotype — the same data
-   the admin dashboard's `/beans` view renders.
+   the startup report. Find `LumenBeans`, `WalletApi`, the `ledger` /
+   `event_store` factories, and the `[repository] ReadModel` data-access bean,
+   grouped by stereotype — the same data the admin dashboard's `/beans` view
+   renders.
 2. **Add a bean and watch it appear.** Add a small `#[derive(Service)]` to
    `web.rs`, run Lumen, and confirm it shows up in the startup report — you wrote
    no registration call. Then add `#[firefly(condition_on_property =

@@ -301,8 +301,10 @@ impl LumenBeans {
     fn query_cache(&self) -> QueryCache {
         QueryCache::new()
     }
-    // ... event_store, read_model, jwt_service, ledger, security beans ...
+    // ... event_store, jwt_service, ledger, security beans ...
 }
+// The read store is *not* a `#[bean]` here — `ReadModel` carries
+// `#[derive(Repository)]` on its own struct, so the scan registers it directly.
 ```
 
 > **Where does the `Bus` come from?** It is a framework-provided infrastructure

@@ -37,6 +37,10 @@ like Spring Boot, with no process-globals.
   it, so one container's singletons stay consistent.
 - The free-`fn` `#[command_handler]` / `#[query_handler]` / `#[event_listener]`
   macros are unchanged and still supported for simple, collaborator-free handlers.
+- Lumen's read model is now a `#[derive(Repository)]` (`@Repository`) data-access
+  bean rather than a `@Bean` factory product, so the sample exercises the full
+  Spring stereotype set — `@Configuration` + `@Bean`, `@Service`, `@Repository`,
+  and `@Controller` + `@Autowired` — all scanned and wired by the DI container.
 
 ## v26.6.6 — 2026-06-15
 

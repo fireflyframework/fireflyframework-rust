@@ -54,11 +54,14 @@ pub const EVENT_SOURCE: &str = "lumen";
 // Read model — the CQRS query side.
 // ---------------------------------------------------------------------------
 
-/// The in-memory **read model**: a map of wallet id → [`WalletView`], upserted
-/// by the projection and served by the `GetWallet` query. A real service would
-/// back this with `firefly`'s reactive repository over Postgres; an in-memory
-/// map keeps the teaching baseline dependency-free.
-#[derive(Debug, Default)]
+/// The in-memory **read model** — a `#[derive(Repository)]` data-access bean
+/// (Spring's `@Repository`): a map of wallet id → [`WalletView`], upserted by the
+/// projection and served by the `GetWallet` query. `container.scan()` registers
+/// it as a singleton bean, autowired (as `Arc<ReadModel>`) into the handler and
+/// projection beans. A real service would back this with `firefly`'s reactive
+/// repository over Postgres; an in-memory map keeps the teaching baseline
+/// dependency-free.
+#[derive(Debug, Default, Repository)]
 pub struct ReadModel {
     rows: Mutex<HashMap<String, WalletView>>,
 }
