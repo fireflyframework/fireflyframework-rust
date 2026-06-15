@@ -172,4 +172,4 @@ pub use serializer::{
 };
 
 /// The released framework version, shared across all Firefly crates.
-pub const VERSION: &str = "26.7.0";
+pub const VERSION: &str = "26.6.6";

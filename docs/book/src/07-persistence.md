@@ -721,7 +721,7 @@ Postgres, MySQL, SQLite, and MongoDB.
 
 > **One-dependency note.** Lumen pulls none of these adapters in its default
 > build — they are opt-in cargo features on the `firefly` facade
-> (`firefly = { version = "26.7", features = ["data-sqlx"] }`), re-exported as
+> (`firefly = { version = "26.6", features = ["data-sqlx"] }`), re-exported as
 > `firefly::data_sqlx` / `firefly::data_mongodb`. The teaching build stays lean;
 > the production build adds exactly the driver it needs.
 

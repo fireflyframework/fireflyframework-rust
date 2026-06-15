@@ -15,7 +15,7 @@ as an axum `Router`:
 | `GET /actuator/env`      | `{activeProfiles, propertySources}` when an `EnvSource` is wired; else a flat redacted env view |
 | `GET /actuator/tasks`    | `{"count": N}` alive tokio tasks; `?dump=true` returns a runtime report          |
 | `GET /actuator/threaddump`| `{threads:[…]}` — the tokio runtime worker/task snapshot                         |
-| `GET /actuator/version`  | `{"firefly":"26.7.0","app":"orders","appVersion":"…","rust":"…"}`                |
+| `GET /actuator/version`  | `{"firefly":"26.6.6","app":"orders","appVersion":"…","rust":"…"}`                |
 
 Bind these on a separate admin port (e.g. `:8081`) so they never leak
 onto the public network.

@@ -2,7 +2,7 @@
 
 All notable changes to the Firefly Framework for Rust.
 
-## v26.7.0 — 2026-06-15
+## v26.6.6 — 2026-06-15
 
 The **turnkey-bootstrap & auto-generated-API-docs milestone**. A service now
 boots from a single line — `firefly::FireflyApplication::new("app").run().await`

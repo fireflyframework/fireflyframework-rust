@@ -195,7 +195,7 @@ version = 4
 
 [[package]]
 name = "firefly-cli"
-version = "26.7.0"
+version = "26.6.6"
 dependencies = [
  "clap",
 ]
@@ -227,7 +227,7 @@ source = "git+https://github.com/example/repo?branch=main#abc123"
         assert_eq!(entries[0].source, "crates.io");
 
         let firefly = entries.iter().find(|e| e.name == "firefly-cli").unwrap();
-        assert_eq!(firefly.version, "26.7.0");
+        assert_eq!(firefly.version, "26.6.6");
         assert_eq!(firefly.source, "local"); // no source key -> workspace member
 
         let git = entries.iter().find(|e| e.name == "some-git-dep").unwrap();

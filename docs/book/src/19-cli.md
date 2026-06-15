@@ -19,7 +19,7 @@ built for a compiled Cargo workspace.
 ```bash
 cargo install --path crates/cli   # installs the `firefly` binary
 firefly --help                     # prints the banner + every command
-firefly --version                  # 26.7.0
+firefly --version                  # 26.6.6
 ```
 
 ## Command overview
