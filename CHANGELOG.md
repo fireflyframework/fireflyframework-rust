@@ -2,6 +2,23 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.17 — 2026-06-16
+
+Spring Boot **parity** push, PR 7/N — **Tier B**: caching `condition` / `unless`.
+
+### Added
+
+- **`#[cacheable(condition = "...", unless = "...")]`** (firefly-macros) — Spring's
+  `@Cacheable` conditional caching:
+  - **`condition`** — a Rust boolean over the method parameters, evaluated
+    *before* any cache interaction; `false` bypasses the cache entirely (no read,
+    no write — just the body).
+  - **`unless`** — a Rust boolean over the freshly computed value (bound as
+    `result: &V`), evaluated *after* the body; `true` returns the value but does
+    **not** store it.
+  - Both are `#[cacheable]`-only (rejected on `#[cache_put]` / `#[cache_evict]`
+    with a clear error).
+
 ## v26.6.16 — 2026-06-16
 
 Spring Boot **parity** push, PR 6/N — **Tier B**: an Argon2id password encoder.

@@ -91,4 +91,4 @@ pub use ports::{
 pub use service::Service;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.16";
+pub const VERSION: &str = "26.6.17";

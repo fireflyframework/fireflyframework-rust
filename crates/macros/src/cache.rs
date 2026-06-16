@@ -59,6 +59,16 @@ struct CacheArgs {
     /// `#[cache_evict(all_entries)]` — evict every entry whose key starts with
     /// `key` (prefix eviction) rather than the single exact key.
     all_entries: bool,
+    /// `#[cacheable(condition = "<bool expr>")]` — Spring's `condition`. A Rust
+    /// boolean expression over the method parameters, evaluated **before** any
+    /// cache interaction; when `false` the call bypasses the cache entirely (no
+    /// read, no write — just the body). `None` means "always cache".
+    condition: Option<String>,
+    /// `#[cacheable(unless = "<bool expr>")]` — Spring's `unless`. A Rust boolean
+    /// expression over the freshly computed value (bound as `result: &V`),
+    /// evaluated **after** the body; when `true` the value is returned but **not
+    /// stored**. `None` means "always store".
+    unless: Option<String>,
 }
 
 /// Which caching behaviour is being expanded — selects the validation rules and
@@ -128,6 +138,17 @@ fn expand(args: TokenStream, mut func: ItemFn, kind: Kind) -> syn::Result<TokenS
         ));
     }
 
+    // `condition` / `unless` are the read-through `#[cacheable]` predicates.
+    if (parsed.condition.is_some() || parsed.unless.is_some()) && !matches!(kind, Kind::Cacheable) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            format!(
+                "`condition` / `unless` are only valid on #[cacheable]; remove them from {}",
+                kind.macro_name()
+            ),
+        ));
+    }
+
     // Extract the Ok type `V` of the `Result<V, E>` return.
     let ok_ty = result_ok_type(&func.sig.output).ok_or_else(|| {
         syn::Error::new_spanned(
@@ -155,7 +176,13 @@ fn expand(args: TokenStream, mut func: ItemFn, kind: Kind) -> syn::Result<TokenS
     };
 
     let new_block = match kind {
-        Kind::Cacheable => cacheable_block(&func, &cache, &ok_ty, &key_expr, &ttl),
+        Kind::Cacheable => {
+            // The `condition` gate and the `unless` veto, parsed as Rust boolean
+            // expressions (absent → no gate / always store).
+            let condition = bool_predicate(parsed.condition.as_deref())?;
+            let unless = bool_predicate(parsed.unless.as_deref())?;
+            cacheable_block(&func, &cache, &ok_ty, &key_expr, &ttl, condition, unless)
+        }
         Kind::Put => put_block(&func, &cache, &ok_ty, &key_expr, &ttl),
         Kind::Evict => evict_block(&func, &cache, &ok_ty, &key_expr, parsed.all_entries),
     };
@@ -179,15 +206,43 @@ fn cacheable_block(
     ok_ty: &Type,
     key_expr: &TokenStream,
     ttl: &TokenStream,
+    condition: Option<TokenStream>,
+    unless: Option<TokenStream>,
 ) -> TokenStream {
     let orig = &func.block;
+    // `condition == false` bypasses the cache entirely (Spring's `condition`).
+    // Evaluated *before* the loader closure moves the parameters it reads in.
+    let condition_gate = condition.map(|cond| {
+        quote! {
+            if !(#cond) {
+                return __firefly_cache_loader().await;
+            }
+        }
+    });
+    // `unless` vetoes *storing* the freshly computed value (Spring's `unless`),
+    // bound as `result: &V`; absent, the value is always stored.
+    let store = match unless {
+        Some(pred) => quote! {
+            let __firefly_skip_store = { let result = &__firefly_value; #pred };
+            if !__firefly_skip_store {
+                let _ = __firefly_typed
+                    .set(&__firefly_cache_key, &__firefly_value, #ttl)
+                    .await;
+            }
+        },
+        None => quote! {
+            let _ = __firefly_typed
+                .set(&__firefly_cache_key, &__firefly_value, #ttl)
+                .await;
+        },
+    };
     quote! {
         {
-            // The loader runs the original body exactly once on a miss. Built
-            // before the adapter branch so the key can borrow parameters the
-            // loader then moves.
+            // The key (and the `condition` gate) read parameters, so they are
+            // evaluated before the loader closure moves those parameters in.
             let __firefly_cache_key = ::std::string::ToString::to_string(&(#key_expr));
             let __firefly_cache_loader = move || async move #orig;
+            #condition_gate
             match #cache::cache_adapter() {
                 ::core::option::Option::Some(__firefly_adapter) => {
                     let __firefly_typed = #cache::Typed::<#ok_ty>::new(__firefly_adapter);
@@ -200,9 +255,7 @@ fn cacheable_block(
                                 ::core::result::Result::Ok(__firefly_value) => {
                                     // A cache-write failure must not mask the
                                     // freshly computed value.
-                                    let _ = __firefly_typed
-                                        .set(&__firefly_cache_key, &__firefly_value, #ttl)
-                                        .await;
+                                    #store
                                     ::core::result::Result::Ok(__firefly_value)
                                 }
                                 __firefly_err => __firefly_err,
@@ -213,6 +266,23 @@ fn cacheable_block(
                 ::core::option::Option::None => __firefly_cache_loader().await,
             }
         }
+    }
+}
+
+/// Parses an optional boolean predicate string (`condition` / `unless`) into a
+/// Rust expression, or `None` when the argument is absent/blank.
+fn bool_predicate(raw: Option<&str>) -> syn::Result<Option<TokenStream>> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(expr) => {
+            let parsed: syn::Expr = syn::parse_str(expr).map_err(|e| {
+                syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!("`condition` / `unless` must be a Rust boolean expression: {e}"),
+                )
+            })?;
+            Ok(Some(quote!(#parsed)))
+        }
+        None => Ok(None),
     }
 }
 

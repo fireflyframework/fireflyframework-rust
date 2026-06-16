@@ -1077,6 +1077,12 @@ pub fn aspect(args: TokenStream, item: TokenStream) -> TokenStream {
 ///   a key that borrows a parameter is valid.
 /// - `ttl`: a duration literal (`"60s"`, `"500ms"`, `"5m"`, `"1h"`, or a bare
 ///   integer of seconds); omit for no expiry.
+/// - `condition` (Spring's `condition`): a Rust boolean expression over the
+///   method parameters, evaluated **before** any cache interaction; when `false`
+///   the call bypasses the cache entirely (no read, no write).
+/// - `unless` (Spring's `unless`): a Rust boolean expression over the freshly
+///   computed value (bound as `result: &V`), evaluated **after** the body; when
+///   `true` the value is returned but **not stored**.
 /// - `crate`: facade override for a renamed/shimmed `firefly`.
 ///
 /// ```ignore
@@ -1086,6 +1092,14 @@ pub fn aspect(args: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// // generated: on hit, returns the cached Order; on miss, runs the body and
 /// // stores Order under "order:<id>" for 60s.
+///
+/// // Only cache live orders, and never cache an empty result:
+/// #[firefly::cacheable(
+///     key = "format!(\"order:{}\", id)",
+///     condition = "id != 0",
+///     unless = "result.is_empty()"
+/// )]
+/// async fn find_order(&self, id: u64) -> Result<Vec<Line>, MyError> { /* … */ }
 /// ```
 #[proc_macro_attribute]
 pub fn cacheable(args: TokenStream, item: TokenStream) -> TokenStream {

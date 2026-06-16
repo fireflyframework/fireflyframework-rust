@@ -69,7 +69,7 @@ const FIELD_PRINCIPAL: &str = "principal";
 const FIELD_CREATED_AT: &str = "created_at";
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.16";
+pub const VERSION: &str = "26.6.17";
 
 /// A MongoDB-backed [`SessionRegistry`].
 ///
