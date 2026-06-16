@@ -2,6 +2,19 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.16 — 2026-06-16
+
+Spring Boot **parity** push, PR 6/N — **Tier B**: an Argon2id password encoder.
+
+### Added
+
+- **`Argon2PasswordEncoder`** (firefly-security) — Spring Security's
+  `Argon2PasswordEncoder`, the OWASP-preferred memory-hard alternative to
+  `BcryptPasswordEncoder`, behind the same `PasswordEncoder` port. Produces
+  self-describing Argon2id PHC strings (`$argon2id$v=19$m=…,t=…,p=…$…`) so a hash
+  still verifies after the encoder is reconfigured; `new()` uses the `argon2`
+  crate's OWASP defaults, `with_params(m, t, p)` sets explicit cost.
+
 ## v26.6.15 — 2026-06-16
 
 Spring Boot **parity** push, PR 5/N — **`@Transactional` ↔ repository

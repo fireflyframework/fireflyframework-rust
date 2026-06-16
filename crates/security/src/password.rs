@@ -118,3 +118,178 @@ impl PasswordEncoder for BcryptPasswordEncoder {
             .map_err(|e| SecurityError::verification(format!("bcrypt verify failed: {e}")))
     }
 }
+
+/// A [`PasswordEncoder`] backed by **Argon2id** — the Rust analog of Spring
+/// Security's `Argon2PasswordEncoder` and the OWASP-preferred, memory-hard
+/// alternative to bcrypt.
+///
+/// Hashes are self-describing PHC strings (`$argon2id$v=19$m=…,t=…,p=…$salt$hash`)
+/// carrying their algorithm, parameters, and a random 128-bit salt — so, exactly
+/// like bcrypt's embedded cost, a hash produced under one parameter set still
+/// verifies after the encoder is reconfigured, and two hashes of the same
+/// password differ.
+///
+/// ```
+/// use firefly_security::{Argon2PasswordEncoder, PasswordEncoder};
+///
+/// // Low parameters keep the doctest fast; production uses the OWASP default.
+/// let encoder = Argon2PasswordEncoder::with_params(4096, 1, 1);
+/// let hash = encoder.hash("s3cret").unwrap();
+/// assert!(hash.starts_with("$argon2id$"));
+/// assert!(encoder.verify("s3cret", &hash).unwrap());
+/// assert!(!encoder.verify("wrong", &hash).unwrap());
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct Argon2PasswordEncoder {
+    /// Memory cost in KiB (Argon2 `m`).
+    m_cost: u32,
+    /// Iteration (time) cost (Argon2 `t`).
+    t_cost: u32,
+    /// Degree of parallelism (Argon2 `p`).
+    p_cost: u32,
+}
+
+impl Argon2PasswordEncoder {
+    /// Creates an encoder at the `argon2` crate's OWASP-recommended default
+    /// parameters (Argon2id, `m=19456` KiB, `t=2`, `p=1`) — matching the spirit
+    /// of Spring's `Argon2PasswordEncoder` defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        let d = argon2::Params::DEFAULT_M_COST;
+        Self {
+            m_cost: d,
+            t_cost: argon2::Params::DEFAULT_T_COST,
+            p_cost: argon2::Params::DEFAULT_P_COST,
+        }
+    }
+
+    /// Creates an encoder at explicit Argon2 parameters — `m_cost` (memory in
+    /// KiB), `t_cost` (iterations), `p_cost` (parallelism). Tests use low values
+    /// to stay fast; production should keep the [`new`](Self::new) defaults or
+    /// higher.
+    #[must_use]
+    pub fn with_params(m_cost: u32, t_cost: u32, p_cost: u32) -> Self {
+        Self {
+            m_cost,
+            t_cost,
+            p_cost,
+        }
+    }
+
+    /// Builds the configured `argon2::Argon2` hasher (Argon2id, v19).
+    fn hasher(&self) -> Result<argon2::Argon2<'static>, SecurityError> {
+        let params = argon2::Params::new(self.m_cost, self.t_cost, self.p_cost, None)
+            .map_err(|e| SecurityError::verification(format!("argon2 params invalid: {e}")))?;
+        Ok(argon2::Argon2::new(
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            params,
+        ))
+    }
+}
+
+/// OWASP defaults via [`Argon2PasswordEncoder::new`].
+impl Default for Argon2PasswordEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PasswordEncoder for Argon2PasswordEncoder {
+    fn hash(&self, raw_password: &str) -> Result<String, SecurityError> {
+        use argon2::password_hash::rand_core::OsRng;
+        use argon2::password_hash::{PasswordHasher, SaltString};
+
+        let salt = SaltString::generate(&mut OsRng);
+        let hash = self
+            .hasher()?
+            .hash_password(raw_password.as_bytes(), &salt)
+            .map_err(|e| SecurityError::verification(format!("argon2 hash failed: {e}")))?;
+        Ok(hash.to_string())
+    }
+
+    fn verify(&self, raw_password: &str, hashed_password: &str) -> Result<bool, SecurityError> {
+        use argon2::password_hash::{Error, PasswordHash, PasswordVerifier};
+
+        // A malformed stored hash is a structural error; a correct-but-wrong
+        // password is `Ok(false)` — the trait's contract, mirroring bcrypt.
+        let parsed = PasswordHash::new(hashed_password)
+            .map_err(|e| SecurityError::verification(format!("argon2 hash malformed: {e}")))?;
+        match self
+            .hasher()?
+            .verify_password(raw_password.as_bytes(), &parsed)
+        {
+            Ok(()) => Ok(true),
+            Err(Error::Password) => Ok(false),
+            Err(e) => Err(SecurityError::verification(format!(
+                "argon2 verify failed: {e}"
+            ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Low parameters keep the tests fast; production uses the OWASP defaults.
+    fn argon() -> Argon2PasswordEncoder {
+        Argon2PasswordEncoder::with_params(4096, 1, 1)
+    }
+
+    #[test]
+    fn argon2_round_trips_and_rejects_a_wrong_password() {
+        let enc = argon();
+        let hash = enc.hash("s3cret").expect("hash");
+        assert!(hash.starts_with("$argon2id$"), "PHC string: {hash}");
+        assert!(enc.verify("s3cret", &hash).expect("verify match"));
+        assert!(!enc
+            .verify("wrong", &hash)
+            .expect("verify mismatch is Ok(false)"));
+    }
+
+    #[test]
+    fn argon2_salts_each_hash() {
+        let enc = argon();
+        let a = enc.hash("same").expect("hash a");
+        let b = enc.hash("same").expect("hash b");
+        assert_ne!(
+            a, b,
+            "a random salt makes two hashes of one password differ"
+        );
+    }
+
+    #[test]
+    fn argon2_hash_self_describes_params_so_it_verifies_after_reconfigure() {
+        // A hash produced under one parameter set still verifies under another,
+        // because the PHC string carries its own m/t/p (like bcrypt's cost).
+        let produced = Argon2PasswordEncoder::with_params(8192, 2, 1)
+            .hash("portable")
+            .expect("hash");
+        let verifier = Argon2PasswordEncoder::with_params(4096, 1, 1);
+        assert!(verifier.verify("portable", &produced).expect("verify"));
+    }
+
+    #[test]
+    fn argon2_rejects_a_malformed_stored_hash() {
+        let err = argon().verify("x", "not-a-phc-string");
+        assert!(
+            err.is_err(),
+            "a malformed stored hash is a structural error"
+        );
+    }
+
+    #[test]
+    fn argon2_and_bcrypt_share_the_password_encoder_port() {
+        // Both encoders are usable behind the same `dyn PasswordEncoder`.
+        let encoders: Vec<Box<dyn PasswordEncoder>> = vec![
+            Box::new(argon()),
+            Box::new(BcryptPasswordEncoder::with_rounds(4)),
+        ];
+        for enc in &encoders {
+            let hash = enc.hash("portable").expect("hash");
+            assert!(enc.verify("portable", &hash).expect("verify"));
+            assert!(!enc.verify("nope", &hash).expect("mismatch"));
+        }
+    }
+}

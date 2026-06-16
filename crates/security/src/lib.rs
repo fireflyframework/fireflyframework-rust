@@ -45,9 +45,10 @@
 //!    presets), the browser login flow (auth-code + state/nonce +
 //!    PKCE S256), and an authorization server (client_credentials +
 //!    refresh_token) with pluggable token stores.
-//! 10. [`PasswordEncoder`] + [`BcryptPasswordEncoder`] — a standalone,
-//!     reusable credential hash/verify primitive (pyfly's
-//!     `pyfly.security.password`), usable independently of any IdP.
+//! 10. [`PasswordEncoder`] + [`BcryptPasswordEncoder`] /
+//!     [`Argon2PasswordEncoder`] — a standalone, reusable credential
+//!     hash/verify primitive (pyfly's `pyfly.security.password` / Spring's
+//!     `Argon2PasswordEncoder`), usable independently of any IdP.
 //! 11. [`JwtService`] — a standalone symmetric (HMAC, HS256 default) JWT
 //!     encode/decode/`to_authentication` primitive (pyfly's
 //!     `pyfly.security.jwt.JWTService`), reusable for symmetric-token
@@ -171,7 +172,7 @@ pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
 pub use guards::{require, AuthorizationGuard};
 pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier};
 pub use jwt::{authentication_from_claims, JwtService, DEFAULT_EXPIRATION_SECONDS};
-pub use password::{BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
+pub use password::{Argon2PasswordEncoder, BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
 pub use role_hierarchy::RoleHierarchy;
 pub use session_auth::{
     SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,
@@ -179,4 +180,4 @@ pub use session_auth::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.15";
+pub const VERSION: &str = "26.6.16";
