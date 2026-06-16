@@ -31,32 +31,35 @@ parts:
       - {id: ch03, file: 03-configuration.md,        num: 3, title: "Configuration, Profiles & Secrets",            opener: art/openers/ch03.svg}
       - {id: ch04, file: 04a-dependency-injection.md, num: 4, title: "Dependency Injection & the Application Context", opener: art/openers/ch04.svg}
       - {id: ch05, file: 04-dependency-wiring.md,    num: 5, title: "Dependency Wiring & Composition",               opener: art/openers/ch05.svg}
-      - {id: ch06, file: 05-reactive-model.md,       num: 6, title: "The Reactive Model — Mono & Flux",              opener: art/openers/ch06.svg}
+      - {id: ch04b, file: 04b-bootstrap.md,          num: 6, title: "Application Bootstrap",                          opener: art/openers/ch04b.svg}
+      - {id: ch06, file: 05-reactive-model.md,       num: 7, title: "The Reactive Model — Mono & Flux",              opener: art/openers/ch06.svg}
   - title: "Part II — Modeling & Persisting the Domain"
     chapters:
-      - {id: ch07, file: 06-first-http-api.md,       num: 7,  title: "Your First HTTP API",                  opener: art/openers/ch07.svg}
-      - {id: ch08, file: 07-persistence.md,          num: 8,  title: "Persistence & Reactive Repositories",  opener: art/openers/ch08.svg}
-      - {id: ch09, file: 08-domain-driven-design.md, num: 9,  title: "Domain-Driven Design",                 opener: art/openers/ch09.svg}
-      - {id: ch10, file: 09-cqrs.md,                 num: 10, title: "CQRS: Commands & Queries",             opener: art/openers/ch10.svg}
+      - {id: ch07, file: 06-first-http-api.md,       num: 8,  title: "Your First HTTP API",                  opener: art/openers/ch07.svg}
+      - {id: ch06a, file: 06a-openapi.md,            num: 9,  title: "OpenAPI & API Documentation",          opener: art/openers/ch06a.svg}
+      - {id: ch08, file: 07-persistence.md,          num: 10, title: "Persistence & Reactive Repositories",  opener: art/openers/ch08.svg}
+      - {id: ch09, file: 08-domain-driven-design.md, num: 11, title: "Domain-Driven Design",                 opener: art/openers/ch09.svg}
+      - {id: ch10, file: 09-cqrs.md,                 num: 12, title: "CQRS: Commands & Queries",             opener: art/openers/ch10.svg}
   - title: "Part III — Event-Driven Architecture"
     chapters:
-      - {id: ch11, file: 10-eda-messaging.md,        num: 11, title: "Event-Driven Architecture & Messaging", opener: art/openers/ch11.svg}
-      - {id: ch12, file: 11-event-sourcing.md,       num: 12, title: "Event Sourcing the Ledger",            opener: art/openers/ch12.svg}
+      - {id: ch11, file: 10-eda-messaging.md,        num: 13, title: "Event-Driven Architecture & Messaging", opener: art/openers/ch11.svg}
+      - {id: ch12, file: 11-event-sourcing.md,       num: 14, title: "Event Sourcing the Ledger",            opener: art/openers/ch12.svg}
   - title: "Part IV — Into Microservices"
     chapters:
-      - {id: ch13, file: 13-http-clients.md,         num: 13, title: "HTTP Clients & Calling Other Services", opener: art/openers/ch13.svg}
-      - {id: ch14, file: 20a-experience-tier.md,      num: 14, title: "The Experience Tier: Composing a BFF",  opener: art/openers/ch14.svg}
-      - {id: ch15, file: 12-sagas.md,                num: 15, title: "Distributed Transactions: Sagas, Workflows & TCC", opener: art/openers/ch15.svg}
+      - {id: ch13, file: 13-http-clients.md,         num: 15, title: "HTTP Clients & Calling Other Services", opener: art/openers/ch13.svg}
+      - {id: ch14, file: 20a-experience-tier.md,      num: 16, title: "The Experience Tier: Composing a BFF",  opener: art/openers/ch14.svg}
+      - {id: ch15, file: 12-sagas.md,                num: 17, title: "Distributed Transactions: Sagas, Workflows & TCC", opener: art/openers/ch15.svg}
+      - {id: ch22b, file: 22-layered-microservices.md, num: 18, title: "Layered Microservices",               opener: art/openers/ch22b.svg}
   - title: "Part V — Secure, Observe & Ship"
     chapters:
-      - {id: ch16, file: 14-security.md,                 num: 16, title: "Security, Sessions & Identity",        opener: art/openers/ch16.svg}
-      - {id: ch17, file: 15-observability.md,            num: 17, title: "Observability & Health",               opener: art/openers/ch17.svg}
-      - {id: ch18, file: 17-caching.md,                  num: 18, title: "Caching & Resilience",                 opener: art/openers/ch18.svg}
-      - {id: ch19, file: 16-scheduling-notifications.md, num: 19, title: "Scheduling, Notifications & Webhooks",  opener: art/openers/ch19.svg}
-      - {id: ch20, file: 21-declarative-macros.md,       num: 20, title: "Declarative Services with Macros",      opener: art/openers/ch20.svg}
-      - {id: ch21, file: 18-testing.md,                  num: 21, title: "Testing Firefly Applications",          opener: art/openers/ch21.svg}
-      - {id: ch22, file: 19-cli.md,                      num: 22, title: "The firefly CLI",                       opener: art/openers/ch22.svg}
-      - {id: ch23, file: 20-production.md,               num: 23, title: "Extending Firefly & Going to Production", opener: art/openers/ch23.svg}
+      - {id: ch16, file: 14-security.md,                 num: 19, title: "Security, Sessions & Identity",        opener: art/openers/ch16.svg}
+      - {id: ch17, file: 15-observability.md,            num: 20, title: "Observability & Health",               opener: art/openers/ch17.svg}
+      - {id: ch18, file: 17-caching.md,                  num: 21, title: "Caching & Resilience",                 opener: art/openers/ch18.svg}
+      - {id: ch19, file: 16-scheduling-notifications.md, num: 22, title: "Scheduling, Notifications & Webhooks",  opener: art/openers/ch19.svg}
+      - {id: ch20, file: 21-declarative-macros.md,       num: 23, title: "Declarative Services with Macros",      opener: art/openers/ch20.svg}
+      - {id: ch21, file: 18-testing.md,                  num: 24, title: "Testing Firefly Applications",          opener: art/openers/ch21.svg}
+      - {id: ch22, file: 19-cli.md,                      num: 25, title: "The firefly CLI",                       opener: art/openers/ch22.svg}
+      - {id: ch23, file: 20-production.md,               num: 26, title: "Extending Firefly & Going to Production", opener: art/openers/ch23.svg}
   - title: "Appendices"
     chapters:
       - {id: appb,     file: 91-appendix-modules.md, num: "A", title: "Crate & Module Index",             opener: art/openers/appb.svg}
