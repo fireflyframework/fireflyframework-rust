@@ -2,6 +2,36 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.23 — 2026-06-16
+
+OpenAPI **operation parameters & bodies** now render in full (Swagger UI / ReDoc
+showed bare operations with no inputs before).
+
+### Added
+
+- **Query parameters** are generated from a `Query<T>` / `ValidQuery<T>`
+  extractor: the generator expands `T`'s `#[derive(Schema)]` fields into one
+  `in: query` parameter each (required iff non-optional). A `PageRequest`
+  argument adds the standard `page` / `size` / `sort` parameters.
+- **Header parameters** are declared on a verb attribute:
+  `#[post("/x", header("Idempotency-Key", required, description = "…"))]` (and
+  `query("…")` for an extra query parameter) → an `in: header` parameter the
+  handler reads like any axum header.
+- `RouteDescriptor` gains `query_schema` / `pageable` / `parameters`
+  (`ParamDescriptor`); the openapi `Builder` expands them; `Parameter::{query,
+  header}` constructors.
+
+### Fixed
+
+- **Request bodies are inferred from `Valid<T>`**, not only `Json<T>` — so the
+  validating extractor's body (the common case) is documented as a
+  `requestBody`. POST/PATCH operations previously showed no body in Swagger UI.
+
+### lumen-ledger
+
+- Query DTOs (`OwnerQuery`, `StatusQuery`) and `StatusBody` are `#[derive(Schema)]`
+  so their fields render; `POST /wallets` declares an `Idempotency-Key` header.
+
 ## v26.6.22 — 2026-06-16
 
 Security: remove an unauthenticated all-wallets listing from the sample

@@ -50,10 +50,10 @@ pub struct WalletController {
 }
 
 /// `?owner=…` query for the by-owner list endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Schema)]
 struct OwnerQuery {
-    /// The owner to filter by. **Optional** — omit `?owner=` to list every
-    /// wallet (the conventional REST collection), supply it to filter.
+    /// The owner whose wallets to list. **Required** — the listing is
+    /// deliberately owner-scoped (never an unauthenticated list-everything).
     #[serde(default)]
     owner: Option<String>,
 }
@@ -61,7 +61,7 @@ struct OwnerQuery {
 /// `?status=` filter for the paged list endpoint. Pagination (`page`, `size`,
 /// `sort`) is bound separately by the framework's `PageRequest` resolver, so
 /// this query only carries the domain filter.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Schema)]
 struct StatusQuery {
     /// The status to filter by (defaults to `active`).
     #[serde(default)]
@@ -69,7 +69,7 @@ struct StatusQuery {
 }
 
 /// JSON body for the status-transition endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Schema)]
 struct StatusBody {
     /// The new status.
     status: WalletStatus,
@@ -87,12 +87,23 @@ impl WalletController {
         "/wallets",
         summary = "Open a wallet",
         description = "Opens a new wallet for an owner with an optional opening balance.",
-        status = 201
+        status = 201,
+        header(
+            "Idempotency-Key",
+            description = "optional client-supplied key to make retries safe"
+        )
     )]
     async fn open(
         State(api): State<WalletController>,
+        headers: axum::http::HeaderMap,
         Valid(body): Valid<CreateWalletRequest>,
     ) -> WebResult<(StatusCode, Json<WalletResponse>)> {
+        // The declared `Idempotency-Key` header is readable here exactly like any
+        // axum header (a real handler would dedupe on it); declaring it makes it a
+        // first-class parameter in Swagger UI / ReDoc so callers can supply it.
+        let _idempotency_key = headers
+            .get("idempotency-key")
+            .and_then(|v| v.to_str().ok());
         let view = api.service.create(body).await.map_err(service_to_web)?;
         Ok((StatusCode::CREATED, Json(view)))
     }

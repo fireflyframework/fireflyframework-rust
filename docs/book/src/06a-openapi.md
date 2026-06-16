@@ -155,10 +155,32 @@ for `WalletResponse.status`.
 You do **not** name request and response models on the attribute — the macro
 infers them from the handler's own signature:
 
-- the **request** is the inner type of the first `Json<T>` *parameter*, and
+- the **request body** is the inner type of the first `Json<T>` *or* `Valid<T>`
+  parameter (so the validating extractor documents its body too), and
 - the **response** is the `Json<T>` found inside the return type, after
   unwrapping `WebResult<…>` / `Result<…>` and looking through a
   `(StatusCode, Json<T>)` tuple.
+
+### Parameters: path, query, header
+
+The same signature-driven inference covers operation **parameters**, so Swagger
+UI / ReDoc render an input for each — no hand-written parameter list:
+
+- **Path** parameters come from the route template: every `:id` / `{id}` segment
+  becomes a required `in: path` parameter.
+- **Query** parameters come from a `Query<T>` / `ValidQuery<T>` extractor — the
+  generator expands `T`'s `#[derive(Schema)]` fields into one `in: query`
+  parameter each (required iff the field is non-optional). A `PageRequest`
+  argument adds the standard `page` / `size` / `sort` query parameters.
+- **Header** parameters are declared on the verb attribute:
+  `#[post("/wallets", header("Idempotency-Key", required, description = "…"))]`
+  emits an `in: header` parameter (and the handler reads it like any axum
+  header). `query("…")` declares an extra query parameter the same way.
+
+So Lumen's `GET /wallets/page` shows `status` (from its `Query<StatusQuery>`)
+plus `page`/`size`/`sort` (from `PageRequest`), and `POST /wallets` shows its
+`CreateWalletRequest` body plus the `Idempotency-Key` header — all in Swagger UI,
+with zero parameter boilerplate.
 
 Take Lumen's `open` handler:
 

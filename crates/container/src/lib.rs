@@ -98,8 +98,8 @@ pub use registration::{
     BeanMetrics, DestroyHook, Factory, Registration, HIGHEST_PRECEDENCE, LOWEST_PRECEDENCE,
 };
 pub use scan::{
-    discovered, routes, schemas, BeanDescriptor, BeanStats, ComponentRegistration, RouteDescriptor,
-    SchemaDescriptor, Stereotype as BeanStereotype,
+    discovered, routes, schemas, BeanDescriptor, BeanStats, ComponentRegistration, ParamDescriptor,
+    RouteDescriptor, SchemaDescriptor, Stereotype as BeanStereotype,
 };
 pub use scope::{RefreshScope, Scope, ScopeHandler, ScopeSpec, SharedInstance, REFRESH_SCOPE_NAME};
 pub use value::resolve_value;
@@ -111,7 +111,7 @@ pub use value::resolve_value;
 pub use inventory;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.22";
+pub const VERSION: &str = "26.6.23";
 
 /// Type-erased boxed `Arc<T>` — a sized fat pointer wrapped in `Box<dyn Any>`
 /// so resolution can return `Arc<T>` for both sized and `?Sized` (trait-object)

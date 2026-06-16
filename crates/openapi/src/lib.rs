@@ -132,7 +132,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.22";
+pub const VERSION: &str = "26.6.23";
 
 /// Errors produced by the OpenAPI generator.
 #[derive(Debug, thiserror::Error)]
@@ -270,6 +270,11 @@ pub struct RouteDef {
     /// Whether the endpoint is deprecated; renders `deprecated: true` and
     /// is omitted from the document when `false`.
     pub deprecated: bool,
+    /// Schema name of a `Query<T>` extractor whose `#[derive(Schema)]` fields are
+    /// expanded into `in: query` parameters at build time (when registered).
+    pub query_schema: Option<String>,
+    /// Whether the route takes a `PageRequest` — emits `page` / `size` / `sort`.
+    pub pageable: bool,
 }
 
 /// Where a [`Parameter`] is carried — the OpenAPI `in` field.
@@ -323,6 +328,26 @@ impl Parameter {
             location: ParameterIn::Path,
             required: true,
             schema: json!({"type": "string"}),
+        }
+    }
+
+    /// Builds an `in: query` parameter with the given JSON schema.
+    pub fn query(name: impl Into<String>, required: bool, schema: Value) -> Self {
+        Self {
+            name: name.into(),
+            location: ParameterIn::Query,
+            required,
+            schema,
+        }
+    }
+
+    /// Builds an `in: header` parameter with the given JSON schema.
+    pub fn header(name: impl Into<String>, required: bool, schema: Value) -> Self {
+        Self {
+            name: name.into(),
+            location: ParameterIn::Header,
+            required,
+            schema,
         }
     }
 
@@ -509,7 +534,25 @@ impl Builder {
     /// controller type name and its `operationId` is the handler name.
     #[must_use]
     pub fn add_route(self, descriptor: &firefly_container::RouteDescriptor) -> Self {
-        let (path, params) = openapi_path_and_params(descriptor.path);
+        let (path, mut params) = openapi_path_and_params(descriptor.path);
+        // Explicitly-declared header / query parameters (`#[get(header(...))]`).
+        for p in descriptor.parameters {
+            let ty = if p.schema_type.is_empty() {
+                "string"
+            } else {
+                p.schema_type
+            };
+            let mut schema = serde_json::Map::new();
+            schema.insert("type".to_string(), Value::String(ty.to_string()));
+            if !p.description.is_empty() {
+                schema.insert("description".to_string(), Value::String(p.description.to_string()));
+            }
+            let schema = Value::Object(schema);
+            params.push(match p.location {
+                "header" => Parameter::header(p.name, p.required, schema),
+                _ => Parameter::query(p.name, p.required, schema),
+            });
+        }
         // Tags from the macro (`#[get(tags = [..])]` / `#[rest_controller(tag)]`)
         // win; otherwise derive a single tag from the controller type name.
         let tags = if descriptor.tags.is_empty() {
@@ -535,6 +578,8 @@ impl Builder {
             request_schema: opt(descriptor.request_schema),
             response_schema: opt(descriptor.response_schema),
             status: descriptor.status,
+            query_schema: opt(descriptor.query_schema),
+            pageable: descriptor.pageable,
             ..RouteDef::default()
         })
     }
@@ -626,6 +671,17 @@ impl Builder {
                 request_body: None,
                 responses: BTreeMap::new(),
             };
+            // A `Query<T>` extractor's `#[derive(Schema)]` fields expand into
+            // `in: query` parameters (so Swagger UI renders an input per field).
+            if let Some(qname) = &r.query_schema {
+                if let Some(qs) = self.extra_schemas.get(qname) {
+                    op.parameters.extend(query_params_from_schema(qs));
+                }
+            }
+            // A `PageRequest` extractor emits the Spring Data page/size/sort params.
+            if r.pageable {
+                op.parameters.extend(pageable_params());
+            }
             // A request schema name `$ref`s a component — but ONLY when that
             // component is actually registered (a `#[derive(Schema)]` type), so
             // an inferred-but-unregistered body type (e.g. `serde_json::Value`)
@@ -1127,6 +1183,45 @@ fn openapi_path_and_params(path: &str) -> (String, Vec<Parameter>) {
         segments.push(segment.to_string());
     }
     (segments.join("/"), params)
+}
+
+/// Expands a `#[derive(Schema)]` object schema into one `in: query` parameter
+/// per property (each carrying the property's own schema; required iff the
+/// property is in the schema's `required` list). The Rust analog of springdoc
+/// flattening a `@ParameterObject` query DTO into individual query parameters.
+fn query_params_from_schema(schema: &Value) -> Vec<Value> {
+    let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let required: std::collections::HashSet<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    props
+        .iter()
+        .map(|(name, prop_schema)| {
+            json!({
+                "in": "query",
+                "name": name,
+                "required": required.contains(name.as_str()),
+                "schema": prop_schema,
+            })
+        })
+        .collect()
+}
+
+/// The standard Spring Data `page` / `size` / `sort` query parameters a
+/// `PageRequest` argument resolver accepts.
+fn pageable_params() -> Vec<Value> {
+    vec![
+        json!({"in":"query","name":"page","required":false,
+               "description":"1-based page number","schema":{"type":"integer","minimum":1,"default":1}}),
+        json!({"in":"query","name":"size","required":false,
+               "description":"page size (max 2000)","schema":{"type":"integer","minimum":1,"default":20}}),
+        json!({"in":"query","name":"sort","required":false,
+               "description":"sort order `property[,asc|desc]` (repeatable)","schema":{"type":"string"}}),
+    ]
 }
 
 /// Returns the canonical reason phrase for a status code, or `""` for
@@ -1709,6 +1804,62 @@ mod tests {
 
     use firefly_container::RouteDescriptor;
 
+    #[test]
+    fn query_schema_pageable_and_header_params_expand() {
+        use firefly_container::ParamDescriptor;
+        let route = RouteDescriptor {
+            controller: "WalletApi",
+            method: "GET",
+            path: "/wallets",
+            handler: "list",
+            summary: "",
+            description: "",
+            tags: &[],
+            deprecated: false,
+            request_schema: "",
+            response_schema: "",
+            status: 0,
+            query_schema: "Filter",
+            pageable: true,
+            parameters: &[ParamDescriptor {
+                location: "header",
+                name: "X-Tenant-Id",
+                required: true,
+                schema_type: "string",
+                description: "tenant",
+            }],
+        };
+        let doc = Builder::new(Info::default())
+            .add_schema(
+                "Filter",
+                json!({"type":"object","properties":{"owner":{"type":"string"}},"required":["owner"]}),
+            )
+            .add_route(&route)
+            .build();
+        let v = serde_json::to_value(&doc).unwrap();
+        let params = v["paths"]["/wallets"]["get"]["parameters"].as_array().unwrap();
+        let has = |loc: &str, name: &str| {
+            params
+                .iter()
+                .any(|p| p["in"] == loc && p["name"] == name)
+        };
+        let required = |name: &str| {
+            params
+                .iter()
+                .find(|p| p["name"] == name)
+                .and_then(|p| p["required"].as_bool())
+                .unwrap_or(false)
+        };
+        // Query<Filter> expands into one query param per field (required from the schema).
+        assert!(has("query", "owner"), "owner query param: {params:#?}");
+        assert!(required("owner"), "owner is required per the schema");
+        // PageRequest -> the standard page/size/sort query params.
+        assert!(has("query", "page") && has("query", "size") && has("query", "sort"));
+        // Explicit header declaration -> an in: header parameter.
+        assert!(has("header", "X-Tenant-Id"));
+        assert!(required("X-Tenant-Id"));
+    }
+
     const ORDER_ROUTES: &[RouteDescriptor] = &[
         RouteDescriptor {
             controller: "OrderApi",
@@ -1722,6 +1873,9 @@ mod tests {
             request_schema: "",
             response_schema: "",
             status: 0,
+            query_schema: "",
+            pageable: false,
+            parameters: &[],
         },
         RouteDescriptor {
             controller: "OrderApi",
@@ -1735,6 +1889,9 @@ mod tests {
             request_schema: "",
             response_schema: "",
             status: 0,
+            query_schema: "",
+            pageable: false,
+            parameters: &[],
         },
     ];
 
