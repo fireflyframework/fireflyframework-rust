@@ -71,7 +71,7 @@ use firefly_ecm::{
 use serde_json::json;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.17";
+pub const VERSION: &str = "26.6.18";
 
 /// Maps an Adobe Sign agreement / participant `status` string onto the
 /// framework's [`SignatureStatus`], porting pyfly's `_map_status` table.

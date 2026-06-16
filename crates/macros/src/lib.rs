@@ -325,11 +325,18 @@ pub fn derive_controller(input: TokenStream) -> TokenStream {
 /// a key prefix and registers it as a resolvable singleton, so a component can
 /// `#[autowired]` it by type.
 ///
+/// Options (`#[firefly(...)]`): `prefix` (the config-key prefix), `name` (an
+/// explicit bean name), `validate` (Spring's `@Validated` — run the struct's
+/// `#[derive(Validate)]` constraints after binding and fail context refresh on a
+/// violation), and `crate` (facade override).
+///
 /// ```ignore
-/// #[derive(Deserialize, ConfigProperties)]
-/// #[firefly(prefix = "app.db")]
+/// #[derive(Deserialize, ConfigProperties, Validate)]
+/// #[firefly(prefix = "app.db", validate)]      // @ConfigurationProperties @Validated
 /// struct DbProperties {
+///     #[validate(not_empty)]
 ///     url: String,
+///     #[validate(range(min = 1, max = 64))]
 ///     pool_size: u32,
 /// }
 /// ```

@@ -90,7 +90,7 @@ pub use writer::{last_event_id, SseError, SseResponse, SseWriter, LAST_EVENT_ID_
 
 /// Released framework version. Calendar-versioned (`YY.M.PATCH`), the
 /// Rust port's counterpart of the Go `kernel.Version` constant.
-pub const VERSION: &str = "26.6.17";
+pub const VERSION: &str = "26.6.18";
 
 #[cfg(test)]
 mod tests {

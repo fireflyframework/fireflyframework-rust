@@ -2,6 +2,19 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.18 — 2026-06-16
+
+Spring Boot **parity** push, PR 8/N — **Tier B**: `@Validated` config properties.
+
+### Added
+
+- **`#[derive(ConfigProperties)]` + `#[firefly(validate)]`** (firefly-macros) —
+  Spring's `@ConfigurationProperties @Validated`. After binding the struct from
+  config, its declarative `#[derive(Validate)]` constraints run; a violation
+  **fails the bean's creation** (context refresh) with the structured per-field
+  errors, instead of letting an out-of-range setting reach the app. Requires the
+  struct to also `#[derive(Validate)]`.
+
 ## v26.6.17 — 2026-06-16
 
 Spring Boot **parity** push, PR 7/N — **Tier B**: caching `condition` / `unless`.

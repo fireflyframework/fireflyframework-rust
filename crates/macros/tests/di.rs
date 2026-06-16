@@ -587,6 +587,49 @@ fn config_properties_binds_and_injects() {
 }
 
 // ===========================================================================
+// #[derive(ConfigProperties)] + #[firefly(validate)] — Spring's @Validated
+// ===========================================================================
+
+#[derive(Deserialize, ConfigProperties, Validate, Default)]
+#[firefly(prefix = "app.svc", validate)]
+struct SvcProperties {
+    #[validate(not_empty)]
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    workers: u32,
+}
+
+#[test]
+fn config_properties_validated_accepts_valid_config() {
+    let c = Container::new();
+    c.set_condition_context(
+        ConditionContext::new()
+            .with_property("app.svc.name", "orders")
+            .with_property("app.svc.workers", "8"),
+    );
+    SvcProperties::firefly_register(&c);
+
+    let props = c.resolve::<SvcProperties>().expect("valid config binds");
+    assert_eq!(props.name, "orders");
+    assert_eq!(props.workers, 8);
+}
+
+#[test]
+fn config_properties_validated_rejects_invalid_config() {
+    let c = Container::new();
+    // A blank `name` violates the `not_empty` constraint.
+    c.set_condition_context(ConditionContext::new().with_property("app.svc.name", ""));
+    SvcProperties::firefly_register(&c);
+
+    let result = c.resolve::<SvcProperties>();
+    assert!(
+        result.is_err(),
+        "@Validated must fail the bean's creation on a constraint violation"
+    );
+}
+
+// ===========================================================================
 // register_all! still works for the explicit-list fallback
 // ===========================================================================
 
