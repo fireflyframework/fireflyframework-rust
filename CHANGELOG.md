@@ -2,6 +2,28 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.14 — 2026-06-16
+
+Spring Boot **parity** push, PR 4/N — **test slices**. Completes the
+`@WebMvcTest` / `@MockBean` story: the `Slice` already provided DI slices and the
+mock-bean override (`instance` + `bind`); this adds the bridge from a controller
+slice to an in-process `MockMvc`.
+
+### Added
+
+- **`BuiltSlice::web_client::<C, _>(C::routes)`** (firefly-testkit, feature
+  `web`) — Spring's `@WebMvcTest(C)`: resolves the controller bean `C` from the
+  slice (so its collaborators are the installed mocks) and wraps its
+  `#[rest_controller]`-generated router in a `TestClient`, exercising one
+  controller's whole web layer over fakes with no full-application boot and no
+  datasource.
+
+### Docs
+
+- The testing chapter documents the `@WebMvcTest` (`web_client`), `@MockBean`
+  (`instance` + `bind`), and `@DataJpaTest` (a `Slice` over an in-memory SQLite
+  repository) mappings.
+
 ## v26.6.13 — 2026-06-16
 
 Spring Boot **parity** push, PR 3/N — **web developer experience**. Three

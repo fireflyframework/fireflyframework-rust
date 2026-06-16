@@ -72,7 +72,7 @@ use redis::aio::MultiplexedConnection;
 use redis::{AsyncCommands, Client, ExistenceCheck, SetExpiry, SetOptions};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.13";
+pub const VERSION: &str = "26.6.14";
 
 /// Fixed `COUNT` hint for cursor-driven `SCAN` loops. This is a per-round
 /// batch-size suggestion to Redis, independent of any caller-supplied total

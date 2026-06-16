@@ -527,8 +527,8 @@ mod tests {
         );
         // Version/git deps are uniform across crates.
         assert_eq!(
-            DepSource::Version("26.6.13".into()).render_for("firefly-kernel"),
-            "version = \"26.6.13\""
+            DepSource::Version("26.6.14".into()).render_for("firefly-kernel"),
+            "version = \"26.6.14\""
         );
         assert!(DepSource::default()
             .render_for("firefly-kernel")

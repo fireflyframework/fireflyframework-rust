@@ -297,6 +297,48 @@ impl BuiltSlice {
     }
 }
 
+#[cfg(feature = "web")]
+impl BuiltSlice {
+    /// Build an in-process [`TestClient`](crate::TestClient) — Spring MVC's
+    /// `MockMvc` — for a single controller resolved from this slice: the
+    /// `@WebMvcTest` one-liner.
+    ///
+    /// Resolves the controller bean `C` from this slice (so its collaborators
+    /// are the *mocks* you installed with [`instance`](Slice::instance) +
+    /// [`bind`](Slice::bind)) and hands it to the controller's
+    /// `#[rest_controller]`-generated `routes` function, wrapping the resulting
+    /// router in a `TestClient`. This isolates the web layer of one controller
+    /// over fake services — without booting the full application or its
+    /// datasource.
+    ///
+    /// ```ignore
+    /// // @WebMvcTest(WalletController) + @MockBean(WalletService)
+    /// let client = Slice::new()
+    ///     .instance(FakeWalletService::default())
+    ///     .bind::<dyn WalletService, FakeWalletService>(|a| a)
+    ///     .register::<WalletController, _>(Scope::Singleton, |c| {
+    ///         Ok(WalletController { service: c.resolve::<dyn WalletService>()? })
+    ///     })
+    ///     .eager::<WalletController>()
+    ///     .build()
+    ///     .web_client::<WalletController, _>(WalletController::routes);
+    ///
+    /// client.get_blocking("/api/v1/wallets/unknown").assert_status(404);
+    /// ```
+    ///
+    /// `routes` is the controller's generated `fn routes(state: C) -> Router`;
+    /// `C` is `Clone` (the `#[derive(Controller)]` requirement axum already
+    /// imposes), so the resolved bean is cloned into the router's state.
+    #[must_use]
+    pub fn web_client<C, F>(&self, routes: F) -> crate::client::TestClient
+    where
+        C: Clone + Send + Sync + 'static,
+        F: FnOnce(C) -> axum::Router,
+    {
+        crate::client::TestClient::new(routes((*self.get::<C>()).clone()))
+    }
+}
+
 impl std::fmt::Debug for BuiltSlice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BuiltSlice")
@@ -468,5 +510,68 @@ mod tests {
         let _ = slice.get::<Service>().create();
         // Both handles see the same container -> same shared fake state.
         assert_eq!(cloned.get::<FakeRepo>().calls(), 1);
+    }
+
+    // The `@WebMvcTest` bridge: a controller's web layer driven over a mocked
+    // collaborator, with no full-application boot.
+    #[cfg(feature = "web")]
+    mod web_mvc {
+        use super::*;
+        use axum::extract::State;
+        use axum::routing::get;
+        use axum::Router;
+
+        // The service port, and a fake (the `@MockBean`) returning a canned
+        // greeting so the test asserts the controller wired *this* collaborator.
+        trait Greeting: Send + Sync {
+            fn greet(&self, who: &str) -> String;
+        }
+        struct FakeGreeting;
+        impl Greeting for FakeGreeting {
+            fn greet(&self, who: &str) -> String {
+                format!("mocked hello, {who}")
+            }
+        }
+
+        // A controller bean shaped like a `#[derive(Controller)]` one: `Clone`,
+        // an autowired `dyn Greeting`, and a `routes(state)` builder (here
+        // hand-written, standing in for the `#[rest_controller]`-generated one).
+        #[derive(Clone)]
+        struct GreetController {
+            service: Arc<dyn Greeting>,
+        }
+        impl GreetController {
+            fn routes(state: GreetController) -> Router {
+                Router::new()
+                    .route("/greet/:who", get(Self::greet))
+                    .with_state(state)
+            }
+            async fn greet(
+                State(api): State<GreetController>,
+                axum::extract::Path(who): axum::extract::Path<String>,
+            ) -> String {
+                api.service.greet(&who)
+            }
+        }
+
+        #[test]
+        fn web_mvc_test_drives_a_controller_over_a_mocked_service() {
+            let client = Slice::new()
+                .instance(FakeGreeting)
+                .bind::<dyn Greeting, FakeGreeting>(|a| a)
+                .register::<GreetController, _>(Scope::Singleton, |c| {
+                    Ok(GreetController {
+                        service: c.resolve::<dyn Greeting>()?,
+                    })
+                })
+                .eager::<GreetController>()
+                .build()
+                .web_client::<GreetController, _>(GreetController::routes);
+
+            client
+                .get_blocking("/greet/ada")
+                .assert_status(200)
+                .assert_body_contains("mocked hello, ada");
+        }
     }
 }

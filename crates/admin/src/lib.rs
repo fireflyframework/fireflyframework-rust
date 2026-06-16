@@ -127,7 +127,7 @@ pub use view::{AdminView, AdminViewRegistry};
 
 /// Released framework version. Calendar-versioned (`YY.M.PATCH`), the Rust
 /// port's counterpart of the Go `kernel.Version` constant.
-pub const VERSION: &str = "26.6.13";
+pub const VERSION: &str = "26.6.14";
 
 #[cfg(test)]
 mod tests {
