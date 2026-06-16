@@ -95,4 +95,4 @@ pub use sdk::Client;
 pub use web::router;
 
 /// The released framework version (CalVer expressed as semver).
-pub const VERSION: &str = "26.6.16";
+pub const VERSION: &str = "26.6.17";

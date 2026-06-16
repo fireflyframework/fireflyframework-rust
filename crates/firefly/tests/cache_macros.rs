@@ -62,6 +62,25 @@ impl OrderService {
     async fn save_order(&self, order: Order) -> Result<Order, DemoError> {
         Ok(order)
     }
+
+    // Spring's `condition`: cache only when `should_cache` is true; otherwise the
+    // call bypasses the cache entirely and always recomputes.
+    #[firefly::cacheable(key = "format!(\"cond:{}\", id)", condition = "should_cache")]
+    async fn load_conditional(&self, id: u64, should_cache: bool) -> Result<Order, DemoError> {
+        COMPUTES[id as usize].fetch_add(1, Ordering::SeqCst);
+        Ok(Order { id, total: id * 10 })
+    }
+
+    // Spring's `unless`: a result with `total == 0` is returned but NOT stored,
+    // so a later call recomputes; a non-zero result is cached.
+    #[firefly::cacheable(key = "format!(\"unless:{}\", id)", unless = "result.total == 0")]
+    async fn load_unless(&self, id: u64) -> Result<Order, DemoError> {
+        COMPUTES[id as usize].fetch_add(1, Ordering::SeqCst);
+        Ok(Order {
+            id,
+            total: if id == 6 { 0 } else { 999 },
+        })
+    }
 }
 
 // The process-global cache is first-wins, so register exactly once per test
@@ -137,5 +156,49 @@ async fn cache_put_warms_the_cache_so_cacheable_reads_it() {
         computes(3),
         0,
         "cache_put primed the cache, so load_order must not recompute"
+    );
+}
+
+#[tokio::test]
+async fn cacheable_condition_false_bypasses_the_cache() {
+    init_cache();
+    let svc = OrderService;
+
+    // condition = false: every call recomputes (never cached).
+    let _ = svc.load_conditional(4, false).await.expect("call 1");
+    let _ = svc.load_conditional(4, false).await.expect("call 2");
+    assert_eq!(computes(4), 2, "condition=false must bypass the cache");
+
+    // condition = true: the second call is a hit.
+    let _ = svc.load_conditional(5, true).await.expect("call 1");
+    let _ = svc.load_conditional(5, true).await.expect("call 2");
+    assert_eq!(
+        computes(5),
+        1,
+        "condition=true caches like a plain #[cacheable]"
+    );
+}
+
+#[tokio::test]
+async fn cacheable_unless_vetoes_storing_the_result() {
+    init_cache();
+    let svc = OrderService;
+
+    // id 6 → total 0 → `unless` true → not stored → the next call recomputes.
+    let _ = svc.load_unless(6).await.expect("call 1");
+    let _ = svc.load_unless(6).await.expect("call 2");
+    assert_eq!(
+        computes(6),
+        2,
+        "unless=true must veto storing, forcing a recompute"
+    );
+
+    // id 7 → total 999 → `unless` false → stored → the next call is a hit.
+    let _ = svc.load_unless(7).await.expect("call 1");
+    let _ = svc.load_unless(7).await.expect("call 2");
+    assert_eq!(
+        computes(7),
+        1,
+        "unless=false stores, so the second call is a hit"
     );
 }
