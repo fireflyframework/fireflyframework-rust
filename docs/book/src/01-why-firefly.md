@@ -261,32 +261,62 @@ its left, never to its right; the Cargo crate graph enforces the layering. You
 rarely name these crates directly — the facade re-exports them — but knowing the
 shape tells you where each capability lives, and *which* book chapter unlocks it.
 
-```text
-                    ┌──────────────────────────────────────────────┐
-  THE FRONT DOOR →  │   firefly  +  firefly-macros                  │
-                    │   one dependency · use firefly::prelude::*;   │
-                    └───┬───────────┬───────────┬───────────┬───────┘
-                        │           │           │           │
-        ┌───────────────┼───────────┼───────────┼───────────┼──────────────┐
-        │  Tier 1       │  Tier 2   │  Tier 3   │  Tier 4   │   builds      │
-        │  FOUNDATIONAL │  PLATFORM │  ADAPTERS │  STARTERS │   left→right  │
-        │  reactive base│  engines  │  implement│  compose  │               │
-        │  cross-cutting│  define   │  the ports│  & ship   │               │
-        │               │  ports    │           │           │               │
-        │  kernel       │  cqrs     │  data-sqlx│  starter-core               │
-        │  web          │  eda      │  data-    │  starter-web                │
-        │  config       │  event-   │   mongodb │  starter-domain             │
-        │  validators   │   sourcing│  eda-kafka│  starter-data               │
-        │  container    │  orchestr.│  cache-   │  admin                      │
-        │  i18n         │  cache    │   redis   │  cli                        │
-        │  + utils,     │  security │  idp-* ·  │  + backoffice               │
-        │    session    │  + observ.│   ecm-* · │                             │
-        │               │           │   notif-* │                             │
-        └───────────────┴───────────┴───────────┴───────────┴──────────────┘
-                              firefly-reactive
-              the Mono / Flux reactive core every tier is built on
-                          (tokio · axum · async-native)
-```
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 360" role="img"
+     aria-label="Four-tier architecture: the firefly facade is the front door; below it Foundational, Platform, Adapters and Starters tiers build left to right, each depending on the tiers to its left, all resting on the firefly-reactive Mono/Flux core"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+<rect x="120.0" y="18.5" width="320.0" height="46.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="120.0" y="16.0" width="320.0" height="46.0" rx="9" fill="#fff6e6" stroke="#e0b96a" stroke-width="1.5"/><text x="280.0" y="36.0" text-anchor="middle" font-size="14" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">firefly + firefly-macros</text><text x="280.0" y="50.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">one dependency · use firefly::prelude::*;</text>
+<rect x="24" y="82" width="124" height="206" rx="11" fill="#f7ecd8" stroke="#e6d4b0" stroke-width="1.2"/>
+<rect x="24" y="82" width="124" height="34" rx="11" fill="#d4793a" opacity="0.30"/>
+<text x="86.0" y="100.0" text-anchor="middle" font-size="10.5" font-weight="800" fill="#b5531f" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Tier 1</text>
+<text x="86.0" y="132.0" text-anchor="middle" font-size="12" font-weight="700" fill="#3a2a1c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Foundational</text>
+<text x="86.0" y="152.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">kernel</text>
+<text x="86.0" y="173.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">reactive</text>
+<text x="86.0" y="194.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">web</text>
+<text x="86.0" y="215.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">config</text>
+<text x="86.0" y="236.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">container</text>
+<text x="86.0" y="257.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">i18n</text>
+<line x1="86.0" y1="62.0" x2="86.0" y2="72.0" stroke="#d4793a" stroke-width="2.5" stroke-linecap="round"/><polygon points="86.0,80.0 81.5,72.0 90.5,72.0" fill="#b5531f"/>
+<line x1="148.0" y1="200.0" x2="152.0" y2="200.0" stroke="#d4793a" stroke-width="2.5" stroke-linecap="round"/><polygon points="160.0,200.0 152.0,204.5 152.0,195.5" fill="#b5531f"/>
+<rect x="160" y="82" width="124" height="206" rx="11" fill="#f7ecd8" stroke="#e6d4b0" stroke-width="1.2"/>
+<rect x="160" y="82" width="124" height="34" rx="11" fill="#ffc24a" opacity="0.30"/>
+<text x="222.0" y="100.0" text-anchor="middle" font-size="10.5" font-weight="800" fill="#b5531f" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Tier 2</text>
+<text x="222.0" y="132.0" text-anchor="middle" font-size="12" font-weight="700" fill="#3a2a1c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Platform</text>
+<text x="222.0" y="152.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">cqrs</text>
+<text x="222.0" y="173.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">eda</text>
+<text x="222.0" y="194.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">event-sourcing</text>
+<text x="222.0" y="215.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">orchestration</text>
+<text x="222.0" y="236.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">cache</text>
+<text x="222.0" y="257.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">security</text>
+<line x1="222.0" y1="62.0" x2="222.0" y2="72.0" stroke="#d4793a" stroke-width="2.5" stroke-linecap="round"/><polygon points="222.0,80.0 217.5,72.0 226.5,72.0" fill="#b5531f"/>
+<line x1="284.0" y1="200.0" x2="288.0" y2="200.0" stroke="#d4793a" stroke-width="2.5" stroke-linecap="round"/><polygon points="296.0,200.0 288.0,204.5 288.0,195.5" fill="#b5531f"/>
+<rect x="296" y="82" width="124" height="206" rx="11" fill="#f7ecd8" stroke="#e6d4b0" stroke-width="1.2"/>
+<rect x="296" y="82" width="124" height="34" rx="11" fill="#d4793a" opacity="0.30"/>
+<text x="358.0" y="100.0" text-anchor="middle" font-size="10.5" font-weight="800" fill="#b5531f" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Tier 3</text>
+<text x="358.0" y="132.0" text-anchor="middle" font-size="12" font-weight="700" fill="#3a2a1c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Adapters</text>
+<text x="358.0" y="152.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">data-sqlx</text>
+<text x="358.0" y="173.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">data-mongodb</text>
+<text x="358.0" y="194.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">eda-kafka</text>
+<text x="358.0" y="215.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">cache-redis</text>
+<text x="358.0" y="236.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">idp-*</text>
+<text x="358.0" y="257.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">notif-*</text>
+<line x1="358.0" y1="62.0" x2="358.0" y2="72.0" stroke="#d4793a" stroke-width="2.5" stroke-linecap="round"/><polygon points="358.0,80.0 353.5,72.0 362.5,72.0" fill="#b5531f"/>
+<line x1="420.0" y1="200.0" x2="424.0" y2="200.0" stroke="#d4793a" stroke-width="2.5" stroke-linecap="round"/><polygon points="432.0,200.0 424.0,204.5 424.0,195.5" fill="#b5531f"/>
+<rect x="432" y="82" width="124" height="206" rx="11" fill="#f7ecd8" stroke="#e6d4b0" stroke-width="1.2"/>
+<rect x="432" y="82" width="124" height="34" rx="11" fill="#ffc24a" opacity="0.30"/>
+<text x="494.0" y="100.0" text-anchor="middle" font-size="10.5" font-weight="800" fill="#b5531f" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Tier 4</text>
+<text x="494.0" y="132.0" text-anchor="middle" font-size="12" font-weight="700" fill="#3a2a1c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Starters</text>
+<text x="494.0" y="152.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">starter-core</text>
+<text x="494.0" y="173.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">starter-web</text>
+<text x="494.0" y="194.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">starter-domain</text>
+<text x="494.0" y="215.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">starter-data</text>
+<text x="494.0" y="236.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">admin</text>
+<text x="494.0" y="257.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">cli</text>
+<line x1="494.0" y1="62.0" x2="494.0" y2="72.0" stroke="#d4793a" stroke-width="2.5" stroke-linecap="round"/><polygon points="494.0,80.0 489.5,72.0 498.5,72.0" fill="#b5531f"/>
+<rect x="80.0" y="306.5" width="400.0" height="44.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="80.0" y="304.0" width="400.0" height="44.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="280.0" y="323.0" text-anchor="middle" font-size="14" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">firefly-reactive</text><text x="280.0" y="337.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">the Mono / Flux core every tier rests on (tokio · axum)</text>
+</svg>
+<figcaption>The four tiers. A service depends only on the <code>firefly</code> facade (the front door). The tiers build left to right — <strong>Foundational</strong> vocabulary, <strong>Platform</strong> engines that define ports, <strong>Adapters</strong> that implement them, <strong>Starters</strong> that compose and ship — each depending only on the tiers to its left, all resting on the <code>firefly-reactive</code> core.</figcaption>
+</figure>
 
 A service depends only on the `firefly` facade (the front door). The four tiers
 build left to right — each depending only on the tiers to its left — all resting
