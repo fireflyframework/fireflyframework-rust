@@ -60,6 +60,13 @@ _CALLOUT_LABEL = {
     "note": "Note", "tip": "Tip", "warning": "Warning",
     "spring": "Spring parity", "reactor": "Reactor parity",
 }
+# Spanish callout labels for the localized (ES) build, selected via LANG.
+_CALLOUT_LABEL_ES = {
+    "note": "Nota", "tip": "Consejo", "warning": "Advertencia",
+    "spring": "Equivalencia con Spring", "reactor": "Equivalencia con Reactor",
+}
+# The build sets this to "es" to localize callout labels; default is English.
+LANG = "en"
 
 # Professional inline SVG icons injected into callout titles (no emoji).
 _ADM_ICON = {
@@ -167,7 +174,7 @@ class _Blocks(Preprocessor):
                 tail = "\n".join(block[1:]).strip()
                 body_md = (first_rest + ("\n" + tail if tail else "")).strip()
                 inner = _inline_md(body_md)
-                label = _CALLOUT_LABEL[css]
+                label = (_CALLOUT_LABEL_ES if LANG == "es" else _CALLOUT_LABEL)[css]
                 icon = _ADM_ICON.get(css, "")
                 return (f'<div class="admonition {css}">'
                         f'<p class="admonition-title">{icon}{html.escape(label)}</p>'

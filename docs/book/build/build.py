@@ -22,6 +22,8 @@ from xml.sax.saxutils import escape
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import os                               # noqa: E402
+import md                              # noqa: E402  (to set md.LANG for localized callout labels)
 from md import render_markdown          # noqa: E402
 from epub import EpubBuilder, Doc       # noqa: E402
 from pdf import render_pdf              # noqa: E402
@@ -32,6 +34,9 @@ DIST = BOOK / "dist"
 
 PDF_NAME = "firefly-rust-by-example.pdf"
 EPUB_NAME = "firefly-rust-by-example.epub"
+
+# Localizable structural labels; overridden per-language via book.yaml `labels:`.
+LABELS = {"chapter": "Chapter", "appendix": "Appendix", "contents": "Contents"}
 
 _H1_RE = re.compile(r'<h1[^>]*>.*?</h1>', re.DOTALL)
 
@@ -87,7 +92,7 @@ def _items_from_manifest(cfg: dict) -> list[dict]:
     # not in the nav) precede it; the readable sections (preface, conventions,
     # the Rust primer) follow it and are listed *in* it.
     items.extend(f for f in front_items if not f["in_nav"])
-    items.append({"kind": "toc", "id": "toc", "title": "Contents"})
+    items.append({"kind": "toc", "id": "toc", "title": LABELS["contents"]})
     items.extend(f for f in front_items if f["in_nav"])
 
     # 3) parts
@@ -121,10 +126,10 @@ def _chapter_head(num, raw_title: str, opener: str | None) -> str:
     if num in (None, ""):
         eyebrow = ""
     elif isinstance(num, str):
-        eyebrow = f'<span class="ch-num">Appendix {escape(num)}</span>' \
+        eyebrow = f'<span class="ch-num">{LABELS["appendix"]} {escape(num)}</span>' \
             if len(num) == 1 and num.isalpha() else f'<span class="ch-num">{escape(num)}</span>'
     else:
-        eyebrow = f'<span class="ch-num">Chapter {num}</span>'
+        eyebrow = f'<span class="ch-num">{LABELS["chapter"]} {num}</span>'
     op_html = ""
     if opener:
         p = BOOK / opener
@@ -173,7 +178,7 @@ def _toc_html(items: list[dict], *, href_fmt: str) -> str:
                          f'{escape(it["title"])}</a></li>')
     if open_group:
         parts.append("</ol></div>")
-    return f'<h1 class="chtitle">Contents</h1>{"".join(parts)}'
+    return f'<h1 class="chtitle">{escape(LABELS["contents"])}</h1>{"".join(parts)}'
 
 
 def _divider_html(eyebrow: str, ptitle: str) -> str:
@@ -210,7 +215,15 @@ def _divider_html(eyebrow: str, ptitle: str) -> str:
 
 
 def main() -> int:
-    cfg = yaml.safe_load((BOOK / "book.yaml").read_text())
+    # The manifest (default book.yaml) can be overridden for a localized build,
+    # e.g. BOOK_CONFIG=book-es.yaml for the Spanish edition.
+    cfg_name = os.environ.get("BOOK_CONFIG", "book.yaml")
+    cfg = yaml.safe_load((BOOK / cfg_name).read_text())
+    # Localize structural labels + callout labels for this edition's language.
+    md.LANG = cfg.get("language", "en")
+    LABELS.update(cfg.get("labels", {}))
+    pdf_name = cfg.get("pdf_name", PDF_NAME)
+    epub_name = cfg.get("epub_name", EPUB_NAME)
     css_text = [(THEME / "tokens.css").read_text(),
                 (THEME / "pygments.css").read_text(),
                 (THEME / "book.css").read_text()]
@@ -252,7 +265,7 @@ def main() -> int:
                 epub.add_doc(Doc(id=it["id"], title=it["title"], xhtml_body=body,
                                  in_nav=True, kind="chapter",
                                  part=it.get("part"), num=it.get("num")))
-        epub.build(DIST / EPUB_NAME)
+        epub.build(DIST / epub_name)
 
     # ---- PDF (single concatenated document) ----
     if do_pdf:
@@ -277,7 +290,7 @@ def main() -> int:
         render_pdf(full, base_url=BOOK,
                    css_paths=[THEME / "tokens.css", THEME / "pygments.css",
                               THEME / "book.css", THEME / "print.css"],
-                   out=DIST / PDF_NAME)
+                   out=DIST / pdf_name)
 
     nch = sum(1 for it in items if it["kind"] == "chapter")
     nfr = sum(1 for it in items if it["kind"] == "front")
