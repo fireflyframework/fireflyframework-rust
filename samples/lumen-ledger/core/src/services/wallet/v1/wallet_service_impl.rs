@@ -193,20 +193,6 @@ impl WalletService for WalletServiceImpl {
         Ok(self.mapper.to_response(&wallet))
     }
 
-    async fn list_all(&self) -> Result<Vec<WalletResponse>, ServiceError> {
-        // The canonical CRUD `find_all` streams every row as a `Flux`;
-        // `collect_list` reduces it to a single `Mono<Vec<_>>` (always present).
-        let wallets = self
-            .repository
-            .find_all()
-            .collect_list()
-            .block()
-            .await
-            .map_err(|e| ServiceError::Backend(e.to_string()))?
-            .unwrap_or_default();
-        Ok(wallets.iter().map(|w| self.mapper.to_response(w)).collect())
-    }
-
     async fn list_by_owner(&self, owner: &str) -> Result<Vec<WalletResponse>, ServiceError> {
         let wallets = self
             .repository

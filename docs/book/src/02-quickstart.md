@@ -72,7 +72,7 @@ saga orchestration, scheduling, security, observability — and *every*
 # The one-dependency front door: the `firefly` facade re-exports the whole
 # framework AND every macro. Generated code resolves runtime types through the
 # facade, so Lumen never lists the underlying `firefly-*` crates.
-firefly = "26.6.21"
+firefly = "26.6.22"
 
 # The two ecosystem crates a Firefly service still writes against directly:
 # axum (you author the controller handlers) and serde (your messages and event
@@ -232,7 +232,7 @@ curl localhost:8081/actuator/health
 # Build metadata — the app name and version flow straight from
 # `FireflyApplication::new(...).version(...)`.
 curl localhost:8081/actuator/info
-# {"app":{"name":"lumen","version":"26.6.21"}, ...}
+# {"app":{"name":"lumen","version":"26.6.22"}, ...}
 ```
 
 ## What you got for free

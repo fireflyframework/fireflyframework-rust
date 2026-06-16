@@ -106,7 +106,7 @@ pub use retry::{retry, JitterFn, Retry, RetryConfig, DEFAULT_MAX_ATTEMPTS};
 pub use timeout::Timeout;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.21";
+pub const VERSION: &str = "26.6.22";
 
 #[cfg(test)]
 mod tests {

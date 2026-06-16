@@ -32,7 +32,7 @@ A snippet annotated `rust,ignore` or `rust,no_run` elides surrounding setup for 
 
 ```text
 $ cargo run -p firefly-sample-lumen
-:: lumen :: digital-wallet & ledger (v26.6.21)
+:: lumen :: digital-wallet & ledger (v26.6.22)
 ```
 
 ### The One-Dependency Reminder
