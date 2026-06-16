@@ -87,3 +87,26 @@ pub fn repository_for<E: SqlxEntity>(db: Db) -> SqlxReactiveRepository<E, E::Id>
     }
     repo
 }
+
+/// Parses a stored timestamp into a UTC [`chrono::DateTime`], tolerating both
+/// RFC 3339 (`T`-separated) and the space-separated form the sqlx SQLite /
+/// PostgreSQL binders emit for an auditor-stamped `DateTime<Utc>`.
+///
+/// The text-portable timestamp decode used by `#[derive(Entity)]` for
+/// `DateTime<Utc>` columns, so an auditor-written audit column round-trips back
+/// into the entity regardless of which backend wrote it.
+///
+/// # Errors
+/// Returns a [`FireflyError`] if `s` matches none of the accepted formats.
+pub fn parse_timestamp(s: &str) -> Result<chrono::DateTime<chrono::Utc>, FireflyError> {
+    use chrono::{DateTime, NaiveDateTime, Utc};
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .or_else(|_| {
+            DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f%:z").map(|dt| dt.with_timezone(&Utc))
+        })
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f").map(|ndt| ndt.and_utc())
+        })
+        .map_err(|e| FireflyError::internal(format!("bad timestamp '{s}': {e}")))
+}

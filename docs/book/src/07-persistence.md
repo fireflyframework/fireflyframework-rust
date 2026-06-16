@@ -294,23 +294,26 @@ a domain conflict.
 
 ### Declaring a repository: `#[derive(SqlxRepository)]`
 
-You rarely build the repository by hand. Implement `SqlxEntity` on the entity
-(its `@Table` / `@Id` / `@Version` / `@Column` mapping), then `#[derive(SqlxRepository)]`
-over a struct holding its `SqlxReactiveRepository`:
+You rarely build the repository by hand. `#[derive(Entity)]` on the entity
+generates its `@Table` / `@Id` / `@Version` / `@Column` mapping from the fields,
+then `#[derive(SqlxRepository)]` over a struct holding its `SqlxReactiveRepository`:
 
 ```rust,ignore
+#[derive(Entity)]
+#[firefly(table = "wallets")]
+pub struct Wallet { #[firefly(id)] id: Uuid, balance: i64, #[firefly(version)] version: i64, /* … */ }
+
 #[derive(SqlxRepository)]
 pub struct WalletRepository { repo: SqlxReactiveRepository<Wallet, Uuid> }
 ```
 
-The derive registers it as a `@Repository` bean **built from the injected `Db`
-datasource bean** (wiring `@Version` locking + auditing from the entity), and
-implements `ReactiveCrudRepository` by delegation — the Spring Data "declare a
-repository, get the implementation" experience. The
-[`lumen-ledger`](./22-layered-microservices.md) sample uses exactly this. (A
-`#[derive(Entity)]` to generate the `SqlxEntity` mapping from the fields is a
-tracked next step; for now the entity declares its column mapping explicitly,
-like JPA `@Column`s.)
+`#[derive(SqlxRepository)]` registers it as a `@Repository` bean **built from the
+injected `Db` datasource bean** (wiring `@Version` locking + auditing from the
+entity), and implements `ReactiveCrudRepository` by delegation — the Spring Data
+"declare a repository, get the implementation" experience. Scalar columns map
+automatically; a non-scalar field (an enum) uses
+`#[firefly(with(read = "...", write = "..."))]`. The
+[`lumen-ledger`](./22-layered-microservices.md) sample uses exactly this.
 
 ### Reactive specification / paging
 

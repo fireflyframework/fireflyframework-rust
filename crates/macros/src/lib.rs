@@ -63,6 +63,7 @@ mod config_properties;
 mod container;
 mod cqrs;
 mod eda;
+mod entity;
 mod event_listener;
 mod eventsourcing;
 mod handlers;
@@ -242,6 +243,18 @@ pub fn derive_repository(input: TokenStream) -> TokenStream {
 pub fn derive_sqlx_repository(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     emit(sqlx_repository::derive_sqlx_repository(input))
+}
+
+/// Derives the `SqlxEntity` mapping (`@Table` / `@Id` / `@Version` / `@Column`)
+/// from a struct's fields, so a persistence entity is just annotated fields —
+/// the JPA `@Entity` experience. Pairs with `#[derive(SqlxRepository)]`. See
+/// [`firefly_data_sqlx::SqlxEntity`]. Scalar fields (`String`, `i64`/`i32`,
+/// `bool`, `f64`, `Uuid`, `DateTime<Utc>`) map automatically; non-scalar fields
+/// (e.g. enums) use `#[firefly(with(read = "...", write = "..."))]`.
+#[proc_macro_derive(Entity, attributes(firefly))]
+pub fn derive_entity(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    emit(entity::derive_entity(input))
 }
 
 /// Derives a DI registration for a configuration-holder bean — a

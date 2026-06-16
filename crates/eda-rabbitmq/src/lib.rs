@@ -95,4 +95,4 @@ pub use config::{DeclarationPlan, ExchangeDeclaration, QueueDeclaration, RabbitM
 pub use dispatch::{dispatch, pattern_matches, Ack, Subscription};
 
 /// Framework version stamp, shared across all Firefly crates.
-pub const VERSION: &str = "26.6.10";
+pub const VERSION: &str = "26.6.11";

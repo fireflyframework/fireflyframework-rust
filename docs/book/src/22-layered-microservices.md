@@ -60,20 +60,27 @@ A Spring Data repository is a *declaration*: you write the interface, the
 framework supplies the implementation. `lumen-ledger` does the same with two
 derives — no factory, no hand-written CRUD.
 
-The entity declares its `@Table` / `@Id` / `@Version` / `@Column` mapping by
-implementing `SqlxEntity`:
+The entity declares its `@Table` / `@Id` / `@Version` / `@Column` mapping with
+`#[derive(Entity)]` — just annotated fields, the JPA `@Entity` experience:
 
 ```rust,ignore
-impl SqlxEntity for Wallet {
-    type Id = Uuid;
-    fn table() -> &'static str { "wallets" }
-    fn id_column() -> &'static str { "id" }
-    fn version_column() -> Option<&'static str> { Some("version") }   // @Version
-    fn columns() -> &'static [&'static str] { &[ /* … */ ] }
-    fn read_row(row: &AnyRow) -> Result<Self, FireflyError> { /* @Column mapping */ }
-    fn write_row(&self) -> Vec<ColumnValue> { /* … */ }
+#[derive(Entity)]
+#[firefly(table = "wallets")]
+pub struct Wallet {
+    #[firefly(id)] pub id: Uuid,
+    pub account_number: String,
+    pub balance: i64,
+    // an enum maps via an explicit converter (the @Enumerated(STRING) boundary)
+    #[firefly(with(read = "WalletStatus::from_token", write = "WalletStatus::as_str"))]
+    pub status: WalletStatus,
+    #[firefly(version)] pub version: i64,            // @Version
+    pub created_at: DateTime<Utc>,                   // @CreatedDate (auditor-stamped)
+    pub updated_at: DateTime<Utc>,                   // @LastModifiedDate
 }
 ```
+
+Scalar columns (`String`, `i64`/`i32`, `bool`, `f64`, `Uuid`, `DateTime<Utc>`)
+map automatically; `#[firefly(column = "name")]` renames one.
 
 The repository is then **one annotation** — `#[derive(SqlxRepository)]` over a
 struct holding the entity's repository:

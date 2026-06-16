@@ -326,3 +326,65 @@ async fn sqlx_repository_derive_builds_from_the_db_bean() {
         .and_then(|b| b.stereotype.clone());
     assert_eq!(label.as_deref(), Some("repository"));
 }
+
+// ── #[derive(Entity)] — auto-generated SqlxEntity mapping over diverse types ──
+
+#[derive(Debug, Clone, PartialEq, firefly::Entity)]
+#[firefly(table = "gadgets")]
+struct Gadget {
+    #[firefly(id)]
+    id: i64,
+    name: String,
+    #[firefly(column = "qty")]
+    quantity: i32,
+    active: bool,
+    weight: f64,
+    #[firefly(version)]
+    version: i64,
+}
+
+#[derive(firefly::SqlxRepository)]
+struct GadgetRepo {
+    repo: SqlxReactiveRepository<Gadget, i64>,
+}
+
+#[tokio::test]
+async fn entity_derive_maps_scalar_types_and_renames() {
+    let pool = shared_memory_pool("firefly_entity_derive").await;
+    sqlx::query(
+        "CREATE TABLE gadgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL, qty INTEGER NOT NULL, \
+         active INTEGER NOT NULL, weight REAL NOT NULL, version INTEGER NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create table");
+
+    // SqlxEntity metadata is generated from the fields + attributes.
+    assert_eq!(<Gadget as SqlxEntity>::table(), "gadgets");
+    assert_eq!(<Gadget as SqlxEntity>::id_column(), "id");
+    assert_eq!(<Gadget as SqlxEntity>::version_column(), Some("version"));
+    assert_eq!(
+        <Gadget as SqlxEntity>::columns(),
+        &["id", "name", "qty", "active", "weight", "version"]
+    );
+
+    let c = Arc::new(Container::new());
+    c.register_instance(Db::Sqlite(pool));
+    GadgetRepo::firefly_register(&c);
+    let repo = c.resolve::<GadgetRepo>().expect("gadget repo");
+
+    let g = Gadget {
+        id: 1,
+        name: "widget".into(),
+        quantity: 7,
+        active: true,
+        weight: 2.5,
+        version: 1,
+    };
+    repo.save(g.clone()).await.expect("save");
+    let loaded = repo.find_by_id(1).await.expect("find").expect("present");
+    assert_eq!(loaded.name, "widget");
+    assert_eq!(loaded.quantity, 7); // renamed column `qty` round-trips
+    assert!(loaded.active);
+    assert_eq!(loaded.weight, 2.5);
+}
