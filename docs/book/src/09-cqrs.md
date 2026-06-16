@@ -439,43 +439,24 @@ automatically (a fourth, authorization, arrives at the HTTP edge with
 | `QueryCache::middleware()`  | memoises results for messages whose `cache_ttl` is `Some` — installed when a `QueryCache` bean exists |
 
 <figure class="fig">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 306" role="img"
-     aria-label="The CQRS bus dispatch: a message is matched to a handler by TypeId, passes the middleware chain, then reaches your handler"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 300" role="img"
+     aria-label="CQRS dispatch: a message is matched to a handler by TypeId, passes the Validation, Correlation and QueryCache middleware chain with validation outermost, then reaches your command or query handler"
      font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
-  <text x="190" y="20" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">send / query a message</text>
-  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
-    <line x1="190" y1="28" x2="190" y2="46"/><polygon points="190,54 186,46 194,46"/>
-  </g>
-  <rect x="100" y="56" width="180" height="40" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
-  <text x="190" y="76" text-anchor="middle" font-size="12" fill="#3a2a1c"
-        font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">msg &#8614; TypeId</text>
-  <text x="190" y="90" text-anchor="middle" font-size="10" fill="#7a6450">matched against registered handlers</text>
-  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
-    <line x1="190" y1="96" x2="190" y2="114"/><polygon points="190,122 186,114 194,114"/>
-  </g>
-  <text x="190" y="138" text-anchor="middle" font-size="11.5" font-weight="600" fill="#7a6450">middleware chain</text>
-  <g>
-    <rect x="118" y="148" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
-    <text x="141" y="176" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
-          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">V</text>
-    <rect x="216" y="148" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
-    <text x="239" y="176" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
-          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">Q</text>
-  </g>
-  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
-    <line x1="164" y1="170" x2="210" y2="170"/><polygon points="216,170 208,166 208,174"/>
-  </g>
-  <g font-size="10.5" fill="#7a6450">
-    <text x="120" y="208">V = ValidationMiddleware</text>
-    <text x="120" y="222">Q = QueryCache</text>
-  </g>
-  <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
-    <line x1="190" y1="232" x2="190" y2="250"/><polygon points="190,258 186,250 194,250"/>
-  </g>
-  <rect x="120" y="260" width="140" height="38" rx="10" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
-  <text x="190" y="284" text-anchor="middle" font-size="12.5" font-weight="600" fill="#3a2a1c">your handler</text>
+<text x="280.0" y="24.0" text-anchor="middle" font-size="12.5" font-weight="700" fill="#3a2a1c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">send / query a message</text>
+<line x1="280.0" y1="30.0" x2="280.0" y2="46.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="280.0,54.0 275.5,46.0 284.5,46.0" fill="#b5531f"/>
+<rect x="180.0" y="58.5" width="200.0" height="46.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="180.0" y="56.0" width="200.0" height="46.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="280.0" y="76.0" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">msg ↦ TypeId</text><text x="280.0" y="90.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">matched to a handler</text>
+<text x="280.0" y="120.0" text-anchor="middle" font-size="11.5" font-weight="700" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">middleware chain</text>
+<line x1="280.0" y1="102.0" x2="280.0" y2="122.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="280.0,130.0 275.5,122.0 284.5,122.0" fill="#b5531f"/>
+<rect x="96.0" y="142.5" width="60.0" height="52.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="96.0" y="140.0" width="60.0" height="52.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="126.0" y="170.5" text-anchor="middle" font-size="18" font-weight="700" fill="#2a1d10" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">V</text>
+<line x1="156.0" y1="166.0" x2="176.0" y2="166.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="184.0,166.0 176.0,170.5 176.0,161.5" fill="#b5531f"/>
+<rect x="184.0" y="142.5" width="60.0" height="52.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="184.0" y="140.0" width="60.0" height="52.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="214.0" y="170.5" text-anchor="middle" font-size="18" font-weight="700" fill="#2a1d10" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">C</text>
+<line x1="244.0" y1="166.0" x2="264.0" y2="166.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="272.0,166.0 264.0,170.5 264.0,161.5" fill="#b5531f"/>
+<rect x="272.0" y="142.5" width="60.0" height="52.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="272.0" y="140.0" width="60.0" height="52.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="302.0" y="170.5" text-anchor="middle" font-size="18" font-weight="700" fill="#2a1d10" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">Q</text>
+<text x="280.0" y="212.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">V = Validation   ·   C = Correlation   ·   Q = QueryCache</text>
+<line x1="280.0" y1="222.0" x2="280.0" y2="240.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="280.0,248.0 275.5,240.0 284.5,240.0" fill="#b5531f"/>
+<rect x="190.0" y="252.5" width="180.0" height="44.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="190.0" y="250.0" width="180.0" height="44.0" rx="9" fill="#fff6e6" stroke="#e0b96a" stroke-width="1.5"/><text x="280.0" y="269.0" text-anchor="middle" font-size="13" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">your handler</text><text x="280.0" y="283.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Command or Query</text>
 </svg>
-<figcaption>A message is matched to its handler by <code>TypeId</code>, then runs the registered middleware chain (validation outermost, then the query cache) before the handler executes.</figcaption>
+<figcaption>A message is matched to its handler by <code>TypeId</code>, then runs the registered middleware chain — <code>Validation</code> outermost, then <code>Correlation</code>, then <code>QueryCache</code> — before the handler executes. The correlation scope opens before the cache layer, so everything it logs carries the id.</figcaption>
 </figure>
 
 > **Tip** **Checkpoint.** `cargo run` boots Lumen and the startup report's CQRS

@@ -94,11 +94,26 @@ serde = { workspace = true }
 
 The dependency arrows run strictly **inward**:
 
-```text
-interfaces  ←  models  ←  core  ←  web
-    ↑
-   sdk
-```
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 320" role="img"
+     aria-label="Layered crate stack: interfaces, models, core and web crates with dependencies pointing strictly inward toward the interfaces contract, and an sdk crate that depends only on interfaces"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+<rect x="140.0" y="32.5" width="260.0" height="50.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="140.0" y="30.0" width="260.0" height="50.0" rx="9" fill="#fff6e6" stroke="#e0b96a" stroke-width="1.5"/><text x="270.0" y="52.0" text-anchor="middle" font-size="14" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">-interfaces</text><text x="270.0" y="66.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">DTOs · the public contract</text>
+<line x1="270.0" y1="106.0" x2="270.0" y2="88.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="270.0,80.0 274.5,88.0 265.5,88.0" fill="#b5531f"/>
+<text x="334.0" y="97.0" text-anchor="start" font-size="9.5" font-weight="600" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">depends on</text>
+<rect x="140.0" y="108.5" width="260.0" height="50.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="140.0" y="106.0" width="260.0" height="50.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="270.0" y="128.0" text-anchor="middle" font-size="14" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">-models</text><text x="270.0" y="142.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">@Entity · @Repository · @Bean</text>
+<line x1="270.0" y1="182.0" x2="270.0" y2="164.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="270.0,156.0 274.5,164.0 265.5,164.0" fill="#b5531f"/>
+<text x="334.0" y="173.0" text-anchor="start" font-size="9.5" font-weight="600" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">depends on</text>
+<rect x="140.0" y="184.5" width="260.0" height="50.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="140.0" y="182.0" width="260.0" height="50.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="270.0" y="204.0" text-anchor="middle" font-size="14" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">-core</text><text x="270.0" y="218.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">@Service · @Mapper · @Component</text>
+<line x1="270.0" y1="258.0" x2="270.0" y2="240.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="270.0,232.0 274.5,240.0 265.5,240.0" fill="#b5531f"/>
+<text x="334.0" y="249.0" text-anchor="start" font-size="9.5" font-weight="600" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">depends on</text>
+<rect x="140.0" y="260.5" width="260.0" height="50.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="140.0" y="258.0" width="260.0" height="50.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="270.0" y="280.0" text-anchor="middle" font-size="14" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">-web</text><text x="270.0" y="294.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">@RestController · the binary</text>
+<rect x="444.0" y="184.5" width="112.0" height="50.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="444.0" y="182.0" width="112.0" height="50.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="500.0" y="204.0" text-anchor="middle" font-size="14" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">-sdk</text><text x="500.0" y="218.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">typed client</text>
+<path d="M500.0,182.0 Q415.4,145.7 401.3,62.9" fill="none" stroke="#d4793a" stroke-width="3.0" stroke-dasharray="6 5" stroke-linecap="round"/><polygon points="400.0,55.0 405.8,62.1 396.9,63.6" fill="#b5531f"/>
+<text x="500.0" y="252.0" text-anchor="middle" font-size="9.5" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">→ -interfaces</text>
+</svg>
+<figcaption>Five separately-compiled crates. Dependencies run strictly <strong>inward</strong>: <code>-web</code> knows <code>-core</code>, which knows <code>-models</code>, which knows <code>-interfaces</code> — and the contract crate knows nobody. <code>-sdk</code> depends only on <code>-interfaces</code>, so a caller links the DTOs without the persistence or web code.</figcaption>
+</figure>
 
 A lower layer never depends on a higher one. The `-web` crate knows the
 `-core` service; the service knows the `-models` repository; the repository

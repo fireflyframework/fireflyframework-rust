@@ -112,29 +112,19 @@ Each leg commits to its own stream independently, and you design a recovery path
 one fails. "Re-credit the source" is a brand-new `deposit` that restores the
 balance, and it leaves an auditable refund event behind.
 
-<figure>
-<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A two-step saga: debit then credit, with a compensation arrow from credit failure back to a refund of the debit.">
-  <rect x="0" y="0" width="640" height="200" fill="#ffffff"/>
-  <!-- debit node -->
-  <rect x="48" y="48" width="150" height="56" rx="10" fill="#f6a821" stroke="#d4793a" stroke-width="2"/>
-  <text x="123" y="72" text-anchor="middle" font-family="sans-serif" font-size="15" font-weight="bold" fill="#3a2a1c">debit</text>
-  <text x="123" y="92" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#3a2a1c">withdraw(amount)</text>
-  <!-- forward arrow -->
-  <line x1="198" y1="76" x2="278" y2="76" stroke="#d4793a" stroke-width="2.5" marker-end="url(#arrow)"/>
-  <!-- credit node -->
-  <rect x="278" y="48" width="150" height="56" rx="10" fill="#f6a821" stroke="#d4793a" stroke-width="2"/>
-  <text x="353" y="72" text-anchor="middle" font-family="sans-serif" font-size="15" font-weight="bold" fill="#3a2a1c">credit</text>
-  <text x="353" y="92" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#3a2a1c">deposit(amount)</text>
-  <text x="486" y="80" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#b03a2e">fails</text>
-  <!-- compensation arrow: from credit, curving back under debit -->
-  <path d="M 353 104 C 353 160, 123 160, 123 104" fill="none" stroke="#b03a2e" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrowred)"/>
-  <text x="238" y="178" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#b03a2e">compensate: refund_debit — deposit(amount) back to source</text>
-  <defs>
-    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#d4793a"/></marker>
-    <marker id="arrowred" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#b03a2e"/></marker>
-  </defs>
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 220" role="img"
+     aria-label="Saga with compensation: forward steps debit, credit and notify run in dependency order; if credit fails, the engine runs the debit's compensation in reverse order to refund"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+<text x="280.0" y="24.0" text-anchor="middle" font-size="12" font-weight="700" fill="#3a2a1c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">forward: dependency-ordered steps</text>
+<rect x="40.0" y="50.5" width="150.0" height="52.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="40.0" y="48.0" width="150.0" height="52.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="115.0" y="71.0" text-anchor="middle" font-size="13.0" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">debit</text><text x="115.0" y="85.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">withdraw(amount)</text><line x1="190.0" y1="74.0" x2="216.0" y2="74.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="224.0,74.0 216.0,78.5 216.0,69.5" fill="#b5531f"/><rect x="224.0" y="50.5" width="150.0" height="52.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="224.0" y="48.0" width="150.0" height="52.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="299.0" y="71.0" text-anchor="middle" font-size="13.0" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">credit</text><text x="299.0" y="85.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">deposit(amount)</text><line x1="374.0" y1="74.0" x2="400.0" y2="74.0" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="408.0,74.0 400.0,78.5 400.0,69.5" fill="#b5531f"/><rect x="408.0" y="50.5" width="150.0" height="52.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="408.0" y="48.0" width="150.0" height="52.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="483.0" y="71.0" text-anchor="middle" font-size="13.0" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">notify</text><text x="483.0" y="85.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">publish event</text>
+<text x="299.0" y="44.0" text-anchor="middle" font-size="10.5" font-weight="700" fill="#b03a2e" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">may fail</text>
+<path d="M299.0,100 V150 H115.0 V108" fill="none" stroke="#b03a2e" stroke-width="2.6" stroke-dasharray="6 5" stroke-linecap="round"/>
+<polygon points="115.0,100 110.5,109.0 119.5,109.0" fill="#b03a2e"/>
+<text x="207.0" y="143.0" text-anchor="middle" font-size="11" font-weight="700" fill="#b03a2e" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">compensate — reverse order</text>
+<text x="280.0" y="200.0" text-anchor="middle" font-size="11" font-weight="600" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">a compensation is a forward undo, not a database rollback</text>
 </svg>
-<figcaption>The transfer saga: <code>debit</code> then <code>credit</code>. A failed credit runs the debit's compensation in reverse, refunding the source.</figcaption>
+<figcaption>A saga runs its steps in dependency order. If a step fails, the engine runs the already-completed steps' compensations in <strong>reverse order</strong> — here a failed <code>credit</code> refunds the <code>debit</code>. A compensation is a forward action that undoes, not a database rollback.</figcaption>
 </figure>
 
 What just happened: you named the two writes, saw why neither retry nor
@@ -567,30 +557,18 @@ false), and `fire_and_forget` (schedule the node without blocking the layer). Th
 macro generates `Workflow::workflow(self: Arc<Self>)` and
 `run(self, input) -> Result<(), WorkflowError>`.
 
-<figure>
-<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A compliance DAG: balance-check and limit-check run in parallel and both feed the approve node.">
-  <rect x="0" y="0" width="640" height="220" fill="#ffffff"/>
-  <!-- balance-check -->
-  <rect x="40" y="36" width="180" height="52" rx="10" fill="#f6a821" stroke="#d4793a" stroke-width="2"/>
-  <text x="130" y="58" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#3a2a1c">balance-check</text>
-  <text x="130" y="76" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#3a2a1c">funds_ok: bool</text>
-  <!-- limit-check -->
-  <rect x="40" y="132" width="180" height="52" rx="10" fill="#f6a821" stroke="#d4793a" stroke-width="2"/>
-  <text x="130" y="154" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#3a2a1c">limit-check</text>
-  <text x="130" y="172" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#3a2a1c">within_limit: bool</text>
-  <!-- approve -->
-  <rect x="420" y="84" width="180" height="52" rx="10" fill="#d4793a" stroke="#3a2a1c" stroke-width="2"/>
-  <text x="510" y="106" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#ffffff">approve</text>
-  <text x="510" y="124" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#fff3e0">depends_on both</text>
-  <!-- edges -->
-  <path d="M 220 62 C 320 62, 330 100, 418 104" fill="none" stroke="#d4793a" stroke-width="2.5" marker-end="url(#wfarrow)"/>
-  <path d="M 220 158 C 320 158, 330 120, 418 116" fill="none" stroke="#d4793a" stroke-width="2.5" marker-end="url(#wfarrow)"/>
-  <text x="300" y="28" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#8a6d3b">parallel layer</text>
-  <defs>
-    <marker id="wfarrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#d4793a"/></marker>
-  </defs>
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 220" role="img"
+     aria-label="Workflow DAG: balance-check and limit-check run in parallel in one layer and both feed the approve gate, which depends on both"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+<text x="170.0" y="26.0" text-anchor="middle" font-size="11" font-weight="700" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">parallel layer</text>
+<rect x="40.0" y="42.5" width="188.0" height="52.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="40.0" y="40.0" width="188.0" height="52.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="134.0" y="63.0" text-anchor="middle" font-size="13.0" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">balance-check</text><text x="134.0" y="77.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">funds_ok: bool</text>
+<rect x="40.0" y="130.5" width="188.0" height="52.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="40.0" y="128.0" width="188.0" height="52.0" rx="9" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/><text x="134.0" y="151.0" text-anchor="middle" font-size="13.0" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">limit-check</text><text x="134.0" y="165.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">within_limit: bool</text>
+<rect x="360.0" y="86.5" width="188.0" height="52.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="360.0" y="84.0" width="188.0" height="52.0" rx="9" fill="#fff6e6" stroke="#e0b96a" stroke-width="1.5"/><text x="454.0" y="107.0" text-anchor="middle" font-size="14" font-weight="700" fill="#2a1d10" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">approve</text><text x="454.0" y="121.0" text-anchor="middle" font-size="10.0" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">depends_on both</text>
+<path d="M228.0,66.0 Q288.2,105.2 352.0,102.4" fill="none" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="360.0,102.0 352.2,106.9 351.8,97.9" fill="#b5531f"/>
+<path d="M228.0,154.0 Q288.2,114.8 352.0,117.6" fill="none" stroke="#d4793a" stroke-width="3.0" stroke-linecap="round"/><polygon points="360.0,118.0 351.8,122.1 352.2,113.1" fill="#b5531f"/>
 </svg>
-<figcaption>The compliance workflow: <code>balance-check</code> and <code>limit-check</code> have no dependency on each other, so they run in the same layer; <code>approve</code> waits for both and consumes their verdicts.</figcaption>
+<figcaption>A workflow is a DAG of steps. <code>balance-check</code> and <code>limit-check</code> have no dependency on each other, so they run in the same parallel layer; <code>approve</code> waits for both and consumes their verdicts.</figcaption>
 </figure>
 
 Lumen's `src/compliance.rs` runs two independent checks in parallel and then an
@@ -817,40 +795,29 @@ name, so confirm and cancel can read it via `#[from_step("<name>")]`.
 `backoff_ms`, and `timeout_ms`. The macro generates `Tcc::tcc(self: Arc<Self>)`
 and `run(self, input) -> Result<(), TccError>`.
 
-<figure>
-<svg viewBox="0 0 640 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TCC phases for two participants: a Try column, a Confirm column on success, and a Cancel column on failure.">
-  <rect x="0" y="0" width="640" height="250" fill="#ffffff"/>
-  <!-- column headers -->
-  <text x="120" y="28" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#3a2a1c">Try (reserve)</text>
-  <text x="330" y="28" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#2e7d32">Confirm (on success)</text>
-  <text x="540" y="28" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#b03a2e">Cancel (on try failure)</text>
-  <!-- source row -->
-  <text x="14" y="80" font-family="sans-serif" font-size="12" font-weight="bold" fill="#8a6d3b">source</text>
-  <rect x="40" y="56" width="160" height="44" rx="9" fill="#f6a821" stroke="#d4793a" stroke-width="2"/>
-  <text x="120" y="83" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#3a2a1c">withdraw (hold)</text>
-  <rect x="250" y="56" width="160" height="44" rx="9" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2"/>
-  <text x="330" y="83" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#2e7d32">(none — held)</text>
-  <rect x="460" y="56" width="160" height="44" rx="9" fill="#fdecea" stroke="#b03a2e" stroke-width="2"/>
-  <text x="540" y="83" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#b03a2e">deposit (release)</text>
-  <!-- dest row -->
-  <text x="14" y="154" font-family="sans-serif" font-size="12" font-weight="bold" fill="#8a6d3b">dest</text>
-  <rect x="40" y="130" width="160" height="44" rx="9" fill="#f6a821" stroke="#d4793a" stroke-width="2"/>
-  <text x="120" y="157" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#3a2a1c">verify exists</text>
-  <rect x="250" y="130" width="160" height="44" rx="9" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2"/>
-  <text x="330" y="157" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#2e7d32">deposit (capture)</text>
-  <rect x="460" y="130" width="160" height="44" rx="9" fill="#fdecea" stroke="#b03a2e" stroke-width="2"/>
-  <text x="540" y="157" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#b03a2e">(none — nothing held)</text>
-  <!-- flow note -->
-  <line x1="200" y1="210" x2="250" y2="210" stroke="#2e7d32" stroke-width="2.5" marker-end="url(#okarrow)"/>
-  <text x="225" y="202" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#2e7d32">all tried</text>
-  <line x1="200" y1="232" x2="250" y2="232" stroke="#b03a2e" stroke-width="2.5" stroke-dasharray="6 4" marker-end="url(#failarrow)"/>
-  <text x="372" y="236" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#b03a2e">any try fails → cancel tried in reverse</text>
-  <defs>
-    <marker id="okarrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#2e7d32"/></marker>
-    <marker id="failarrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#b03a2e"/></marker>
-  </defs>
+<figure class="fig">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 616 250" role="img"
+     aria-label="TCC phases for two participants source and dest: a Try column reserves, a Confirm column captures on success, and a Cancel column releases on a try failure"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+<text x="176.0" y="28.0" text-anchor="middle" font-size="14" font-weight="800" fill="#b5531f" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Try</text>
+<text x="176.0" y="44.0" text-anchor="middle" font-size="10" font-weight="600" fill="#b5531f" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">reserve</text>
+<text x="356.0" y="28.0" text-anchor="middle" font-size="14" font-weight="800" fill="#1f8a4c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Confirm</text>
+<text x="356.0" y="44.0" text-anchor="middle" font-size="10" font-weight="600" fill="#1f8a4c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">on all-tried</text>
+<text x="536.0" y="28.0" text-anchor="middle" font-size="14" font-weight="800" fill="#b03a2e" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">Cancel</text>
+<text x="536.0" y="44.0" text-anchor="middle" font-size="10" font-weight="600" fill="#b03a2e" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">on a try failure</text>
+<text x="20.0" y="88.0" text-anchor="start" font-size="11.5" font-weight="700" fill="#8a6d3b" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">source</text>
+<rect x="97.0" y="62.5" width="158.0" height="46.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="97.0" y="60.0" width="158.0" height="46.0" rx="9" fill="#fdf6ea" stroke="#d4793a" stroke-width="1.5"/><text x="176.0" y="87.5" text-anchor="middle" font-size="11" font-weight="700" fill="#d4793a" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">withdraw (hold)</text>
+<rect x="277.0" y="62.5" width="158.0" height="46.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="277.0" y="60.0" width="158.0" height="46.0" rx="9" fill="#ecf9f0" stroke="#1f8a4c" stroke-width="1.5"/><text x="356.0" y="87.5" text-anchor="middle" font-size="11" font-weight="700" fill="#1f8a4c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">(none — held)</text>
+<rect x="457.0" y="62.5" width="158.0" height="46.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="457.0" y="60.0" width="158.0" height="46.0" rx="9" fill="#fdecea" stroke="#b03a2e" stroke-width="1.5"/><text x="536.0" y="87.5" text-anchor="middle" font-size="11" font-weight="700" fill="#b03a2e" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">deposit (release)</text>
+<text x="20.0" y="162.0" text-anchor="start" font-size="11.5" font-weight="700" fill="#8a6d3b" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">dest</text>
+<rect x="97.0" y="136.5" width="158.0" height="46.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="97.0" y="134.0" width="158.0" height="46.0" rx="9" fill="#fdf6ea" stroke="#d4793a" stroke-width="1.5"/><text x="176.0" y="161.5" text-anchor="middle" font-size="11" font-weight="700" fill="#d4793a" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">verify exists</text>
+<rect x="277.0" y="136.5" width="158.0" height="46.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="277.0" y="134.0" width="158.0" height="46.0" rx="9" fill="#ecf9f0" stroke="#1f8a4c" stroke-width="1.5"/><text x="356.0" y="161.5" text-anchor="middle" font-size="11" font-weight="700" fill="#1f8a4c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">deposit (capture)</text>
+<rect x="457.0" y="136.5" width="158.0" height="46.0" rx="9" fill="#d9c4a3" opacity="0.22"/><rect x="457.0" y="134.0" width="158.0" height="46.0" rx="9" fill="#fdecea" stroke="#b03a2e" stroke-width="1.5"/><text x="536.0" y="161.5" text-anchor="middle" font-size="11" font-weight="700" fill="#b03a2e" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">(none — nothing held)</text>
+<line x1="252.0" y1="216.0" x2="260.0" y2="216.0" stroke="#1f8a4c" stroke-width="2.5" stroke-linecap="round"/><polygon points="268.0,216.0 260.0,220.5 260.0,211.5" fill="#1f8a4c"/>
+<text x="348.0" y="212.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1f8a4c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">all tried → confirm</text>
+<text x="430.0" y="236.0" text-anchor="middle" font-size="10.5" font-weight="600" fill="#b03a2e" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">any try fails → cancel tried in reverse</text>
 </svg>
-<figcaption>The two-phase transfer: Try holds on the source and verifies the destination; Confirm captures on the destination; a failed Try cancels by releasing the source hold.</figcaption>
+<figcaption>Try / Confirm / Cancel. Every participant's <strong>Try</strong> reserves; once all have tried, <strong>Confirm</strong> captures; if any Try fails, the engine <strong>Cancels</strong> the already-tried participants in reverse order. The source holds funds on Try and releases them on Cancel; the destination captures on Confirm.</figcaption>
 </figure>
 
 Lumen's `src/tcc_transfer.rs` models the transfer as a reserve-then-capture. The

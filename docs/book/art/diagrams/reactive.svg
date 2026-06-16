@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 250" role="img"
+     aria-label="Reactive streams: a Mono of T emits at most one item then completes; a Flux of T emits zero or more items then completes; both can short-circuit on a terminal error"
+     font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
+<text x="36.0" y="44.0" text-anchor="start" font-size="15" font-weight="800" fill="#b5531f" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">Mono&lt;T&gt;</text>
+<text x="36.0" y="62.0" text-anchor="start" font-size="11" font-weight="600" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">0 or 1 item, then complete</text>
+<line x1="150" y1="58" x2="500" y2="58" stroke="#7a6450" stroke-width="2"/>
+<polygon points="510,58 500,53 500,63" fill="#7a6450"/>
+<circle cx="250" cy="58" r="13" fill="#f6a821" stroke="#d4793a" stroke-width="1.5"/>
+<line x1="430" y1="50" x2="430" y2="66" stroke="#1f8a4c" stroke-width="3"/>
+<text x="250.0" y="86.0" text-anchor="middle" font-size="10" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">just(v)</text>
+<text x="430.0" y="86.0" text-anchor="middle" font-size="10" font-weight="600" fill="#1f8a4c" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">complete</text>
+<line x1="24" y1="120" x2="536" y2="120" stroke="#e0cda8" stroke-width="1" stroke-dasharray="4 4"/>
+<text x="36.0" y="162.0" text-anchor="start" font-size="15" font-weight="800" fill="#b5531f" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">Flux&lt;T&gt;</text>
+<text x="36.0" y="180.0" text-anchor="start" font-size="11" font-weight="600" fill="#7a6450" font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">0..N items, then complete</text>
+<line x1="150" y1="176" x2="500" y2="176" stroke="#7a6450" stroke-width="2"/>
+<polygon points="510,176 500,171 500,181" fill="#7a6450"/>
+<circle cx="200" cy="176" r="11" fill="#f6a821" stroke="#b5531f" stroke-width="1.2"/>
+<circle cx="256" cy="176" r="10" fill="#d4793a" stroke="#b5531f" stroke-width="1.2"/>
+<circle cx="312" cy="176" r="9" fill="#f6a821" stroke="#b5531f" stroke-width="1.2"/>
+<circle cx="368" cy="176" r="8" fill="#d4793a" stroke="#b5531f" stroke-width="1.2"/>
+<circle cx="424" cy="176" r="7" fill="#f6a821" stroke="#b5531f" stroke-width="1.2"/>
+<line x1="492" y1="168" x2="492" y2="184" stroke="#1f8a4c" stroke-width="3"/>
+<text x="228.0" y="206.0" text-anchor="middle" font-size="10" font-weight="600" fill="#7a6450" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">map · filter · flat_map</text>
+</svg>
