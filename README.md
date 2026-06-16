@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-  <a href="CHANGELOG.md"><img alt="Version 26.6.23" src="https://img.shields.io/badge/version-26.6.23-orange.svg"></a>
+  <a href="CHANGELOG.md"><img alt="Version 26.6.24" src="https://img.shields.io/badge/version-26.6.24-orange.svg"></a>
   <a href="https://www.rust-lang.org"><img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-93450a.svg"></a>
   <a href="docs/book/src/05-reactive-model.md"><img alt="Reactive: Mono / Flux" src="https://img.shields.io/badge/reactive-Mono%20%2F%20Flux-success.svg"></a>
   <a href="crates/firefly/README.md"><img alt="One dependency: firefly" src="https://img.shields.io/badge/one%20dep-firefly%20%2B%20macros-success.svg"></a>
@@ -124,7 +124,7 @@ orchestration — is in scope, alongside every macro from
 
 ```toml
 [dependencies]
-firefly = "26.6.23"            # the whole framework + every macro
+firefly = "26.6.24"            # the whole framework + every macro
 axum    = "0.7"               # you author axum handlers
 serde   = { version = "1", features = ["derive"] }
 tokio   = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -371,12 +371,12 @@ fireflyframework-rust/
 ├── docs/                         # ARCHITECTURE, CONFIGURATION, DESIGN
 ├── docs/book/                    # the mdBook guide (mdbook build docs/book) + dist/*.pdf,*.epub
 ├── docker-compose.yml            # real backing services for integration tests
-└── Cargo.toml                    # workspace root — version 26.6.23, edition 2021, MSRV 1.88
+└── Cargo.toml                    # workspace root — version 26.6.24, edition 2021, MSRV 1.88
 ```
 
 ### Choosing your tier / optional adapters
 
-The fastest path is the **one-dependency facade** — `firefly = "26.6.23"`
+The fastest path is the **one-dependency facade** — `firefly = "26.6.24"`
 brings the whole framework and every macro in via `use firefly::prelude::*;`,
 with heavy adapters as opt-in cargo features
 (`features = ["data-sqlx", "eda-kafka", …]`). Prefer the individual crates when
@@ -422,7 +422,7 @@ macro. Add it plus the ecosystem crates you author against:
 
 ```toml
 [dependencies]
-firefly = "26.6.23"            # the whole framework + every macro
+firefly = "26.6.24"            # the whole framework + every macro
 axum    = "0.7"               # you author axum handlers
 serde   = { version = "1", features = ["derive"] }
 tokio   = { version = "1", features = ["rt-multi-thread", "macros", "net"] }

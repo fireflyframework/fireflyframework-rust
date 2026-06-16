@@ -666,7 +666,7 @@ impl ContentStore for S3Store {
 }
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.23";
+pub const VERSION: &str = "26.6.24";
 
 #[cfg(test)]
 mod tests {

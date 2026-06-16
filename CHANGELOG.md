@@ -2,6 +2,26 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.24 — 2026-06-16
+
+Spec-based **filtering** is now first-class on derived repositories, with a
+filtering endpoint in the sample.
+
+### Added
+
+- **`#[derive(SqlxRepository)]` also implements `ReactiveSpecificationRepository`**
+  (`find_by_spec` / `find_by_spec_paged`) by delegation — so any derived
+  repository runs composable, dialect-aware `Specification` queries out of the
+  box (the Spring Data `JpaSpecificationExecutor` analog), not just CRUD +
+  derived queries.
+- **lumen-ledger `GET /api/v1/wallets/search`** — a `WalletFilter` query DTO
+  (owner / currency / status / minBalance / maxBalance, each an OpenAPI query
+  parameter) that the `@Service` turns into a `firefly::data::Specification` the
+  repository compiles to a `WHERE`. At least one criterion is required — a
+  no-filter search is a **422**, not an unscoped list-everything (and, like the
+  rest of this auth-free demo, a real service would authorization-scope the
+  results). New `WalletFilter` DTO; `WalletService::search`.
+
 ## v26.6.23 — 2026-06-16
 
 OpenAPI **operation parameters & bodies** now render in full (Swagger UI / ReDoc

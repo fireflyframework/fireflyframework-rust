@@ -94,7 +94,7 @@ part of the framework, shown here as a focused standalone example:
 | `#[derive(Builder)]` | a fluent constructor with required/defaulted fields | `T::builder()` → fluent setters → `build() -> Result<T, String>` |
 | `#[derive(Mapper)]` | compile-time struct-to-struct conversion | one compile-time `From<Source>` per `#[firefly(from = "…")]` |
 | `#[derive(Entity)]` | the `@Entity` mapping from annotated struct fields | a `SqlxEntity` impl (`@Table` / `@Id` / `@Version` / `@Column`); scalar fields map automatically, a non-scalar field uses `#[firefly(with(read = …, write = …))]` |
-| `#[derive(SqlxRepository)]` | a fully-wired sqlx `@Repository` bean | a `@Repository` bean built from the injected `Db` (via `repository_for`), a `ReactiveCrudRepository` impl by delegation, and the `repository()` accessor `#[firefly::repository]` uses |
+| `#[derive(SqlxRepository)]` | a fully-wired sqlx `@Repository` bean | a `@Repository` bean built from the injected `Db` (via `repository_for`), `ReactiveCrudRepository` **and** `ReactiveSpecificationRepository` (`find_by_spec`, the `JpaSpecificationExecutor` analog) impls by delegation, and the `repository()` accessor `#[firefly::repository]` uses |
 | `#[firefly::repository]` | derived-query and custom-query method bodies | method bodies on a `SqlxReactiveRepository` impl from method names or `#[query(…)]` |
 | `#[firefly::transactional]` | a declared transaction boundary | a commit-on-`Ok` / rollback-on-`Err` boundary around an `async fn` body |
 | `#[firefly::pre_authorize]` / `#[firefly::post_authorize]` | method-level access control | an access check before the body, or a returnObject check after it |

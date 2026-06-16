@@ -166,6 +166,22 @@ pub(crate) fn derive_sqlx_repository(input: DeriveInput) -> syn::Result<TokenStr
                 #data::ReactiveCrudRepository::count(&self.#field)
             }
         }
+
+        // "extends JpaSpecificationExecutor<Entity>" — composable, dialect-aware
+        // `Specification` queries, delegated to the inner repository so a service
+        // can filter with `repo.find_by_spec(spec)` out of the box.
+        impl #data::ReactiveSpecificationRepository<#entity_ty> for #self_ty {
+            fn find_by_spec(&self, spec: #data::Specification) -> #reactive::Flux<#entity_ty> {
+                #data::ReactiveSpecificationRepository::find_by_spec(&self.#field, spec)
+            }
+            fn find_by_spec_paged(
+                &self,
+                spec: #data::Specification,
+                pageable: #data::Pageable,
+            ) -> #reactive::Flux<#entity_ty> {
+                #data::ReactiveSpecificationRepository::find_by_spec_paged(&self.#field, spec, pageable)
+            }
+        }
     })
 }
 

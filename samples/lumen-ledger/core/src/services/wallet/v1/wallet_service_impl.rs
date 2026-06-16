@@ -17,11 +17,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use firefly::data::{Page, Pageable, ReactiveCrudRepository};
+use firefly::data::{
+    Op, Page, Pageable, Predicate, ReactiveCrudRepository, ReactiveSpecificationRepository,
+    Specification,
+};
 use firefly::data_sqlx::{Db, SqlxTransactionManager};
 use firefly::prelude::*;
 use firefly::transactional::TransactionManager;
-use lumen_ledger_interfaces::{CreateWalletRequest, WalletResponse, WalletStatus};
+use lumen_ledger_interfaces::{CreateWalletRequest, WalletFilter, WalletResponse, WalletStatus};
 use lumen_ledger_models::entities::wallet::v1::Wallet;
 use lumen_ledger_models::is_optimistic_lock;
 use lumen_ledger_models::repositories::wallet::v1::WalletRepository;
@@ -199,6 +202,53 @@ impl WalletService for WalletServiceImpl {
             .find_by_owner(owner)
             .await
             .map_err(|e| ServiceError::Backend(e.to_string()))?;
+        Ok(wallets.iter().map(|w| self.mapper.to_response(w)).collect())
+    }
+
+    async fn search(&self, filter: WalletFilter) -> Result<Vec<WalletResponse>, ServiceError> {
+        // At least one criterion is required: a no-filter search would be an
+        // unscoped list-every-wallet enumeration (the same broken-access-control
+        // concern as a `list_all`). In a real service the result set would also
+        // be authorization-scoped to the caller; this sample omits the auth layer.
+        if filter.owner.is_none()
+            && filter.currency.is_none()
+            && filter.status.is_none()
+            && filter.min_balance.is_none()
+            && filter.max_balance.is_none()
+        {
+            return Err(ServiceError::Validation(
+                "provide at least one filter criterion (owner, currency, status, minBalance, \
+                 maxBalance)"
+                    .into(),
+            ));
+        }
+        // Translate the optional criteria into a composable framework
+        // `Specification` (each present field is an AND-combined predicate); the
+        // repository compiles it to a dialect-aware `WHERE` and runs it.
+        let mut spec = Specification::all();
+        if let Some(owner) = filter.owner {
+            spec = spec.and(Specification::eq("owner", owner));
+        }
+        if let Some(currency) = filter.currency {
+            spec = spec.and(Specification::eq("currency", currency));
+        }
+        if let Some(status) = filter.status {
+            spec = spec.and(Specification::eq("status", status.as_str()));
+        }
+        if let Some(min) = filter.min_balance {
+            spec = spec.and(Specification::pred(Predicate::new("balance", Op::Gte, min)));
+        }
+        if let Some(max) = filter.max_balance {
+            spec = spec.and(Specification::pred(Predicate::new("balance", Op::Lte, max)));
+        }
+        let wallets = self
+            .repository
+            .find_by_spec(spec)
+            .collect_list()
+            .block()
+            .await
+            .map_err(|e| ServiceError::Backend(e.to_string()))?
+            .unwrap_or_default();
         Ok(wallets.iter().map(|w| self.mapper.to_response(w)).collect())
     }
 

@@ -35,7 +35,7 @@ use firefly::prelude::*;
 use firefly::web::{PageRequest, Path, Query, Valid, WebError, WebResult};
 use lumen_ledger_core::{ServiceError, WalletService};
 use lumen_ledger_interfaces::{
-    AmountRequest, CreateWalletRequest, TransferRequest, WalletResponse, WalletStatus,
+    AmountRequest, CreateWalletRequest, TransferRequest, WalletFilter, WalletResponse, WalletStatus,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -140,6 +140,26 @@ impl WalletController {
             .list_by_owner(owner)
             .await
             .map_err(service_to_web)?;
+        Ok(Json(views))
+    }
+
+    /// `GET /api/v1/wallets/search?owner=&currency=&status=&minBalance=&maxBalance=`
+    /// — filter wallets by any combination of criteria (AND-combined). Every
+    /// field is an **optional query parameter** (each rendered in Swagger UI from
+    /// the `WalletFilter` schema); the `@Service` translates the set into a
+    /// framework `Specification` the repository compiles to a dialect-aware
+    /// `WHERE` — the Spring Data `JpaSpecificationExecutor` analog.
+    ///
+    /// At least one criterion is **required** (a no-filter search would be an
+    /// unscoped enumeration → **422**). Like the rest of this auth-free demo, the
+    /// result is not authorization-scoped; a real service would scope it to the
+    /// caller (admin sees all, others their own) — see the `list` note above.
+    #[get("/wallets/search", summary = "Search wallets by filter criteria")]
+    async fn search(
+        State(api): State<WalletController>,
+        Query(filter): Query<WalletFilter>,
+    ) -> WebResult<Json<Vec<WalletResponse>>> {
+        let views = api.service.search(filter).await.map_err(service_to_web)?;
         Ok(Json(views))
     }
 

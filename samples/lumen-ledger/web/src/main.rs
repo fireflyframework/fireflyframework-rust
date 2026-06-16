@@ -428,6 +428,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_filters_wallets_by_specification() {
+        let app = router("lumen_ledger_web_search").await;
+        let open = |owner: &str, currency: &str, balance: i64| {
+            post(
+                "/api/v1/wallets",
+                json!({"owner": owner, "currency": currency, "openingBalance": balance}),
+            )
+        };
+        for req in [
+            open("alice", "EUR", 1000),
+            open("bob", "USD", 200),
+            open("carol", "EUR", 5000),
+        ] {
+            assert_eq!(
+                app.clone().oneshot(req).await.unwrap().status(),
+                StatusCode::CREATED
+            );
+        }
+
+        let count = |app: axum::Router, query: String| async move {
+            let res = app
+                .oneshot(get(&format!("/api/v1/wallets/search?{query}")))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "search ?{query}");
+            body_json(res).await.as_array().unwrap().len()
+        };
+
+        // The framework `Specification` compiles each present criterion into an
+        // AND-combined `WHERE` clause.
+        assert_eq!(count(app.clone(), "owner=alice".into()).await, 1);
+        assert_eq!(count(app.clone(), "currency=EUR".into()).await, 2);
+        assert_eq!(count(app.clone(), "minBalance=1000".into()).await, 2);
+        assert_eq!(
+            count(app.clone(), "minBalance=1000&maxBalance=2000".into()).await,
+            1
+        );
+        assert_eq!(
+            count(app.clone(), "currency=EUR&minBalance=2000".into()).await,
+            1
+        );
+        assert_eq!(count(app.clone(), "status=active".into()).await, 3);
+
+        // No criteria → 422 (a no-filter search must not list every wallet).
+        let res = app
+            .clone()
+            .oneshot(get("/api/v1/wallets/search"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // `/wallets/search` is a literal route — it does not collide with
+        // `/wallets/:id` (a literal segment beats the param), so this is an empty
+        // result set, not a malformed-UUID 400.
+        let res = app
+            .oneshot(get("/api/v1/wallets/search?owner=nobody"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
     async fn edge_inputs_render_rfc9457_problems() {
         let app = router("lumen_ledger_web_edges").await;
 
