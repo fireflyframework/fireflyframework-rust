@@ -37,6 +37,13 @@ body{ background:#fff; }
   display:flex; flex-direction:column; justify-content:flex-end;
   min-height:7.3in; font-size:.82rem; color:var(--ink-soft); string-set:runhead "";
 }
+/* a short dedication, vertically centred and italic, no running head */
+.frontmatter.dedication-page{
+  display:flex; flex-direction:column; justify-content:center;
+  min-height:7.3in; text-align:center; font-style:italic;
+  color:var(--ink-soft); string-set:runhead "";
+}
+.frontmatter.dedication-page p{ margin:.5rem auto; max-width:25rem; line-height:1.5; }
 
 /* ============ chapters ============ */
 .chapter{ break-before:page; padding-bottom:0; }
