@@ -19,9 +19,13 @@ you write for routing, and no codegen step.
 ## Served, with no app code
 
 During step 10 of the [boot pipeline](./04b-bootstrap.md), `FireflyApplication`
-builds the document from the inventory and mounts it on the **public** router,
-*outside* the security + bearer chain so the docs are reachable without a token
-(like springdoc's permitted endpoints). The served paths default to:
+builds the document from the inventory and mounts it on the **management**
+router — beside the actuator and the admin dashboard, on the management port —
+**not** the public API. Swagger UI, ReDoc, and the spec expose the entire API
+surface and every schema, so they belong on the control-plane surface (where
+operators already reach `/actuator/*` and `/admin/`), keeping the public
+data-plane port free of API-introspection endpoints. The served paths (on the
+management port) default to:
 
 | Path | Serves |
 |------|--------|
@@ -33,15 +37,25 @@ builds the document from the inventory and mounts it on the **public** router,
 `serve` even prints the URLs on boot:
 
 ```text
-:: api docs :: swagger-ui http://0.0.0.0:8080/swagger-ui | redoc http://0.0.0.0:8080/redoc | spec http://0.0.0.0:8080/v3/api-docs
+:: api docs (management) :: swagger-ui http://0.0.0.0:8081/swagger-ui | redoc http://0.0.0.0:8081/redoc | spec http://0.0.0.0:8081/v3/api-docs
 ```
 
-Internally this is `firefly_openapi::Builder::new(info).from_inventory()` —
+Internally this is
+`firefly_openapi::Builder::new(info).add_server(api_url).from_inventory()` —
 `from_inventory()` reads `firefly_container::routes()` (every controller route)
 and `firefly_container::schemas()` (every `#[derive(Schema)]` DTO) — rendered by
 `docs_router(&DocsConfig::default())`. The defaults above come from
 `DocsConfig`; you would only touch them to relocate the doc endpoints. Lumen
 touches nothing: the document just appears.
+
+Because the docs are served on the management port but the API answers on the
+public port, the document declares the **API base URL** as its OpenAPI `server`
+— so Swagger UI's *Try it out* and ReDoc's samples target the API (`:8080`),
+not the management origin they were loaded from. `FireflyApplication` derives it
+from the API bind address (a wildcard host falls back to `localhost`);
+`FIREFLY_OPENAPI_SERVER_URL` overrides it for a public URL behind a reverse
+proxy. An unknown path on **either** listener answers the same RFC 9457
+`application/problem+json` 404.
 
 ## `#[derive(Schema)]` — component schemas
 

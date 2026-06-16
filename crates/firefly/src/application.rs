@@ -309,13 +309,13 @@ impl FireflyApplication {
 
         // 9. Assemble the public router and wrap EVERY request in the
         //    observability edge. Security (the filter chain + bearer) is layered
-        //    onto the application routes ONLY; the OpenAPI docs and the default
-        //    404 are public siblings. `web.apply_middleware` then wraps the whole
-        //    combined router in the inherited edge — idempotency, the
-        //    request-access-log, metrics, correlation, W3C trace, security
-        //    headers, problem rendering, CORS, and the global exception advice —
-        //    so docs requests and unmatched-route 404s are logged, traced, and
-        //    correlated exactly like application requests (no observability gap).
+        //    onto the application routes ONLY; the default 404 is a public sibling
+        //    (the OpenAPI docs live on the management surface — step 7).
+        //    `web.apply_middleware` then wraps the whole router in the inherited
+        //    edge — idempotency, the request-access-log, metrics, correlation, W3C
+        //    trace, security headers, problem rendering, CORS, and the global
+        //    exception advice — so application requests and unmatched-route 404s
+        //    are logged, traced, and correlated (no observability gap).
         let mut app = routes;
         if let Some(chain) = filter_chain {
             app = app.layer(chain.layer());
@@ -324,10 +324,14 @@ impl FireflyApplication {
             app = app.layer(bearer);
         }
 
-        // 9b. OpenAPI (public): the spec is built from the live inventory — every
-        //     `#[rest_controller]` route plus every `#[derive(Schema)]` DTO — and
-        //     served at the springdoc/pyfly paths (`/v3/api-docs`, `/swagger-ui`,
-        //     `/redoc`) with no application code.
+        // 9b. OpenAPI: the spec is built from the live inventory — every
+        //     `#[rest_controller]` route plus every `#[derive(Schema)]` DTO. The
+        //     docs router (`/v3/api-docs`, `/swagger-ui`, `/redoc`) is built here
+        //     but mounted on the **management** surface (step 7), not the public
+        //     API: Swagger UI / ReDoc / the spec expose the whole API surface and
+        //     every schema — a control-plane concern that belongs beside the
+        //     actuator + admin dashboard, so the public data-plane port never
+        //     serves them.
         let openapi = firefly_openapi::Builder::new(firefly_openapi::Info {
             title: format!("{app_name} API"),
             version: if app_version.is_empty() {
@@ -337,15 +341,23 @@ impl FireflyApplication {
             },
             ..firefly_openapi::Info::default()
         })
+        // The docs are served on the management port, but the API is on the
+        // public port — so the spec advertises the API base URL as its `server`,
+        // and Swagger UI / ReDoc "Try it out" send requests *there*, not to the
+        // management origin they're loaded from. Override with
+        // `FIREFLY_OPENAPI_SERVER_URL` (e.g. a public URL behind a reverse proxy).
+        .add_server(firefly_openapi::Server {
+            url: api_server_url(&api_addr),
+            description: "API server".to_string(),
+        })
         .from_inventory();
+        let docs_router = openapi.docs_router(&firefly_openapi::DocsConfig::default());
 
         // 9c. Default 404: an unmatched route answers a proper RFC 9457
         //     `application/problem+json` instead of axum's bare empty body (which
         //     a browser offers to download as a blank file). The fallback is set
-        //     on the combined router so the edge below logs + traces it too.
-        let combined = app
-            .merge(openapi.docs_router(&firefly_openapi::DocsConfig::default()))
-            .fallback(not_found_fallback);
+        //     on the public router so the edge below logs + traces it too.
+        let combined = app.fallback(not_found_fallback);
 
         let api = web.apply_middleware(combined);
 
@@ -382,6 +394,16 @@ impl FireflyApplication {
                 deps,
             ))
         };
+        // The OpenAPI docs (Swagger UI / ReDoc / spec) live on the management
+        // surface, beside the actuator + admin dashboard — never on the public
+        // API port. Their paths (`/swagger-ui`, `/redoc`, `/v3/api-docs`) do not
+        // collide with `/actuator/*` or `/admin/`, and the UIs load the spec
+        // same-origin from this port.
+        // An unknown path on the management surface answers the same RFC 9457
+        // `application/problem+json` 404 the public API does, not axum's bare
+        // empty body. (Safe: neither the actuator nor the admin router sets a
+        // fallback, so this is the single fallback for the merged router.)
+        let management = management.merge(docs_router).fallback(not_found_fallback);
 
         Ok(Bootstrapped {
             web,
@@ -428,7 +450,7 @@ impl Bootstrapped {
         #[cfg(feature = "admin")]
         println!(":: admin dashboard :: http://{management_addr}/admin/");
         println!(
-            ":: api docs :: swagger-ui http://{api_addr}/swagger-ui | redoc http://{api_addr}/redoc | spec http://{api_addr}/v3/api-docs"
+            ":: api docs (management) :: swagger-ui http://{management_addr}/swagger-ui | redoc http://{management_addr}/redoc | spec http://{management_addr}/v3/api-docs"
         );
         log_startup_report(&container);
 
@@ -470,6 +492,36 @@ async fn not_found_fallback(
 ) -> axum::response::Response {
     let detail = format!("No route matches {method} {}", uri.path());
     firefly_web::problem_response(&firefly_kernel::ProblemDetail::not_found(detail))
+}
+
+/// The client-reachable base URL of the **public API**, for the OpenAPI spec's
+/// `servers` entry. The docs are served on the management port, so this is what
+/// makes Swagger UI / ReDoc "Try it out" call the API port instead of the docs
+/// origin. `FIREFLY_OPENAPI_SERVER_URL` overrides it (e.g. a public URL behind a
+/// reverse proxy); otherwise it is derived from the API bind address — a
+/// wildcard host (`0.0.0.0` / `[::]`) is not client-usable, so it falls back to
+/// `localhost`.
+fn api_server_url(api_addr: &str) -> String {
+    if let Ok(url) = std::env::var("FIREFLY_OPENAPI_SERVER_URL") {
+        if !url.trim().is_empty() {
+            return url.trim().to_string();
+        }
+    }
+    match api_addr.parse::<std::net::SocketAddr>() {
+        Ok(addr) => {
+            let host = if addr.ip().is_unspecified() {
+                "localhost".to_string()
+            } else {
+                match addr.ip() {
+                    std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+                    std::net::IpAddr::V4(v4) => v4.to_string(),
+                }
+            };
+            format!("http://{host}:{}", addr.port())
+        }
+        // Not a bare socket address (e.g. already a host:port name) — best effort.
+        Err(_) => format!("http://{api_addr}"),
+    }
 }
 
 /// Emits the pyfly/Spring-Boot-style **line-by-line startup report** — the

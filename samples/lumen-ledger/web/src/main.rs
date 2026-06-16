@@ -65,7 +65,11 @@ mod tests {
     /// database (`cache`), asserts the cross-crate discovery wired up, and
     /// returns the public router. The router's controller state keeps the
     /// repository (and its pool) alive after the `Bootstrapped` is dropped.
-    async fn router(cache: &str) -> axum::Router {
+    /// Boots the whole graph once and returns `(public api router, management
+    /// router)`. The OpenAPI docs (`/v3/api-docs`, `/swagger-ui`, `/redoc`) are
+    /// served on the **management** router, beside actuator + admin — never on
+    /// the public API.
+    async fn boot(cache: &str) -> (axum::Router, axum::Router) {
         let app = {
             let _guard = boot_lock().lock().await;
             std::env::set_var(
@@ -82,7 +86,17 @@ mod tests {
         // The async sqlx repository, @Service/@Mapper/@Component, @Configuration,
         // and the @RestController are all discovered cross-crate.
         firefly::assert_discovered(&app.container, 8, 1);
-        app.api_router
+        (app.api_router, app.management_router)
+    }
+
+    /// The public API router (the surface application tests drive).
+    async fn router(cache: &str) -> axum::Router {
+        boot(cache).await.0
+    }
+
+    /// The management router (actuator + admin + the OpenAPI docs).
+    async fn mgmt_router(cache: &str) -> axum::Router {
+        boot(cache).await.1
     }
 
     async fn body_json(res: axum::response::Response) -> Value {
@@ -433,9 +447,10 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-        // Missing required ?owner= → 400 problem (the firefly::web::Query extractor).
+        // A bare GET /wallets lists every wallet (`owner` is an optional filter),
+        // so it is a 200 collection — not a "missing query parameter" 400.
         let res = app.clone().oneshot(get("/api/v1/wallets")).await.unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.status(), StatusCode::OK);
 
         // Blank owner / bad currency → 422 (bean validation via Valid<…>).
         let res = app
@@ -472,9 +487,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn openapi_document_lists_every_dto_schema() {
-        let app = router("lumen_ledger_web_oas").await;
-        let res = app.oneshot(get("/v3/api-docs")).await.unwrap();
+    async fn management_surface_404s_cleanly_and_advertises_the_api_server() {
+        let mgmt = mgmt_router("lumen_ledger_web_mgmt").await;
+
+        // An unknown management path answers an RFC 9457 problem 404 — the same
+        // contract as the public API, not axum's bare empty body.
+        let res = mgmt
+            .clone()
+            .oneshot(get("/no/such/management/path"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let ct = res
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.contains("application/problem+json"),
+            "management 404 must be a problem document, got content-type {ct:?}"
+        );
+
+        // The OpenAPI spec (served on this management surface) advertises the API
+        // server, so Swagger UI / ReDoc "Try it out" target the API port — not the
+        // management origin the docs are loaded from.
+        let res = mgmt.oneshot(get("/v3/api-docs")).await.unwrap();
+        let spec = body_json(res).await;
+        let server = spec["servers"][0]["url"].as_str().unwrap_or("");
+        assert!(
+            server.starts_with("http://"),
+            "the spec must advertise an absolute API server URL, got {server:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn openapi_document_served_on_the_management_surface() {
+        // The OpenAPI docs live on the management router (beside actuator/admin),
+        // NOT the public API — so they must be absent from the api router and
+        // present on the management one.
+        let (api, mgmt) = boot("lumen_ledger_web_oas").await;
+        let on_api = api
+            .oneshot(get("/v3/api-docs"))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(
+            on_api,
+            StatusCode::NOT_FOUND,
+            "the public API must not expose the spec"
+        );
+        let res = mgmt.oneshot(get("/v3/api-docs")).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let spec = body_json(res).await;
         let schemas = &spec["components"]["schemas"];

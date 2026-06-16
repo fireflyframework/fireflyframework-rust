@@ -72,7 +72,7 @@ saga orchestration, scheduling, security, observability — and *every*
 # The one-dependency front door: the `firefly` facade re-exports the whole
 # framework AND every macro. Generated code resolves runtime types through the
 # facade, so Lumen never lists the underlying `firefly-*` crates.
-firefly = "26.6.20"
+firefly = "26.6.21"
 
 # The two ecosystem crates a Firefly service still writes against directly:
 # axum (you author the controller handlers) and serde (your messages and event
@@ -215,7 +215,7 @@ handler/listener/scheduled counts — followed by the admin and API-docs URLs:
 
 ```text
 :: admin dashboard :: http://0.0.0.0:8081/admin/
-:: api docs :: swagger-ui http://0.0.0.0:8080/swagger-ui | redoc http://0.0.0.0:8080/redoc | spec http://0.0.0.0:8080/v3/api-docs
+:: api docs (management) :: swagger-ui http://0.0.0.0:8081/swagger-ui | redoc http://0.0.0.0:8081/redoc | spec http://0.0.0.0:8081/v3/api-docs
 :: active profiles :: default
 :: beans (…) ::
 :: routes (…) ::
@@ -232,7 +232,7 @@ curl localhost:8081/actuator/health
 # Build metadata — the app name and version flow straight from
 # `FireflyApplication::new(...).version(...)`.
 curl localhost:8081/actuator/info
-# {"app":{"name":"lumen","version":"26.6.20"}, ...}
+# {"app":{"name":"lumen","version":"26.6.21"}, ...}
 ```
 
 ## What you got for free
@@ -252,7 +252,8 @@ Without writing any of it yourself, Lumen already has:
   reports mirror Spring Boot Actuator's) plus a self-hosted `/admin` dashboard,
   on a separate listener.
 - **Auto-generated API docs.** Swagger UI (`/swagger-ui`), ReDoc (`/redoc`), and
-  the OpenAPI 3.1 spec (`/v3/api-docs`) are served automatically — zero app code.
+  the OpenAPI 3.1 spec (`/v3/api-docs`) are served automatically on the
+  **management** port (beside actuator + admin, not the public API) — zero app code.
 - **Graceful shutdown.** `run()` traps SIGINT/SIGTERM and drains.
 
 > **Design note.** Health, info, and metrics on a dedicated management port, a
