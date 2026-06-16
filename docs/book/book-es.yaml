@@ -1,0 +1,191 @@
+# Edición en español (ES) — misma estructura que book.yaml; arte/openers compartidos.
+# Construir con: BOOK_CONFIG=book-es.yaml bash docs/book/build-book.sh
+title: Firefly para Rust con Ejemplos
+subtitle: Microservicios reactivos y orientados a eventos con el framework Firefly
+author: Firefly Software Foundation
+publisher: Firefly Software Foundation
+language: es
+identifier: urn:uuid:5b2e9c70-1a4d-4f88-bc31-7e0a6d2f9c14
+rights: Copyright (c) 2026 Firefly Software Foundation. Licensed under Apache-2.0.
+cover_svg: art/cover.svg
+trim_width: 7.5in
+trim_height: 9.25in
+src_dir: src-es
+front:
+- id: title
+  file: 00-front/00-title.md
+  nav: false
+- id: copyright
+  file: 00-front/00-copyright.md
+  nav: false
+- id: dedication
+  file: 00-front/00-dedication.md
+  nav: false
+- id: preface
+  file: 00-front/00-preface.md
+  title: Prefacio
+- id: conventions
+  file: 00-front/00-conventions.md
+  title: Convenciones
+- id: primer
+  file: 00-front/00-rust-primer.md
+  title: Iniciación a Rust
+parts:
+- title: Parte I — Fundamentos
+  chapters:
+  - id: ch01
+    file: 01-why-firefly.md
+    num: 1
+    title: ¿Por qué Firefly para Rust?
+    opener: art/openers/ch01.svg
+  - id: ch02
+    file: 02-quickstart.md
+    num: 2
+    title: 'Inicio rápido: de cero a un servicio en marcha'
+    opener: art/openers/ch02.svg
+  - id: ch03
+    file: 03-configuration.md
+    num: 3
+    title: Configuración, perfiles y secretos
+    opener: art/openers/ch03.svg
+  - id: ch04
+    file: 04a-dependency-injection.md
+    num: 4
+    title: Inyección de dependencias y el contexto de aplicación
+    opener: art/openers/ch04.svg
+  - id: ch05
+    file: 04-dependency-wiring.md
+    num: 5
+    title: Cableado de dependencias y composición
+    opener: art/openers/ch05.svg
+  - id: ch04b
+    file: 04b-bootstrap.md
+    num: 6
+    title: Arranque de la aplicación
+    opener: art/openers/ch04b.svg
+  - id: ch06
+    file: 05-reactive-model.md
+    num: 7
+    title: El modelo reactivo — Mono y Flux
+    opener: art/openers/ch06.svg
+- title: Parte II — Modelar y persistir el dominio
+  chapters:
+  - id: ch07
+    file: 06-first-http-api.md
+    num: 8
+    title: Tu primera API HTTP
+    opener: art/openers/ch07.svg
+  - id: ch06a
+    file: 06a-openapi.md
+    num: 9
+    title: OpenAPI y documentación de la API
+    opener: art/openers/ch06a.svg
+  - id: ch08
+    file: 07-persistence.md
+    num: 10
+    title: Persistencia y repositorios reactivos
+    opener: art/openers/ch08.svg
+  - id: ch09
+    file: 08-domain-driven-design.md
+    num: 11
+    title: Diseño guiado por el dominio
+    opener: art/openers/ch09.svg
+  - id: ch10
+    file: 09-cqrs.md
+    num: 12
+    title: 'CQRS: comandos y consultas'
+    opener: art/openers/ch10.svg
+- title: Parte III — Arquitectura orientada a eventos
+  chapters:
+  - id: ch11
+    file: 10-eda-messaging.md
+    num: 13
+    title: Arquitectura orientada a eventos y mensajería
+    opener: art/openers/ch11.svg
+  - id: ch12
+    file: 11-event-sourcing.md
+    num: 14
+    title: Event sourcing del libro mayor
+    opener: art/openers/ch12.svg
+- title: Parte IV — Hacia los microservicios
+  chapters:
+  - id: ch13
+    file: 13-http-clients.md
+    num: 15
+    title: Clientes HTTP y llamadas a otros servicios
+    opener: art/openers/ch13.svg
+  - id: ch14
+    file: 20a-experience-tier.md
+    num: 16
+    title: 'La capa de experiencia: componer un BFF'
+    opener: art/openers/ch14.svg
+  - id: ch15
+    file: 12-sagas.md
+    num: 17
+    title: 'Transacciones distribuidas: sagas, workflows y TCC'
+    opener: art/openers/ch15.svg
+  - id: ch22b
+    file: 22-layered-microservices.md
+    num: 18
+    title: Microservicios por capas
+    opener: art/openers/ch22b.svg
+- title: Parte V — Asegurar, observar y desplegar
+  chapters:
+  - id: ch16
+    file: 14-security.md
+    num: 19
+    title: Seguridad, sesiones e identidad
+    opener: art/openers/ch16.svg
+  - id: ch17
+    file: 15-observability.md
+    num: 20
+    title: Observabilidad y salud
+    opener: art/openers/ch17.svg
+  - id: ch18
+    file: 17-caching.md
+    num: 21
+    title: Caché y resiliencia
+    opener: art/openers/ch18.svg
+  - id: ch19
+    file: 16-scheduling-notifications.md
+    num: 22
+    title: Tareas programadas, notificaciones y webhooks
+    opener: art/openers/ch19.svg
+  - id: ch20
+    file: 21-declarative-macros.md
+    num: 23
+    title: Servicios declarativos con macros
+    opener: art/openers/ch20.svg
+  - id: ch21
+    file: 18-testing.md
+    num: 24
+    title: Pruebas de aplicaciones Firefly
+    opener: art/openers/ch21.svg
+  - id: ch22
+    file: 19-cli.md
+    num: 25
+    title: La CLI de firefly
+    opener: art/openers/ch22.svg
+  - id: ch23
+    file: 20-production.md
+    num: 26
+    title: Extender Firefly y llevarlo a producción
+    opener: art/openers/ch23.svg
+- title: Apéndices
+  chapters:
+  - id: appb
+    file: 91-appendix-modules.md
+    num: A
+    title: Índice de crates y módulos
+    opener: art/openers/appb.svg
+  - id: glossary
+    file: 92-glossary.md
+    num: ''
+    title: Glosario
+back: []
+pdf_name: firefly-rust-by-example-es.pdf
+epub_name: firefly-rust-by-example-es.epub
+labels:
+  chapter: Capítulo
+  appendix: Apéndice
+  contents: Contenido

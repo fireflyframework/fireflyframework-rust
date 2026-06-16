@@ -53,6 +53,8 @@ jobs:
         run: |
           test -f docs/book/dist/firefly-rust-by-example.pdf
           test -f docs/book/dist/firefly-rust-by-example.epub
+          test -f docs/book/dist/firefly-rust-by-example-es.pdf
+          test -f docs/book/dist/firefly-rust-by-example-es.epub
 
       - name: publish GitHub release
         uses: softprops/action-gh-release@v2
@@ -62,3 +64,5 @@ jobs:
           files: |
             docs/book/dist/firefly-rust-by-example.pdf
             docs/book/dist/firefly-rust-by-example.epub
+            docs/book/dist/firefly-rust-by-example-es.pdf
+            docs/book/dist/firefly-rust-by-example-es.epub
