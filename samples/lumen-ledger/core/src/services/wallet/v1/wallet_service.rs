@@ -16,7 +16,7 @@
 
 use async_trait::async_trait;
 use firefly::data::{Page, Pageable};
-use lumen_ledger_interfaces::{CreateWalletRequest, WalletResponse, WalletStatus};
+use lumen_ledger_interfaces::{CreateWalletRequest, WalletFilter, WalletResponse, WalletStatus};
 use uuid::Uuid;
 
 use super::service_error::ServiceError;
@@ -37,6 +37,11 @@ pub trait WalletService: Send + Sync {
     /// a broken-access-control / IDOR enumeration; a real service would expose an
     /// admin-only listing guarded by an authority instead — see the controller.)
     async fn list_by_owner(&self, owner: &str) -> Result<Vec<WalletResponse>, ServiceError>;
+
+    /// Filters wallets by any combination of [`WalletFilter`] criteria
+    /// (AND-combined) — translated into a framework
+    /// [`Specification`](firefly::data::Specification) the repository runs.
+    async fn search(&self, filter: WalletFilter) -> Result<Vec<WalletResponse>, ServiceError>;
 
     /// A page of wallets in a given status (Spring Data `Page<T>`), honouring
     /// the request's [`Pageable`] (page, size, and sort).

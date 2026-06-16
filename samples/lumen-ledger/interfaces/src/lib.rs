@@ -35,7 +35,9 @@ pub mod dtos;
 pub mod enums;
 
 // ---- convenience flat re-exports ------------------------------------------
-pub use dtos::wallet::v1::{AmountRequest, CreateWalletRequest, TransferRequest, WalletResponse};
+pub use dtos::wallet::v1::{
+    AmountRequest, CreateWalletRequest, TransferRequest, WalletFilter, WalletResponse,
+};
 pub use enums::wallet::v1::WalletStatus;
 
 #[cfg(test)]

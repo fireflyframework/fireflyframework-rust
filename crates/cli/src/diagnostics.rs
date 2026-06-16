@@ -61,7 +61,7 @@ pub struct DoctorReport {
 }
 
 /// The framework version this CLI was built from.
-pub const FRAMEWORK_VERSION: &str = "26.6.23";
+pub const FRAMEWORK_VERSION: &str = "26.6.24";
 
 /// Run a `<tool> --version` and return its first trimmed output line, or `None`
 /// when the tool is missing or errors.

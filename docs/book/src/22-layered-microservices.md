@@ -183,6 +183,7 @@ discipline a Spring Boot service is expected to have, all rendered as RFC 9457
 | Status lifecycle | `PATCH /api/v1/wallets/:id/status` transitions `active → frozen → closed`; a frozen wallet rejects a debit with **422** |
 | Delete | `DELETE /api/v1/wallets/:id` → **204**, delegating to `delete_by_id` |
 | Pagination | `GET /api/v1/wallets/page?status=active&page=1&size=20&sort=balance,desc` returns a Spring-Data `Page<T>` (`content` + `totalElements`). The framework's `PageRequest` argument resolver binds `page`/`size`/`sort` into a `Pageable` (exactly like a Spring `Pageable` parameter), which the `@Service` passes straight to the paged `find_by_status` derived query |
+| Filtering | `GET /api/v1/wallets/search?owner=&currency=&status=&minBalance=&maxBalance=` binds a `WalletFilter` query DTO (each field an OpenAPI query parameter); the `@Service` turns the present criteria into a composable `firefly::data::Specification` that `#[derive(SqlxRepository)]`'s `find_by_spec` compiles to a dialect-aware `WHERE` — the Spring Data `JpaSpecificationExecutor` analog. At least one criterion is required (no unscoped list-all) |
 
 Because `WebError` and `ServiceError` are both foreign to the `-web` crate,
 the controller maps them with a small `service_to_web` function rather than an
