@@ -56,7 +56,8 @@ def _inline_svg(path: Path) -> str:
 
 def _front_class(fid: str) -> str:
     return {"title": "frontmatter title-page",
-            "copyright": "frontmatter copyright-page"}.get(fid, "frontmatter")
+            "copyright": "frontmatter copyright-page",
+            "dedication": "frontmatter dedication-page"}.get(fid, "frontmatter")
 
 
 def _items_from_manifest(cfg: dict) -> list[dict]:

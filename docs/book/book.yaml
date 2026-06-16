@@ -19,6 +19,7 @@ src_dir: "src"
 front:
   - {id: title,       file: 00-front/00-title.md,       nav: false}
   - {id: copyright,   file: 00-front/00-copyright.md,   nav: false}
+  - {id: dedication,  file: 00-front/00-dedication.md,  nav: false}
   - {id: preface,     file: 00-front/00-preface.md,     title: "Preface"}
   - {id: conventions, file: 00-front/00-conventions.md, title: "Conventions"}
   - {id: primer,      file: 00-front/00-rust-primer.md, title: "A Rust Primer"}
