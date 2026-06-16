@@ -85,7 +85,7 @@ exactly one Firefly dependency. This is its real `Cargo.toml`:
 ```toml
 [dependencies]
 # The whole framework AND every `#[derive(...)]` / `#[...]` macro.
-firefly = { version = "26.6.7" }
+firefly = { version = "26.6.19" }
 
 # The two ecosystem crates a Firefly service still writes against directly:
 # axum (you author the controller handlers) and serde (your messages and

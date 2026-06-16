@@ -46,7 +46,7 @@ index.
 | `firefly-rule-engine` | YAML DSL → AST → evaluator with `between`/null/`regex`, `EvaluationMode`, validator + `ActionHandler` |
 | `firefly-plugins` | Lifecycle SPI + composite registry |
 | `firefly-lifecycle` | `Application::run()` orchestrator with signal trap + drain |
-| `firefly-actuator` | `/actuator/{health,info,metrics,env,tasks,version}` + probes, loggers, httpexchanges, threaddump, refresh |
+| `firefly-actuator` | `/actuator/{health,info,metrics,env,tasks,version}` + probes, loggers, httpexchanges, threaddump, refresh, and the `beans`/`mappings`/`conditions` DI-introspection reports (rendered from the `firefly-container` compile-time inventory) |
 | `firefly-scheduling` | Cron + FixedRate + FixedDelay `Scheduler` with zones |
 | `firefly-resilience` | `CircuitBreaker`, `RateLimiter`, `Bulkhead`, `Timeout`, composable `Chain` |
 | `firefly-security` | `BearerLayer`, RBAC `FilterChain`, `JwksVerifier`, `oauth2`, `RoleHierarchy`, `CsrfLayer`, `BcryptPasswordEncoder` |

@@ -15,7 +15,7 @@ a `thiserror` derive.
 > **What's in the box.** `firefly-security` is a complete resource-server
 > stack: a `BearerLayer` + `Verifier` for token validation, a URL-based
 > authorization `FilterChain`, method guards, JWKS validation, an OAuth2 client +
-> authorization server, a role hierarchy, CSRF, and a bcrypt encoder. Auth
+> authorization server, a role hierarchy, CSRF, and bcrypt + Argon2id password encoders. Auth
 > failures render as RFC 9457 `application/problem+json` on a 401/403 — a stable,
 > standards-based wire contract that off-the-shelf clients and gateways
 > understand.
@@ -525,16 +525,25 @@ surface you reach for as a real wallet service matures:
   tokens for `client_credentials` / `refresh_token`.
 - **CSRF & passwords.** `CsrfLayer` implements the double-submit-cookie pattern
   for cookie-session flows; `BcryptPasswordEncoder` (default work factor 12)
-  hashes credentials. The `$2b$` hashes interchange with the
-  `firefly-idp-internal-db` adapter and every other port.
+  hashes credentials, and `Argon2PasswordEncoder` (Argon2id, OWASP defaults via
+  `new()` — `m=19456` KiB, `t=2`, `p=1` — or `with_params(m, t, p)`) is the
+  memory-hard alternative behind the *same* `PasswordEncoder` port. The `$2b$`
+  bcrypt hashes and the self-describing `$argon2id$` PHC strings both interchange
+  with the `firefly-idp-internal-db` adapter and every other port.
 
 ```rust
-use firefly_security::{BcryptPasswordEncoder, PasswordEncoder};
+use firefly_security::{Argon2PasswordEncoder, BcryptPasswordEncoder, PasswordEncoder};
 
 let enc = BcryptPasswordEncoder::new(); // work factor 12 (the default)
 let hash = enc.hash("s3cret").unwrap();
 assert!(enc.verify("s3cret", &hash).unwrap());
 assert!(!enc.verify("wrong", &hash).unwrap());
+
+// Argon2id — the OWASP-preferred encoder, same PasswordEncoder port.
+let argon = Argon2PasswordEncoder::new(); // OWASP defaults (m=19456, t=2, p=1)
+let argon_hash = argon.hash("s3cret").unwrap();
+assert!(argon_hash.starts_with("$argon2id$"));
+assert!(argon.verify("s3cret", &argon_hash).unwrap());
 ```
 
 ## What changed in Lumen

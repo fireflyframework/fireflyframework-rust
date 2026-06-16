@@ -81,8 +81,8 @@
 //! With the `actuator` feature enabled, [`SqlxHealthIndicator`] contributes a
 //! `db` component to `GET /actuator/health` (`SELECT 1`, reporting the
 //! backend kind) and [`SqlxQueryMetrics`] records the
-//! `pyfly_db_query_duration_seconds` / `pyfly_db_queries_total` /
-//! `pyfly_db_query_errors_total` metrics with a bounded `operation` label.
+//! `firefly_db_query_duration_seconds` / `firefly_db_queries_total` /
+//! `firefly_db_query_errors_total` metrics with a bounded `operation` label.
 //!
 //! # Quick start (SQLite, runs on a bare machine)
 //!

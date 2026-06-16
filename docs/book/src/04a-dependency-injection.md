@@ -522,9 +522,12 @@ pub struct ReportService {
 
 `ConfigProperties` is the sixth container-aware derive alongside the five
 stereotypes: it generates a `firefly_register` that binds and registers the
-struct, and carries a `config_properties` stereotype label into `/beans`. Single
-values use `${...}` placeholders only — SpEL `#{...}` is out of scope (see *What
-Rust's model changes*).
+struct, and carries a `config_properties` stereotype label into `/beans`. Adding
+`#[firefly(validate)]` (with `#[derive(Validate)]` on the struct) is Spring's
+`@Validated`: the bound struct's declarative constraints run after binding, and a
+violation **fails the bean's creation** at startup rather than booting a malformed
+configuration. Single values use `${...}` placeholders only — SpEL `#{...}` is
+out of scope (see *What Rust's model changes*).
 
 > **Spring parity.** `#[firefly(value = "${...}")]` is `@Value` (placeholder
 > form), and `#[derive(ConfigProperties)]` + `#[firefly(prefix = "...")]` is

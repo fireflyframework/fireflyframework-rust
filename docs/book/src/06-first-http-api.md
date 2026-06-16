@@ -88,8 +88,16 @@ Three things to read here:
   `#[post("/wallets")]` and `#[get("/wallets/:id")]` are the suffixes. The macro
   joins them into `/api/v1/wallets` and `/api/v1/wallets/:id`.
 - **Each handler is a plain axum handler.** `State`, `Path`, and `Json` are
-  axum's own extractors — Firefly does not replace them. You write the function;
-  the macro only registers it on the router.
+  axum's own extractors — Firefly does not replace them, but it *adds* to them.
+  Beyond `Json`/`Path`/`Query`, `firefly::web` (re-exported in
+  `firefly::prelude`) ships validating and problem-rendering extractors that
+  drop into the same handler signature: `Valid<T>` for a JSON body and
+  `ValidPath<T>` / `ValidQuery<T>` for path/query objects (a bind failure is a
+  **400**, a constraint failure a **422** problem), the `Multipart` /
+  `UploadedFile` form-upload extractor, and the `PageRequest` argument resolver
+  that binds Spring's `Pageable` from `?page=&size=&sort=`. The layered sample
+  in [Layered Microservices](./22-layered-microservices.md) uses all of them.
+  You write the function; the macro only registers it on the router.
 - **The controller is thin.** `open` and `get` translate HTTP into a message and
   hand it to the CQRS `Bus`, then translate the result (or error) back into an
   HTTP response. The wallet *logic* lives behind the bus, where
@@ -401,7 +409,7 @@ handlers; the rest of the request lifecycle is the framework's.
 
 ## Proving it works — an in-process round-trip
 
-Because `router()` is a self-contained `axum::Router`, Lumen's tests drive it
+Because `build_router()` returns a self-contained `axum::Router`, Lumen's tests drive it
 **in-process** with `tower::ServiceExt::oneshot` — no socket bound, no port to
 race on. This is the first end-to-end test, the open-then-get round-trip:
 

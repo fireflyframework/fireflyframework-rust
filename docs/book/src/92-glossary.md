@@ -7,7 +7,8 @@ precise sense Firefly uses them.
 The management surface (`firefly-actuator`) exposing the endpoints
 `/actuator/health`, `/actuator/info`, `/actuator/metrics`, `/actuator/env`,
 `/actuator/tasks`, `/actuator/version`, `/actuator/loggers`,
-`/actuator/httpexchanges`, and `/actuator/refresh`.
+`/actuator/httpexchanges`, `/actuator/refresh`, and the DI-introspection reports
+`/actuator/beans`, `/actuator/mappings`, `/actuator/conditions`.
 Mounted by `core.actuator_router(..)`, typically on a separate, firewalled port.
 
 ### Adapter

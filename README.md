@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-  <a href="CHANGELOG.md"><img alt="Version 26.6.7" src="https://img.shields.io/badge/version-26.6.7-orange.svg"></a>
+  <a href="CHANGELOG.md"><img alt="Version 26.6.19" src="https://img.shields.io/badge/version-26.6.19-orange.svg"></a>
   <a href="https://www.rust-lang.org"><img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-93450a.svg"></a>
   <a href="docs/book/src/05-reactive-model.md"><img alt="Reactive: Mono / Flux" src="https://img.shields.io/badge/reactive-Mono%20%2F%20Flux-success.svg"></a>
   <a href="crates/firefly/README.md"><img alt="One dependency: firefly" src="https://img.shields.io/badge/one%20dep-firefly%20%2B%20macros-success.svg"></a>
@@ -124,7 +124,7 @@ orchestration — is in scope, alongside every macro from
 
 ```toml
 [dependencies]
-firefly = "26.6.7"            # the whole framework + every macro
+firefly = "26.6.19"            # the whole framework + every macro
 axum    = "0.7"               # you author axum handlers
 serde   = { version = "1", features = ["derive"] }
 tokio   = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -275,7 +275,7 @@ Firefly Framework treats those concerns as solved problems on Rust too:
 | Event sourcing (aggregates, snapshots, projections, outbox, tenancy) | `firefly-eventsourcing` | Axon | Full |
 | Sagas / Workflows (DAG) / TCC, compensation, retry | `firefly-orchestration` | Temporal / Camunda | Full |
 | Security (JWT, JWKS, RBAC, OAuth2 login + authorization server, CSRF) | `firefly-security` | Spring Security | Full |
-| Actuator (`health`/`info`/`metrics`/`env`/`tasks`/`version`, probes) | `firefly-actuator` | spring-boot-actuator | Full |
+| Actuator (`health`/`info`/`metrics`/`env`/`tasks`/`version`/`beans`/`mappings`/`conditions`, probes) | `firefly-actuator` | spring-boot-actuator | Full |
 | Observability (`tracing`, W3C trace-context, metrics, banner) | `firefly-observability` | Micrometer + OTel | Full |
 | Cache (`Adapter` port + Memory / NoOp / Fallback / **Redis** / **Postgres**) | `firefly-cache`, `-redis`, `-postgres` | spring-data cache | Full |
 | Event transports (**Kafka / RabbitMQ / Postgres outbox / Redis Streams**) | `firefly-eda-*` | Spring Kafka / AMQP | Full |
@@ -371,12 +371,12 @@ fireflyframework-rust/
 ├── docs/                         # ARCHITECTURE, CONFIGURATION, DESIGN
 ├── docs/book/                    # the mdBook guide (mdbook build docs/book) + dist/*.pdf,*.epub
 ├── docker-compose.yml            # real backing services for integration tests
-└── Cargo.toml                    # workspace root — version 26.6.7, edition 2021, MSRV 1.88
+└── Cargo.toml                    # workspace root — version 26.6.19, edition 2021, MSRV 1.88
 ```
 
 ### Choosing your tier / optional adapters
 
-The fastest path is the **one-dependency facade** — `firefly = "26.6.7"`
+The fastest path is the **one-dependency facade** — `firefly = "26.6.19"`
 brings the whole framework and every macro in via `use firefly::prelude::*;`,
 with heavy adapters as opt-in cargo features
 (`features = ["data-sqlx", "eda-kafka", …]`). Prefer the individual crates when
@@ -422,7 +422,7 @@ macro. Add it plus the ecosystem crates you author against:
 
 ```toml
 [dependencies]
-firefly = "26.6.7"            # the whole framework + every macro
+firefly = "26.6.19"            # the whole framework + every macro
 axum    = "0.7"               # you author axum handlers
 serde   = { version = "1", features = ["derive"] }
 tokio   = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
@@ -497,7 +497,7 @@ curl -N localhost:8080/orders/live    # text/event-stream Server-Sent Events
 Every response echoes an `X-Correlation-Id`; every `POST`/`PUT`/`PATCH` carrying an
 `Idempotency-Key` header replays its stored response with `Idempotent-Replay: true`;
 any handler error renders as `application/problem+json`. The management port
-(`:8081`) already serves the `/actuator/{health,info,metrics,env,tasks,version}`
+(`:8081`) already serves the `/actuator/{health,info,metrics,env,tasks,version,beans,mappings,conditions}`
 surface and the self-hosted `/admin` dashboard, and the public port serves
 auto-generated API docs — Swagger UI at `/swagger-ui`, ReDoc at `/redoc`, and the
 OpenAPI 3.1 spec at `/v3/api-docs` (+ `/openapi.json`) — with no extra app code.

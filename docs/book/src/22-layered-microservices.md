@@ -43,7 +43,7 @@ is a **DI bean** discovered by `container.scan()` — there is no composition ro
 @Component       (core)   →  #[derive(Component)] WalletNumberGenerator
 @Repository      (models) →  #[derive(SqlxRepository)] WalletRepository  (built from the Db @Bean)
    │ over
-@Entity          (models) →  impl SqlxEntity for Wallet
+@Entity          (models) →  #[derive(Entity)] Wallet  (generates the SqlxEntity mapping)
    │ from
 @Bean (DataSource)(models) →  #[bean] async fn data_source() -> Db
 ```
