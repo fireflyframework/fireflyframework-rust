@@ -89,7 +89,7 @@ pub use extension::{extension_point, ExtensionPoint, ExtensionRegistry};
 pub use manager::{PluginDescriptor, PluginManager};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.14";
+pub const VERSION: &str = "26.6.15";
 
 /// Boxed error type returned by plugin lifecycle hooks.
 ///
