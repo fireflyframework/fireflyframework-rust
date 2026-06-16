@@ -49,7 +49,7 @@ pub mod bean;
 pub use bean::{Validate, ValidationError as FieldError, ValidationErrors};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.18";
+pub const VERSION: &str = "26.6.19";
 
 /// The canonical error returned by every validator when the input is
 /// malformed.
@@ -1135,6 +1135,6 @@ mod tests {
 
     #[test]
     fn version_stamp() {
-        assert_eq!(VERSION, "26.6.18");
+        assert_eq!(VERSION, "26.6.19");
     }
 }

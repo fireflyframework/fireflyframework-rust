@@ -247,8 +247,10 @@ Without writing any of it yourself, Lumen already has:
 - **Idempotency.** Every `POST`/`PUT`/`PATCH` carrying an `Idempotency-Key`
   header is recorded; repeating the request replays the stored response, and
   reusing the key with a different body is a `409`.
-- **A management surface.** `/actuator/{health,info,metrics,...}` plus a
-  self-hosted `/admin` dashboard, on a separate listener.
+- **A management surface.** `/actuator/{health,info,metrics,env,beans,mappings,
+  conditions,...}` (the `beans` / `mappings` / `conditions` DI-introspection
+  reports mirror Spring Boot Actuator's) plus a self-hosted `/admin` dashboard,
+  on a separate listener.
 - **Auto-generated API docs.** Swagger UI (`/swagger-ui`), ReDoc (`/redoc`), and
   the OpenAPI 3.1 spec (`/v3/api-docs`) are served automatically — zero app code.
 - **Graceful shutdown.** `run()` traps SIGINT/SIGTERM and drains.

@@ -31,12 +31,15 @@
 //! | `GET /actuator/env/{toMatch}`       | One property's value across the ordered sources (when an [`EnvSource`] is wired)|
 //! | `GET /actuator/tasks`               | `{"count": N}` alive tokio tasks; `?dump=true` returns a runtime report          |
 //! | `GET /actuator/threaddump`          | Spring `{threads:[…]}` — the tokio runtime worker/task snapshot (Rust analog)    |
-//! | `GET /actuator/version`             | `{"firefly":"26.6.18","app":"orders","appVersion":"…","rust":"…"}`                |
+//! | `GET /actuator/version`             | `{"firefly":"26.6.19","app":"orders","appVersion":"…","rust":"…"}`                |
 //! | `GET/POST /actuator/loggers[/{n}]`  | Runtime log levels over a `tracing_subscriber` reload handle                     |
 //! | `GET /actuator/scheduledtasks`      | Tasks grouped by trigger (cron / fixedDelay / fixedRate)                         |
 //! | `GET/POST /actuator/caches[…]`      | Configured caches + `POST /{name}/evict`                                         |
 //! | `POST /actuator/refresh`            | `{"refreshed": [keys…]}` from the wired [`Refresher`]                            |
 //! | `GET /actuator/httpexchanges`       | The last 100 exchanges recorded by [`HttpExchangesLayer`]                        |
+//! | `GET /actuator/beans`               | Every DI bean (type, scope, stereotype, primary, lazy) — Spring's `/beans`       |
+//! | `GET /actuator/mappings`            | Every `#[rest_controller]` route (method, path, controller, handler)             |
+//! | `GET /actuator/conditions`          | The `@Profile`/`@ConditionalOn…` guards each conditional bean declares           |
 //!
 //! Which ids actually go on the wire — and under which base path — is
 //! controlled by the Spring-style [`ExposureConfig`]; custom endpoints
@@ -94,6 +97,7 @@ mod exposure;
 mod handler;
 mod health;
 mod http_exchanges;
+mod introspection;
 mod loggers;
 mod metrics;
 mod refresh;
@@ -112,6 +116,9 @@ pub use http_exchanges::{
     ExchangeRequest, ExchangeResponse, HttpExchange, HttpExchangeRecorder, HttpExchangesLayer,
     HttpExchangesService, DEFAULT_EXCHANGE_CAPACITY,
 };
+pub use introspection::{
+    register_introspection, BeansEndpoint, ConditionsEndpoint, MappingsEndpoint,
+};
 pub use loggers::{LoggersError, LoggersState, SPRING_LEVELS};
 pub use metrics::{Counter, Gauge, Histogram, MetricRegistry, TimerGuard, DEFAULT_BUCKETS};
 pub use refresh::Refresher;
@@ -120,7 +127,7 @@ pub use threaddump::{thread_dump, StackFrame, ThreadInfo};
 
 /// Released framework version. Calendar-versioned (`YY.M.PATCH`), the
 /// Rust port's counterpart of the Go `kernel.Version` constant.
-pub const VERSION: &str = "26.6.18";
+pub const VERSION: &str = "26.6.19";
 
 #[cfg(test)]
 mod tests {

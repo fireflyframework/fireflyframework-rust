@@ -2,6 +2,29 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.19 — 2026-06-16
+
+Spring Boot **parity** push, PR 9/N — **Tier B**: Actuator DI/route introspection.
+
+### Added
+
+- **`/actuator/beans`, `/actuator/mappings`, `/actuator/conditions`**
+  (firefly-actuator) — Spring Boot Actuator's introspection endpoints, rendered
+  from the framework's compile-time inventory (`firefly_container::{discovered,
+  routes}`), so they need no live container:
+  - **`beans`** — every DI bean (type, module, scope, stereotype, primary, lazy),
+    grouped under `contexts.application.beans`.
+  - **`mappings`** — every `#[rest_controller]` route (method, path, controller,
+    handler, summary), the `RequestMappingHandlerMapping` analog.
+  - **`conditions`** — the `@Profile` / `@ConditionalOn…` guards each
+    conditionally-registered bean declares.
+  - `mount()` auto-registers all three (override-respecting); each is served only
+    when the `ExposureConfig` includes it, exactly as Spring gates them behind
+    `exposure.include`. Also exposed via `register_introspection` /
+    `BeansEndpoint` / `MappingsEndpoint` / `ConditionsEndpoint`.
+
+This completes the prioritized **Tier A + Tier B** Spring-Boot-parity gap list.
+
 ## v26.6.18 — 2026-06-16
 
 Spring Boot **parity** push, PR 8/N — **Tier B**: `@Validated` config properties.
