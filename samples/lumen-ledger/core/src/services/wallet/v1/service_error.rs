@@ -33,3 +33,12 @@ pub enum ServiceError {
     #[error("{0}")]
     Backend(String),
 }
+
+/// A transaction-infrastructure failure (begin/commit/rollback) surfaces as a
+/// `Backend` error — required by `#[transactional]`, whose error type must be
+/// `From<firefly::transactional::TxError>`.
+impl From<firefly::transactional::TxError> for ServiceError {
+    fn from(e: firefly::transactional::TxError) -> Self {
+        ServiceError::Backend(format!("transaction failed: {e}"))
+    }
+}

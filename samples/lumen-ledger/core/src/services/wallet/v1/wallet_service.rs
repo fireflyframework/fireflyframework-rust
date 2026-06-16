@@ -46,6 +46,17 @@ pub trait WalletService: Send + Sync {
     /// Credits an active wallet (atomically, within a transaction).
     async fn deposit(&self, id: Uuid, amount: i64) -> Result<WalletResponse, ServiceError>;
 
+    /// Atomically moves `amount` from the `from` wallet to the `to` wallet —
+    /// both must be active and `from` must have sufficient funds. The debit and
+    /// credit commit together or not at all (`@Transactional`); the updated
+    /// source wallet is returned.
+    async fn transfer(
+        &self,
+        from: Uuid,
+        to: Uuid,
+        amount: i64,
+    ) -> Result<WalletResponse, ServiceError>;
+
     /// Debits an active wallet (rejects an overdraft; atomic).
     async fn withdraw(&self, id: Uuid, amount: i64) -> Result<WalletResponse, ServiceError>;
 

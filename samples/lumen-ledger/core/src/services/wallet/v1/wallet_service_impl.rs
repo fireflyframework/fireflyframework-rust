@@ -18,7 +18,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use firefly::data::{Page, Pageable, ReactiveCrudRepository};
+use firefly::data_sqlx::{Db, SqlxTransactionManager};
 use firefly::prelude::*;
+use firefly::transactional::TransactionManager;
 use lumen_ledger_interfaces::{CreateWalletRequest, WalletResponse, WalletStatus};
 use lumen_ledger_models::entities::wallet::v1::Wallet;
 use lumen_ledger_models::is_optimistic_lock;
@@ -50,9 +52,80 @@ pub struct WalletServiceImpl {
     /// The account-number `@Component`.
     #[autowired]
     numbers: Arc<WalletNumberGenerator>,
+    /// The datasource (Spring Boot's `DataSource`), autowired so the service can
+    /// build its **own** transaction manager for the atomic `transfer` —
+    /// see [`tx_manager`](Self::tx_manager).
+    #[autowired]
+    db: Arc<Db>,
 }
 
 impl WalletServiceImpl {
+    /// This service's **own** transaction manager, built from the autowired
+    /// datasource. `#[transactional(manager = "self.tx_manager()")]` evaluates it
+    /// per call, so `transfer` runs against an explicit manager instead of the
+    /// process-global registry — Spring's `@Transactional("txManager")`. That
+    /// keeps a multi-datasource service (and the per-test isolated databases of
+    /// this sample's suite) correct, where one process-global manager could not.
+    fn tx_manager(&self) -> Arc<dyn TransactionManager> {
+        Arc::new(SqlxTransactionManager::new((*self.db).clone()))
+    }
+
+    /// Atomically moves `amount` minor units from `from` to `to` — both wallets
+    /// must be active and share a currency. The debit and credit run inside
+    /// **one transaction** bound to this service's manager: every precondition
+    /// (positive amount, distinct active wallets, matching currency, sufficient
+    /// funds) is checked **before** the source is debited, so a rejected transfer
+    /// moves no money; and if the *credit* fails after the debit (a backend error
+    /// or a stale `@Version` write on the destination), the transaction rolls the
+    /// debit back — the partial-write protection proven end-to-end by
+    /// `firefly-data-sqlx`'s `tests/transactional.rs`. Returns the updated source.
+    #[firefly::transactional(manager = "self.tx_manager()")]
+    async fn transfer_tx(
+        &self,
+        from: Uuid,
+        to: Uuid,
+        amount: i64,
+    ) -> Result<WalletResponse, ServiceError> {
+        if amount <= 0 {
+            return Err(ServiceError::Validation(
+                "transfer amount must be positive".into(),
+            ));
+        }
+        if from == to {
+            return Err(ServiceError::Validation(
+                "cannot transfer to the same wallet".into(),
+            ));
+        }
+        let mut source = self.load_active(from).await?;
+        let mut dest = self.load_active(to).await?;
+        // A ledger must not move value across currencies — that would create or
+        // destroy money. Both wallets carry an ISO-4217 code; they must match.
+        if source.currency != dest.currency {
+            return Err(ServiceError::Validation(format!(
+                "currency mismatch: cannot transfer {} to {}",
+                source.currency, dest.currency
+            )));
+        }
+        if source.balance < amount {
+            return Err(ServiceError::Validation("insufficient funds".into()));
+        }
+
+        // Debit the source, then credit the destination — checked arithmetic so a
+        // ledger overflow is a domain error, never a silent wrap. If the credit
+        // fails after the debit, the transaction rolls the debit back.
+        source.balance = source
+            .balance
+            .checked_sub(amount)
+            .ok_or_else(|| ServiceError::Validation("balance underflow".into()))?;
+        let saved_source = self.persist(source).await?;
+        dest.balance = dest
+            .balance
+            .checked_add(amount)
+            .ok_or_else(|| ServiceError::Validation("balance overflow".into()))?;
+        self.persist(dest).await?;
+        Ok(saved_source)
+    }
+
     /// Loads a wallet, erroring `NotFound` when absent and `Validation` when it
     /// is not active (so a frozen/closed wallet cannot transact).
     async fn load_active(&self, id: Uuid) -> Result<Wallet, ServiceError> {
@@ -163,6 +236,18 @@ impl WalletService for WalletServiceImpl {
         }
         wallet.balance -= amount;
         self.persist(wallet).await
+    }
+
+    async fn transfer(
+        &self,
+        from: Uuid,
+        to: Uuid,
+        amount: i64,
+    ) -> Result<WalletResponse, ServiceError> {
+        // The `#[transactional]` boundary lives on the inherent `transfer_tx`
+        // (an async-trait method can't carry the attribute cleanly); the trait
+        // method just delegates.
+        self.transfer_tx(from, to, amount).await
     }
 
     async fn set_status(

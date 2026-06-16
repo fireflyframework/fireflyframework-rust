@@ -21,6 +21,13 @@
 //! `Ok`, roll back on `Err`. The function's error type must implement
 //! `From<firefly_transactional::TxError>` so begin/commit failures surface
 //! through the normal `?` path.
+//!
+//! `#[transactional(manager = "<expr>")]` (Spring's
+//! `@Transactional("txManagerBean")`) instead drives an **explicit** manager via
+//! [`transactional_on`](firefly_transactional::transactional_on) — the expression
+//! (e.g. `self.tx_manager()`) yields a value `m` with
+//! `&m: &Arc<dyn TransactionManager>`. This keeps a multi-datasource service, or
+//! a per-test-isolated one, off the process-global registry.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -36,6 +43,13 @@ struct TxAttr {
     isolation: Option<String>,
     read_only: bool,
     timeout_ms: Option<u64>,
+    /// `#[transactional(manager = "<expr>")]` — Spring's
+    /// `@Transactional("txManagerBean")`: run against an **explicit**
+    /// `TransactionManager` expression (e.g. `self.tx_manager()`) instead of the
+    /// process-global registry. The expression must yield a value `m` such that
+    /// `&m: &Arc<dyn TransactionManager>`. Use this for a multi-datasource
+    /// service, or to keep per-test isolation (each instance owns its manager).
+    manager: Option<String>,
 }
 
 /// Expands `#[transactional]` / `#[transactional(propagation = "...", …)]` on an
@@ -74,20 +88,45 @@ pub(crate) fn transactional_impl(args: TokenStream, mut func: ItemFn) -> syn::Re
         ));
     }
 
-    let new_block = quote! {
-        {
-            #tx::transactional(
-                #tx::TxOptions {
-                    propagation: #propagation,
-                    isolation: #isolation,
-                    read_only: #read_only,
-                    timeout: #timeout,
-                },
-                move || async move #block,
-            )
-            .await
+    let options = quote! {
+        #tx::TxOptions {
+            propagation: #propagation,
+            isolation: #isolation,
+            read_only: #read_only,
+            timeout: #timeout,
         }
     };
+
+    // With `manager = "..."`, drive an explicit manager via `transactional_on`
+    // (Spring's `@Transactional("txManager")`); otherwise use the process-global
+    // registry via `transactional`.
+    let driver = match attr
+        .manager
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(expr) => {
+            let manager: syn::Expr = syn::parse_str(expr).map_err(|e| {
+                syn::Error::new_spanned(
+                    &func.sig,
+                    format!(
+                        "#[transactional] `manager` must be a Rust expression yielding a value \
+                         `m` with `&m: &Arc<dyn TransactionManager>` (e.g. \
+                         manager = \"self.tx_manager()\"): {e}"
+                    ),
+                )
+            })?;
+            quote! {
+                #tx::transactional_on(&(#manager), #options, move || async move #block).await
+            }
+        }
+        None => quote! {
+            #tx::transactional(#options, move || async move #block).await
+        },
+    };
+
+    let new_block = quote! { { #driver } };
     func.block = syn::parse2(new_block)?;
 
     Ok(quote!(#func))
@@ -162,10 +201,12 @@ fn parse_attr(args: TokenStream) -> syn::Result<TxAttr> {
             }
         } else if meta.path.is_ident("timeout_ms") {
             attr.timeout_ms = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);
+        } else if meta.path.is_ident("manager") {
+            attr.manager = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else {
             return Err(meta.error(
                 "unknown #[transactional] argument; use propagation, isolation, read_only, \
-                 timeout_ms, or crate",
+                 timeout_ms, manager, or crate",
             ));
         }
         Ok(())

@@ -495,7 +495,7 @@ boundary becomes a declaration. The function must be `async`, must return a
 `Result<T, E>`, and its error type must implement
 `From<firefly_transactional::TxError>` so begin/commit failures surface through the
 normal `?` path. Bare or with options (`propagation`, `isolation`, `read_only`,
-`timeout_ms`):
+`timeout_ms`, `manager`):
 
 ```rust,ignore
 #[firefly::transactional]
@@ -507,6 +507,25 @@ async fn open_account(repo: &AccountRepo, acct: Account) -> Result<(), DataError
 
 #[firefly::transactional(propagation = "requires_new", isolation = "serializable", read_only = false, timeout_ms = 5000)]
 async fn reconcile(repo: &LedgerRepo) -> Result<(), DataError> { /* … */ }
+```
+
+By default the boundary runs through the **process-global** registered
+`TransactionManager`. `manager = "<expr>"` (Spring's `@Transactional("txManager")`)
+instead binds it to an **explicit** manager the service owns — the expression
+yields a value `m` with `&m: &Arc<dyn TransactionManager>`. Use it for a
+multi-datasource service, or to keep per-instance/per-test isolation (each
+instance drives its own manager rather than a shared global one). The
+`lumen-ledger` `transfer` use case is wired exactly this way:
+
+```rust,ignore
+#[firefly::transactional(manager = "self.tx_manager()")]   // self owns the manager
+async fn transfer_tx(&self, from: Uuid, to: Uuid, amount: i64) -> Result<WalletResponse, ServiceError> {
+    let mut src = self.load_active(from).await?;            // debit + credit commit
+    let mut dst = self.load_active(to).await?;              // together, or roll back
+    src.balance -= amount; let saved = self.persist(src).await?;
+    dst.balance += amount; self.persist(dst).await?;
+    Ok(saved)
+}
 ```
 
 These two are the relational counterpart to how Lumen achieves consistency

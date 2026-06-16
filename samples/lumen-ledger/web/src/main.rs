@@ -228,6 +228,192 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transfer_is_atomic_and_validated() {
+        let app = router("lumen_ledger_web_transfer").await;
+
+        // Open two EUR wallets: alice (1000) and bob (200).
+        let open_in = |owner: &str, balance: i64, currency: &str| {
+            post(
+                "/api/v1/wallets",
+                json!({"owner": owner, "currency": currency, "openingBalance": balance}),
+            )
+        };
+        let alice = body_json(
+            app.clone()
+                .oneshot(open_in("alice", 1000, "EUR"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let bob = body_json(app.clone().oneshot(open_in("bob", 200, "EUR")).await.unwrap()).await;
+        let alice_id = alice["id"].as_str().unwrap().to_string();
+        let bob_id = bob["id"].as_str().unwrap().to_string();
+
+        let balance = |app: axum::Router, id: String| async move {
+            body_json(
+                app.oneshot(get(&format!("/api/v1/wallets/{id}")))
+                    .await
+                    .unwrap(),
+            )
+            .await["balance"]
+                .clone()
+        };
+
+        // Transfer 300 alice -> bob. The response is the updated *source* (700);
+        // the destination is credited to 500 — debit + credit committed together.
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{alice_id}/transfer"),
+                json!({"to": bob_id, "amount": 300}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await["balance"], 700, "source debited");
+        assert_eq!(
+            balance(app.clone(), bob_id.clone()).await,
+            500,
+            "destination credited"
+        );
+
+        // Insufficient funds → 422, and NOTHING moved (the transfer is atomic:
+        // a rejected transfer leaves both balances exactly as they were).
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{alice_id}/transfer"),
+                json!({"to": bob_id, "amount": 1_000_000}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            balance(app.clone(), alice_id.clone()).await,
+            700,
+            "a rejected transfer moves no money from the source"
+        );
+        assert_eq!(balance(app.clone(), bob_id.clone()).await, 500);
+
+        // Same-wallet transfer → 422.
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{alice_id}/transfer"),
+                json!({"to": alice_id, "amount": 10}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Malformed destination id → 422 (Valid bind passes, the UUID parse fails).
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{alice_id}/transfer"),
+                json!({"to": "not-a-uuid", "amount": 10}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A non-positive amount is rejected by `Valid<TransferRequest>` (422).
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{alice_id}/transfer"),
+                json!({"to": bob_id, "amount": 0}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A well-formed but absent destination → 404 (source untouched).
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{alice_id}/transfer"),
+                json!({"to": uuid::Uuid::new_v4().to_string(), "amount": 50}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(balance(app.clone(), alice_id.clone()).await, 700);
+
+        // Cross-currency transfer is refused (a ledger must not move value across
+        // currencies) → 422, both balances unchanged.
+        let carol = body_json(
+            app.clone()
+                .oneshot(open_in("carol", 0, "USD"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let carol_id = carol["id"].as_str().unwrap().to_string();
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{alice_id}/transfer"),
+                json!({"to": carol_id, "amount": 50}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(balance(app.clone(), alice_id.clone()).await, 700);
+        assert_eq!(balance(app.clone(), carol_id.clone()).await, 0);
+
+        // A frozen destination → 422, and the source is NOT debited (the
+        // destination-active check fires before any write — no partial debit).
+        let res = app
+            .clone()
+            .oneshot(
+                Request::patch(format!("/api/v1/wallets/{bob_id}/status"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"status": "frozen"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{alice_id}/transfer"),
+                json!({"to": bob_id, "amount": 50}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            balance(app.clone(), alice_id.clone()).await,
+            700,
+            "a transfer to a frozen wallet leaves the source untouched"
+        );
+
+        // A frozen source cannot transfer out → 422.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::patch(format!("/api/v1/wallets/{alice_id}/status"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"status": "frozen"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/api/v1/wallets/{alice_id}/transfer"),
+                json!({"to": carol_id, "amount": 50}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
     async fn edge_inputs_render_rfc9457_problems() {
         let app = router("lumen_ledger_web_edges").await;
 
@@ -295,6 +481,7 @@ mod tests {
         assert!(schemas["WalletResponse"].is_object(), "response schema");
         assert!(schemas["CreateWalletRequest"].is_object(), "request schema");
         assert!(schemas["AmountRequest"].is_object(), "amount schema");
+        assert!(schemas["TransferRequest"].is_object(), "transfer schema");
         assert_eq!(schemas["WalletStatus"]["type"], "string");
         assert!(schemas["WalletStatus"]["enum"].is_array());
     }

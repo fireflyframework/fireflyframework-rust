@@ -177,6 +177,7 @@ discipline a Spring Boot service is expected to have, all rendered as RFC 9457
 |---|---|
 | Bean validation at the edge | `Valid<CreateWalletRequest>` / `Valid<AmountRequest>` — a blank owner, a non-ISO currency (`#[validate(pattern = "[A-Z]{3}")]`), or a non-positive amount (`#[validate(range(min = 1))]`) is a **422** before the service runs. The same `Validate` runs on query/path objects via `ValidQuery<T>` / `ValidPath<T>`, and a `multipart/form-data` upload binds through the problem-rendering `Multipart` extractor |
 | Malformed path / query | `firefly::web::{Path, Query}` extractors — a non-UUID id or a missing `?owner=` is a **400** problem, not axum's plain-text default |
+| Atomic transfer | `POST /api/v1/wallets/:id/transfer` debits the source and credits the destination inside **one transaction** — `#[firefly::transactional(manager = "self.tx_manager()")]` on the service. The debit and credit commit together or not at all; a rejected transfer (insufficient funds, inactive party) moves no money. The `manager = …` binds the boundary to a manager the service owns rather than the process-global registry, so the per-test isolated databases stay correct |
 | Optimistic-lock conflict | a stale `@Version` write → `ServiceError::Conflict` → **409** |
 | Unknown wallet | `ServiceError::NotFound` → **404** |
 | Status lifecycle | `PATCH /api/v1/wallets/:id/status` transitions `active → frozen → closed`; a frozen wallet rejects a debit with **422** |

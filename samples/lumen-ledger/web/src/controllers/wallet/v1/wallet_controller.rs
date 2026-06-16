@@ -34,7 +34,9 @@ use firefly::data::Page;
 use firefly::prelude::*;
 use firefly::web::{PageRequest, Path, Query, Valid, WebError, WebResult};
 use lumen_ledger_core::{ServiceError, WalletService};
-use lumen_ledger_interfaces::{AmountRequest, CreateWalletRequest, WalletResponse, WalletStatus};
+use lumen_ledger_interfaces::{
+    AmountRequest, CreateWalletRequest, TransferRequest, WalletResponse, WalletStatus,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -177,6 +179,27 @@ impl WalletController {
         let view = api
             .service
             .withdraw(id, body.amount)
+            .await
+            .map_err(service_to_web)?;
+        Ok(Json(view))
+    }
+
+    /// `POST /api/v1/wallets/:id/transfer` — **atomically** move funds from this
+    /// wallet to another (`Valid<…>` rejects a non-positive amount or a blank
+    /// destination as 422). The debit and credit commit together or not at all;
+    /// insufficient funds / an inactive party is a 422 with no partial debit.
+    #[post("/wallets/:id/transfer", summary = "Transfer funds to another wallet", status = 200)]
+    async fn transfer(
+        State(api): State<WalletController>,
+        Path(from): Path<Uuid>,
+        Valid(body): Valid<TransferRequest>,
+    ) -> WebResult<Json<WalletResponse>> {
+        let to = Uuid::parse_str(&body.to).map_err(|_| {
+            WebError::from(FireflyError::validation("`to` is not a valid wallet id"))
+        })?;
+        let view = api
+            .service
+            .transfer(from, to, body.amount)
             .await
             .map_err(service_to_web)?;
         Ok(Json(view))
