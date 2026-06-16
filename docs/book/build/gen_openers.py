@@ -420,14 +420,59 @@ def s_appb():
     return rows
 
 
+def s_bootstrap():
+    # FireflyApplication::new("lumen").run() ignites the whole stack: one call
+    # on the left fans out into the services the framework discovers & wires.
+    call = (card(48, 132, 150, "new().run()", "url(#grh)", RUST_D, "#16110c", 14)
+            + spark(60, 90, 5, AMBER, 0.85) + spark(178, 102, 4, AMBER_B, 0.8))
+    fans = (arrow(202, 142, 270, 78) + arrow(202, 150, 274, 150) + arrow(202, 158, 270, 222))
+    pieces = (chip(280, 64, "web + CQRS") + chip(284, 136, "scan beans")
+              + chip(280, 208, "admin + docs"))
+    return call + fans + pieces
+
+
+def s_openapi():
+    # routes + DTOs are harvested into one generated spec, served as Swagger/ReDoc.
+    sources = (chip(40, 70, "#[rest_controller]") + chip(40, 196, "#[derive(Schema)]"))
+    funnel = (arrow(196, 92, 256, 132) + arrow(196, 210, 256, 156))
+    doc = (f'<g transform="translate(266,104)">'
+           f'<rect x="0" y="3" width="92" height="92" rx="9" fill="#d9c4a3" opacity="0.30"/>'
+           f'<rect x="0" y="0" width="92" height="92" rx="9" fill="{NODE}" '
+           f'stroke="{RUST}" stroke-width="1.8"/>'
+           # a little "spec" sheet: title bar + lines
+           f'<rect x="14" y="16" width="64" height="8" rx="4" fill="url(#grh)"/>'
+           + "".join(f'<rect x="14" y="{34 + r*13}" width="{64 - r*8}" height="5" rx="2.5" '
+                     f'fill="{MUTED}" opacity="0.7"/>' for r in range(4))
+           + f'</g>')
+    out = (f'<text x="312" y="222" text-anchor="middle" fill="{RUST_D}" '
+           f'font-size="12.5" font-weight="700">openapi.json</text>')
+    return sources + funnel + doc + out + chip(290, 70, "Swagger · ReDoc", AMBER)
+
+
+def s_layered():
+    # five separately-compiled crates stacked like a multi-module project.
+    crates = ["…-interfaces", "…-models", "…-core", "…-web", "…-sdk"]
+    rows = []
+    for i, c in enumerate(crates):
+        y = 60 + i * 38
+        fill = "url(#grh)" if i == 4 else NODE
+        stroke = RUST_D if i == 4 else RUST
+        tcol = "#16110c" if i == 4 else INK
+        # slight left inset per layer to read as a stack
+        rows.append(card(44 + i * 6, y, 300 - i * 12, c, fill, stroke, tcol, 13))
+    return "".join(rows) + spark(420, 96, 5, AMBER, 0.8) + spark(404, 196, 4, AMBER_B, 0.7)
+
+
 SCENES = {
     "ch01": ("Why Firefly — infinite choice becomes cohesion", "WHY FIREFLY", s_choice),
     "ch02": ("Quickstart — cargo new to a running service", "QUICKSTART", s_quickstart),
     "ch03": ("Configuration — layered defaults, profiles, secrets", "CONFIGURATION", s_config),
     "ch04": ("Dependency Injection — the application context", "DEPENDENCY INJECTION", s_di),
     "ch05": ("Dependency Wiring — composing the core", "WIRING", s_wiring),
+    "ch04b": ("Application Bootstrap — one call ignites the stack", "BOOTSTRAP", s_bootstrap),
     "ch06": ("The Reactive Model — Mono and Flux", "MONO & FLUX", s_reactive),
     "ch07": ("Your first HTTP API — routes and handlers", "HTTP API", s_http),
+    "ch06a": ("OpenAPI — routes and DTOs become a served spec", "OPENAPI", s_openapi),
     "ch08": ("Persistence — reactive repositories", "PERSISTENCE", s_persist),
     "ch09": ("Domain-Driven Design — aggregates and value objects", "DOMAIN MODEL", s_ddd),
     "ch10": ("CQRS — commands and queries on a bus", "CQRS", s_cqrs),
@@ -436,6 +481,7 @@ SCENES = {
     "ch13": ("HTTP clients — calling other services", "HTTP CLIENTS", s_clients),
     "ch14": ("The experience tier — composing a BFF", "EXPERIENCE TIER", s_bff),
     "ch15": ("Sagas, workflows and TCC — and compensation", "SAGAS", s_saga),
+    "ch22b": ("Layered microservices — separately-compiled crates", "LAYERED SERVICES", s_layered),
     "ch16": ("Security, sessions and identity", "SECURITY", s_security),
     "ch17": ("Observability and health", "OBSERVABILITY", s_observe),
     "ch18": ("Caching and resilience", "CACHING", s_cache),
@@ -448,8 +494,18 @@ SCENES = {
     "appb": ("Crate and module index", "MODULE INDEX", s_appb),
 }
 
-# kicker numbers shown top-left, keyed by opener id
-NUMS = {f"ch{i:02d}": f"CHAPTER {i}" for i in range(1, 24)}
+# kicker numbers shown top-left, keyed by opener id. The order below is the
+# book's reading order and the display number must match book.yaml's `num:`.
+# Inserting 04b-bootstrap, 06a-openapi and 22-layered renumbers everything that
+# follows, so this is an EXPLICIT ordered list rather than a range() formula.
+_CH_ORDER = [
+    "ch01", "ch02", "ch03", "ch04", "ch05", "ch04b", "ch06",   # Part I  (1..7)
+    "ch07", "ch06a", "ch08", "ch09", "ch10",                    # Part II (8..12)
+    "ch11", "ch12",                                             # Part III (13..14)
+    "ch13", "ch14", "ch15", "ch22b",                            # Part IV (15..18)
+    "ch16", "ch17", "ch18", "ch19", "ch20", "ch21", "ch22", "ch23",  # Part V (19..26)
+]
+NUMS = {oid: f"CHAPTER {i}" for i, oid in enumerate(_CH_ORDER, start=1)}
 NUMS["appa"] = "APPENDIX A"
 # book.yaml maps the module-index appendix (opener id appb) to "Appendix A".
 NUMS["appb"] = "APPENDIX A"
