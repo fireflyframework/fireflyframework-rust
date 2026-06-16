@@ -1,0 +1,5 @@
+error: #[http_client] path variable `:id` must be a Display scalar, not Option/Vec/slice — got `Option<String>`
+  --> tests/ui/http_client/fail/option_path_var.rs:10:25
+   |
+10 |     async fn get(&self, id: Option<String>) -> Result<(), ClientError>;
+   |                         ^^

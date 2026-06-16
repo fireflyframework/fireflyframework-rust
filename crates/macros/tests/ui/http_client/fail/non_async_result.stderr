@@ -1,0 +1,5 @@
+error: a Result-returning #[http_client] method must be `async fn` (it is awaited); for the deferred form return `Mono<T>` / `Flux<T>` from a non-async fn
+ --> tests/ui/http_client/fail/non_async_result.rs:8:5
+  |
+8 |     fn get(&self) -> Result<(), ClientError>;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

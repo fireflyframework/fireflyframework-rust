@@ -1,0 +1,5 @@
+error: unsupported #[http_client] return type; use `async fn -> Result<T, ClientError>` (or a custom `E: From<ClientError>`), or a non-async `fn -> Mono<T>` / `Flux<T>`
+ --> tests/ui/http_client/fail/bad_return.rs:9:5
+  |
+9 |     async fn get(&self) -> String;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

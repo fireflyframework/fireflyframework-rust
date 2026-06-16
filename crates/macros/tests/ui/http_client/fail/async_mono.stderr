@@ -1,0 +1,5 @@
+error: a Mono-returning method must not be `async fn`; the Mono is already deferred — drop `async` (or return `Result<_, ClientError>` for the awaited form)
+  --> tests/ui/http_client/fail/async_mono.rs:13:5
+   |
+13 |     async fn get(&self) -> Mono<Order>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

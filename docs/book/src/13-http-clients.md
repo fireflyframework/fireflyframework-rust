@@ -23,6 +23,9 @@ RFC 7807 problem decode into a typed `FireflyError`:
 - the **reactive `WebClient`** — whose terminal operators hand back `Mono` /
   `Flux`, so an outbound call drops straight into a reactive pipeline.
 
+On top of the `WebClient` sits the **declarative `#[http_client]`** trait — the
+Spring `@HttpExchange` analog — covered [below](#the-declarative-client-http_client).
+
 The crate also ships scaffolds for SOAP, gRPC, GraphQL, and WebSocket clients.
 Everything is reachable through the one `firefly` facade as `firefly::client`.
 
@@ -218,6 +221,87 @@ if resp.is_success() {
 >     Backoff::new(3, Duration::from_millis(100)),
 > );
 > ```
+
+## The declarative client (`#[http_client]`)
+
+Writing the call chain by hand is fine for one-off requests, but a *service you
+call repeatedly* deserves a typed interface. `#[http_client]` is the analog of
+Spring 6's `@HttpExchange` (the modern OpenFeign replacement): you write a
+**trait** of methods carrying the same verb attributes a `#[rest_controller]`
+uses, and the macro generates a `<Trait>Impl` that issues the requests over a
+`WebClient`. It is the mirror image of a controller — same vocabulary, request
+issued instead of received.
+
+```rust,ignore
+use firefly::prelude::*;            // #[http_client], ClientError, Mono, Flux
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize)]
+pub struct CreateOrder { pub sku: String, pub qty: u32 }
+#[derive(Deserialize)]
+pub struct Order { pub id: String, pub sku: String }
+
+#[http_client(path = "/api/v1/orders", name = "orders", bean)]
+pub trait OrdersClient {
+    // `:id` name-matches the `id` arg → path variable (percent-encoded).
+    #[get("/:id")]
+    async fn get_order(&self, id: String) -> Result<Order, ClientError>;
+
+    // `status` / `page` are neither path vars nor a body → inferred query
+    // params; `Option` omits itself when `None`.
+    #[get("/")]
+    async fn list(&self, status: String, page: Option<u32>) -> Result<Vec<Order>, ClientError>;
+
+    // the lone non-scalar arg is the JSON body; one explicit header.
+    #[post("/")]
+    async fn create(&self, #[header("X-Tenant")] tenant: String, order: CreateOrder)
+        -> Result<Order, ClientError>;
+
+    #[delete("/:id")]
+    async fn cancel(&self, id: String) -> Result<(), ClientError>;   // 204 → ()
+
+    // reactive-first: a non-async fn returning Mono/Flux, no bridging.
+    #[get("/stream")]
+    fn stream(&self) -> Flux<Order>;
+}
+```
+
+Construct it from a base URL, or inject a tuned `WebClient`:
+
+```rust,ignore
+let api = OrdersClientImpl::new("https://orders.svc");      // builds a WebClient
+let order = api.get_order("42".into()).await?;
+// or: OrdersClientImpl::with_client(my_web_client)         // shared pool / timeouts
+```
+
+**Path syntax is the framework's `:id`** (the same as `#[rest_controller]`), not
+Spring's `{id}` — so a controller and its mirror-image client read identically,
+and writing `{id}` is a compile error pointing you at `:id`. **Argument binding**
+needs no attributes in the common case: an unannotated arg whose name matches a
+`:var` segment is the path variable, the lone unannotated non-scalar arg on a
+`POST`/`PUT`/`PATCH` is the JSON body, and everything else is a query param.
+Override with `#[path]` / `#[query("k")]` / `#[header("X")]` / `#[body]`. Every
+`:var` must bind to exactly one argument or the macro refuses to compile, so a
+rename surfaces loudly instead of silently dropping the value.
+
+**Return shapes:** an `async fn` returning `Result<T, ClientError>` is the
+ergonomic default; `Result<T, E>` works for any `E: From<ClientError>`; a
+*non-async* `fn` returning `Mono<T>` / `Flux<T>` hands back the deferred reactive
+value directly (a `Flux` defaults to `Accept: application/x-ndjson`); and
+`WebClientResponse` is the raw `.exchange()` escape hatch.
+
+> **Error fidelity.** On an awaited `Result<T, ClientError>` method every failure
+> arrives as `ClientError::Problem` carrying a `FireflyError` with the original
+> status and code — so `is_not_found()` / `is_server_error()` / `is_retryable()`
+> still classify correctly — rather than the structured `Transport` / `Decode` /
+> `Encode` variants, which survive only on the `Mono` / `Flux` return forms
+> (where the `FireflyError` terminal *is* the reactive error channel). Match on
+> the reactive form when you need byte-exact variants.
+
+With `#[http_client(... bean)]` the generated `OrdersClientImpl` is registered as
+a `@Service` and bound to `dyn OrdersClient`, so a collaborator just
+`#[autowired] orders: Arc<dyn OrdersClient>` — the Feign-client autowire payoff,
+resolving a shared `WebClient` bean (a named one with `client = "…"`).
 
 ## Composing with resilience
 

@@ -76,8 +76,8 @@ struct Mapping {
 /// or the rich `#[get("/x", summary = "...", description = "...",
 /// tags = ["A"], deprecated)]` form that feeds the OpenAPI generator.
 #[derive(Default)]
-struct MappingAttr {
-    path: Option<LitStr>,
+pub(crate) struct MappingAttr {
+    pub(crate) path: Option<LitStr>,
     summary: Option<String>,
     description: Option<String>,
     tags: Vec<String>,
@@ -88,7 +88,7 @@ struct MappingAttr {
     /// Success-response type name (`response = Foo` → `"Foo"`).
     response: Option<String>,
     /// Success status code (`status = 202`).
-    status: Option<u16>,
+    pub(crate) status: Option<u16>,
     /// Explicitly-declared `header("X-Foo", required, description = "…")` params.
     params: Vec<ParamDecl>,
 }
@@ -260,7 +260,7 @@ fn json_inner_schema(ty: &Type) -> Option<String> {
 
 /// The `Ok` type of a `Result<Ok, _>` / `WebResult<Ok>` return type, or the type
 /// itself when it is not a result.
-fn unwrap_result_ok(ty: &Type) -> &Type {
+pub(crate) fn unwrap_result_ok(ty: &Type) -> &Type {
     let Type::Path(tp) = ty else {
         return ty;
     };
@@ -365,7 +365,7 @@ fn infer_response_schema(output: &ReturnType) -> Option<String> {
     find_json_schema(unwrap_result_ok(ty))
 }
 
-const VERBS: &[&str] = &["get", "post", "put", "delete", "patch"];
+pub(crate) const VERBS: &[&str] = &["get", "post", "put", "delete", "patch"];
 
 /// Expands `#[rest_controller(path = "...")]` on an `impl` block into the
 /// original impl plus a generated `fn routes(state) -> axum::Router`.
@@ -632,7 +632,7 @@ fn parse_mapping_attr(attr: &syn::Attribute) -> syn::Result<MappingAttr> {
 /// Joins a controller base path with a method-relative path, normalising
 /// slashes so `("/api", "/x")`, `("/api", "x")` and `("/api/", "/x")` all
 /// yield `"/api/x"`, and an empty method path yields the base path.
-fn join_path(base: &str, sub: &str) -> String {
+pub(crate) fn join_path(base: &str, sub: &str) -> String {
     let base = base.trim_end_matches('/');
     let sub = sub.trim();
     if sub.is_empty() || sub == "/" {

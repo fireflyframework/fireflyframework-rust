@@ -1,0 +1,5 @@
+error: an #[http_client] method may carry at most one #[body] argument
+  --> tests/ui/http_client/fail/double_body.rs:14:5
+   |
+14 |     async fn create(&self, #[body] a: A, #[body] b: B) -> Result<(), ClientError>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

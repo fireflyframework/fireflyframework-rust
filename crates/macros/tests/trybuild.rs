@@ -21,4 +21,9 @@ fn ui() {
     let t = trybuild::TestCases::new();
     t.pass("tests/ui/pass/*.rs");
     t.compile_fail("tests/ui/fail/*.rs");
+    // The `#[http_client]` macro keeps its own pass/fail corpus so each return
+    // shape and binding rule (and each locked diagnostic) is exercised in
+    // isolation from the rest of the macro suite.
+    t.pass("tests/ui/http_client/pass/*.rs");
+    t.compile_fail("tests/ui/http_client/fail/*.rs");
 }

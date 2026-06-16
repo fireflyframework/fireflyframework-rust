@@ -1,0 +1,5 @@
+error: an #[http_client] method must take `&self`
+ --> tests/ui/http_client/fail/missing_self.rs:8:5
+  |
+8 |     async fn get(id: String) -> Result<(), ClientError>;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
