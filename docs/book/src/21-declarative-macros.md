@@ -583,6 +583,56 @@ sees the `Request` — the macro reads from scope, not from a handler argument.
 > error. Both rely on `SecurityError: From` for the function's error type, so
 > denials travel the normal `Result` path.
 
+### Resilience — `#[retry]` / `#[circuit_breaker]` / `#[rate_limit]` / `#[bulkhead]` / `#[timeout]`
+
+Where the [`firefly_resilience`](./91-appendix-modules.md) primitives are the
+fluent, build-it-yourself surface (`Retry::new().max_attempts(3).execute(op)`),
+five **decorator** macros put the same guards on a method — Resilience4j /
+Spring-Retry's `@Retry`, `@CircuitBreaker`, `@RateLimiter`, `@Bulkhead`,
+`@TimeLimiter`:
+
+```rust,ignore
+#[firefly::retry(max_attempts = 4, delay = "100ms", backoff = 2.0, max_delay = "2s")]
+async fn fetch_quote(&self) -> Result<Quote, IntegrationError> { /* … */ }
+
+#[firefly::circuit_breaker(failure_threshold = 5, open_duration = "30s")]
+async fn call_upstream(&self) -> Result<Reply, IntegrationError> { /* … */ }
+
+#[firefly::rate_limit(rate = 100.0, burst = 20)]    // 100/s, bucket of 20
+async fn search(&self, q: &str) -> Result<Hits, SearchError> { /* … */ }
+
+#[firefly::bulkhead(20)]                              // ≤ 20 calls in flight
+async fn render(&self, doc: &Doc) -> Result<Pdf, RenderError> { /* … */ }
+
+#[firefly::timeout("2s")]
+async fn slow_report(&self) -> Result<Report, ReportError> { /* … */ }
+```
+
+Apply them to an `async fn` returning `Result<T, E>` whose error implements
+`std::error::Error + Send + Sync + 'static + From<firefly_resilience::ResilienceError>`.
+The decorator threads the body's own failure through the primitive and recovers
+the **original `E`** on the way out — so a caller still pattern-matches the domain
+error — while a guard's own short-circuit (a timeout, an open circuit, a
+rate-limit or bulkhead rejection) surfaces through `E::from(ResilienceError)`.
+
+The attributes **stack**, outermost first, exactly like layering `@Retry` over
+`@CircuitBreaker`:
+
+```rust,ignore
+#[firefly::retry(max_attempts = 3, delay = "50ms")]   // outer: re-runs the call
+#[firefly::circuit_breaker(failure_threshold = 5)]    // inner: trips on a failing dep
+async fn call_upstream(&self) -> Result<Reply, IntegrationError> { /* … */ }
+```
+
+> **What it generates.** Each macro wraps the body in the matching
+> `firefly_resilience` primitive's `execute`. The stateful guards
+> (`#[circuit_breaker]`, `#[rate_limit]`, `#[bulkhead]`) live in a per-method
+> `static` so their state — the breaker's failure count, the bucket's tokens, the
+> in-flight permits — is **shared across every call**, the Resilience4j
+> registry-bean semantics; `#[retry]` and `#[timeout]` are stateless and rebuilt
+> per call. Durations accept a unit-suffixed string (`"100ms"`, `"2s"`, `"1m"`)
+> or a bare integer of milliseconds.
+
 ## How it works: the `__rt` contract
 
 A `proc-macro` crate cannot re-export runtime types, so macro-generated code

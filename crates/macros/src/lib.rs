@@ -71,6 +71,7 @@ mod mapper;
 mod method_security;
 mod orchestration;
 mod repository_query;
+mod resilience;
 mod scheduling;
 mod schema;
 mod sqlx_repository;
@@ -392,6 +393,130 @@ pub fn bean(args: TokenStream, item: TokenStream) -> TokenStream {
 pub fn transactional(args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);
     emit(transactional::transactional_impl(args.into(), item))
+}
+
+/// Retries a failing `async fn` — Spring-Retry's `@Retry` / Resilience4j's
+/// `@Retry`.
+///
+/// Wraps the body in a [`firefly_resilience::Retry`]: each failure re-runs the
+/// guarded call up to `max_attempts` times, sleeping the (optionally
+/// exponential, optionally jittered) backoff between tries. The function must be
+/// an `async fn` returning `Result<T, E>` with
+/// `E: std::error::Error + Send + Sync + 'static + From<firefly_resilience::ResilienceError>`;
+/// the original error is preserved across the retry, and only an exhausted
+/// budget resurfaces it.
+///
+/// ```ignore
+/// #[firefly::retry(max_attempts = 4, delay = "100ms", backoff = 2.0, max_delay = "2s")]
+/// async fn fetch_quote(&self) -> Result<Quote, IntegrationError> { /* ... */ }
+/// ```
+///
+/// Args (all optional): `max_attempts`, `delay` (`"100ms"`/`"2s"`/ms-int),
+/// `backoff` (multiplier), `max_delay`, `jitter` (`0.0..1.0`), `crate`.
+#[proc_macro_attribute]
+pub fn retry(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(resilience::expand(
+        resilience::Kind::Retry,
+        args.into(),
+        item,
+    ))
+}
+
+/// Guards an `async fn` with a circuit breaker — Resilience4j's
+/// `@CircuitBreaker`.
+///
+/// Wraps the body in a [`firefly_resilience::CircuitBreaker`] held in a shared,
+/// per-method `static`, so the failure state is counted **across calls**: once
+/// failures cross the threshold the breaker opens and short-circuits subsequent
+/// calls with `E::from(ResilienceError::CircuitOpen)` until the open window
+/// elapses and a trial call probes recovery.
+///
+/// ```ignore
+/// #[firefly::circuit_breaker(failure_threshold = 5, open_duration = "30s")]
+/// async fn call_upstream(&self) -> Result<Reply, IntegrationError> { /* ... */ }
+/// ```
+///
+/// Args (all optional): `failure_threshold`, `open_duration`, `window`,
+/// `failure_rate` (`0.0..1.0`, count-based mode), `window_size`, `crate`.
+#[proc_macro_attribute]
+pub fn circuit_breaker(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(resilience::expand(
+        resilience::Kind::CircuitBreaker,
+        args.into(),
+        item,
+    ))
+}
+
+/// Rate-limits an `async fn` — Resilience4j's `@RateLimiter`.
+///
+/// Wraps the body in a [`firefly_resilience::RateLimiter`] (token bucket) held
+/// in a shared, per-method `static`, so the budget is enforced **across calls**;
+/// an exhausted bucket short-circuits with
+/// `E::from(ResilienceError::RateLimited)`.
+///
+/// ```ignore
+/// #[firefly::rate_limit(rate = 100.0, burst = 20)]   // 100/s, bucket of 20
+/// async fn search(&self, q: &str) -> Result<Hits, SearchError> { /* ... */ }
+/// ```
+///
+/// Args: `rate` (per-second, required), `burst` (bucket size, default `1`),
+/// `crate`.
+#[proc_macro_attribute]
+pub fn rate_limit(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(resilience::expand(
+        resilience::Kind::RateLimit,
+        args.into(),
+        item,
+    ))
+}
+
+/// Caps an `async fn`'s in-flight concurrency — Resilience4j's `@Bulkhead`.
+///
+/// Wraps the body in a [`firefly_resilience::Bulkhead`] held in a shared,
+/// per-method `static`, so no more than `max_concurrent` calls run at once;
+/// excess calls wait for a permit (a non-blocking variant short-circuits with
+/// `E::from(ResilienceError::BulkheadFull)`).
+///
+/// ```ignore
+/// #[firefly::bulkhead(20)]
+/// async fn render(&self, doc: &Doc) -> Result<Pdf, RenderError> { /* ... */ }
+/// ```
+///
+/// Arg: a single positional max concurrency (`#[bulkhead(20)]`) or
+/// `max_concurrent = 20`; plus `crate`.
+#[proc_macro_attribute]
+pub fn bulkhead(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(resilience::expand(
+        resilience::Kind::Bulkhead,
+        args.into(),
+        item,
+    ))
+}
+
+/// Bounds an `async fn`'s wall-clock time — Resilience4j's `@TimeLimiter`.
+///
+/// Wraps the body in a [`firefly_resilience::Timeout`]: a call that outruns the
+/// budget short-circuits with `E::from(ResilienceError::Timeout)`.
+///
+/// ```ignore
+/// #[firefly::timeout("2s")]
+/// async fn slow_report(&self) -> Result<Report, ReportError> { /* ... */ }
+/// ```
+///
+/// Arg: a single positional budget (`#[timeout("2s")]`) or
+/// `duration = "2s"`; plus `crate`.
+#[proc_macro_attribute]
+pub fn timeout(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(resilience::expand(
+        resilience::Kind::Timeout,
+        args.into(),
+        item,
+    ))
 }
 
 /// Registers a free `async fn` as an in-process application event listener —

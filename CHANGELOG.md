@@ -2,6 +2,33 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.12 — 2026-06-16
+
+Spring Boot **parity** push, PR 2/N. The `firefly_resilience` primitives gain a
+declarative face: Resilience4j / Spring-Retry **decorator macros**, so a guard is
+one annotation on a method instead of a hand-built `execute(op)` at every call.
+
+### Added
+
+- **`#[retry]` / `#[circuit_breaker]` / `#[rate_limit]` / `#[bulkhead]` /
+  `#[timeout]`** (firefly-macros) — the `@Retry` / `@CircuitBreaker` /
+  `@RateLimiter` / `@Bulkhead` / `@TimeLimiter` annotations. Decorate an
+  `async fn` returning `Result<T, E>` where
+  `E: std::error::Error + Send + Sync + 'static + From<ResilienceError>`:
+  - The body's own failure threads through the guard as
+    `ResilienceError::Operation` and the **original `E` is recovered** on the way
+    out (the caller still pattern-matches the domain error); a guard's own
+    short-circuit (timeout / open circuit / rate-limit / bulkhead-full) surfaces
+    through `E::from(ResilienceError)`.
+  - The attributes **stack** (outermost first), e.g. `#[retry]` over
+    `#[circuit_breaker]`.
+  - The **stateful** guards (`#[circuit_breaker]`, `#[rate_limit]`,
+    `#[bulkhead]`) keep their state in a per-method `static`, shared across every
+    call — the Resilience4j registry-bean semantics; `#[retry]` and `#[timeout]`
+    are stateless and rebuilt per call.
+  - Durations accept a unit-suffixed string (`"100ms"`, `"2s"`, `"1m"`, `"1h"`)
+    or a bare integer of milliseconds.
+
 ## v26.6.11 — 2026-06-16
 
 The first of a multi-PR **Spring Boot parity** push (driven by a framework-wide
