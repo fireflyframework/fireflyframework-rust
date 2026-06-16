@@ -2,6 +2,31 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.11 — 2026-06-16
+
+The first of a multi-PR **Spring Boot parity** push (driven by a framework-wide
+audit). This one completes the Spring Data repository story: the entity is now
+*just annotated fields*.
+
+### Added
+
+- **`#[derive(Entity)]`** (firefly-macros) — generates the `SqlxEntity` mapping
+  (`@Table` / `@Id` / `@Version` / `@Column`) from a struct's fields, the JPA
+  `@Entity` experience. Scalar columns (`String`, `i64`/`i32`, `bool`, `f64`,
+  `Uuid` as text, `DateTime<Utc>` as text) map automatically; `#[firefly(id)]`,
+  `#[firefly(version)]`, and `#[firefly(column = "...")]` annotate the key,
+  optimistic-lock column, and renames; a non-scalar field (e.g. an enum) uses
+  `#[firefly(with(read = "...", write = "..."))]`. Pairs with
+  `#[derive(SqlxRepository)]` so a repository is declared, not hand-built.
+- **`firefly_data_sqlx::parse_timestamp`** — the text-portable timestamp decode
+  the derive uses for `DateTime<Utc>` columns (tolerates RFC 3339 and the
+  space-separated auditor form across SQLite/PostgreSQL).
+
+### Changed
+
+- **lumen-ledger**: the `Wallet` entity's ~50-line hand-written `SqlxEntity` impl
+  is now a `#[derive(Entity)]` over annotated fields.
+
 ## v26.6.10 — 2026-06-16
 
 The **Spring Data repository** pass. A hand-built repository declared with a

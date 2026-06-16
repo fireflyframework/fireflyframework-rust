@@ -103,7 +103,7 @@ pub use backend::{
 pub use server::ConfigServer;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.10";
+pub const VERSION: &str = "26.6.11";
 
 /// Errors surfaced by a [`Store`] lookup.
 ///

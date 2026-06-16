@@ -91,4 +91,4 @@ pub use broker::{PostgresBroker, PostgresConfig};
 pub use sql::{group_lock_key, normalise_dsn, quote_ident, IdentError};
 
 /// The released framework version, shared across all Firefly crates.
-pub const VERSION: &str = "26.6.10";
+pub const VERSION: &str = "26.6.11";

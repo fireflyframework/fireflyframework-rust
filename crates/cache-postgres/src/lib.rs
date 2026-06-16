@@ -98,7 +98,7 @@ use firefly_cache::{Adapter, CacheError, CacheStats};
 use tokio_postgres::{Client, NoTls};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.10";
+pub const VERSION: &str = "26.6.11";
 
 /// The cache table name, matching pyfly's `pyfly_cache_entries` under the
 /// Rust framework's `firefly_` prefix.
