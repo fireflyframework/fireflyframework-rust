@@ -79,4 +79,4 @@ pub use noop::NoOpAdapter;
 pub use typed::Typed;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.18";
+pub const VERSION: &str = "26.6.19";

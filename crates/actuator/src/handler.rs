@@ -338,6 +338,11 @@ pub fn mount(cfg: ActuatorConfig) -> Router {
         router = router.route(&format!("{bp}/httpexchanges"), get(httpexchanges_handler));
     }
 
+    // Auto-register the DI/route introspection endpoints (Spring's
+    // beans/mappings/conditions); each is then served only if exposed below. A
+    // user-registered endpoint with the same id is left untouched.
+    crate::introspection::register_introspection(&cfg.endpoints);
+
     // Custom endpoints (pyfly's ActuatorRegistry surface).
     for ep in cfg.endpoints.all() {
         let id = ep.id().to_string();

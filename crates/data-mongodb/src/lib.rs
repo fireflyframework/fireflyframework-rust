@@ -128,4 +128,4 @@ pub use repository::{Audited, MongoRepository};
 pub use observe::MongoHealthIndicator;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.18";
+pub const VERSION: &str = "26.6.19";

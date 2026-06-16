@@ -18,6 +18,9 @@ async-trait = { workspace = true }
 http = { workspace = true }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The compile-time DI/route inventory the `/beans`, `/mappings`, and
+# `/conditions` introspection endpoints render (read-only, no live container).
+firefly-container = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
