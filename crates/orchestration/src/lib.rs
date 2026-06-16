@@ -200,7 +200,7 @@ pub use web::{router, OrchestrationApi};
 use std::future::Future;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.14";
+pub const VERSION: &str = "26.6.15";
 
 /// Boxed error returned by step / node / participant callbacks — the Rust
 /// analogue of Go's `error` interface value.
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn version_stamp() {
-        assert_eq!(VERSION, "26.6.14");
+        assert_eq!(VERSION, "26.6.15");
     }
 
     #[test]

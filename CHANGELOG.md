@@ -2,6 +2,37 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.15 — 2026-06-16
+
+Spring Boot **parity** push, PR 5/N — **`@Transactional` ↔ repository
+integration, proven**. The `#[transactional]` macro and the `firefly-data-sqlx`
+repository were each tested in isolation but never *together*; this adds the
+end-to-end coverage and corrects a stale design note it disproves.
+
+### Added
+
+- **`firefly-data-sqlx/tests/transactional.rs`** — proves the transactional
+  runtime drives the sqlx repository over a real SQLite database:
+  - a write inside a **rolled-back** transaction is undone (and is visible
+    *within* its own transaction before the rollback);
+  - a **committed** transaction persists;
+  - a **non-transactional** write stays immediately visible to a later read even
+    with a process-global manager registered (disproving the lumen-ledger note's
+    "invisible write" claim).
+  - The per-database tests drive an **explicit** manager via `transactional_on`
+    rather than the first-wins process registry, the isolation-safe pattern for a
+    multi-datasource / per-test suite.
+
+### Changed
+
+- **lumen-ledger**: the persistence config's design note is corrected — it cited
+  a (disproven) ambient-enlistment visibility bug; the real reason the sample
+  keeps `@Version` optimistic locking instead of registering a manager is that
+  the manager registry is process-global first-wins, which does not fit a test
+  suite where every test boots its own isolated in-memory database. The note now
+  points to the new integration tests and shows the production pattern (register
+  once at startup, annotate with `#[firefly::transactional]`).
+
 ## v26.6.14 — 2026-06-16
 
 Spring Boot **parity** push, PR 4/N — **test slices**. Completes the

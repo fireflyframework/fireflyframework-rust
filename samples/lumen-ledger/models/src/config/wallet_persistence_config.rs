@@ -57,11 +57,17 @@ impl WalletPersistenceConfig {
 ///
 /// Concurrency correctness is provided by the repository's **`@Version`
 /// optimistic locking** (a stale write fails with a `409` conflict). A
-/// `SqlxTransactionManager` is intentionally *not* auto-registered here: in this
-/// framework version the reactive repository's ambient-transaction enlistment
-/// makes a non-transactional write invisible to a later connection, so wiring a
-/// process-global manager would break ordinary reads. (Tracked as a framework
-/// gap; the optimistic-locking guard is the substantive lost-update fix.)
+/// `SqlxTransactionManager` is intentionally *not* registered here — but not
+/// because `@Transactional` is unsound: the `firefly-data-sqlx`
+/// `tests/transactional.rs` suite proves end-to-end that the reactive repository
+/// enlists in the ambient transaction (a rolled-back unit undoes its writes, a
+/// committed one persists) **and** that a non-transactional write stays visible
+/// with a manager registered. The reason is process-shape: the manager registry
+/// is process-global *first-wins*, which does not fit this sample's test suite,
+/// where every test boots its own isolated in-memory database. For a real
+/// service on one datasource, register the manager once at startup and annotate
+/// service methods with `#[firefly::transactional]`; here the `@Version` guard
+/// is the substantive lost-update fix and keeps each test hermetic.
 ///
 /// `pub(crate)`: the only callers are the async repository bean above and the
 /// `-models` tests — the datasource bootstrap is an implementation detail, not
