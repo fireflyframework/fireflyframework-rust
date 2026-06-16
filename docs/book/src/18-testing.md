@@ -239,6 +239,44 @@ concrete type to a trait object; and `eager` forces construction at build time.
 `build()` returns a `BuiltSlice` you resolve from with `get::<T>()` /
 `get_named::<T>(name)`.
 
+The `instance` + `bind` pair **is** the `@MockBean`: install a fake under a port
+and the bean under test wires it instead of the real collaborator. Because the
+fake is held by the container, `get::<Fake>()` after `build()` hands back the
+*same* instance, so you configure and assert against it via interior mutability.
+
+### `@WebMvcTest` — a controller over mocked services with `web_client`
+
+A `Slice` registers the controller bean plus its **mocked** collaborators;
+`built.web_client::<C, _>(C::routes)` then resolves that controller and wraps its
+`#[rest_controller]`-generated router in a [`TestClient`](#testclient--an-in-process-http-client-feature-web) —
+Spring's `@WebMvcTest(Controller.class)` + `@MockBean(Service.class)`, with no
+full-application boot and no datasource:
+
+```rust,ignore
+use firefly_testkit::Slice;
+use firefly_container::Scope;
+
+// @WebMvcTest(WalletController) + @MockBean(WalletService)
+let client = Slice::new()
+    .instance(FakeWalletService::default())               // the mock
+    .bind::<dyn WalletService, FakeWalletService>(|a| a)
+    .register::<WalletController, _>(Scope::Singleton, |c| {
+        Ok(WalletController { service: c.resolve::<dyn WalletService>()? })
+    })
+    .eager::<WalletController>()
+    .build()
+    .web_client::<WalletController, _>(WalletController::routes);
+
+client.get_blocking("/api/v1/wallets/unknown").assert_status(404);
+```
+
+`web_client` (feature `web`) takes the controller's generated `fn routes(state:
+C) -> Router`; it clones the resolved bean into the router state, so the whole
+web layer of one controller is exercised over fakes. For a **`@DataJpaTest`**,
+the same `Slice` registers a repository over an in-memory SQLite `Db` (build it
+with `firefly::data_sqlx::repository_for`, as `lumen-ledger`'s `-models` tests
+do) — a focused persistence slice with no web stack.
+
 ### Asserting emitted events
 
 `SpyBroker` records what a handler published; `assert_event_published(&spy,
