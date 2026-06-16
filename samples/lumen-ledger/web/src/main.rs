@@ -259,7 +259,13 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        let bob = body_json(app.clone().oneshot(open_in("bob", 200, "EUR")).await.unwrap()).await;
+        let bob = body_json(
+            app.clone()
+                .oneshot(open_in("bob", 200, "EUR"))
+                .await
+                .unwrap(),
+        )
+        .await;
         let alice_id = alice["id"].as_str().unwrap().to_string();
         let bob_id = bob["id"].as_str().unwrap().to_string();
 
@@ -598,11 +604,7 @@ mod tests {
         // NOT the public API — so they must be absent from the api router and
         // present on the management one.
         let (api, mgmt) = boot("lumen_ledger_web_oas").await;
-        let on_api = api
-            .oneshot(get("/v3/api-docs"))
-            .await
-            .unwrap()
-            .status();
+        let on_api = api.oneshot(get("/v3/api-docs")).await.unwrap().status();
         assert_eq!(
             on_api,
             StatusCode::NOT_FOUND,
@@ -646,7 +648,8 @@ mod tests {
         // explicitly-declared `Idempotency-Key` header parameter.
         assert!(has_body("/api/v1/wallets", "post"), "POST /wallets body");
         assert!(
-            params("/api/v1/wallets", "post").contains(&("header".into(), "Idempotency-Key".into())),
+            params("/api/v1/wallets", "post")
+                .contains(&("header".into(), "Idempotency-Key".into())),
             "Idempotency-Key header: {:?}",
             params("/api/v1/wallets", "post")
         );

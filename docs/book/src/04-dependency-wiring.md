@@ -21,7 +21,7 @@ using Lumen's real beans, then surveys the full container surface
 
 ## How `FireflyApplication` wires the object graph
 
-When `FireflyApplication::new("lumen").run()` boots (the one-line `main` from
+When `FireflyApplication::new("lumen").run().await` boots (the one-line `main` from
 the [Quickstart](./02-quickstart.md)), it does the wiring a composition root
 used to do by hand:
 

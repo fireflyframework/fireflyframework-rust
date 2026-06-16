@@ -230,7 +230,7 @@ CLI path to every artifact Lumen grew by hand: `firefly new --archetype web-api`
 scaffolds the chapter-2 skeleton, `firefly generate command/query/aggregate/saga`
 writes the CQRS, DDD, and orchestration pieces, `firefly run --bin lumen`
 launches it with `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR` overrides, and
-`firefly health/routes/beans --url :8081` introspects the actuator surface from
+`firefly health/routes/beans --url http://localhost:8081` introspects the actuator surface from
 chapter 15. The CLI never
 invents APIs — every command maps to a framework crate (`firefly-migrations`,
 `firefly-openapi`, the actuator endpoints) you have already met.

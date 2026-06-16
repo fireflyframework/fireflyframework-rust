@@ -323,7 +323,10 @@ async fn tower_layer_restarts_trace_on_malformed_traceparent() {
         .into_body();
     // The malformed header is NOT propagated; a fresh, valid root is minted.
     let tp = tp.expect("a root span is originated");
-    assert!(!tp.contains("not-a-trace"), "malformed header must be dropped");
+    assert!(
+        !tp.contains("not-a-trace"),
+        "malformed header must be dropped"
+    );
     let ext = ext.expect("root TraceParent in extensions");
     assert_eq!(ext.trace_id.len(), 32);
     assert_eq!(ext.parent_id.len(), 16);

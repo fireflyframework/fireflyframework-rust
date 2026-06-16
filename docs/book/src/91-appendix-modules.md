@@ -1,9 +1,10 @@
 # Appendix: Module Index
 
-The Firefly Rust workspace ships **79 members** — 74 framework crates under
-`crates/`, plus the cross-crate integration suite and four samples: the book's
-running example [`lumen`](https://github.com/fireflyframework/fireflyframework-rust/tree/main/samples/lumen),
-alongside `orders`, `reactive-banking`, and `macro-quickstart`. Each crate
+The Firefly Rust workspace ships **86 members** — 74 framework crates under
+`crates/`, plus the cross-crate integration suite and 11 sample entries: the
+book's running example [`lumen`](https://github.com/fireflyframework/fireflyframework-rust/tree/main/samples/lumen),
+alongside `orders`, `reactive-banking`, `macro-quickstart`, `linkspike-core`,
+`linkspike-web`, and the `lumen-ledger` multi-module sample. Each crate
 carries its own `README.md` with its full public surface, design rationale, and a
 runnable quick-start.
 

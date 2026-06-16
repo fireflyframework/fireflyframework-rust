@@ -455,7 +455,7 @@ sibling operations never leak ids into one another.
 let trace = firefly_kernel::correlation_id();   // Some(<id>) under the middleware
 ```
 
-Because the framework installs `CorrelationMiddleware` outermost on Lumen's bus,
+Because the framework installs `ValidationMiddleware` outermost on Lumen's bus (installed first by Core), followed by `CorrelationMiddleware`,
 the same id that the HTTP layer stamped on `POST /wallets/:id/deposit` flows into
 the `Deposit` handler, into the transfer saga it may start, and into the events
 the saga publishes — without any handler touching the id explicitly. It sits
@@ -481,13 +481,13 @@ the id too:
   <g>
     <rect x="80" y="146" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
     <text x="103" y="174" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
-          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">C</text>
+          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">V</text>
     <rect x="187" y="146" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
     <text x="210" y="174" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
-          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">Q</text>
+          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">C</text>
     <rect x="294" y="146" width="46" height="44" rx="8" fill="#fdf6ea" stroke="#e0cda8" stroke-width="1.5"/>
     <text x="317" y="174" text-anchor="middle" font-size="15" font-weight="700" fill="#2a1d10"
-          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">V</text>
+          font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">Q</text>
   </g>
   <g stroke="#d4793a" stroke-width="3" fill="#d4793a">
     <line x1="126" y1="168" x2="181" y2="168"/><polygon points="187,168 179,164 179,172"/>
@@ -638,7 +638,7 @@ let balance = bus
     .query_mono::<_, WalletView>(GetWallet { id: wallet_id })
     .map(|view| view.balance)
     .block()
-    .await?;            // Ok(Some(<cents>))
+    .await?;            // Some(<cents>) or None
 ```
 
 Because `firefly-reactive` fixes its error channel to `FireflyError`, a failed

@@ -2,6 +2,33 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.25 — 2026-06-16
+
+A correctness-and-hygiene release: the workspace is `rustfmt`-clean again and
+every book example was re-audited against the shipped API. No behavioural or
+API changes.
+
+### Fixed
+
+- **Workspace formatting.** `cargo fmt --all --check` (and therefore
+  `make ci`) was silently failing on `main`: prior changes to
+  `firefly-openapi`, an observability test, and the `lumen-ledger` sample
+  controller/`main.rs` were never formatted. Reformatted; `make ci` now passes
+  `fmt-check` → `clippy -D warnings` → `build` → `test` end to end.
+- **Book example accuracy (full-chapter audit, every finding verified against
+  source).** Corrected: a `FireflyApplication::new(..).run()` missing `.await`;
+  a `WalletView` read model missing its `Schema` derive; the CQRS middleware
+  order (`ValidationMiddleware` is installed first by `Core`, so with the bus's
+  reverse-iteration wrapping it is **outermost** — prose and the SVG diagram
+  now read `Validation → Correlation → QueryCache`, not Correlation-first);
+  three `WebClient` snippets that built a `Mono`/`Flux` without
+  `.block().await`; the experience-tier signal endpoint path
+  (`POST /journeys/:id/data`, not `/confirm`); a CLI `--url :8081` lacking a
+  scheme; a streaming handler/test missing a `Response` import and the
+  `open_with_deposit(&app)` argument; a stale `79 members` / “four samples”
+  module-index count (now 86 / five reference samples); and two `samples/lumen`
+  GitHub links that pointed at the org root instead of the file.
+
 ## v26.6.24 — 2026-06-16
 
 Spec-based **filtering** is now first-class on derived repositories, with a

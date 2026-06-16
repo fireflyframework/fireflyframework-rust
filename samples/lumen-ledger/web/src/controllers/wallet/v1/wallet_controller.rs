@@ -101,9 +101,7 @@ impl WalletController {
         // The declared `Idempotency-Key` header is readable here exactly like any
         // axum header (a real handler would dedupe on it); declaring it makes it a
         // first-class parameter in Swagger UI / ReDoc so callers can supply it.
-        let _idempotency_key = headers
-            .get("idempotency-key")
-            .and_then(|v| v.to_str().ok());
+        let _idempotency_key = headers.get("idempotency-key").and_then(|v| v.to_str().ok());
         let view = api.service.create(body).await.map_err(service_to_web)?;
         Ok((StatusCode::CREATED, Json(view)))
     }
@@ -120,7 +118,10 @@ impl WalletController {
     /// (it demonstrates the data/web/transactional stack; access control is its
     /// own [security chapter]), so it keeps the surface scoped instead of
     /// exposing a `list_all`. A missing `owner` is a clear **400** problem.
-    #[get("/wallets", summary = "List a single owner's wallets (?owner= required)")]
+    #[get(
+        "/wallets",
+        summary = "List a single owner's wallets (?owner= required)"
+    )]
     async fn list(
         State(api): State<WalletController>,
         Query(query): Query<OwnerQuery>,
@@ -242,7 +243,11 @@ impl WalletController {
     /// wallet to another (`Valid<…>` rejects a non-positive amount or a blank
     /// destination as 422). The debit and credit commit together or not at all;
     /// insufficient funds / an inactive party is a 422 with no partial debit.
-    #[post("/wallets/:id/transfer", summary = "Transfer funds to another wallet", status = 200)]
+    #[post(
+        "/wallets/:id/transfer",
+        summary = "Transfer funds to another wallet",
+        status = 200
+    )]
     async fn transfer(
         State(api): State<WalletController>,
         Path(from): Path<Uuid>,

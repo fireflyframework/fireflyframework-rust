@@ -62,7 +62,7 @@ compensating transfer saga, JWT bearer auth with path-based RBAC, an actuator
 admin surface, a scheduled housekeeping task, and an end-to-end test suite.
 
 Every code block in the book is a slice of the real, compiling, tested
-[`samples/lumen`](https://github.com/fireflyframework) crate. When the prose
+[`samples/lumen`](https://github.com/fireflyframework/fireflyframework-rust/tree/main/samples/lumen) crate. When the prose
 drifts from the source, the sample stops building and a test fails — so what you
 read is what runs.
 
