@@ -365,7 +365,7 @@ impl Wallet {
 
 /// The read-model projection of a wallet — the wire shape served by
 /// `GET /api/v1/wallets/:id` and stored in the read-model repository.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
 pub struct WalletView {
     pub id: String,
     pub owner: String,

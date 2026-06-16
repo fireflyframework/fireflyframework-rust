@@ -140,7 +140,9 @@ async fn main() {
         .uri("/payments")
         .body(&SettleTransfer { wallet_id: "wlt_alice".into(), amount: 300 })
         .retrieve()
-        .body_to_mono::<Payment>();
+        .body_to_mono::<Payment>()
+        .block()
+        .await;
 
     // body_to_flux — a streamed NDJSON OR SSE body, decoded lazily
     // element-by-element with backpressure.
@@ -149,10 +151,13 @@ async fn main() {
         .uri("/ledger/ticks")
         .header("Accept", "application/x-ndjson")
         .retrieve()
-        .body_to_flux::<LedgerTick>();
+        .body_to_flux::<LedgerTick>()
+        .collect_list()
+        .block()
+        .await;
 
     // exchange — raw status + headers without raising on a non-2xx.
-    let _resp = client.get().uri("/health").retrieve().exchange();
+    let _resp = client.get().uri("/health").retrieve().exchange().block().await;
 }
 ```
 

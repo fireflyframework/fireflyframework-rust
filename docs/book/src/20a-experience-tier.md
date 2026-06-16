@@ -143,7 +143,7 @@ let journey_id = "j-1".to_string();
 let workflow = Workflow::new("fund-and-confirm")
     // 1. reserve: call the Lumen "wallets" SDK to open/lock the funds.
     .node(Node::new("reserve", || async { Ok(()) }))
-    // 2. await-confirm: park until POST /journeys/{id}/confirm delivers "confirmed".
+    // 2. await-confirm: park until POST /journeys/{id}/data delivers "confirmed".
     .node(
         Node::wait_for_signal("await-confirm", &signals, journey_id.clone(), "confirmed")
             .depends_on(["reserve"]),
@@ -226,7 +226,7 @@ the **atomic REST** shape:
 | Method & path | Does |
 |---------------|------|
 | `POST /journeys` | start the workflow (calls the "wallets" SDK to reserve), persist `WorkflowState`, park on the gate, return the journey id |
-| `POST /journeys/:id/confirm` | deliver the `confirmed` signal — the parked workflow resumes and commits the transfer via the "wallets" SDK |
+| `POST /journeys/:id/data` | deliver the `confirmed` signal — the parked workflow resumes and commits the transfer via the "wallets" SDK |
 | `GET  /journeys/:id` | report the persisted phase (or 404 if unknown) |
 
 Each phase is one HTTP request; state lives in the cache (Redis-capable), so a

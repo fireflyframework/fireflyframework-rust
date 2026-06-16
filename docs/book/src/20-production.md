@@ -132,6 +132,7 @@ async fn stream_events(
     axum::extract::Query(params): axum::extract::Query<StreamParams>,
 ) -> Response {
     use crate::domain::WalletEvent;
+    use axum::response::Response;
     use firefly::reactive::Flux;
     use firefly::web::{NdJson, Sse};
 
@@ -160,9 +161,10 @@ a streaming body starts you can no longer change the status. `tests/streaming.rs
 ```rust,ignore
 #[tokio::test]
 async fn events_stream_as_ndjson_by_default() {
-    let id = open_with_deposit().await;          // two events: opened + deposited
-    let res = build_router()
-        .await
+    let app = build_router().await;
+    let id = open_with_deposit(&app).await;          // two events: opened + deposited
+    let res = app
+        .clone()
         .oneshot(Request::get(format!("/api/v1/wallets/{id}/events")).body(Body::empty()).unwrap())
         .await
         .unwrap();

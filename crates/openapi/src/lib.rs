@@ -545,7 +545,10 @@ impl Builder {
             let mut schema = serde_json::Map::new();
             schema.insert("type".to_string(), Value::String(ty.to_string()));
             if !p.description.is_empty() {
-                schema.insert("description".to_string(), Value::String(p.description.to_string()));
+                schema.insert(
+                    "description".to_string(),
+                    Value::String(p.description.to_string()),
+                );
             }
             let schema = Value::Object(schema);
             params.push(match p.location {
@@ -1837,12 +1840,11 @@ mod tests {
             .add_route(&route)
             .build();
         let v = serde_json::to_value(&doc).unwrap();
-        let params = v["paths"]["/wallets"]["get"]["parameters"].as_array().unwrap();
-        let has = |loc: &str, name: &str| {
-            params
-                .iter()
-                .any(|p| p["in"] == loc && p["name"] == name)
-        };
+        let params = v["paths"]["/wallets"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        let has =
+            |loc: &str, name: &str| params.iter().any(|p| p["in"] == loc && p["name"] == name);
         let required = |name: &str| {
             params
                 .iter()
