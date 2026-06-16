@@ -166,10 +166,14 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(body_json(res).await.as_array().unwrap().len(), 1);
 
-        // Paged by status — the Pageable + Page<T> machinery.
+        // Paged by status — the `PageRequest` argument resolver binds
+        // page/size/sort from the query into the Pageable + Page<T> machinery
+        // (the `sort=balance,desc` is accepted and threaded to the repository).
         let res = app
             .clone()
-            .oneshot(get("/api/v1/wallets/page?status=active&page=1&size=10"))
+            .oneshot(get(
+                "/api/v1/wallets/page?status=active&page=1&size=10&sort=balance,desc",
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);

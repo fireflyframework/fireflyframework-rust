@@ -32,7 +32,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use firefly::data::Page;
 use firefly::prelude::*;
-use firefly::web::{Path, Query, Valid, WebError, WebResult};
+use firefly::web::{PageRequest, Path, Query, Valid, WebError, WebResult};
 use lumen_ledger_core::{ServiceError, WalletService};
 use lumen_ledger_interfaces::{AmountRequest, CreateWalletRequest, WalletResponse, WalletStatus};
 use serde::Deserialize;
@@ -54,25 +54,14 @@ struct OwnerQuery {
     owner: String,
 }
 
-/// `?status=&page=&size=` query for the paged list endpoint.
+/// `?status=` filter for the paged list endpoint. Pagination (`page`, `size`,
+/// `sort`) is bound separately by the framework's `PageRequest` resolver, so
+/// this query only carries the domain filter.
 #[derive(Debug, Deserialize)]
-struct StatusPageQuery {
+struct StatusQuery {
     /// The status to filter by (defaults to `active`).
     #[serde(default)]
     status: WalletStatus,
-    /// 1-based page number (defaults to `1`).
-    #[serde(default = "default_page")]
-    page: usize,
-    /// Page size (defaults to `20`).
-    #[serde(default = "default_size")]
-    size: usize,
-}
-
-fn default_page() -> usize {
-    1
-}
-fn default_size() -> usize {
-    20
 }
 
 /// JSON body for the status-transition endpoint.
@@ -118,16 +107,19 @@ impl WalletController {
         Ok(Json(views))
     }
 
-    /// `GET /api/v1/wallets/page?status=&page=&size=` — a Spring Data `Page<T>`
-    /// of wallets in a status.
+    /// `GET /api/v1/wallets/page?status=&page=&size=&sort=` — a Spring Data
+    /// `Page<T>` of wallets in a status. Pagination is bound by the framework's
+    /// `PageRequest` argument resolver (`page`/`size`/`sort`, e.g.
+    /// `?sort=balance,desc`), exactly like a Spring `Pageable` parameter.
     #[get("/wallets/page", summary = "List wallets by status (paged)")]
     async fn list_paged(
         State(api): State<WalletController>,
-        Query(query): Query<StatusPageQuery>,
+        Query(query): Query<StatusQuery>,
+        PageRequest(pageable): PageRequest,
     ) -> WebResult<Json<Page<WalletResponse>>> {
         let page = api
             .service
-            .list_by_status(query.status, query.page, query.size)
+            .list_by_status(query.status, pageable)
             .await
             .map_err(service_to_web)?;
         Ok(Json(page))

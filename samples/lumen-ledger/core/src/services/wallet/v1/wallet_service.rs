@@ -15,7 +15,7 @@
 //! The [`WalletService`] `@Service` interface.
 
 use async_trait::async_trait;
-use firefly::data::Page;
+use firefly::data::{Page, Pageable};
 use lumen_ledger_interfaces::{CreateWalletRequest, WalletResponse, WalletStatus};
 use uuid::Uuid;
 
@@ -35,12 +35,12 @@ pub trait WalletService: Send + Sync {
     /// Lists every wallet of one owner.
     async fn list_by_owner(&self, owner: &str) -> Result<Vec<WalletResponse>, ServiceError>;
 
-    /// A page of wallets in a given status (Spring Data `Page<T>`).
+    /// A page of wallets in a given status (Spring Data `Page<T>`), honouring
+    /// the request's [`Pageable`] (page, size, and sort).
     async fn list_by_status(
         &self,
         status: WalletStatus,
-        page: usize,
-        size: usize,
+        pageable: Pageable,
     ) -> Result<Page<WalletResponse>, ServiceError>;
 
     /// Credits an active wallet (atomically, within a transaction).

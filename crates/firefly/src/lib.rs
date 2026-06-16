@@ -405,12 +405,16 @@ pub mod prelude {
 
     // ---- Web ------------------------------------------------------------
     /// The web result/error types, the RFC 9457 problem-response helper, the
-    /// auto-validating `Valid<T>` JSON extractor, and the reactive responders
-    /// that let a controller return `Mono`/`Flux`: `MonoJson` (Mono to JSON,
-    /// empty to 404), `NdJson` (Flux to backpressured `application/x-ndjson`),
-    /// and `Sse` / `SseEvents` (Flux to `text/event-stream`).
+    /// auto-validating extractors (`Valid<T>` for JSON bodies, `ValidPath` /
+    /// `ValidQuery` for path/query objects), the `Multipart` form / file-upload
+    /// extractor, the `PageRequest` `Pageable` argument resolver, and the
+    /// reactive responders that let a controller return `Mono`/`Flux`:
+    /// `MonoJson` (Mono to JSON, empty to 404), `NdJson` (Flux to
+    /// backpressured `application/x-ndjson`), and `Sse` / `SseEvents` (Flux to
+    /// `text/event-stream`).
     pub use firefly_web::{
-        problem_response, MonoJson, NdJson, Sse, SseEvents, Valid, WebError, WebResult,
+        problem_response, MonoJson, Multipart, NdJson, PageRequest, Sse, SseEvents, UploadedFile,
+        Valid, ValidPath, ValidQuery, WebError, WebResult,
     };
 
     // ---- Declarative bean validation -----------------------------------

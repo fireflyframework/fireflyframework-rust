@@ -175,13 +175,13 @@ discipline a Spring Boot service is expected to have, all rendered as RFC 9457
 
 | Concern | How |
 |---|---|
-| Bean validation at the edge | `Valid<CreateWalletRequest>` / `Valid<AmountRequest>` — a blank owner, a non-ISO currency (`#[validate(pattern = "[A-Z]{3}")]`), or a non-positive amount (`#[validate(range(min = 1))]`) is a **422** before the service runs |
+| Bean validation at the edge | `Valid<CreateWalletRequest>` / `Valid<AmountRequest>` — a blank owner, a non-ISO currency (`#[validate(pattern = "[A-Z]{3}")]`), or a non-positive amount (`#[validate(range(min = 1))]`) is a **422** before the service runs. The same `Validate` runs on query/path objects via `ValidQuery<T>` / `ValidPath<T>`, and a `multipart/form-data` upload binds through the problem-rendering `Multipart` extractor |
 | Malformed path / query | `firefly::web::{Path, Query}` extractors — a non-UUID id or a missing `?owner=` is a **400** problem, not axum's plain-text default |
 | Optimistic-lock conflict | a stale `@Version` write → `ServiceError::Conflict` → **409** |
 | Unknown wallet | `ServiceError::NotFound` → **404** |
 | Status lifecycle | `PATCH /api/v1/wallets/:id/status` transitions `active → frozen → closed`; a frozen wallet rejects a debit with **422** |
 | Delete | `DELETE /api/v1/wallets/:id` → **204**, delegating to `delete_by_id` |
-| Pagination | `GET /api/v1/wallets?status=active&page=1&size=20` returns a Spring-Data `Page<T>` (`content` + `totalElements`), built from the paged `find_by_status` derived query |
+| Pagination | `GET /api/v1/wallets/page?status=active&page=1&size=20&sort=balance,desc` returns a Spring-Data `Page<T>` (`content` + `totalElements`). The framework's `PageRequest` argument resolver binds `page`/`size`/`sort` into a `Pageable` (exactly like a Spring `Pageable` parameter), which the `@Service` passes straight to the paged `find_by_status` derived query |
 
 Because `WebError` and `ServiceError` are both foreign to the `-web` crate,
 the controller maps them with a small `service_to_web` function rather than an

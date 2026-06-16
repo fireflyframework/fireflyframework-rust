@@ -117,6 +117,8 @@ mod headers;
 mod idempotency;
 mod json_mapper;
 mod metrics;
+mod multipart;
+mod pageable;
 mod pii;
 mod problem;
 pub mod reactive;
@@ -151,7 +153,7 @@ pub use csrf::{
 pub use exception_handler::{
     ExceptionAdviceLayer, ExceptionAdviceService, ExceptionHandlerRegistry,
 };
-pub use extract::{Path, Query};
+pub use extract::{Path, Query, ValidPath, ValidQuery};
 pub use headers::{SecurityHeadersConfig, SecurityHeadersLayer, SecurityHeadersService};
 pub use idempotency::{
     IdempotencyConfig, IdempotencyLayer, IdempotencyRecord, IdempotencyService, IdempotencyStore,
@@ -162,6 +164,8 @@ pub use metrics::{
     MetricsLayer, MetricsService, Outcome, RequestMetric, RequestObserver, RollingMax,
     HTTP_SERVER_REQUESTS_MAX_METRIC, HTTP_SERVER_REQUESTS_METRIC,
 };
+pub use multipart::{Multipart, UploadedFile};
+pub use pageable::PageRequest;
 pub use pii::{mask_map, mask_pii};
 pub use problem::{
     error_response, problem_response, ProblemLayer, ProblemService, WebError, WebResult,
