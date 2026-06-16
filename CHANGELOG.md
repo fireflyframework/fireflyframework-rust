@@ -2,6 +2,38 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.27 — 2026-06-16
+
+A Spring Boot **parity** increment: declarative rollback rules on
+`#[transactional]`. Chosen from a 16-area parity-gap analysis as the best
+value-to-effort gap (the transaction runtime already supported it).
+
+### Added
+
+- **`#[transactional(no_rollback_for = "<pat>", rollback_only_for = "<pat>")]`**
+  — declarative transaction rollback rules. Spring names exception *types*;
+  because Rust's `Result` already separates failure from success, the Firefly
+  analog names an error **pattern**. By default every `Err` rolls back; then:
+  - `no_rollback_for = "P"` — **Spring's `@Transactional(noRollbackFor = …)`**:
+    an `Err` matching pattern `P` **commits** instead of rolling back;
+  - `rollback_only_for = "P"`: roll back **only** when the `Err` matches `P`,
+    committing the rest;
+  - with both, `no_rollback_for` wins on overlap.
+
+  The pattern is any Rust match pattern valid for the fn's error type (no `if`
+  guard), alternatives included (`"Error::A | Error::B"`). The macro lowers to
+  the already-present `transactional_with` / `transactional_with_on` runtime
+  entry points (which take a `should_rollback(&E) -> bool` predicate), composes
+  with `manager = "…"`, and the generated predicate is `matches!`-based, so a
+  pattern that does not fit the error type is a compile error.
+
+  `rollback_only_for` is **not** named `rollback_for`: Spring's `rollbackFor` is
+  *additive* (it widens the set of exceptions that roll back), but Rust has no
+  checked/unchecked split — every `Err` already rolls back — so the faithful
+  rule here is *restrictive*. Writing `rollback_for` is a friendly compile error
+  pointing at the two rules above, so a Spring port can't be silently inverted.
+  No runtime or API changes elsewhere.
+
 ## v26.6.26 — 2026-06-16
 
 A correctness release. Every one of the **74 per-crate `README.md`** files was
