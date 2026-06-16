@@ -829,8 +829,40 @@ async fn record(accounts: &Accounts, ledger: &Ledger) -> Result<(), TransferErro
 
 The attributes are `propagation` (`required` / `requires_new` / `nested` /
 `supports` / `not_supported` / `mandatory` / `never`), `isolation`
-(`read_committed` / `repeatable_read` / `serializable` / …), `read_only`, and
-`timeout_ms`.
+(`read_committed` / `repeatable_read` / `serializable` / …), `read_only`,
+`timeout_ms`, `manager = "<expr>"` (Spring's `@Transactional("txManager")` — run
+against an explicit `TransactionManager`, e.g. `self.tx_manager()`, instead of
+the process-global registry), and the **rollback rules** `no_rollback_for` /
+`rollback_only_for`.
+
+Spring names exception *types*; because Rust's `Result` already separates
+failure from success, the Firefly analog names an error **pattern** (any match
+pattern for the fn's error type, no `if` guard, alternatives `A | B` included).
+By default every `Err` rolls back. Then:
+
+- `no_rollback_for = "P"` — **Spring's `noRollbackFor`**: an `Err` matching `P`
+  **commits** instead of rolling back;
+- `rollback_only_for = "P"` — roll back **only** for errors matching `P`,
+  committing the rest;
+- with both, `no_rollback_for` wins on overlap.
+
+```rust,ignore
+// Persist the audit row even when the domain rejects the charge, but still roll
+// back on any infrastructure failure — @Transactional(noRollbackFor = …).
+#[firefly::transactional(no_rollback_for = "BillingError::Rejected(_)")]
+async fn charge(&self, req: Charge) -> Result<Receipt, BillingError> {
+    self.audit.save(/* … */).await?;        // committed even on a Rejected error
+    self.gateway.settle(req).await          // a Backend error still rolls back
+}
+```
+
+> **Not `rollback_for`.** Spring's `rollbackFor` is *additive* — it adds
+> exception types to the runtime-exceptions that already roll back. Rust has no
+> checked/unchecked split (every `Err` rolls back by default), so an additive
+> rule would be a no-op. `rollback_only_for` is therefore deliberately named to
+> signal that it *restricts* (rather than widens) the rollback set, so a Spring
+> port is never silently inverted. Writing `rollback_for` is a friendly compile
+> error pointing you at the two rules above.
 
 **Ambient enlistment** is what makes this seamless. The manager opens a sqlx
 transaction and stows it in a task-local stack; while that scope is active,
