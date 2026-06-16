@@ -139,6 +139,16 @@ impl Facade {
         quote!(#rt::firefly_aop)
     }
 
+    /// `#facade::__rt::firefly_resilience` — the resilience runtime the
+    /// declarative `#[retry]` / `#[circuit_breaker]` / `#[rate_limit]` /
+    /// `#[bulkhead]` / `#[timeout]` decorator macros expand against (each
+    /// primitive's builder plus the shared `ResilienceError` the generated
+    /// guard threads the operation's failure through).
+    pub(crate) fn resilience(&self) -> TokenStream {
+        let rt = self.rt();
+        quote!(#rt::firefly_resilience)
+    }
+
     /// `#facade::__rt::firefly_validators` — the validation tier the
     /// `#[derive(Validate)]` macro expands against (the `bean::Validate`
     /// trait, the `bean::{ValidationError, ValidationErrors}` accumulator,
