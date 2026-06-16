@@ -26,6 +26,9 @@ sha2 = { workspace = true }
 redis = { workspace = true }
 tokio-postgres = { workspace = true }
 bcrypt = { workspace = true }
+# Argon2id password hashing (`Argon2PasswordEncoder`) — the OWASP-preferred
+# memory-hard alternative to bcrypt. `std` enables the OS RNG for salt generation.
+argon2 = { version = "0.5", features = ["std"] }
 firefly-session = { workspace = true }
 
 [dev-dependencies]
