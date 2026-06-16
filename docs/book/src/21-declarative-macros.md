@@ -462,7 +462,7 @@ impl AccountRepo {
 }
 
 // Build the page (1-based index) with sort + window:
-let page = Pageable::of(1, 20, RequestSort::of([Order::desc("id")]));
+let page = Pageable::of(1, 20, RequestSort::of([Order::desc("id")])).unwrap();
 let rows = repo.find_by_owner("ada", page).await?;
 ```
 
