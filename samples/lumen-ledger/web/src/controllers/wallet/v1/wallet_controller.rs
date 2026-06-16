@@ -52,8 +52,10 @@ pub struct WalletController {
 /// `?owner=…` query for the by-owner list endpoint.
 #[derive(Debug, Deserialize)]
 struct OwnerQuery {
-    /// The owner whose wallets to list.
-    owner: String,
+    /// The owner to filter by. **Optional** — omit `?owner=` to list every
+    /// wallet (the conventional REST collection), supply it to filter.
+    #[serde(default)]
+    owner: Option<String>,
 }
 
 /// `?status=` filter for the paged list endpoint. Pagination (`page`, `size`,
@@ -96,16 +98,20 @@ impl WalletController {
     }
 
     /// `GET /api/v1/wallets?owner=…` — list one owner's wallets.
-    #[get("/wallets", summary = "List an owner's wallets")]
+    #[get(
+        "/wallets",
+        summary = "List wallets (all, or filtered by ?owner=)"
+    )]
     async fn list(
         State(api): State<WalletController>,
         Query(query): Query<OwnerQuery>,
     ) -> WebResult<Json<Vec<WalletResponse>>> {
-        let views = api
-            .service
-            .list_by_owner(&query.owner)
-            .await
-            .map_err(service_to_web)?;
+        // `?owner=ada` filters; a bare `GET /wallets` lists every wallet.
+        let views = match query.owner.as_deref() {
+            Some(owner) => api.service.list_by_owner(owner).await,
+            None => api.service.list_all().await,
+        }
+        .map_err(service_to_web)?;
         Ok(Json(views))
     }
 

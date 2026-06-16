@@ -126,8 +126,9 @@ So the production path (`run`) and the test path (`bootstrap` →
 10. **Serve OpenAPI docs.** The spec is built from the **live inventory** —
     every `#[rest_controller]` route plus every `#[derive(Schema)]` DTO — and
     served at `/v3/api-docs` (+ `/openapi.json`), with Swagger UI at
-    `/swagger-ui` and ReDoc at `/redoc`, *outside* the security chain so the
-    docs are reachable without a token. This is auto-wired with no app code;
+    `/swagger-ui` and ReDoc at `/redoc` — mounted on the **management** router
+    (beside actuator + admin), not the public API, since they expose the whole
+    API surface. This is auto-wired with no app code;
     [the next-but-one chapter](./06a-openapi.md) covers it in full.
 
 11. **Install the default 404.** An unmatched route gets a proper RFC 9457

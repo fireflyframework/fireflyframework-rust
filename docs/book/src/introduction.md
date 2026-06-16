@@ -23,7 +23,7 @@ handlers, and routes; the framework wires the rest. And you depend on exactly
 
 ```toml
 [dependencies]
-firefly = { version = "26.6.20" }
+firefly = { version = "26.6.21" }
 ```
 
 Firefly is a production-grade platform for reactive, event-driven Rust
@@ -100,7 +100,7 @@ reference afterward.
   offer a quick-reference for developers arriving from other ecosystems.
 
 > **Note.** Every code block in this book is real, compiling Rust against the
-> actual crate APIs at version 26.6.20. Where a snippet elides setup for brevity
+> actual crate APIs at version 26.6.21. Where a snippet elides setup for brevity
 > it is marked `ignore`/`no_run`, but the API names, types, and method
 > signatures are exactly what the crates expose.
 

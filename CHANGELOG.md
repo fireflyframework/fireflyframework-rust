@@ -2,6 +2,31 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.21 — 2026-06-16
+
+API docs move to the **management** port, and the surfaces are hardened.
+
+### Changed
+
+- **OpenAPI docs (Swagger UI / ReDoc / `/v3/api-docs`) are served on the
+  management port**, beside actuator + admin — not the public API port. They
+  expose the whole API surface and every schema, a control-plane concern, so the
+  public data-plane port no longer serves them.
+- The OpenAPI document now declares the **API base URL** as its `server`
+  (`Builder::add_server`), so Swagger UI's *Try it out* / ReDoc target the API
+  port rather than the management origin the docs load from. Derived from the API
+  bind address (wildcard host → `localhost`); overridable with
+  `FIREFLY_OPENAPI_SERVER_URL`.
+
+### Fixed
+
+- The **management** listener now answers an RFC 9457 `application/problem+json`
+  **404** for unknown paths (it previously returned axum's bare empty body),
+  matching the public API.
+- **lumen-ledger** `GET /api/v1/wallets` lists every wallet when `?owner=` is
+  omitted (an optional filter) — a bare collection request is a 200, not a
+  "missing query parameter" 400. Adds `WalletService::list_all`.
+
 ## v26.6.20 — 2026-06-16
 
 The lumen-ledger sample gains the **transactional transfer** use case, on a new

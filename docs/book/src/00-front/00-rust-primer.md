@@ -17,7 +17,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-firefly = { version = "26.6.20" }                       # the whole framework
+firefly = { version = "26.6.21" }                       # the whole framework
 tokio   = { version = "1", features = ["full"] }       # the async runtime
 serde   = { version = "1", features = ["derive"] }      # (de)serialization
 ```

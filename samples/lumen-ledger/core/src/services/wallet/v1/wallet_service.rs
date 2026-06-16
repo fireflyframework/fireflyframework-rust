@@ -32,6 +32,9 @@ pub trait WalletService: Send + Sync {
     /// Fetches a wallet by id.
     async fn get(&self, id: Uuid) -> Result<WalletResponse, ServiceError>;
 
+    /// Lists every wallet (the unfiltered collection).
+    async fn list_all(&self) -> Result<Vec<WalletResponse>, ServiceError>;
+
     /// Lists every wallet of one owner.
     async fn list_by_owner(&self, owner: &str) -> Result<Vec<WalletResponse>, ServiceError>;
 
