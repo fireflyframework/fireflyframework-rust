@@ -31,6 +31,12 @@ firefly = { workspace = true, features = ["data-sqlx"] }
 # `#[async_method]` macro test can route through a local `__rt` shim, exercising
 # the executor surface without compiling the heavy facade.
 firefly-scheduling = { workspace = true }
+# The `#[http_client]` round-trip test points a generated `<Trait>Impl` at an
+# in-process axum server; `firefly-client` / `firefly-reactive` are named
+# directly so the test can build the `WebClient` and assert `Mono` / `Flux`
+# results (and the `Flux::collect_list().block()` streaming case).
+firefly-client = { workspace = true }
+firefly-reactive = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

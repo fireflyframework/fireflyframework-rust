@@ -1,0 +1,5 @@
+error: an #[http_client] method may carry at most one HTTP-verb mapping
+ --> tests/ui/http_client/fail/two_verbs.rs:8:5
+  |
+8 |     #[post("/b")]
+  |     ^^^^^^^^^^^^^

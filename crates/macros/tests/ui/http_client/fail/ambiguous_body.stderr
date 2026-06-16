@@ -1,0 +1,5 @@
+error: ambiguous body; more than one argument could be the request body — annotate exactly one with #[body]
+  --> tests/ui/http_client/fail/ambiguous_body.rs:14:5
+   |
+14 |     async fn create(&self, a: A, b: B) -> Result<(), ClientError>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

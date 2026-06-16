@@ -2,6 +2,52 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.28 — 2026-06-16
+
+A Spring Boot **parity** increment: the declarative HTTP-interface client — the
+highest single value lever from the parity-gap analysis (it lifts the REST/HTTP
+clients area off the floor).
+
+### Added
+
+- **`#[http_client]`** — a declarative HTTP-interface client, the analog of
+  Spring 6's `@HttpExchange` (the modern OpenFeign replacement). Annotate a
+  **trait** of methods with the *same* verb attributes a `#[rest_controller]`
+  uses and the macro generates a `<Trait>Impl` that issues the requests over a
+  `WebClient` — the mirror image of a controller.
+  - **Verbs:** `#[get("/path")]` / `#[post]` / `#[put]` / `#[delete]` /
+    `#[patch]` + generic `#[request(method = "…")]`. Path variables use the
+    framework's `:id` syntax (same as the server macro); `{id}` is a compile
+    error pointing at `:id`.
+  - **Argument binding** needs no attributes in the common case: a name-matched
+    `:var` arg is the path variable, the lone non-scalar arg on a body verb is
+    the JSON body, the rest are query params (`Option` omits when `None`,
+    `Vec`/`&[_]` repeat). Override with `#[path]` / `#[query("k")]` /
+    `#[header("X")]` / `#[body]`. Every `:var` must bind exactly once or it is a
+    compile error; an `Option`/`Vec`/slice path variable is rejected.
+  - **Return shapes:** `async fn -> Result<T, ClientError>` (the ergonomic
+    default), `Result<T, E: From<ClientError>>`, non-async `Mono<T>` / `Flux<T>`
+    (returned directly; a `Flux` defaults `Accept: application/x-ndjson`), and
+    `WebClientResponse` (the `.exchange()` escape hatch).
+  - **Construction:** `<Trait>Impl::new(base_url)` or `::with_client(WebClient)`;
+    the type is `Clone`. With `#[http_client(... bean)]` it is registered as a
+    `@Service` and bound to `dyn Trait`, so `#[autowired] Arc<dyn Trait>`
+    resolves (pulling a shared `WebClient` bean, named via `client = "…"`).
+  - **Error fidelity (documented):** an awaited `Result<T, ClientError>`
+    surfaces every failure as `ClientError::Problem` (carrying a `FireflyError`
+    with the original status/code, so the classifiers still work); the
+    structured `Transport`/`Decode`/`Encode`/`InvalidUrl` variants survive only
+    on the `Mono`/`Flux` return forms.
+- **`firefly_client::encode_path_segment`** — RFC 3986 path-segment
+  percent-encoding (used by generated clients; also public).
+
+The macro reuses the server `#[rest_controller]`'s verb-attribute grammar
+(`MappingAttr`/`VERBS`/`join_path`), so client and server can't drift. Designed
+via a scored 3-proposal panel and adversarially reviewed (the review caught a
+runtime footgun — an `Option` path variable producing `…/Some(x)` URLs — now a
+compile error). The `firefly::prelude` now also re-exports `WebClient` /
+`ClientError` / `new_web_client`.
+
 ## v26.6.27 — 2026-06-16
 
 A Spring Boot **parity** increment: declarative rollback rules on

@@ -155,6 +155,7 @@ mod rest;
 mod retry;
 mod scaffold;
 mod soap;
+mod uri;
 mod webclient;
 
 #[cfg(feature = "grpc")]
@@ -170,6 +171,12 @@ pub use scaffold::{
     new_grpc, new_soap, new_websocket, GrpcPlaceholder, SoapPlaceholder, WebSocketPlaceholder,
 };
 pub use soap::{wrap_envelope, SoapBuilder, SoapClient};
+pub use uri::encode_path_segment;
+
+// Re-export `http` so the `#[http_client]` macro's generic `#[request(method =
+// "...")]` codegen can name `firefly_client::http::Method` through the one
+// facade contract path, without the user crate depending on `http` directly.
+pub use http;
 pub use webclient::{
     new_web_client, RequestSpec, ResponseSpec, WebClient, WebClientBuilder, WebClientResponse,
     NDJSON_CONTENT_TYPE, SSE_CONTENT_TYPE,

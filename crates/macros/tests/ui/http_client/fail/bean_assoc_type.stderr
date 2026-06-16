@@ -1,0 +1,5 @@
+error: #[http_client(bean)] requires an object-safe trait, but associated type `Output` makes it not `dyn`-compatible; remove it or drop `bean`
+ --> tests/ui/http_client/fail/bean_assoc_type.rs:9:5
+  |
+9 |     type Output;
+  |     ^^^^^^^^^^^^

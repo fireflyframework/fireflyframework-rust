@@ -1,0 +1,5 @@
+error: #[request(...)] requires `method = "<HTTP-METHOD>"` (e.g. #[request(method = "HEAD", path = "/x")])
+ --> tests/ui/http_client/fail/request_missing_method.rs:8:5
+  |
+8 |     #[request(path = "/x")]
+  |     ^^^^^^^^^^^^^^^^^^^^^^^

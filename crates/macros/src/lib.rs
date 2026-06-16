@@ -38,6 +38,7 @@
 //! | [`macro@scheduled`] | a zero-arg `async fn` | a `schedule_<fn>(scheduler)` helper |
 //! | [`macro@async_method`] | an `async fn(self: Arc<Self>, …) -> R` | a non-async `fn … -> firefly_scheduling::TaskHandle<R>` that spawns the body |
 //! | [`macro@rest_controller`] | an `impl` block (`#[get]`/`#[post]`/… methods) | a `routes(state) -> axum::Router` |
+//! | [`macro@http_client`] | a `trait` (`#[get]`/`#[post]`/… methods) | a `<Trait>Impl` client over a `WebClient` (Spring's `@HttpExchange`) |
 //! | [`macro@DomainEvent`] / [`macro@AggregateRoot`] (derive) | a struct | event-type/aggregate ergonomics |
 //! | [`macro@event_listener`] | an `async fn(Event) -> FireflyResult<()>` | a `subscribe_<fn>(broker)` helper (EDA broker consumer) |
 //! | [`macro@application_event_listener`] | a free `async fn(&E)` | an in-process `@EventListener` (discovered via `inventory`, fired by `publish_event`) |
@@ -67,6 +68,7 @@ mod entity;
 mod event_listener;
 mod eventsourcing;
 mod handlers;
+mod http_client;
 mod mapper;
 mod method_security;
 mod orchestration;
@@ -80,7 +82,7 @@ mod validate;
 mod web;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput, ItemFn, ItemImpl};
+use syn::{parse_macro_input, DeriveInput, ItemFn, ItemImpl, ItemTrait};
 
 use crate::container::{RegisterAllInput, Stereotype};
 
@@ -831,6 +833,120 @@ pub fn async_method(args: TokenStream, item: TokenStream) -> TokenStream {
 pub fn rest_controller(args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemImpl);
     emit(web::rest_controller(args.into(), item))
+}
+
+/// Turns a `trait` into a declarative **HTTP-interface client** — Spring's
+/// `@HttpExchange` (the `HttpServiceProxyFactory` / Feign-client experience).
+///
+/// The trait describes the remote API; the macro emits it verbatim (markers
+/// stripped) plus a concrete `<Trait>Impl` struct that wraps a
+/// [`WebClient`](firefly_client::WebClient) and implements the trait by
+/// translating each method's verb attribute, path template, and bound arguments
+/// into a fluent request. The host is **not** on the attribute (faithful to
+/// Spring's relative `@HttpExchange(url)`); it comes from construction —
+/// `<Trait>Impl::new(base_url)` builds a `WebClient`, or
+/// `<Trait>Impl::with_client(web)` injects a tuned one.
+///
+/// ## Methods
+///
+/// Each method carries one verb attribute — `#[get("/:id")]` / `#[post]` /
+/// `#[put]` / `#[delete]` / `#[patch]`, or the generic
+/// `#[request(method = "HEAD", path = "/x")]` — using the **same** grammar and
+/// the **same** axum-style `:name` path-variable spelling as
+/// [`macro@rest_controller`], so a signature copies cleanly between server and
+/// client. (The Spring `{id}` spelling is rejected with a pointer at `:id`.)
+/// Every method takes `&self`.
+///
+/// ## Argument binding (zero attrs in the common case)
+///
+/// First match wins: an explicit arg attr > a path-name match > the body
+/// default > the query default.
+/// - `#[path]` / `#[path("id")]` substitutes the `:id` hole (percent-encoded,
+///   via `Display`); an **unannotated** arg whose name equals a `:name` segment
+///   binds to it automatically. Every `:name` must bind to exactly one argument.
+/// - `#[query]` / `#[query("k")]` adds a query param (via `Display`); an
+///   `Option<_>` omits `None`, a `Vec<_>` / `&[_]` repeats per element. An
+///   unannotated query-scalar argument (integer/float/bool, `String`/`&str`,
+///   `Uuid`, or `Option`/`Vec`/`&[_]` of those) defaults to a query param.
+/// - `#[header("X-Tenant")]` sets a header (name required; `Option<_>` omits).
+/// - `#[body]` sends the argument as a JSON body (via `Serialize`, `.body(&v)`);
+///   on a body verb the lone unannotated non-scalar argument is the body by
+///   default. At most one body.
+///
+/// ## Return shapes
+///
+/// - `async fn -> Result<T, ClientError>` (the ergonomic tier):
+///   `.body_to_mono::<T>().await`, folded `Some → Ok` / `None →` (`Ok(())` for
+///   `()`, `Ok(vec![])` for `Vec`, `Ok(None)` for `Option`, else a synthesized
+///   `CLIENT_EMPTY_BODY` problem) / `Err → ClientError::Problem`.
+/// - `async fn -> Result<T, E>` with `E: From<ClientError>` honors the custom
+///   error via `.map_err(From::from)`.
+/// - `fn -> Mono<T>` / `fn -> Flux<T>` (**non-async**, reactive-first) return the
+///   `Mono` / `Flux` directly, no fold; a `Flux` defaults `Accept:
+///   application/x-ndjson`. (A `Mono` / `Flux` on an `async fn` is a compile
+///   error — it is already deferred.)
+/// - `WebClientResponse` (as `Mono<WebClientResponse>` or the `Result` form) is
+///   the raw `.exchange()` escape hatch.
+///
+/// ## Errors (fold fidelity)
+///
+/// On the awaited `async fn -> Result<T, ClientError>` form, **every** failure
+/// (transport, encode, decode, invalid URL, or an upstream error status) is
+/// surfaced as `ClientError::Problem(FireflyError)`. The original status / problem
+/// code is preserved, so `is_not_found()` / `is_server_error()` / `is_retryable()`
+/// still classify correctly — but the structured `ClientError::Transport` /
+/// `::Decode` / `::Encode` / `::InvalidUrl` variants are **not** reconstructed in
+/// this form. Those structured variants are preserved only on the `Mono<T>` /
+/// `Flux<T>` (non-awaited) return forms, which yield the raw `ClientError`
+/// unchanged. (With a custom `E: From<ClientError>`, your `From` impl sees the
+/// `Problem(..)` variant here.)
+///
+/// ## DI (opt-in via `bean`)
+///
+/// `#[http_client(bean)]` also registers `<Trait>Impl` as a `@Service` and binds
+/// `dyn Trait`, so `#[autowired] x: Arc<dyn Trait>` resolves. Registration pulls
+/// a shared `WebClient` bean from the container (a named one with
+/// `client = "..."`). The trait must be object-safe.
+///
+/// ```ignore
+/// use firefly::prelude::*;            // #[http_client], ClientError, Mono, Flux
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Serialize)]
+/// pub struct CreateOrder { pub sku: String, pub qty: u32 }
+/// #[derive(Deserialize)]
+/// pub struct Order { pub id: String, pub sku: String }
+///
+/// #[http_client(path = "/api/v1/orders", name = "orders", bean)]
+/// pub trait OrdersClient {
+///     #[get("/:id")]
+///     async fn get_order(&self, id: String) -> Result<Order, ClientError>;
+///     #[get("/")]
+///     async fn list(&self, status: String, page: Option<u32>) -> Result<Vec<Order>, ClientError>;
+///     #[post("/")]
+///     async fn create(&self, #[header("X-Tenant")] tenant: String, order: CreateOrder)
+///         -> Result<Order, ClientError>;
+///     #[delete("/:id")]
+///     async fn cancel(&self, id: String) -> Result<(), ClientError>;
+///     #[get("/stream")]
+///     fn stream(&self) -> Flux<Order>;
+/// }
+///
+/// # async fn demo() -> Result<(), ClientError> {
+/// let api = OrdersClientImpl::new("https://orders.svc");
+/// let order = api.get_order("42".into()).await?;
+/// # let _ = order; Ok(())
+/// # }
+/// ```
+///
+/// Trait options: `path` (base path), `name` (DI bean name / qualifier),
+/// `accept` / `content_type` (trait-wide default headers), `client` (a named
+/// `WebClient` bean to share), `bean` (opt into DI registration), and `crate`
+/// (facade override).
+#[proc_macro_attribute]
+pub fn http_client(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemTrait);
+    emit(http_client::http_client(args.into(), item))
 }
 
 /// Registers a DI bean's CQRS / EDA / scheduled handler methods — the Rust

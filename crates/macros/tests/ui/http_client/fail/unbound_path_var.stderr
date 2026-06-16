@@ -1,0 +1,5 @@
+error: the path variable `:id` is not bound to any argument; add an argument named `id` or annotate one with #[path("id")]
+ --> tests/ui/http_client/fail/unbound_path_var.rs:8:5
+  |
+8 |     async fn get(&self, other: String) -> Result<(), ClientError>;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

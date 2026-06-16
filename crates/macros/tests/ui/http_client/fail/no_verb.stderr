@@ -1,0 +1,5 @@
+error: an #[http_client] method must carry a verb attribute: #[get]/#[post]/#[put]/#[delete]/#[patch] or #[request(method = "...")]
+ --> tests/ui/http_client/fail/no_verb.rs:7:5
+  |
+7 |     async fn get(&self) -> Result<(), ClientError>;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: #[http_client] path "/{id}" uses Spring `{name}` syntax; firefly uses the axum-style `:name` path-variable spelling (e.g. `/orders/:id`)
+ --> tests/ui/http_client/fail/spring_path_syntax.rs:9:5
+  |
+9 |     async fn get(&self, id: String) -> Result<(), ClientError>;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

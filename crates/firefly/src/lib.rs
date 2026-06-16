@@ -430,6 +430,20 @@ pub mod prelude {
     /// The reactive `Mono`/`Flux` types (Reactor-style).
     pub use firefly_reactive::{Flux, Mono};
 
+    // ---- Outbound HTTP client ------------------------------------------
+    /// The declarative HTTP-interface client surface: the [`ClientError`] a
+    /// `#[http_client]` `Result` method returns, the reactive
+    /// [`WebClient`] / [`WebClientResponse`] the generated `<Trait>Impl` wraps,
+    /// and the `new_web_client` / `WebClientBuilder` entry points used to
+    /// construct or inject one.
+    ///
+    /// [`ClientError`]: firefly_client::ClientError
+    /// [`WebClient`]: firefly_client::WebClient
+    /// [`WebClientResponse`]: firefly_client::WebClientResponse
+    pub use firefly_client::{
+        new_web_client, ClientError, WebClient, WebClientBuilder, WebClientResponse,
+    };
+
     // ---- Every macro ----------------------------------------------------
     /// All derive/attribute macros from `firefly-macros`.
     // `allow(unused_imports)`: empty while the macro crate is a placeholder
