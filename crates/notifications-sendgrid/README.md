@@ -100,9 +100,9 @@ dispatcher.register(Arc::new(Channel::new(Config {
 * `template_id` enables provider-native Dynamic Templates with
   `personalizations[0].dynamic_template_data`.
 * Attachments are base64-encoded as `{ filename, type, content }`.
-* A 2xx response → `EmailStatus::SENT` with the `X-Message-Id` header as
+* A 2xx response → `EmailStatus::Sent` with the `X-Message-Id` header as
   `provider_id`. Any other status (or a transport error) →
-  `EmailStatus::FAILED` carrying `http {status}: {body}`; the rich `send` never
+  `EmailStatus::Failed` carrying `http {status}: {body}`; the rich `send` never
   returns an `Err`. The `Channel::send` envelope wrapper maps a `FAILED` result
   to `NotificationError::Delivery`.
 

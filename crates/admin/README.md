@@ -59,9 +59,10 @@ The crate adapts the dashboard idiom to idiomatic Rust:
   `AdminDeps::container` — when wired it reports each registered bean's
   name/type/scope/stereotype/primary plus its `initialized` flag and
   resolution count, sourced from `Container::beans()` / `bean_stats()`.
-  Reflection-only fields (constructor `dependencies`/dependency-graph `edges`,
-  `conditions`, `creation_time_ms`, lifecycle methods) have no zero-cost Rust
-  analogue and carry empty/`null` defaults, so the bean graph is nodes-only.
+  Reflection-only fields (constructor `dependencies`, `conditions`,
+  `creation_time_ms`, lifecycle methods) have no zero-cost Rust
+  analogue and carry empty/`null` defaults. Dependency-graph `edges` **are**
+  included — one directed edge per autowired dependency between beans.
   The `runtime` view reports tokio task/worker counts + process RSS via
   `sysinfo`.
 
@@ -97,6 +98,7 @@ pub struct AdminDeps {
     pub instances: Option<Arc<InstanceRegistry>>,// Some ⇒ server mode
     pub container: Option<Arc<Container>>,       // firefly-container, drives the Beans view
     pub views: Vec<Arc<dyn AdminView>>,
+    pub environment: Option<EnvironmentSnapshot>,// firefly-config env/config view
 }
 impl AdminDeps { pub fn new(app_name, app_version, health, metrics, traces, logs) -> Self; }
 

@@ -84,7 +84,7 @@ pub fn exec<'a>(ctx: &TxContext<'a>, db: &'a dyn Executor) -> Conn<'a>;
 
 impl TxContext<'_> {
     pub const fn root() -> Self;
-    pub fn tx(&self) -> Option<&dyn Transaction>;
+    pub fn tx(&self) -> Option<&'a dyn Transaction>;
     pub fn in_transaction(&self) -> bool;
 }
 ```

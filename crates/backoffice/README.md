@@ -46,7 +46,7 @@ impl BackOffice {
 `apply_middleware_chain()` returns the core chain composed with the
 back-office middleware as the innermost layer — apply it once and
 every handler gets problem rendering, correlation, idempotency, AND
-the back-office guard. The execution order is `Problem → Correlation →
+the back-office guard. The execution order is `Problem → TraceContext → Correlation →
 Idempotency → BackOffice → router`.
 
 `BackOffice` dereferences to `Application` (which dereferences to

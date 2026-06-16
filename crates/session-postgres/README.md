@@ -103,8 +103,7 @@ assert_eq!(registry.count("alice").await, 1);
 
 The `SessionRegistry` trait methods are **infallible by contract**, so a
 per-operation Postgres failure is logged via `tracing` and swallowed — the
-concurrency cap simply isn't enforced for that one login. Only the constructors
-and `init()` return a `RegistryError` (connection / table-name / DDL failures).
+concurrency cap simply isn't enforced for that one login. Only the `connect`, `connect_with_table`, `from_client_with_table` constructors and `init()` return a `RegistryError` (connection / table-name / DDL failures).
 
 ## Testing
 

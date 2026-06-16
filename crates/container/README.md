@@ -78,7 +78,7 @@ is a valid registry key.
 | `beans()` / `bean_stats()` / `bean_count()` | Bean introspection for the admin `/beans` view |
 | `destroy()` | Run `#[pre_destroy]` hooks in reverse order, evict singletons |
 | `BeanDescriptor` / `BeanStats` / `RouteDescriptor` | Introspection + route-metadata records |
-| `resolve_named_erased(name)` | Type-erased warm of a named singleton (eager init) |
+| `resolve_named_erased(name)` | Type-erased form of a named singleton (eager init) |
 
 ## Design notes
 

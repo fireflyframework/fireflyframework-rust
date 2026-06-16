@@ -180,4 +180,4 @@ pub use session_auth::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.24";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -80,9 +80,9 @@ adapters and are ignored here.
 * `cc`/`bcc` are added only when non-empty; `text`/`html` only when present.
 * Attachments carry `{ filename, content }` (base64) — Resend takes no `type`
   field, unlike SendGrid.
-* A 2xx response → `EmailStatus::SENT` with the response JSON's `id` as
+* A 2xx response → `EmailStatus::Sent` with the response JSON's `id` as
   `provider_id`. Any other status (or a transport error) →
-  `EmailStatus::FAILED` carrying `http {status}: {body}`; the rich `send` never
+  `EmailStatus::Failed` carrying `http {status}: {body}`; the rich `send` never
   returns an `Err`. The `Channel::send` envelope wrapper maps a `FAILED` result
   to `NotificationError::Delivery`.
 

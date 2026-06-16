@@ -155,6 +155,9 @@ impl BuiltSlice {
     pub fn get<T>(&self) -> Arc<T>;
     pub fn get_named<T>(&self, name: &str) -> Arc<T>;
     pub fn container(&self) -> Arc<Container>;
+    // `web` feature — the @WebMvcTest analog: mount a resolved #[derive(Controller)]
+    // bean over its sliced collaborators and drive it through a TestClient.
+    pub fn web_client<C: Clone + Send + Sync + 'static, F: FnOnce(C) -> axum::Router>(&self, routes: F) -> TestClient;
 }
 ```
 

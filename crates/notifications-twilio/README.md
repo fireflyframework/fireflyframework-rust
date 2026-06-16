@@ -76,7 +76,7 @@ unused by the SMS channel.
 | --- | --- |
 | `Config` | Typed wiring for the adapter (account SID, auth token, sender number, …). |
 | `Channel` | `firefly_notifications::Channel` adapter; `Channel::new(cfg)` / `Channel::with_base_url(cfg, base)` construct it, `config()` exposes the wiring, `provider()` returns the underlying `TwilioSmsProvider`, `kind()` routes `Kind::SMS`, `name()` is `"notificationstwilio"`. |
-| `TwilioSmsProvider` | The rich provider. `new(account_sid, auth_token)` constructs it; `with_from_number(..)` sets a default sender; `with_base_url(..)` / `with_http_client(..)` are wiring seams (the base URL defaults to the real Twilio host). Adds `fetch_status(sid)`. |
+| `TwilioSmsProvider` | The rich provider. `new(account_sid, auth_token)` constructs it; `with_from_number(..)` sets a default sender; `with_base_url(..)` / `with_http_client(..)` are wiring seams (the base URL defaults to the real Twilio host). Adds `fetch_status(message_sid)`. |
 | `SmsProvider` | The async port (`name`, `send(SmsMessage) -> Result<NotificationResult, TwilioError>`), object-safe behind `Arc`/`Box`. |
 | `SmsMessage` | The outbound SMS message (`id` defaults to a UUID v4, optional `sender`). `new(to, body)` + `with_sender(..)`. |
 | `MessageStatus` | The delivery state returned by `fetch_status` (`sid`, raw `status`, `error_code?`, `error_message?`). |
@@ -105,7 +105,7 @@ unused by the SMS channel.
 
 ### Status fetch
 
-`TwilioSmsProvider::fetch_status(sid)` performs a `GET` against
+`TwilioSmsProvider::fetch_status(message_sid)` performs a `GET` against
 `{base}/2010-04-01/Accounts/{sid}/Messages/{message_sid}.json` with basic auth
 and parses the `status`, `error_code`, and `error_message` fields into a
 `MessageStatus`. This is how callers poll for `delivered` / `failed` /

@@ -2,6 +2,61 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.26 — 2026-06-16
+
+A correctness release. Every one of the **74 per-crate `README.md`** files was
+audited against that crate's *actual* shipped public API (43 confirmed fixes
+across 28 crates), and the audit surfaced a real framework bug: the per-crate
+`VERSION` constant was a hardcoded literal frozen at `"26.6.24"` instead of
+tracking the crate version.
+
+### Fixed
+
+- **`VERSION` no longer drifts from the crate version.** Every crate's
+  `pub const VERSION` was a hardcoded `"26.6.24"` string that nothing kept in
+  sync with the workspace version — so `firefly_kernel::VERSION`, the actuator
+  `/actuator/version` payload, and the startup banner all reported a stale
+  release number, and the `version_matches_crate_version` guard tests only
+  passed while the workspace happened to sit at `26.6.24`. All 52 hardcoded
+  constants now derive from `env!("CARGO_PKG_VERSION")` (the re-exporting
+  crates already chained to `firefly_kernel::VERSION`), so `VERSION` is now
+  always exactly the crate version and can never drift again. The `cli`
+  `FRAMEWORK_VERSION` constant got the same treatment, and the handful of
+  unit/integration tests that asserted `VERSION == "26.6.24"` against a frozen
+  literal now assert against `env!("CARGO_PKG_VERSION")`, so the guard holds for
+  every release instead of only when the workspace happened to sit at that
+  number. (The CLI's `render_for` / SBOM-parser fixtures keep their literal
+  sample versions — that string is arbitrary test data, not the build version.)
+
+- **Phantom / incomplete public-surface docs.** Documented APIs now match the
+  source: `admin`'s `AdminDeps` gained its `environment` field; `openapi`'s
+  `RouteDef` (4 missing fields: `request_schema` / `response_schema` /
+  `query_schema` / `pageable`), `Parameter::{query,header}`, `Builder::{add_schema,
+  add_schema_descriptors, from_inventory, docs_router}`, and the `DocsConfig`
+  struct are now listed; `orchestration`'s `CompensationPolicy` (now all six
+  variants incl. `GroupedParallel`) and `SagaError` (all four variants);
+  `starter-web`'s `WebStack::{set_security, set_exception_advice}`; `testkit`'s
+  `BuiltSlice::web_client`; `idp`'s `Error` enum + `change_password` signature;
+  `security`, `webhooks`, `kernel`, `transactional`, `plugins` surface fixes.
+- **Wrong signatures / variant names.** The `notifications-*` READMEs used the
+  wire spellings `EmailStatus::SENT` / `FAILED`; the Rust variants are `Sent` /
+  `Failed` (`#[serde(rename = "SENT")]` only affects the JSON). `plugins` showed
+  a `Vec<Arc<dyn Any>>` annotation that does not type-check against the real
+  `Extension = Arc<dyn Any + Send + Sync>`. `notifications-twilio`,
+  `session-redis` parameter names corrected.
+- **Wrong facts.** `admin`: the bean graph **does** ship dependency `edges`
+  (one per autowired dependency), not "nodes-only". `backoffice`: the middleware
+  order includes `TraceContext` (`Problem → TraceContext → Correlation →
+  Idempotency → BackOffice`). `resilience`, `starter-core`, `eda-kafka`,
+  `session-postgres`, `session-mongodb`, `container` (a `warm`→`form` typo) fixes.
+- **Stale version pins.** Crate-README dependency examples that still pinned the
+  long-stale `26.6.7` now use the self-maintaining minor pin `version = "26.6"`
+  (the convention `firefly` / `testkit` / `webhooks` already used); example
+  `VERSION` outputs updated to the release version.
+- **`firefly-cache` doc comment.** Removed the stale "once the Redis adapter
+  ships in the next minor" note — `firefly-cache-redis` (`RedisAdapter`) has
+  shipped and is a published workspace member.
+
 ## v26.6.25 — 2026-06-16
 
 A correctness-and-hygiene release: the workspace is `rustfmt`-clean again and

@@ -176,7 +176,7 @@ FIREFLY_TEST_MONGODB_URL=mongodb://localhost:27017 \
 Enable the `actuator` feature for a database health component:
 
 ```toml
-firefly-data-mongodb = { version = "26.6.7", features = ["actuator"] }
+firefly-data-mongodb = { version = "26.6", features = ["actuator"] }
 ```
 
 `MongoHealthIndicator` implements `firefly_actuator::HealthIndicator`: it

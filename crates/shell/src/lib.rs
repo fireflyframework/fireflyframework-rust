@@ -84,4 +84,4 @@ pub use runner::{ApplicationArguments, ApplicationRunner, CommandLineRunner, Run
 pub use shell::{ShellRunner, StdShell};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.24";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

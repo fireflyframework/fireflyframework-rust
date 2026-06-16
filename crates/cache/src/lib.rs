@@ -19,8 +19,8 @@
 //! plus a typed wrapper ([`Typed`]) with `get_or_set` memoisation. Every
 //! consumer (CQRS query cache, idempotency middleware, custom service code)
 //! talks to the same [`Adapter`] regardless of whether it is running an
-//! in-process map during local dev or — once the Redis adapter ships in the
-//! next minor — a Redis cluster in production.
+//! in-process map during local dev or a Redis cluster in production (via the
+//! `firefly-cache-redis` `RedisAdapter`).
 //!
 //! [`Typed`] also offers the declarative-cache conveniences pyfly exposes
 //! as decorators: [`get_or_set`](Typed::get_or_set) (`@cacheable`),
@@ -79,4 +79,4 @@ pub use noop::NoOpAdapter;
 pub use typed::Typed;
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.24";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

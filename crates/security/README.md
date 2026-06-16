@@ -77,6 +77,8 @@ pub struct Authentication {
 impl Authentication {
     pub fn has_role(&self, role: &str) -> bool;
     pub fn has_any_role(&self, roles: &[&str]) -> bool;
+    pub fn has_authority(&self, authority: &str) -> bool;
+    pub fn has_any_authority(&self, authorities: &[&str]) -> bool;
     pub fn anonymous() -> Self;
 }
 

@@ -93,7 +93,7 @@ pub use provider::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.24";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Config carries the wiring needed by the adapter.
 ///

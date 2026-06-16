@@ -78,11 +78,19 @@ pub struct RouteDef {
     pub response: Option<Sample>,  // sample of the success response, or None
     pub status: u16,               // success status code; 0 defaults to 200/201
     pub deprecated: bool,          // renders deprecated:true; omitted when false
+    pub request_schema: Option<String>,   // named component schema for the body ($ref)
+    pub response_schema: Option<String>,  // named component schema for the response ($ref)
+    pub query_schema: Option<String>,     // a #[derive(Schema)] type whose fields expand to query params
+    pub pageable: bool,                   // injects page/size/sort params (Spring Pageable)
 }
 
 pub enum ParameterIn { Path, Query, Header, Cookie }
 pub struct Parameter { pub name: String, pub location: ParameterIn, pub required: bool, pub schema: Value }
-impl Parameter { pub fn path(name: impl Into<String>) -> Self; }   // required in:path string
+impl Parameter {
+    pub fn path(name: impl Into<String>) -> Self;                               // required in:path string
+    pub fn query(name: impl Into<String>, required: bool, schema: Value) -> Self;
+    pub fn header(name: impl Into<String>, required: bool, schema: Value) -> Self;
+}
 
 pub struct Tag { pub name: String, pub description: String }
 
@@ -94,10 +102,22 @@ impl Builder {
     pub fn add_route(self, d: &firefly_container::RouteDescriptor) -> Self;        // one #[rest_controller] route
     pub fn add_route_descriptors<'a, I>(self, ds: I) -> Self where I: IntoIterator<Item = &'a firefly_container::RouteDescriptor>;
     pub fn from_routes<'a, I>(self, ds: I) -> Self where I: IntoIterator<Item = &'a firefly_container::RouteDescriptor>;  // alias
+    pub fn add_schema(self, name: impl Into<String>, schema: Value) -> Self;     // register one component schema
+    pub fn add_schema_descriptors<'a, I>(self, ds: I) -> Self where I: IntoIterator<Item = &'a firefly_container::SchemaDescriptor>;
+    pub fn from_inventory(self) -> Self;   // pull every #[rest_controller] route + #[derive(Schema)] type from the link-time registry
     pub fn build(&self) -> Document;
     pub fn json(&self) -> String;          // the exact /openapi.json bytes
     pub fn router(&self) -> axum::Router;  // serves /openapi.json + /openapi/ui + /redoc
+    pub fn docs_router(&self, cfg: &DocsConfig) -> axum::Router;  // Swagger-UI + ReDoc + spec, mounted by FireflyApplication
 }
+
+// Configures where docs_router serves each artifact (all paths have defaults).
+pub struct DocsConfig {
+    pub spec_path: String,           // default `/v3/api-docs` (Swagger/ReDoc point here)
+    pub spec_aliases: Vec<String>,   // default `["/openapi.json"]`
+    pub swagger_ui_path: String,     // default `/swagger-ui` (also `{path}.html`)
+    pub redoc_path: String,          // default `/redoc`
+}   // impl Default
 
 pub struct Document { /* serializable OAS 3.1 root, incl. top-level tags */ }
 pub struct Operation { /* operationId, tags, parameters, deprecated, ... */ }

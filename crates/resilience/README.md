@@ -245,8 +245,7 @@ let chain = Chain::new()
 
 ### ResilienceRegistry
 
-`ResilienceRegistry` materialises named breakers / limiters / bulkheads /
-time-limiters from `firefly.resilience.*` configuration keys, consuming
+`ResilienceRegistry` materialises named breakers / limiters / bulkheads / time-limiters / **retries** from `firefly.resilience.*` configuration keys, consuming
 the flat dot-keyed map that `firefly-config` sources produce:
 
 ```yaml
