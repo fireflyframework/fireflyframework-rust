@@ -2,6 +2,33 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.20 — 2026-06-16
+
+The lumen-ledger sample gains the **transactional transfer** use case, on a new
+`#[transactional]` option that binds the boundary to an explicit manager.
+
+### Added
+
+- **`#[transactional(manager = "<expr>")]`** (firefly-macros) — Spring's
+  `@Transactional("txManager")`. Drives an **explicit** `TransactionManager` (the
+  expression `m` yields a value with `&m: &Arc<dyn TransactionManager>`, e.g.
+  `self.tx_manager()`) via `transactional_on`, instead of the process-global
+  registry. For a multi-datasource service, or to keep per-instance / per-test
+  isolation.
+- **lumen-ledger `transfer`** — `POST /api/v1/wallets/:id/transfer` +
+  `WalletService::transfer` move funds between wallets **atomically** under
+  `#[transactional(manager = "self.tx_manager()")]`: the debit and credit commit
+  together or not at all, and a rejected transfer (insufficient funds, inactive
+  party, self-transfer, bad destination) moves no money and renders RFC 9457
+  **422**. New `TransferRequest` DTO; the service autowires the `Db` to build its
+  own manager.
+
+### Docs
+
+- Book: the layered-microservices web-surface table gains an *atomic transfer*
+  row; the declarative-macros `#[transactional]` section documents the `manager`
+  option; the persistence-config note explains the per-instance-manager choice.
+
 ## v26.6.19 — 2026-06-16
 
 Spring Boot **parity** push, PR 9/N — **Tier B**: Actuator DI/route introspection.

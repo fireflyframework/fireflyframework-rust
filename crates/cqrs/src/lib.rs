@@ -217,5 +217,5 @@ pub use validation::{
 
 /// The released framework version. Calendar-versioned (`YY.M.PATCH`)
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to
-/// `26.6.19` in the June 2026 release window.
-pub const VERSION: &str = "26.6.19";
+/// `26.6.20` in the June 2026 release window.
+pub const VERSION: &str = "26.6.20";

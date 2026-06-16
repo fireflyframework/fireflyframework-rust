@@ -55,19 +55,21 @@ impl WalletPersistenceConfig {
 /// framework [`Db`] handle. Defaults to an in-memory SQLite database; honours
 /// `DATABASE_URL=postgres://…` for real PostgreSQL.
 ///
-/// Concurrency correctness is provided by the repository's **`@Version`
-/// optimistic locking** (a stale write fails with a `409` conflict). A
-/// `SqlxTransactionManager` is intentionally *not* registered here — but not
-/// because `@Transactional` is unsound: the `firefly-data-sqlx`
-/// `tests/transactional.rs` suite proves end-to-end that the reactive repository
-/// enlists in the ambient transaction (a rolled-back unit undoes its writes, a
-/// committed one persists) **and** that a non-transactional write stays visible
-/// with a manager registered. The reason is process-shape: the manager registry
-/// is process-global *first-wins*, which does not fit this sample's test suite,
-/// where every test boots its own isolated in-memory database. For a real
-/// service on one datasource, register the manager once at startup and annotate
-/// service methods with `#[firefly::transactional]`; here the `@Version` guard
-/// is the substantive lost-update fix and keeps each test hermetic.
+/// Concurrency correctness for the read-modify-write paths (`deposit`,
+/// `withdraw`, `set_status`) is provided by the repository's **`@Version`
+/// optimistic locking** (a stale write fails with a `409` conflict). The atomic
+/// **`transfer`** instead runs under `@Transactional` — but bound to a manager
+/// the service *owns* (`#[transactional(manager = "self.tx_manager()")]`), not a
+/// process-global one. A `SqlxTransactionManager` is intentionally **not**
+/// registered globally here: the registry is process-global *first-wins*, which
+/// does not fit this sample's test suite where every test boots its own isolated
+/// in-memory database — a shared global manager would cross-contaminate them.
+/// Binding the boundary to a per-instance manager keeps each test hermetic while
+/// still being fully transactional (the `firefly-data-sqlx`
+/// `tests/transactional.rs` suite proves the reactive repository enlists in the
+/// ambient transaction — a rolled-back unit undoes its writes, a committed one
+/// persists). A single-datasource production service may equally register one
+/// manager at startup and use a bare `#[firefly::transactional]`.
 ///
 /// `pub(crate)`: the only callers are the async repository bean above and the
 /// `-models` tests — the datasource bootstrap is an implementation detail, not

@@ -16,8 +16,10 @@
 
 mod amount_request;
 mod create_wallet_request;
+mod transfer_request;
 mod wallet_response;
 
 pub use amount_request::AmountRequest;
 pub use create_wallet_request::CreateWalletRequest;
+pub use transfer_request::TransferRequest;
 pub use wallet_response::WalletResponse;

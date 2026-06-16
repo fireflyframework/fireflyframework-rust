@@ -377,11 +377,13 @@ pub fn bean(args: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Wraps an `async fn` in a transaction — Spring's `@Transactional`.
 ///
-/// The function runs through the registered
+/// The function runs through a
 /// [`TransactionManager`](firefly_transactional::TransactionManager): the body
 /// is committed if it returns `Ok` and rolled back if it returns `Err`, so an
 /// ordinary `repo.save(a).await?; repo.save(b).await?;` is atomic. The error
-/// type must implement `From<firefly_transactional::TxError>`.
+/// type must implement `From<firefly_transactional::TxError>`. By default the
+/// **process-global** registered manager is used; `manager = "<expr>"` instead
+/// drives an **explicit** one (Spring's `@Transactional("txManager")`).
 ///
 /// ```ignore
 /// #[firefly::transactional(propagation = "requires_new", isolation = "serializable")]
@@ -390,12 +392,18 @@ pub fn bean(args: TokenStream, item: TokenStream) -> TokenStream {
 ///     self.accounts.credit(to, cents).await?;   // both commit, or neither
 ///     Ok(())
 /// }
+///
+/// // Bind to a manager the service owns (multi-datasource, or per-test isolation):
+/// #[firefly::transactional(manager = "self.tx_manager()")]
+/// async fn transfer_tx(&self, from: Id, to: Id, cents: u64) -> Result<(), MyError> { /* … */ }
 /// ```
 ///
 /// Options: `propagation` (required | requires_new | nested | supports |
 /// not_supported | mandatory | never), `isolation` (default | read_uncommitted
 /// | read_committed | repeatable_read | serializable), `read_only`,
-/// `timeout_ms`, and `crate` (facade override).
+/// `timeout_ms`, `manager` (an expression `m` with `&m: &Arc<dyn
+/// TransactionManager>`, e.g. `self.tx_manager()`), and `crate` (facade
+/// override).
 #[proc_macro_attribute]
 pub fn transactional(args: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemFn);

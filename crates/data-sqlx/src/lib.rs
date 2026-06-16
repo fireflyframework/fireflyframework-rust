@@ -159,4 +159,4 @@ pub use observe::{
 };
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.19";
+pub const VERSION: &str = "26.6.20";
