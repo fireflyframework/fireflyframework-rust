@@ -332,8 +332,8 @@ See [`MODULES.md`](MODULES.md) for the full per-crate catalogue and
 
 ## Workspace layout
 
-One Cargo workspace, **79 members** — 74 framework crates plus the
-integration suite and four reference samples — spanning the
+One Cargo workspace, **86 members** — 74 framework crates plus the
+integration suite and five reference samples — spanning the
 core (foundational, platform, adapter, starter tiers) and the
 application layer:
 
@@ -498,10 +498,12 @@ Every response echoes an `X-Correlation-Id`; every `POST`/`PUT`/`PATCH` carrying
 `Idempotency-Key` header replays its stored response with `Idempotent-Replay: true`;
 any handler error renders as `application/problem+json`. The management port
 (`:8081`) already serves the `/actuator/{health,info,metrics,env,tasks,version,beans,mappings,conditions}`
-surface and the self-hosted `/admin` dashboard, and the public port serves
-auto-generated API docs — Swagger UI at `/swagger-ui`, ReDoc at `/redoc`, and the
-OpenAPI 3.1 spec at `/v3/api-docs` (+ `/openapi.json`), served on the management
-port beside actuator + admin — with no extra app code.
+surface, the self-hosted `/admin` dashboard, and the auto-generated API docs —
+Swagger UI at `/swagger-ui`, ReDoc at `/redoc`, and the OpenAPI 3.1 spec at
+`/v3/api-docs` (+ `/openapi.json`) — all on the management port beside actuator +
+admin, with no extra app code. The spec advertises the public API base URL as its
+`server` (override with `FIREFLY_OPENAPI_SERVER_URL`), so Swagger UI "Try it out"
+calls hit the public `:8080` API, not the management origin.
 Override the binds with `FIREFLY_SERVER_ADDR` / `FIREFLY_MANAGEMENT_ADDR`. See
 [`crates/firefly/README.md`](crates/firefly/README.md) and the
 [Reactive Model](docs/book/src/05-reactive-model.md) chapter. The same reactive
@@ -514,7 +516,7 @@ controller, end to end, is [`samples/macro-quickstart`](samples/macro-quickstart
 > building blocks are still public if you prefer naming the crates and
 > mounting routes yourself.
 
-Four reference services ship in the workspace: a minimal idempotent
+Five reference services ship in the workspace: a minimal idempotent
 [`samples/orders/`](samples/orders); the end-to-end reactive
 [`samples/reactive-banking/`](samples/reactive-banking) — reactive CQRS
 (`Bus::send_mono` / `query_mono`), event sourcing, a saga-backed money
@@ -526,7 +528,14 @@ behaviour re-expressed through the declarative macros over the single
 [`samples/lumen/`](samples/lumen) — the declarative orchestration showcase,
 a wallet/ledger service driving a `#[firefly::saga]` money transfer, a
 `#[firefly::workflow]` compliance check, and a `#[firefly::tcc]` two-phase
-transfer over the same `firefly` facade.
+transfer over the same `firefly` facade; and
+[`samples/lumen-ledger/`](samples/lumen-ledger) — a layered, file-per-class
+microservice (interfaces / models / core / web / sdk crates, the Spring Boot
+package layout) whose wallet API pairs an owner-scoped listing
+(`GET /wallets?owner=`, a deliberate IDOR guard) with a
+`Specification`-backed `GET /wallets/search` (the `JpaSpecificationExecutor`
+analog) and an atomic `#[firefly::transactional]` `POST /wallets/:id/transfer`
+that debits and credits in one transaction or not at all.
 
 ---
 
@@ -583,10 +592,10 @@ sample — end to end.
 
 ## Status
 
-The framework ships **79 workspace members** — **74 framework crates**
-under `crates/` plus the cross-crate integration suite and four reference
+The framework ships **86 workspace members** — **74 framework crates**
+under `crates/` plus the cross-crate integration suite and five reference
 samples (`samples/orders`, `samples/reactive-banking`,
-`samples/macro-quickstart`, `samples/lumen`). The workspace quality gate is `make ci`:
+`samples/macro-quickstart`, `samples/lumen`, `samples/lumen-ledger`). The workspace quality gate is `make ci`:
 `cargo fmt --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo build --workspace`, `cargo test --workspace`.

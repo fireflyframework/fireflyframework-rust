@@ -339,7 +339,7 @@ by `from_inventory()`, *is* the live spec:
 
 ```bash
 cargo run --bin lumen &
-curl -s http://localhost:8080/v3/api-docs | jq .
+curl -s http://localhost:8081/v3/api-docs | jq .
 ```
 
 ## Generating a client from the spec — `firefly openapi-client`
@@ -350,7 +350,7 @@ OpenAPI-generated WebClient SDK.
 
 ```bash
 # capture the live spec, then generate a client from it
-curl -s http://localhost:8080/v3/api-docs -o wallet-openapi.json
+curl -s http://localhost:8081/v3/api-docs -o wallet-openapi.json
 firefly openapi-client --spec wallet-openapi.json -o src/generated.rs --client-name WalletClient
 ```
 
