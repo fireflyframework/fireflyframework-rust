@@ -18,6 +18,12 @@ inventory = { workspace = true }
 # Supplies the `bean::Validate` trait + `ValidationErrors` the `Valid<T>`
 # extractor runs after JSON decoding (failure → 422 problem via FireflyError).
 firefly-validators = { workspace = true }
+# The Spring-style `Pageable`/`RequestSort`/`Order` the `PageRequest` argument
+# resolver parses out of `?page=&size=&sort=` query parameters.
+firefly-data = { workspace = true }
+# Decodes the (repeatable) `sort` query parameter for `PageRequest` — repeated
+# keys into a list, which `serde_urlencoded` (axum's `Query`) cannot express.
+form_urlencoded = "1"
 # Reactive (WebFlux/Reactor-style) HTTP surface: Mono/Flux responders.
 firefly-reactive = { workspace = true }
 # Reused for the Flux→SSE responder's canonical wire format.

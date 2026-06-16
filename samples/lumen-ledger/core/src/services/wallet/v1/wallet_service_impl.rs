@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use firefly::data::{Page, Pageable, ReactiveCrudRepository, RequestSort};
+use firefly::data::{Page, Pageable, ReactiveCrudRepository};
 use firefly::prelude::*;
 use lumen_ledger_interfaces::{CreateWalletRequest, WalletResponse, WalletStatus};
 use lumen_ledger_models::entities::wallet::v1::Wallet;
@@ -132,12 +132,10 @@ impl WalletService for WalletServiceImpl {
     async fn list_by_status(
         &self,
         status: WalletStatus,
-        page: usize,
-        size: usize,
+        pageable: Pageable,
     ) -> Result<Page<WalletResponse>, ServiceError> {
         let token = status.as_str();
-        let pageable = Pageable::of(page, size, RequestSort::of([]))
-            .map_err(|e| ServiceError::Validation(format!("invalid page request: {e}")))?;
+        let (page, size) = (pageable.page, pageable.size);
         let rows = self
             .repository
             .find_by_status(token, pageable)

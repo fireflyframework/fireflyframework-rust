@@ -2,6 +2,35 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.13 — 2026-06-16
+
+Spring Boot **parity** push, PR 3/N — **web developer experience**. Three
+argument resolvers / extractors that close the gap with Spring MVC's binding
+layer, all rendering failures as the framework's RFC 9457 `application/problem+json`.
+
+### Added
+
+- **`PageRequest`** (firefly-web) — Spring Data Web's `Pageable` argument
+  resolver. Binds `?page=&size=&sort=` (1-based `page`, `size` capped at 2000,
+  **repeatable** `sort=property[,asc|desc]`) into a `firefly_data::Pageable`; a
+  bad value is a **400** problem. `firefly-web` now depends on `firefly-data`.
+- **`ValidPath<T>` / `ValidQuery<T>`** (firefly-web) — `@Valid` on a path/query
+  object: extract like `Path<T>` / `Query<T>` (malformed bind → **400**), then
+  run the type's declarative `Validate` constraints (failure → **422** with the
+  structured violations), the twin of the `Valid<T>` JSON extractor.
+- **`Multipart` / `UploadedFile`** (firefly-web) — a `@RequestParam MultipartFile`
+  analog that **drains** a `multipart/form-data` request up front into named text
+  fields (`text(name)`) and uploaded files (`file(name)` / `files()`), turning any
+  decode failure into a **400** problem instead of axum's escaping streaming error.
+- All four are re-exported from the `firefly::prelude`.
+
+### Changed
+
+- **lumen-ledger**: the `WalletService::list_by_status` signature now takes a
+  `Pageable` (was `page: usize, size: usize`), and the controller's paged
+  endpoint binds it with `PageRequest` — so `?sort=balance,desc` flows
+  end-to-end to the repository (covered by the in-process integration test).
+
 ## v26.6.12 — 2026-06-16
 
 Spring Boot **parity** push, PR 2/N. The `firefly_resilience` primitives gain a
