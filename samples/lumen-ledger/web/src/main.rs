@@ -447,10 +447,19 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-        // A bare GET /wallets lists every wallet (`owner` is an optional filter),
-        // so it is a 200 collection — not a "missing query parameter" 400.
+        // `owner` is required (the listing is deliberately owner-scoped, never an
+        // unauthenticated list-every-wallet enumeration). A bare GET is a clear
+        // 400 problem — not the raw serde "missing field owner" rejection.
         let res = app.clone().oneshot(get("/api/v1/wallets")).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("`owner` query parameter is required"),
+            "missing owner must give a clear message, got {body}"
+        );
 
         // Blank owner / bad currency → 422 (bean validation via Valid<…>).
         let res = app

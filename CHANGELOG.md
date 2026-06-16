@@ -2,6 +2,24 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.22 — 2026-06-16
+
+Security: remove an unauthenticated all-wallets listing from the sample
+(flagged by automated security review of 26.6.21).
+
+### Fixed
+
+- **lumen-ledger**: `GET /api/v1/wallets` is **owner-scoped again** —
+  `?owner=` is required. 26.6.21 had made it list *every* wallet when `owner`
+  was omitted (`WalletService::list_all`), an unauthenticated enumeration of all
+  account holders + balances (IDOR / broken access control). The unfiltered
+  listing and `list_all` are removed; a missing `owner` now returns a **clear**
+  RFC 9457 `400` (`the \`owner\` query parameter is required …`) instead of the
+  confusing raw `missing field owner` deserialization error — the actual DX issue
+  behind the original report. The controller documents why an unfiltered listing
+  must be authorization-scoped (admin authority + caller-scoping) in a real
+  service, which this auth-free feature sample intentionally does not wire.
+
 ## v26.6.21 — 2026-06-16
 
 API docs move to the **management** port, and the surfaces are hardened.

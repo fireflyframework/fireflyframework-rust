@@ -97,21 +97,38 @@ impl WalletController {
         Ok((StatusCode::CREATED, Json(view)))
     }
 
-    /// `GET /api/v1/wallets?owner=…` — list one owner's wallets.
-    #[get(
-        "/wallets",
-        summary = "List wallets (all, or filtered by ?owner=)"
-    )]
+    /// `GET /api/v1/wallets?owner=…` — list a single owner's wallets.
+    ///
+    /// **`owner` is required, by design.** The collection is deliberately scoped
+    /// to one owner rather than returning every wallet: an *unfiltered* listing
+    /// would be an unauthenticated enumeration of every account holder and their
+    /// balance (an IDOR / broken-access-control). A real service must gate such a
+    /// listing behind authentication + an admin authority (e.g.
+    /// `#[firefly::pre_authorize(role = "ADMIN")]`) and otherwise scope it to the
+    /// caller's *own* wallets. This sample intentionally omits the auth layer
+    /// (it demonstrates the data/web/transactional stack; access control is its
+    /// own [security chapter]), so it keeps the surface scoped instead of
+    /// exposing a `list_all`. A missing `owner` is a clear **400** problem.
+    #[get("/wallets", summary = "List a single owner's wallets (?owner= required)")]
     async fn list(
         State(api): State<WalletController>,
         Query(query): Query<OwnerQuery>,
     ) -> WebResult<Json<Vec<WalletResponse>>> {
-        // `?owner=ada` filters; a bare `GET /wallets` lists every wallet.
-        let views = match query.owner.as_deref() {
-            Some(owner) => api.service.list_by_owner(owner).await,
-            None => api.service.list_all().await,
-        }
-        .map_err(service_to_web)?;
+        let owner = query
+            .owner
+            .as_deref()
+            .map(str::trim)
+            .filter(|o| !o.is_empty())
+            .ok_or_else(|| {
+                WebError::from(FireflyError::bad_request(
+                    "the `owner` query parameter is required, e.g. `GET /api/v1/wallets?owner=ada`",
+                ))
+            })?;
+        let views = api
+            .service
+            .list_by_owner(owner)
+            .await
+            .map_err(service_to_web)?;
         Ok(Json(views))
     }
 

@@ -94,7 +94,7 @@ in-memory infrastructure:
 ```jsonc
 // GET /actuator/info
 {
-  "app": { "name": "lumen", "version": "26.6.21" },
+  "app": { "name": "lumen", "version": "26.6.22" },
   "sample": { "name": "lumen", "store": "in-memory", "eventBus": "in-memory" }
 }
 ```

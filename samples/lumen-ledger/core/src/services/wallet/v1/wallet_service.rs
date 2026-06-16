@@ -32,10 +32,10 @@ pub trait WalletService: Send + Sync {
     /// Fetches a wallet by id.
     async fn get(&self, id: Uuid) -> Result<WalletResponse, ServiceError>;
 
-    /// Lists every wallet (the unfiltered collection).
-    async fn list_all(&self) -> Result<Vec<WalletResponse>, ServiceError>;
-
-    /// Lists every wallet of one owner.
+    /// Lists every wallet of one owner. (There is intentionally **no**
+    /// unfiltered `list_all`: an unauthenticated listing of every wallet would be
+    /// a broken-access-control / IDOR enumeration; a real service would expose an
+    /// admin-only listing guarded by an authority instead — see the controller.)
     async fn list_by_owner(&self, owner: &str) -> Result<Vec<WalletResponse>, ServiceError>;
 
     /// A page of wallets in a given status (Spring Data `Page<T>`), honouring
