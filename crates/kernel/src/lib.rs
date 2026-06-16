@@ -98,4 +98,4 @@ pub use problem::{
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to
 /// `26.6.24` in the June 2026 release window. Embedded in the actuator
 /// `/version` payload and the startup banner.
-pub const VERSION: &str = "26.6.24";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

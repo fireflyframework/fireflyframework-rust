@@ -81,7 +81,7 @@ pub struct FireflyError {
     pub status: u16,
     pub detail: String,
     pub fields: BTreeMap<String, serde_json::Value>,
-    pub cause: Option<Box<dyn std::error::Error + Send + Sync>>,
+    pub cause: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 ```
 
@@ -110,9 +110,10 @@ are exported for cross-crate agreement.
 
 ### Version
 
-`firefly_kernel::VERSION` is the released framework version
-(`"26.6.7"` at the time of writing — CalVer expressed as valid semver)
-— embedded in the actuator `/version` payload and the startup banner.
+`firefly_kernel::VERSION` is the released framework version — CalVer
+expressed as valid semver (`"26.6.26"` at the time of writing). It is
+`env!("CARGO_PKG_VERSION")`, so it always tracks the crate version and can
+never drift — embedded in the actuator `/version` payload and the startup banner.
 
 ## Domain building blocks and structured context
 

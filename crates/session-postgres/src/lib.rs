@@ -109,7 +109,7 @@ use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.24";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The session-registry table name — pyfly's `pyfly_session_registry` under the
 /// Rust framework's `firefly_` prefix.

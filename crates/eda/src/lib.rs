@@ -173,4 +173,4 @@ pub use serializer::{
 };
 
 /// The released framework version, shared across all Firefly crates.
-pub const VERSION: &str = "26.6.24";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

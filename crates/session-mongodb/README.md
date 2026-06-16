@@ -24,7 +24,7 @@ use firefly_session_mongodb::MongoSessionRegistry;
 // Connect from a URI (uses the URI's default database, else `firefly`,
 // and the `firefly_sessions` collection):
 let registry = MongoSessionRegistry::connect("mongodb://localhost:27017").await?;
-registry.init().await?; // create the unique `session_id` + `principal` indexes
+registry.init().await?; // create the unique `session_id` index and the `principal` index
 
 // …or build it over a Collection you already own (DI):
 // let registry = MongoSessionRegistry::from_collection(collection);

@@ -85,7 +85,7 @@ assert_eq!(registry.count("alice").await, 1);
 | `connect(url)`                              | Connect from a `redis://` URL, default prefix + 24h TTL.  |
 | `connect_with(url, prefix, ttl_secs)`       | Connect with a custom key prefix and sliding TTL.         |
 | `from_connection(conn)`                     | Wrap an existing `MultiplexedConnection` (DI).            |
-| `from_connection_with(conn, prefix, ttl)`   | Wrap an existing connection with custom prefix + TTL.     |
+| `from_connection_with(conn, prefix, ttl_secs)` | Wrap an existing connection with custom prefix + TTL.     |
 
 The `SessionRegistry` trait methods are **infallible by contract** (the
 controller can't surface an error mid-login), so a per-operation Redis failure

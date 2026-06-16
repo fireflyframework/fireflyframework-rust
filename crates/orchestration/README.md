@@ -129,10 +129,10 @@ impl Saga {
     pub async fn run_cancellable(&self, token: &CancellationToken) -> Result<Outcome, SagaFailure>;
     pub async fn run_with_context(&self, ctx: &StepContext) -> Result<Outcome, SagaFailure>;
 }
-pub enum CompensationPolicy { BestEffort, StopOnError }
+pub enum CompensationPolicy { BestEffort, StopOnError, RetryWithBackoff, CircuitBreaker, BestEffortParallel, GroupedParallel }
 pub enum SagaStatus { Completed, Compensated, Failed }
 pub struct Outcome { saga, status, steps_executed, steps_rolled, error, started_at, finished_at }
-pub enum SagaError { Step, Compensation, Cancelled }  // SagaError::is_compensation_error
+pub enum SagaError { Step, Compensation, Cancelled, Definition }  // SagaError::is_compensation_error
 pub struct SagaFailure;                // .outcome() / .error() / .into_parts()
 
 pub struct Node;                       // Node::new(name, run).depends_on(["a", "b"])

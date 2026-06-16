@@ -15,7 +15,7 @@ The crate is split into focused modules:
 | Module       | What it provides                                                        |
 |--------------|-------------------------------------------------------------------------|
 | `interfaces` | `Inbound` DTO + `Validator`, `Processor` ports                          |
-| `core`       | `Pipeline`, in-memory `MemoryDlq`, four canonical signature validators  |
+| `core`       | `Pipeline`, in-memory `MemoryDlq`, idempotency `EventStore`, four canonical signature validators  |
 | `processor`  | SPI surface for service-supplied per-provider processors                |
 | `web`        | `POST /api/webhooks/{provider}` ingestion `axum::Router`                |
 | `sdk`        | Typed forwarder (replay DLQ entries; cross-service composition)         |

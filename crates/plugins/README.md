@@ -138,7 +138,7 @@ contributed to them. Each point is keyed by an id carrying the interface's
 let point = extension_point::<dyn Formatter>();
 reg.register_extension_point("formatters", point).await;
 reg.register("formatters", Arc::new(JsonFormatter)).await?;   // validated
-let all: Vec<Arc<dyn Any>> = reg.get("formatters").await;      // priority-sorted
+let all = reg.get("formatters").await;      // priority-sorted
 let top = reg.get_extension("formatters").await?;              // highest priority
 let typed = reg.get_as::<JsonFormatter>("formatters").await;   // downcast helper
 ```

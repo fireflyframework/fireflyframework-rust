@@ -88,7 +88,7 @@ use thiserror::Error;
 use tower::{Layer, Service};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.24";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Errors produced when bulk-loading messages from serialized maps.
 #[derive(Debug, Error)]

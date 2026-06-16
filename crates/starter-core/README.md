@@ -58,6 +58,7 @@ CorsLayer            (cors)              — CORS edge (preflight + simple)
 ProblemLayer         (always)           — panic → 500 RFC7807
 SecurityHeadersLayer (security_headers) — decorate every response
 CorrelationLayer     (always)           — X-Correlation-Id
+TraceContextLayer    (always)           — W3C Trace Context validation + propagation
 MetricsLayer         (request_metrics)  — http_server_requests_* (order -100)
 HttpExchangesLayer   (http_exchanges)   — record into the recorder (order -90)
 RequestLogLayer      (request_log)      — one access-log event (order +200)

@@ -58,7 +58,14 @@ pub trait Adapter: Send + Sync {
     fn name(&self) -> &str;
 }
 
-pub enum Error { InvalidCredentials, UserNotFound, Provider(String) }
+pub enum Error {
+    InvalidCredentials,
+    UserNotFound,
+    MfaRequired(MfaChallenge),
+    NotSupported(String),
+    UnsupportedByProvider { provider: String, operation: String, reason: String },
+    Provider(String),
+}
 ```
 
 `User` and `Token` serialize with stable JSON field names and
@@ -128,7 +135,7 @@ pub trait Adapter: Send + Sync {
     async fn introspect(&self, access_token: &str) -> Result<SessionIntrospection>;
     async fn find_by_username(&self, username: &str) -> Result<User>;
     async fn list_users(&self, limit: usize) -> Result<Vec<User>>;
-    async fn change_password(&self, user_id: &str, old: &str, new: &str) -> Result<bool>;
+    async fn change_password(&self, user_id: &str, old_password: &str, new_password: &str) -> Result<bool>;
     async fn reset_password(&self, user_id: &str) -> Result<String>;
     async fn register_user(&self, user: User, password: &str) -> Result<User>;
     async fn get_user_info(&self, access_token: &str) -> Result<User>;
@@ -200,7 +207,7 @@ fn mount(idp: Arc<dyn Adapter>) -> axum::Router {
 | `GET  /idp/admin/roles`                          | `list_roles`               |
 
 Error mapping: `InvalidCredentials`/`MfaRequired` → `401`, `UserNotFound`
-→ `404`, `NotSupported` → `501`, `Provider` → `500`; each error body is
+→ `404`, `NotSupported`/`UnsupportedByProvider` → `501`, `Provider` → `500`; each error body is
 `{"error": "<message>"}`. The controller is tested end-to-end (no sockets,
 `tower::ServiceExt::oneshot`) against the internal-db adapter in
 `firefly-idp-internal-db`'s `web_controller_test`.

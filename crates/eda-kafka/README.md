@@ -42,7 +42,7 @@ Publisher::close(&*broker).await?;
 
 | Kafka record field | Source |
 |--------------------|--------|
-| value              | canonical `Event` JSON (`id`/`type`/`source`/`topic`/`correlationId`/`time`/`headers`/`payload`) |
+| value              | canonical `Event` JSON (`id`/`type`/`source`/`topic`/`correlationId`/`time`/`headers`/`payload`/`key`) |
 | key                | `Event.correlation_id`, falling back to `Event.id` |
 | topic              | `Event.topic` |
 | headers            | every `Event` header copied as a UTF-8 Kafka header |

@@ -29,7 +29,7 @@ let msg = EmailMessage {
     body_html: Some("<h1>Hello</h1>".into()),
     ..EmailMessage::default()
 };
-let result = provider.send(msg).await; // NotificationResult { status: SENT | FAILED, .. }
+let result = provider.send(msg).await; // NotificationResult { status: Sent | Failed, .. }
 ```
 
 ## Behavior
@@ -49,7 +49,7 @@ let result = provider.send(msg).await; // NotificationResult { status: SENT | FA
 * STARTTLS is used when `use_tls` is set; credentials are attached only when
   both username and password are present.
 * Any failure (bad address, connection error, server rejection) is folded into
-  `EmailStatus::FAILED` carrying the error text — `send` never returns an
+  `EmailStatus::Failed` carrying the error text — `send` never returns an
   `Err`.
 
 ## Public surface
@@ -60,7 +60,7 @@ let result = provider.send(msg).await; // NotificationResult { status: SENT | FA
 | `SmtpConfig` | `{ host, port, username?, password?, use_tls }`; defaults to port 587 with STARTTLS on. `from_config(get)` parses flat config keys. |
 | `build_message(&EmailMessage)` | The pure message-builder. Returns the exact `lettre::Message` the provider would transmit — used by the structure tests. |
 | `EmailMessage` / `Attachment` | Rich e-mail message model. |
-| `EmailStatus` | `QUEUED` / `SENT` / `DELIVERED` / `BOUNCED` / `FAILED` / `SUPPRESSED`. |
+| `EmailStatus` | `Queued` / `Sent` / `Delivered` / `Bounced` / `Failed` / `Suppressed`. |
 | `NotificationResult` | `{ id, provider, status, provider_id?, error? }`. |
 | `EmailProvider` | The async delivery port. |
 | `BuildError` | Errors from `build_message` (invalid address/header, assembly). |

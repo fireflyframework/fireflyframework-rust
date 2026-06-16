@@ -44,11 +44,14 @@ admin-dashboard accessors, … — is available directly on the web value.
 pub struct WebStack {
     pub core: Core,                  // Deref/DerefMut target
     pub security: Option<FilterChain>, // optional filter chain
+    pub exception_advice: Option<firefly_web::ExceptionHandlerRegistry>, // optional global exception handlers
 }
 
 impl WebStack {
     pub fn new(cfg: CoreConfig) -> Self;              // batteries on
     pub fn with_security(self, chain: FilterChain) -> Self;
+    pub fn set_security(&mut self, chain: FilterChain);   // in-place; for a FilterChain discovered as a DI bean
+    pub fn set_exception_advice(&mut self, registry: firefly_web::ExceptionHandlerRegistry); // @ControllerAdvice handlers from DI
     pub fn apply_middleware(&self, router: Router) -> Router;
     // ... plus everything on Core via Deref
 }
