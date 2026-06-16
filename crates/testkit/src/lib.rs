@@ -24,7 +24,7 @@
 //! | Event assertions | [`assert_event_published`] / [`assert_event_published_with`] / [`assert_no_events_published`] | *(default)* |
 //! | JSON             | [`must_encode`] / [`must_decode`]                                   | *(default)* |
 //! | HTTP test client | [`TestClient`] / [`TestResponse`] (in-process over an axum `Router`) | `web`       |
-//! | DI test slices   | [`Slice`] / [`BuiltSlice`] (subset + `Arc` overrides, eager resolve) | `container` |
+//! | DI test slices   | [`Slice`] / [`BuiltSlice`] (subset + `Arc` overrides, eager resolve; [`BuiltSlice::web_client`] is the `@WebMvcTest` controller-over-mocks driver, feature `web`) | `container` |
 //! | Testcontainers   | [`containers::ServiceContainer`] / [`containers::config_for`] / [`containers::docker_available`] | `testcontainers` |
 //!
 //! The default surface carries no heavy dependencies; the richer

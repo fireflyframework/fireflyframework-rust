@@ -93,11 +93,13 @@ part of the framework, shown here as a focused standalone example:
 |-------|---------|-----------|
 | `#[derive(Builder)]` | a fluent constructor with required/defaulted fields | `T::builder()` → fluent setters → `build() -> Result<T, String>` |
 | `#[derive(Mapper)]` | compile-time struct-to-struct conversion | one compile-time `From<Source>` per `#[firefly(from = "…")]` |
+| `#[derive(Entity)]` | the `@Entity` mapping from annotated struct fields | a `SqlxEntity` impl (`@Table` / `@Id` / `@Version` / `@Column`); scalar fields map automatically, a non-scalar field uses `#[firefly(with(read = …, write = …))]` |
+| `#[derive(SqlxRepository)]` | a fully-wired sqlx `@Repository` bean | a `@Repository` bean built from the injected `Db` (via `repository_for`), a `ReactiveCrudRepository` impl by delegation, and the `repository()` accessor `#[firefly::repository]` uses |
 | `#[firefly::repository]` | derived-query and custom-query method bodies | method bodies on a `SqlxReactiveRepository` impl from method names or `#[query(…)]` |
 | `#[firefly::transactional]` | a declared transaction boundary | a commit-on-`Ok` / rollback-on-`Err` boundary around an `async fn` body |
 | `#[firefly::pre_authorize]` / `#[firefly::post_authorize]` | method-level access control | an access check before the body, or a returnObject check after it |
 | `#[derive(Validate)]` (+ `Valid<T>`) | JSR-380 bean validation | `impl Validate` running the field `#[validate(email/url/not_empty/length/range/pattern/custom)]` checks; the `Valid<T>` web extractor rejects a constraint failure with 422 |
-| `#[cacheable]` / `#[cache_put]` / `#[cache_evict]` | declarative caching | a read-through / write-through / evict body around the process-registered cache adapter |
+| `#[cacheable]` / `#[cache_put]` / `#[cache_evict]` | declarative caching | a read-through / write-through / evict body around the process-registered cache adapter; `#[cacheable]` also takes `condition = "…"` (bypass the cache when the param expression is `false`) and `unless = "…"` (don't store when the result expression, `result: &V`, is `true`) |
 | `#[async_method]` | fire-and-forget async | rewrites an `async fn(self: Arc<Self>, …) -> R` into a non-async `fn … -> TaskHandle<R>` that spawns the body on the registered executor |
 | `#[application_event_listener]` / `#[transactional_event_listener]` | in-process events | an `@EventListener` / `@TransactionalEventListener` discovered via `inventory` and fired by `publish_event` (the latter bound to a transaction commit phase) |
 | `#[aspect]` (+ `#[before]`/`#[after]`/`#[around]`/…) | aspect-oriented advice | `impl firefly_aop::Aspect` + an `inventory` registration; advice runs around the explicit `advised(…)` weave point |

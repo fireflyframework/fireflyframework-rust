@@ -75,6 +75,9 @@ port at `http://127.0.0.1:8081/actuator/*`:
 | `/actuator/env`                | masked, origin-attributed property sources         |
 | `/actuator/scheduledtasks`     | scheduled-task descriptors                         |
 | `/actuator/version`            | the running version                                |
+| `/actuator/beans`              | every DI bean (type, scope, stereotype, primary)   |
+| `/actuator/mappings`           | every `#[rest_controller]` route (method/path)     |
+| `/actuator/conditions`         | the `@Profile`/`@ConditionalOn…` guards per bean   |
 | `/actuator/loggers[/:name]`    | runtime log-level control                          |
 | `/actuator/threaddump`         | a thread/task dump                                  |
 | `/actuator/httpexchanges`      | recent HTTP exchanges (when wired)                 |
@@ -91,7 +94,7 @@ in-memory infrastructure:
 ```jsonc
 // GET /actuator/info
 {
-  "app": { "name": "lumen", "version": "26.6.7" },
+  "app": { "name": "lumen", "version": "26.6.19" },
   "sample": { "name": "lumen", "store": "in-memory", "eventBus": "in-memory" }
 }
 ```
@@ -414,7 +417,7 @@ by `FireflyApplication`, with no observability code in `main.rs`:
 - An optional **`InfoContributor`** (registered with `.info_contributor(..)` on
   the application builder) describes the in-memory store and event bus on
   `/actuator/info`; the framework serves the full `/actuator/*` surface —
-  `health`, `info`, `metrics`, `loggers`, `scheduledtasks`, and the rest — on the
+  `health`, `info`, `metrics`, `loggers`, `scheduledtasks`, the DI-introspection reports `beans` / `mappings` / `conditions`, and the rest — on the
   management port.
 - **`init_logging`** (called by the framework, best-effort so the test harness can
   own the subscriber) switches on structured, correlation-enriched logging; the

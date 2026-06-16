@@ -210,6 +210,27 @@ and receive the bound values — no manual `load`, no global. You will wire one 
 even lighter touch: a `#[firefly(value = "${lumen.web.addr:127.0.0.1:8080}")]`
 field injects a single resolved value with a default.
 
+To *validate* a properties bean after binding — Spring's `@Validated` on a
+`@ConfigurationProperties` — add `#[firefly(validate)]` and `#[derive(Validate)]`.
+The macro runs the struct's declarative `Validate` constraints once the config is
+bound, and a violation **fails the bean's creation** (it fails context refresh at
+startup) with the structured per-field errors, rather than letting a malformed
+configuration boot:
+
+```rust,ignore
+use firefly::prelude::*;
+use serde::Deserialize;
+
+#[derive(Deserialize, ConfigProperties, Validate, Default)]
+#[firefly(prefix = "lumen.web", validate)]   // @ConfigurationProperties @Validated
+pub struct WebProperties {
+    #[validate(not_empty)]
+    pub addr: String,
+    #[serde(default)]
+    pub admin_addr: String,
+}
+```
+
 > **Design note.** Firefly offers two binding styles. A prefix-bound bean
 > (`#[derive(ConfigProperties)]` + `#[firefly(prefix = "...")]`) pulls a whole
 > config subtree into one injectable struct, while single-value injection
