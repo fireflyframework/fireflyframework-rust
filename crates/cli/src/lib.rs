@@ -73,4 +73,4 @@ pub use error::CliError;
 
 /// Framework version stamp (kept for backward compatibility with the prior
 /// placeholder crate; equals the workspace version).
-pub const VERSION: &str = "26.6.22";
+pub const VERSION: &str = "26.6.23";

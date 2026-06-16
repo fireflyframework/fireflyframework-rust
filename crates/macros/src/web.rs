@@ -64,6 +64,12 @@ struct Mapping {
     response: String,
     /// Success status code (`0` = derive 201 for POST else 200).
     status: u16,
+    /// `Query<T>` / `ValidQuery<T>` schema name to expand into query params.
+    query_schema: String,
+    /// Whether the handler takes a `PageRequest` (page/size/sort query params).
+    pageable: bool,
+    /// Explicitly-declared header/query parameters.
+    params: Vec<ParamDecl>,
 }
 
 /// The parsed contents of a verb marker attribute — `#[get]`, `#[get("/x")]`,
@@ -83,6 +89,17 @@ struct MappingAttr {
     response: Option<String>,
     /// Success status code (`status = 202`).
     status: Option<u16>,
+    /// Explicitly-declared `header("X-Foo", required, description = "…")` params.
+    params: Vec<ParamDecl>,
+}
+
+/// One `header(...)` / `query(...)` declaration on a verb attribute.
+#[derive(Default)]
+struct ParamDecl {
+    location: &'static str,
+    name: String,
+    required: bool,
+    description: String,
 }
 
 impl Parse for MappingAttr {
@@ -136,12 +153,17 @@ impl Parse for MappingAttr {
                     input.parse::<Token![=]>()?;
                     out.status = Some(input.parse::<syn::LitInt>()?.base10_parse()?);
                 }
+                "header" | "query" => {
+                    let location = if key == "header" { "header" } else { "query" };
+                    out.params.push(parse_param_decl(location, input)?);
+                }
                 other => {
                     return Err(syn::Error::new(
                         key.span(),
                         format!(
                             "unknown route argument `{other}`; expected a path literal or one of: \
-                             summary, description, tags, deprecated, request, response, status"
+                             summary, description, tags, deprecated, request, response, status, \
+                             header, query"
                         ),
                     ));
                 }
@@ -172,6 +194,48 @@ fn type_name_of(ty: &Type) -> Option<String> {
         Type::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
         _ => None,
     }
+}
+
+/// Parses a `header("X-Foo", required, description = "…")` / `query(...)`
+/// declaration body (the parenthesised part after the keyword).
+fn parse_param_decl(location: &'static str, input: ParseStream) -> syn::Result<ParamDecl> {
+    let content;
+    syn::parenthesized!(content in input);
+    let name = content.parse::<LitStr>()?.value();
+    let mut decl = ParamDecl {
+        location,
+        name,
+        required: false,
+        description: String::new(),
+    };
+    while !content.is_empty() {
+        content.parse::<Token![,]>()?;
+        if content.is_empty() {
+            break;
+        }
+        let k: syn::Ident = content.parse()?;
+        match k.to_string().as_str() {
+            "required" => {
+                if content.peek(Token![=]) {
+                    content.parse::<Token![=]>()?;
+                    decl.required = content.parse::<LitBool>()?.value;
+                } else {
+                    decl.required = true;
+                }
+            }
+            "description" => {
+                content.parse::<Token![=]>()?;
+                decl.description = content.parse::<LitStr>()?.value();
+            }
+            other => {
+                return Err(syn::Error::new(
+                    k.span(),
+                    format!("unknown {location} option `{other}`; use `required`, `description`"),
+                ))
+            }
+        }
+    }
+    Ok(decl)
 }
 
 /// If `ty` is `Json<T>` (axum's body extractor/response), returns `T`'s schema
@@ -226,12 +290,68 @@ fn find_json_schema(ty: &Type) -> Option<String> {
     None
 }
 
+/// If `ty` is a body extractor — `Json<T>` **or** the validating `Valid<T>` —
+/// returns `T`'s schema name. Both carry the request body; the response side only
+/// uses `Json<T>`, so this is request-body-specific.
+fn body_inner_schema(ty: &Type) -> Option<String> {
+    let Type::Path(tp) = ty else {
+        return None;
+    };
+    let seg = tp.path.segments.last()?;
+    if seg.ident != "Json" && seg.ident != "Valid" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return None;
+    };
+    match args.args.first()? {
+        GenericArgument::Type(inner) => type_name_of(inner),
+        _ => None,
+    }
+}
+
 /// Infers the request-body schema name from a handler signature: the inner type
-/// of the first `Json<T>` parameter, if any.
+/// of the first `Json<T>` / `Valid<T>` body parameter, if any.
 fn infer_request_schema(sig: &Signature) -> Option<String> {
     sig.inputs.iter().find_map(|arg| match arg {
-        FnArg::Typed(pat) => json_inner_schema(&pat.ty),
+        FnArg::Typed(pat) => body_inner_schema(&pat.ty),
         FnArg::Receiver(_) => None,
+    })
+}
+
+/// If `ty` is `Query<T>` / `ValidQuery<T>`, returns `T`'s schema name — whose
+/// fields the OpenAPI generator expands into `in: query` parameters.
+fn query_inner_schema(ty: &Type) -> Option<String> {
+    let Type::Path(tp) = ty else {
+        return None;
+    };
+    let seg = tp.path.segments.last()?;
+    if seg.ident != "Query" && seg.ident != "ValidQuery" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return None;
+    };
+    match args.args.first()? {
+        GenericArgument::Type(inner) => type_name_of(inner),
+        _ => None,
+    }
+}
+
+/// Infers the query-parameter schema name from a handler signature.
+fn infer_query_schema(sig: &Signature) -> Option<String> {
+    sig.inputs.iter().find_map(|arg| match arg {
+        FnArg::Typed(pat) => query_inner_schema(&pat.ty),
+        FnArg::Receiver(_) => None,
+    })
+}
+
+/// Whether the handler takes a `PageRequest` extractor (Spring `Pageable`).
+fn takes_pageable(sig: &Signature) -> bool {
+    sig.inputs.iter().any(|arg| match arg {
+        FnArg::Typed(pat) => matches!(&*pat.ty, Type::Path(tp)
+            if tp.path.segments.last().is_some_and(|s| s.ident == "PageRequest")),
+        FnArg::Receiver(_) => false,
     })
 }
 
@@ -315,6 +435,8 @@ pub(crate) fn rest_controller(args: TokenStream, item: ItemImpl) -> syn::Result<
                 .response
                 .or_else(|| infer_response_schema(&method.sig.output))
                 .unwrap_or_default();
+            let query_schema = infer_query_schema(&method.sig).unwrap_or_default();
+            let pageable = takes_pageable(&method.sig);
             mappings.push(Mapping {
                 method_ident: method.sig.ident.clone(),
                 verb,
@@ -326,6 +448,9 @@ pub(crate) fn rest_controller(args: TokenStream, item: ItemImpl) -> syn::Result<
                 request,
                 response,
                 status: parsed.status.unwrap_or(0),
+                query_schema,
+                pageable,
+                params: parsed.params,
             });
         }
     }
@@ -385,6 +510,23 @@ pub(crate) fn rest_controller(args: TokenStream, item: ItemImpl) -> syn::Result<
             let request_schema = &m.request;
             let response_schema = &m.response;
             let status = m.status;
+            let query_schema = &m.query_schema;
+            let pageable = m.pageable;
+            let param_literals = m.params.iter().map(|p| {
+                let location = p.location;
+                let name = &p.name;
+                let required = p.required;
+                let description = &p.description;
+                quote! {
+                    #container::ParamDescriptor {
+                        location: #location,
+                        name: #name,
+                        required: #required,
+                        schema_type: "string",
+                        description: #description,
+                    }
+                }
+            });
             let tags: Vec<String> = if !m.tags.is_empty() {
                 m.tags.clone()
             } else if !controller_tag.is_empty() {
@@ -405,6 +547,9 @@ pub(crate) fn rest_controller(args: TokenStream, item: ItemImpl) -> syn::Result<
                     request_schema: #request_schema,
                     response_schema: #response_schema,
                     status: #status,
+                    query_schema: #query_schema,
+                    pageable: #pageable,
+                    parameters: &[ #(#param_literals),* ],
                 }
             }
         })

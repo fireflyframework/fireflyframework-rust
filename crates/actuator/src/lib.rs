@@ -31,7 +31,7 @@
 //! | `GET /actuator/env/{toMatch}`       | One property's value across the ordered sources (when an [`EnvSource`] is wired)|
 //! | `GET /actuator/tasks`               | `{"count": N}` alive tokio tasks; `?dump=true` returns a runtime report          |
 //! | `GET /actuator/threaddump`          | Spring `{threads:[…]}` — the tokio runtime worker/task snapshot (Rust analog)    |
-//! | `GET /actuator/version`             | `{"firefly":"26.6.22","app":"orders","appVersion":"…","rust":"…"}`                |
+//! | `GET /actuator/version`             | `{"firefly":"26.6.23","app":"orders","appVersion":"…","rust":"…"}`                |
 //! | `GET/POST /actuator/loggers[/{n}]`  | Runtime log levels over a `tracing_subscriber` reload handle                     |
 //! | `GET /actuator/scheduledtasks`      | Tasks grouped by trigger (cron / fixedDelay / fixedRate)                         |
 //! | `GET/POST /actuator/caches[…]`      | Configured caches + `POST /{name}/evict`                                         |
@@ -127,7 +127,7 @@ pub use threaddump::{thread_dump, StackFrame, ThreadInfo};
 
 /// Released framework version. Calendar-versioned (`YY.M.PATCH`), the
 /// Rust port's counterpart of the Go `kernel.Version` constant.
-pub const VERSION: &str = "26.6.22";
+pub const VERSION: &str = "26.6.23";
 
 #[cfg(test)]
 mod tests {

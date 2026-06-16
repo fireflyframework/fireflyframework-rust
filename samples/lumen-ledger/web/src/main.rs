@@ -556,4 +556,50 @@ mod tests {
         assert_eq!(schemas["WalletStatus"]["type"], "string");
         assert!(schemas["WalletStatus"]["enum"].is_array());
     }
+
+    #[tokio::test]
+    async fn openapi_renders_parameters_bodies_and_headers() {
+        let mgmt = mgmt_router("lumen_ledger_web_oas_params").await;
+        let spec = body_json(mgmt.oneshot(get("/v3/api-docs")).await.unwrap()).await;
+        let paths = &spec["paths"];
+        let params = |path: &str, verb: &str| -> Vec<(String, String)> {
+            paths[path][verb]["parameters"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|p| {
+                            (
+                                p["in"].as_str().unwrap_or("").to_string(),
+                                p["name"].as_str().unwrap_or("").to_string(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let has_body = |path: &str, verb: &str| paths[path][verb].get("requestBody").is_some();
+
+        // POST /wallets: a `Valid<CreateWalletRequest>` body is inferred, plus the
+        // explicitly-declared `Idempotency-Key` header parameter.
+        assert!(has_body("/api/v1/wallets", "post"), "POST /wallets body");
+        assert!(
+            params("/api/v1/wallets", "post").contains(&("header".into(), "Idempotency-Key".into())),
+            "Idempotency-Key header: {:?}",
+            params("/api/v1/wallets", "post")
+        );
+        // GET /wallets: the `owner` query param (from `Query<OwnerQuery>`).
+        assert!(params("/api/v1/wallets", "get").contains(&("query".into(), "owner".into())));
+        // GET /wallets/page: `status` + the pageable `page`/`size`/`sort` params.
+        let page = params("/api/v1/wallets/page", "get");
+        for n in ["status", "page", "size", "sort"] {
+            assert!(
+                page.contains(&("query".into(), n.into())),
+                "paged query param `{n}` missing: {page:?}"
+            );
+        }
+        // `Valid<AmountRequest>` deposit/withdraw bodies + the `{id}` path param.
+        assert!(has_body("/api/v1/wallets/{id}/deposit", "post"));
+        assert!(has_body("/api/v1/wallets/{id}/transfer", "post"));
+        assert!(params("/api/v1/wallets/{id}", "get").contains(&("path".into(), "id".into())));
+    }
 }

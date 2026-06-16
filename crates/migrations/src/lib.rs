@@ -118,4 +118,4 @@ pub use runner::{inspect, run, Status};
 pub use source::{DirSource, EmbeddedSource, SliceSource, Source};
 
 /// Framework version stamp.
-pub const VERSION: &str = "26.6.22";
+pub const VERSION: &str = "26.6.23";

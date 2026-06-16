@@ -122,8 +122,8 @@ pub use inventory;
 
 /// The released framework version. Calendar-versioned (`YY.M.PATCH`)
 /// expressed as valid semver — the Go port's `26.05.01` corresponds to
-/// `26.6.22` in the June 2026 release window.
-pub const VERSION: &str = "26.6.22";
+/// `26.6.23` in the June 2026 release window.
+pub const VERSION: &str = "26.6.23";
 
 /// Errors produced by the transaction helper and the database port.
 ///
@@ -732,6 +732,6 @@ mod tests {
 
     #[test]
     fn version_is_stamped() {
-        assert_eq!(VERSION, "26.6.22");
+        assert_eq!(VERSION, "26.6.23");
     }
 }

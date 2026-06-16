@@ -160,6 +160,27 @@ pub struct BeanStats {
     pub stereotypes: std::collections::BTreeMap<String, usize>,
 }
 
+/// One explicitly-declared operation parameter (a header or query parameter) —
+/// the `#[get(header("X-Tenant-Id", required), query("q"))]`-style declarations
+/// the OpenAPI generator emits into an operation's `parameters`. Path parameters
+/// are derived from the route template instead, and a `Query<T>` extractor's
+/// fields are expanded from the type's schema (see
+/// [`RouteDescriptor::query_schema`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParamDescriptor {
+    /// The OpenAPI `in` location: `"header"` or `"query"`.
+    pub location: &'static str,
+    /// The parameter name (`X-Tenant-Id`, `q`, …).
+    pub name: &'static str,
+    /// Whether the caller must supply it.
+    pub required: bool,
+    /// The JSON Schema scalar type (`"string"`, `"integer"`, `"boolean"`,
+    /// `"number"`); `""` defaults to `"string"`.
+    pub schema_type: &'static str,
+    /// An optional human-readable description (`""` to omit).
+    pub description: &'static str,
+}
+
 /// Compile-time metadata for one `#[rest_controller]` route.
 ///
 /// Emitted by the `#[rest_controller]` macro both as a `Controller::ROUTES`
@@ -196,6 +217,16 @@ pub struct RouteDescriptor {
     /// The success status code (`#[post(status = 202)]`); `0` defaults to 201
     /// for `POST` and 200 otherwise.
     pub status: u16,
+    /// The schema name of a `Query<T>` / `ValidQuery<T>` extractor whose fields
+    /// are expanded into `in: query` parameters (`""` if none). Inferred from the
+    /// handler signature; the type must be `#[derive(Schema)]` to expand.
+    pub query_schema: &'static str,
+    /// Whether the handler takes a `PageRequest` — emits the standard Spring
+    /// Data `page` / `size` / `sort` query parameters.
+    pub pageable: bool,
+    /// Explicitly-declared header / query parameters
+    /// (`#[get(header("X-Tenant-Id", required))]`).
+    pub parameters: &'static [ParamDescriptor],
 }
 
 inventory::collect!(RouteDescriptor);
