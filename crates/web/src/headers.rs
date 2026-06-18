@@ -55,6 +55,11 @@ pub struct SecurityHeadersConfig {
     pub content_security_policy: Option<String>,
     /// `Permissions-Policy` value; `None` (default) omits the header.
     pub permissions_policy: Option<String>,
+    /// Emit `Strict-Transport-Security` even over plain HTTP. Default `false`,
+    /// matching Spring's `HstsHeaderWriter`, which writes HSTS only on secure
+    /// requests (sending HSTS over HTTP is meaningless and a deployment-config
+    /// smell). Set `true` to force the header on every response.
+    pub hsts_include_insecure: bool,
 }
 
 impl Default for SecurityHeadersConfig {
@@ -67,6 +72,7 @@ impl Default for SecurityHeadersConfig {
             referrer_policy: "strict-origin-when-cross-origin".to_string(),
             content_security_policy: None,
             permissions_policy: None,
+            hsts_include_insecure: false,
         }
     }
 }
@@ -77,21 +83,25 @@ impl Default for SecurityHeadersConfig {
 /// per request.
 #[derive(Debug, Clone, Default)]
 pub struct SecurityHeadersLayer {
+    /// Always-on headers (everything except HSTS).
     pairs: Arc<Vec<(HeaderName, HeaderValue)>>,
+    /// The HSTS header, gated on a secure request unless `hsts_include_insecure`.
+    hsts: Option<(HeaderName, HeaderValue)>,
+    hsts_include_insecure: bool,
 }
 
 impl SecurityHeadersLayer {
     /// Builds the layer from `config`, pre-encoding every header pair.
     /// Invalid header values (non-ASCII) are skipped rather than
     /// panicking, since they can only come from user configuration.
+    ///
+    /// `Strict-Transport-Security` is held separately: it is emitted only on a
+    /// secure request (Spring's `HstsHeaderWriter` default) unless
+    /// [`SecurityHeadersConfig::hsts_include_insecure`] is set.
     pub fn new(config: SecurityHeadersConfig) -> Self {
         let mut raw: Vec<(&'static str, &str)> = vec![
             ("x-content-type-options", &config.x_content_type_options),
             ("x-frame-options", &config.x_frame_options),
-            (
-                "strict-transport-security",
-                &config.strict_transport_security,
-            ),
             ("x-xss-protection", &config.x_xss_protection),
             ("referrer-policy", &config.referrer_policy),
         ];
@@ -110,8 +120,17 @@ impl SecurityHeadersLayer {
                 ))
             })
             .collect();
+        let hsts = if config.strict_transport_security.is_empty() {
+            None
+        } else {
+            HeaderValue::from_str(&config.strict_transport_security)
+                .ok()
+                .map(|v| (HeaderName::from_static("strict-transport-security"), v))
+        };
         Self {
             pairs: Arc::new(pairs),
+            hsts,
+            hsts_include_insecure: config.hsts_include_insecure,
         }
     }
 }
@@ -123,6 +142,8 @@ impl<S> Layer<S> for SecurityHeadersLayer {
         SecurityHeadersService {
             inner,
             pairs: Arc::clone(&self.pairs),
+            hsts: self.hsts.clone(),
+            hsts_include_insecure: self.hsts_include_insecure,
         }
     }
 }
@@ -132,6 +153,8 @@ impl<S> Layer<S> for SecurityHeadersLayer {
 pub struct SecurityHeadersService<S> {
     inner: S,
     pairs: Arc<Vec<(HeaderName, HeaderValue)>>,
+    hsts: Option<(HeaderName, HeaderValue)>,
+    hsts_include_insecure: bool,
 }
 
 impl<S> Service<Request<Body>> for SecurityHeadersService<S>
@@ -151,12 +174,102 @@ where
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
         let pairs = Arc::clone(&self.pairs);
+        let hsts = self.hsts.clone();
+        let send_hsts = self.hsts_include_insecure || request_is_secure(&req);
         Box::pin(async move {
             let mut res = inner.call(req).await?;
             for (name, value) in pairs.iter() {
                 res.headers_mut().insert(name.clone(), value.clone());
             }
+            if send_hsts {
+                if let Some((name, value)) = &hsts {
+                    res.headers_mut().insert(name.clone(), value.clone());
+                }
+            }
             Ok(res)
         })
+    }
+}
+
+/// Whether the request arrived over a secure (HTTPS) channel — directly or via
+/// a TLS-terminating proxy that set `X-Forwarded-Proto: https`. Shared with the
+/// CSRF layer's `Secure`-cookie gating.
+pub(crate) fn request_is_secure(req: &Request<Body>) -> bool {
+    if let Some(proto) = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+    {
+        if proto
+            .split(',')
+            .next()
+            .map(|s| s.trim().eq_ignore_ascii_case("https"))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    req.uri().scheme_str() == Some("https")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    async fn hsts_header(config: SecurityHeadersConfig, forwarded_proto: Option<&str>) -> bool {
+        let inner = tower::service_fn(|_req: Request<Body>| async {
+            Ok::<Response, Infallible>(Response::new(Body::empty()))
+        });
+        let svc = SecurityHeadersLayer::new(config).layer(inner);
+        let mut builder = Request::builder().uri("/x");
+        if let Some(proto) = forwarded_proto {
+            builder = builder.header("x-forwarded-proto", proto);
+        }
+        let resp = svc.oneshot(builder.body(Body::empty()).unwrap()).await.unwrap();
+        resp.headers().contains_key("strict-transport-security")
+    }
+
+    // H9: by default HSTS is emitted only on secure requests (Spring's
+    // HstsHeaderWriter), not over plain HTTP.
+    #[tokio::test]
+    async fn hsts_is_secure_only_by_default() {
+        assert!(
+            !hsts_header(SecurityHeadersConfig::default(), None).await,
+            "HSTS must NOT be sent over plain HTTP by default"
+        );
+        assert!(
+            hsts_header(SecurityHeadersConfig::default(), Some("https")).await,
+            "HSTS must be sent over HTTPS (X-Forwarded-Proto)"
+        );
+    }
+
+    // H9: opt-in to always emit HSTS, even over plain HTTP.
+    #[tokio::test]
+    async fn hsts_can_be_forced_on_insecure() {
+        let config = SecurityHeadersConfig {
+            hsts_include_insecure: true,
+            ..Default::default()
+        };
+        assert!(
+            hsts_header(config, None).await,
+            "HSTS must be sent over HTTP when include_insecure is set"
+        );
+    }
+
+    // The other security headers are always present, on HTTP and HTTPS alike.
+    #[tokio::test]
+    async fn non_hsts_headers_always_present() {
+        let inner = tower::service_fn(|_req: Request<Body>| async {
+            Ok::<Response, Infallible>(Response::new(Body::empty()))
+        });
+        let svc = SecurityHeadersLayer::new(SecurityHeadersConfig::default()).layer(inner);
+        let resp = svc
+            .oneshot(Request::builder().uri("/x").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(resp.headers().contains_key("x-content-type-options"));
+        assert!(resp.headers().contains_key("x-frame-options"));
+        assert!(resp.headers().contains_key("referrer-policy"));
     }
 }

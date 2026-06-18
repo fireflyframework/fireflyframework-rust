@@ -42,7 +42,37 @@ use sha2::{Digest, Sha256};
 use tower::{Layer, Service};
 
 use crate::globs::matches_any;
+use crate::headers::request_is_secure;
 use crate::problem::problem_response;
+
+/// Policy for the `Secure` attribute on the CSRF cookie.
+///
+/// Spring's `CookieCsrfTokenRepository` marks the cookie `Secure` only when the
+/// request is itself secure; sending `Secure` over plain HTTP makes the browser
+/// drop the cookie, so the double-submit pair can never be established (every
+/// unsafe request then 403s). [`Auto`](CookieSecure::Auto) reproduces Spring's
+/// request-driven behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CookieSecure {
+    /// Mark `Secure` only when the request arrived over HTTPS (default).
+    #[default]
+    Auto,
+    /// Always mark the cookie `Secure` (HTTPS-only deployments).
+    Always,
+    /// Never mark the cookie `Secure` (plain-HTTP dev only).
+    Never,
+}
+
+impl CookieSecure {
+    /// Resolves whether the cookie should carry `Secure` for `req`.
+    fn applies(self, req: &Request<Body>) -> bool {
+        match self {
+            CookieSecure::Auto => request_is_secure(req),
+            CookieSecure::Always => true,
+            CookieSecure::Never => false,
+        }
+    }
+}
 
 /// Name of the cookie that carries the CSRF token — identical across
 /// the Java, .NET, Go, and Python ports (Angular convention).
@@ -88,13 +118,16 @@ fn default_exclude_patterns() -> Vec<String> {
 #[derive(Debug, Clone)]
 pub struct CsrfLayer {
     exclude_patterns: Arc<Vec<String>>,
+    cookie_secure: CookieSecure,
 }
 
 impl CsrfLayer {
-    /// Returns the layer with pyfly's default exclude patterns.
+    /// Returns the layer with pyfly's default exclude patterns and the
+    /// request-driven [`CookieSecure::Auto`] cookie policy.
     pub fn new() -> Self {
         Self {
             exclude_patterns: Arc::new(default_exclude_patterns()),
+            cookie_secure: CookieSecure::Auto,
         }
     }
 
@@ -106,6 +139,13 @@ impl CsrfLayer {
         P: Into<String>,
     {
         self.exclude_patterns = Arc::new(patterns.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Sets the `Secure`-attribute policy for the CSRF cookie
+    /// (default [`CookieSecure::Auto`]).
+    pub fn cookie_secure(mut self, policy: CookieSecure) -> Self {
+        self.cookie_secure = policy;
         self
     }
 }
@@ -123,6 +163,7 @@ impl<S> Layer<S> for CsrfLayer {
         CsrfService {
             inner,
             exclude_patterns: Arc::clone(&self.exclude_patterns),
+            cookie_secure: self.cookie_secure,
         }
     }
 }
@@ -132,6 +173,7 @@ impl<S> Layer<S> for CsrfLayer {
 pub struct CsrfService<S> {
     inner: S,
     exclude_patterns: Arc<Vec<String>>,
+    cookie_secure: CookieSecure,
 }
 
 /// Extracts the value of `name` from the request's `Cookie` header(s).
@@ -149,10 +191,14 @@ fn cookie_value(req: &Request<Body>, name: &str) -> Option<String> {
 }
 
 /// Appends the `XSRF-TOKEN` cookie — readable by JavaScript (no
-/// `HttpOnly`), `SameSite=Lax`, `Secure`, path `/` — matching pyfly's
-/// `_set_csrf_cookie` attribute-for-attribute.
-fn set_csrf_cookie(res: &mut Response, token: &str) {
-    let cookie = format!("{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax; Secure");
+/// `HttpOnly`), `SameSite=Lax`, path `/`, and `Secure` only when `secure`
+/// (so the double-submit pair also works over plain-HTTP development; see
+/// [`CookieSecure`]).
+fn set_csrf_cookie(res: &mut Response, token: &str, secure: bool) {
+    let mut cookie = format!("{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax");
+    if secure {
+        cookie.push_str("; Secure");
+    }
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         res.headers_mut().append(header::SET_COOKIE, value);
     }
@@ -185,6 +231,9 @@ where
         }
 
         let method = req.method().clone();
+        // Resolve the `Secure` cookie attribute from the request (before `req`
+        // is moved into the response future).
+        let secure = self.cookie_secure.applies(&req);
 
         // Safe methods — pass through and set/refresh the CSRF cookie.
         if matches!(
@@ -193,7 +242,7 @@ where
         ) {
             return Box::pin(async move {
                 let mut res = inner.call(req).await?;
-                set_csrf_cookie(&mut res, &generate_csrf_token());
+                set_csrf_cookie(&mut res, &generate_csrf_token(), secure);
                 Ok(res)
             });
         }
@@ -226,8 +275,55 @@ where
             }
             // Valid — proceed and rotate the token.
             let mut res = inner.call(req).await?;
-            set_csrf_cookie(&mut res, &generate_csrf_token());
+            set_csrf_cookie(&mut res, &generate_csrf_token(), secure);
             Ok(res)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    async fn set_cookie_for(layer: CsrfLayer, forwarded_proto: Option<&str>) -> String {
+        let inner = tower::service_fn(|_r: Request<Body>| async {
+            Ok::<Response, Infallible>(Response::new(Body::empty()))
+        });
+        let svc = layer.layer(inner);
+        let mut b = Request::builder().method(Method::GET).uri("/page");
+        if let Some(p) = forwarded_proto {
+            b = b.header("x-forwarded-proto", p);
+        }
+        let resp = svc.oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+        resp.headers()
+            .get(header::SET_COOKIE)
+            .expect("XSRF cookie set on safe request")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    // H4: Auto policy follows the request scheme — no `Secure` over plain HTTP
+    // (so the double-submit pair works in dev), `Secure` over HTTPS.
+    #[tokio::test]
+    async fn cookie_secure_auto_follows_request_scheme() {
+        let http = set_cookie_for(CsrfLayer::new(), None).await;
+        assert!(http.contains("XSRF-TOKEN="), "{http}");
+        assert!(!http.contains("Secure"), "HTTP cookie must not be Secure: {http}");
+
+        let https = set_cookie_for(CsrfLayer::new(), Some("https")).await;
+        assert!(https.contains("Secure"), "HTTPS cookie must be Secure: {https}");
+    }
+
+    // H4: Always/Never override the request scheme.
+    #[tokio::test]
+    async fn cookie_secure_always_and_never_override() {
+        let always = set_cookie_for(CsrfLayer::new().cookie_secure(CookieSecure::Always), None).await;
+        assert!(always.contains("Secure"), "{always}");
+
+        let never =
+            set_cookie_for(CsrfLayer::new().cookie_secure(CookieSecure::Never), Some("https")).await;
+        assert!(!never.contains("Secure"), "{never}");
     }
 }

@@ -165,7 +165,7 @@ pub use context::{
     with_authentication_scope_sync, AccessRule,
 };
 pub use csrf::{
-    generate_csrf_token, is_safe_method, validate_csrf_token, CsrfLayer, CsrfService,
+    generate_csrf_token, is_safe_method, validate_csrf_token, CookieSecure, CsrfLayer, CsrfService,
     CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SAFE_METHODS,
 };
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};

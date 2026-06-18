@@ -145,10 +145,10 @@ pub use correlation::{
     CorrelationLayer, CorrelationService, HEADER_REQUEST_ID, HEADER_TENANT_ID, HEADER_TRACEPARENT,
     HEADER_TRACESTATE, HEADER_TRANSACTION_ID,
 };
-pub use cors::{CorsConfig, CorsLayer, CorsService, PERMIT_DEFAULT_METHODS};
+pub use cors::{CorsConfig, CorsConfigError, CorsLayer, CorsService, PERMIT_DEFAULT_METHODS};
 pub use csrf::{
-    generate_csrf_token, validate_csrf_token, CsrfLayer, CsrfService, CSRF_COOKIE_NAME,
-    CSRF_HEADER_NAME, CSRF_SAFE_METHODS,
+    generate_csrf_token, validate_csrf_token, CookieSecure, CsrfLayer, CsrfService,
+    CSRF_COOKIE_NAME, CSRF_HEADER_NAME, CSRF_SAFE_METHODS,
 };
 pub use exception_handler::{
     ExceptionAdviceLayer, ExceptionAdviceService, ExceptionHandlerRegistry,
