@@ -178,6 +178,11 @@ parts:
     num: A
     title: Índice de crates y módulos
     opener: art/openers/appb.svg
+  - id: appc
+    file: 14a-spring-security-parity.md
+    num: B
+    title: Paridad con Spring Security
+    opener: art/openers/appc.svg
   - id: glossary
     file: 92-glossary.md
     num: ''
