@@ -185,16 +185,29 @@ where
 
         Box::pin(async move {
             let restored = restore_authentication(session).await;
-            match restored {
+            // Make the context ambient two ways: insert it into the request
+            // extensions (read by `FilterChain` / `guards` / handlers) AND scope
+            // the task-local `CURRENT_AUTH` around the downstream call (read by
+            // the `#[pre_authorize]` / `#[post_authorize]` macros, `check_access`,
+            // and `current_authentication()`) — exactly as `BearerLayer` does.
+            // Without the task-local scope, method security silently fails for a
+            // session-authenticated caller.
+            let scoped = match restored {
                 Some(auth) => {
-                    req.extensions_mut().insert(auth);
+                    req.extensions_mut().insert(auth.clone());
+                    Some(auth)
                 }
                 None if anonymous_fallback && !already_present => {
-                    req.extensions_mut().insert(Authentication::anonymous());
+                    let anon = Authentication::anonymous();
+                    req.extensions_mut().insert(anon.clone());
+                    Some(anon)
                 }
-                None => {}
+                None => None,
+            };
+            match scoped {
+                Some(auth) => crate::with_authentication_scope(auth, inner.call(req)).await,
+                None => inner.call(req).await,
             }
-            inner.call(req).await
         })
     }
 }
@@ -586,5 +599,85 @@ mod tests {
         assert!(store.exists(&sid).await.unwrap());
         s1.invalidate().await;
         assert!(!store.exists(&sid).await.unwrap());
+    }
+
+    // H1: the layer must scope the *task-local* `CURRENT_AUTH` (what
+    // `#[pre_authorize]` / `check_access` read), not just the request
+    // extension — otherwise method security silently fails for a
+    // session-authenticated caller (it only worked behind `BearerLayer`).
+    #[tokio::test]
+    async fn service_scopes_task_local_for_session_authenticated_request() {
+        use std::sync::Mutex;
+        use tower::ServiceExt;
+
+        let session = Session::new(SessionInner::new("sid"));
+        let auth = Authentication {
+            principal: "u1".into(),
+            username: "alice".into(),
+            roles: vec!["ADMIN".into()],
+            ..Default::default()
+        };
+        session
+            .set_attribute(
+                SESSION_KEY_SECURITY_CONTEXT,
+                serde_json::to_string(&auth).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Inner service records what `current_authentication()` (the task-local)
+        // reports at call time — the contract method security depends on.
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let probe = seen.clone();
+        let inner = tower::service_fn(move |_req: Request| {
+            let probe = probe.clone();
+            async move {
+                *probe.lock().unwrap() = crate::current_authentication().map(|a| a.principal);
+                Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+            }
+        });
+
+        let mut req = Request::new(axum::body::Body::empty());
+        req.extensions_mut().insert(session);
+
+        let _ = SessionAuthenticationLayer::new()
+            .layer(inner)
+            .oneshot(req)
+            .await
+            .unwrap();
+
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("u1"));
+    }
+
+    // H1 (anonymous path): with the default anonymous fallback, the layer
+    // should scope an anonymous context so downstream method security sees a
+    // present-but-anonymous principal (Spring's AnonymousAuthenticationFilter).
+    #[tokio::test]
+    async fn service_scopes_anonymous_when_no_session_context() {
+        use std::sync::Mutex;
+        use tower::ServiceExt;
+
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let probe = seen.clone();
+        let inner = tower::service_fn(move |_req: Request| {
+            let probe = probe.clone();
+            async move {
+                *probe.lock().unwrap() = crate::current_authentication().map(|a| a.principal);
+                Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+            }
+        });
+
+        // No Session handle at all -> anonymous fallback applies.
+        let req = Request::new(axum::body::Body::empty());
+        let _ = SessionAuthenticationLayer::new()
+            .layer(inner)
+            .oneshot(req)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            seen.lock().unwrap().as_deref(),
+            Some(crate::authentication::ANONYMOUS_ID)
+        );
     }
 }

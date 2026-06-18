@@ -47,8 +47,17 @@ pub struct Authentication {
 
 impl Authentication {
     /// Reports whether the authentication carries `role`.
+    ///
+    /// Spring's `hasRole('ADMIN')` checks for the authority `ROLE_ADMIN`. To
+    /// stay drop-in for ported Spring/JWT principals, a role matches either as a
+    /// bare name (`ADMIN`, Firefly's existing convention) or with the
+    /// [`ROLE_PREFIX`] (`ROLE_ADMIN`); a `ROLE_`-prefixed *authority* counts too
+    /// (that is how Spring stores roles). A *bare* authority is not a role — use
+    /// [`has_authority`](Authentication::has_authority) for that.
     pub fn has_role(&self, role: &str) -> bool {
-        self.roles.iter().any(|r| r == role)
+        let prefixed = format!("{ROLE_PREFIX}{role}");
+        self.roles.iter().any(|r| r == role || r == &prefixed)
+            || self.authorities.iter().any(|a| a == &prefixed)
     }
 
     /// Returns true if any role matches.
@@ -84,6 +93,11 @@ impl Authentication {
 /// [`BearerLayer`](crate::BearerLayer) is configured to allow anonymous
 /// access.
 pub const ANONYMOUS_ID: &str = "anonymous";
+
+/// The default `GrantedAuthority` role prefix — Spring's `ROLE_`.
+/// [`Authentication::has_role`] treats `hasRole('X')` as matching the authority
+/// `ROLE_X` (and, for backward compatibility, a bare `X`).
+pub const ROLE_PREFIX: &str = "ROLE_";
 
 /// `SecurityError` is the typed error family of the security tier.
 ///
@@ -206,6 +220,32 @@ mod tests {
         assert!(a.has_any_role(&["ADMIN", "USER"]));
         assert!(!a.has_any_role(&["ADMIN", "OPERATOR"]));
         assert!(!a.has_any_role(&[]));
+    }
+
+    // H2: Spring's hasRole('ADMIN') checks the authority ROLE_ADMIN. A ported
+    // Spring/JWT principal carrying ROLE_-prefixed authorities must satisfy
+    // has_role without the caller hand-stripping prefixes — while bare roles
+    // (the existing convention, e.g. the sample's CUSTOMER) keep working.
+    #[test]
+    fn has_role_accepts_spring_role_prefix() {
+        let mut a = auth(&[]);
+        a.roles = vec!["ROLE_ADMIN".into()];
+        assert!(a.has_role("ADMIN")); // hasRole('ADMIN') matches ROLE_ADMIN
+        assert!(a.has_role("ROLE_ADMIN")); // the literal still matches
+
+        // A ROLE_-prefixed *authority* also satisfies hasRole.
+        let mut b = auth(&[]);
+        b.authorities = vec!["ROLE_OPERATOR".into()];
+        assert!(b.has_role("OPERATOR"));
+
+        // Bare roles still work (backward-compatible).
+        let c = auth(&["CUSTOMER"]);
+        assert!(c.has_role("CUSTOMER"));
+
+        // A bare authority is NOT a role (the role/authority distinction holds).
+        let mut d = auth(&[]);
+        d.authorities = vec!["ADMIN".into()];
+        assert!(!d.has_role("ADMIN"));
     }
 
     #[test]
