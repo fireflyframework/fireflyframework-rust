@@ -162,8 +162,15 @@ pub const COUNT_SQL: &str = "SELECT COUNT(*) FROM firefly_session_registry WHERE
 pub const PRUNE_SQL: &str =
     "DELETE FROM firefly_session_registry WHERE expires_at > 0 AND expires_at < $1";
 
-/// Default registry entry TTL (30 minutes), mirroring the session idle timeout.
-/// A registered session older than this is pruned so the count cannot drift.
+/// A suggested registry entry TTL (30 minutes) for [`with_ttl`] — **not** the
+/// default. Pruning is opt-in (off by default): the TTL is measured from the
+/// session's `created_at`, so it only matches a deployment with an *absolute*
+/// session lifetime. Firefly's sessions are *sliding* (idle-based), so a fixed
+/// TTL would wrongly prune still-active sessions and under-count
+/// `maximumSessions`. Enable pruning with [`with_ttl`] only when you have an
+/// absolute cap; otherwise rely on explicit `deregister` (on logout).
+///
+/// [`with_ttl`]: PostgresSessionRegistry::with_ttl
 pub const DEFAULT_REGISTRY_TTL_MILLIS: i64 = 30 * 60 * 1000;
 
 /// A durable, distributed [`firefly_session::SessionRegistry`] backed by a
@@ -324,14 +331,19 @@ impl PostgresSessionRegistry {
             client,
             sql,
             ensured: Mutex::new(false),
-            ttl_millis: DEFAULT_REGISTRY_TTL_MILLIS,
+            // Pruning is OFF by default: a fixed `created_at + ttl` expiry would
+            // wrongly evict still-active sliding sessions and under-count
+            // `maximumSessions`. Opt in via `with_ttl` only with an absolute cap.
+            ttl_millis: 0,
         }
     }
 
-    /// Overrides the registry entry TTL (default
-    /// [`DEFAULT_REGISTRY_TTL_MILLIS`]); a registered session is pruned once
-    /// `created_at + ttl` has passed. Pass a zero duration to disable expiry
-    /// (entries then live until explicitly deregistered).
+    /// Enables registry-entry pruning with an **absolute** TTL: a registered
+    /// session is pruned once `created_at + ttl` has passed (a zero duration —
+    /// the default — disables pruning, so entries live until explicitly
+    /// deregistered). Only enable this when your sessions have an absolute
+    /// lifetime; for sliding (idle-based) sessions, leave it off (see
+    /// [`DEFAULT_REGISTRY_TTL_MILLIS`] for the rationale).
     #[must_use]
     pub fn with_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.ttl_millis = ttl.as_millis() as i64;
@@ -696,13 +708,15 @@ mod tests {
             eprintln!("skipping: FIREFLY_TEST_POSTGRES_URL not set");
             return;
         };
-        let reg = PostgresSessionRegistry::connect(&url)
+        // Own table so the GLOBAL prune cannot race other parallel tests.
+        let now = now_millis();
+        let table = format!("fftest_h12_prune_{now}");
+        let reg = PostgresSessionRegistry::connect_with_table(&url, &table)
             .await
             .expect("connect")
             .with_ttl(std::time::Duration::from_secs(3600));
         reg.init().await.expect("init");
 
-        let now = now_millis();
         let principal = format!("h12-user-{now}");
 
         // A session created now is live; one created 2h ago is already expired
@@ -721,6 +735,36 @@ mod tests {
 
         // Cleanup.
         reg.deregister(&principal, "s-live").await;
+        assert_eq!(reg.count(&principal).await, 0);
+    }
+
+    // Review fix: pruning is OFF by default, so an "old" session (which under a
+    // sliding policy may still be active) is NOT pruned — it stays counted
+    // until explicitly deregistered. This guards against the cap-under-count
+    // regression a fixed default TTL would cause.
+    #[tokio::test]
+    async fn default_registry_does_not_prune_old_sessions() {
+        let Ok(url) = std::env::var("FIREFLY_TEST_POSTGRES_URL") else {
+            eprintln!("skipping: FIREFLY_TEST_POSTGRES_URL not set");
+            return;
+        };
+        // No with_ttl() -> pruning disabled by default. Own table for isolation.
+        let now = now_millis();
+        let table = format!("fftest_h12_default_{now}");
+        let reg = PostgresSessionRegistry::connect_with_table(&url, &table)
+            .await
+            .expect("connect");
+        reg.init().await.expect("init");
+
+        let principal = format!("h12-default-{now}");
+        reg.register(&principal, "s-old", now - 100 * 3600 * 1000).await; // ~100h ago
+        assert_eq!(
+            reg.count(&principal).await,
+            1,
+            "default registry must NOT prune (sliding sessions stay counted)"
+        );
+
+        reg.deregister(&principal, "s-old").await;
         assert_eq!(reg.count(&principal).await, 0);
     }
 

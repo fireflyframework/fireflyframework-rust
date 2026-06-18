@@ -242,6 +242,18 @@ mod tests {
         );
     }
 
+    // The and/or/not combinators rebuild via require(), so they drop
+    // permit_all()'s anonymous-admitting property (documented behaviour).
+    #[test]
+    fn permit_all_combinators_reset_anonymity() {
+        assert_eq!(
+            permit_all().and(authenticated()).authorize(None),
+            Err(SecurityError::Unauthenticated)
+        );
+        // permit_all() alone still admits anonymous.
+        assert_eq!(permit_all().authorize(None), Ok(()));
+    }
+
     #[test]
     fn typed_predicates_replace_spel() {
         // pyfly: @pre_authorize("principal.user_id == 'u1'")

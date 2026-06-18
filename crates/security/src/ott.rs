@@ -318,18 +318,16 @@ mod tests {
 
     #[tokio::test]
     async fn expired_token_is_rejected() {
-        let s = svc().ttl_seconds(0); // expires immediately (now > expires_at)
-        let token = s.generate("carol").await;
-        // expires_at == now; a token is valid only while now <= expires_at, and
-        // by the time we consume, the second has advanced — but to be robust we
-        // assert the boundary by minting an already-past token directly.
+        let s = svc();
+        // Insert a token whose expiry is already in the past — deterministically
+        // expired (no reliance on wall-clock advancing during the test).
         s.tokens
             .lock()
             .await
             .insert("past".into(), ("carol".into(), now_secs().saturating_sub(10)));
+        assert_eq!(s.consume("past").await, None, "expired token must be rejected");
+        // ...and it is removed on the attempt, so a retry also fails.
         assert_eq!(s.consume("past").await, None);
-        // The 0-ttl token is also gone after one consume regardless.
-        let _ = s.consume(&token.value).await;
     }
 
     fn router(captured: Arc<Mutex<Option<OneTimeToken>>>) -> (Router, Arc<dyn OneTimeTokenService>) {
@@ -375,6 +373,7 @@ mod tests {
         let token = service.generate("erin").await;
 
         let session = Session::new(SessionInner::new("sid"));
+        let id_before = session.id().await;
         let mut req = http::Request::builder()
             .uri(format!("/login/ott?token={}", token.value))
             .body(axum::body::Body::empty())
@@ -384,6 +383,9 @@ mod tests {
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FOUND);
         assert_eq!(resp.headers()[header::LOCATION], "/");
+
+        // Anti-fixation: the session id must rotate on login.
+        assert_ne!(session.id().await, id_before, "session id must rotate on login");
 
         // The security context is now stored on the session.
         let ctx = session

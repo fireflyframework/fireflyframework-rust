@@ -30,7 +30,7 @@ use axum::response::Response;
 use globset::{GlobBuilder, GlobMatcher};
 use tower::{Layer, Service};
 
-use crate::authentication::{Authentication, SecurityError, ANONYMOUS_ID};
+use crate::authentication::{Authentication, SecurityError, ANONYMOUS_ID, ROLE_PREFIX};
 use crate::problem;
 use crate::role_hierarchy::RoleHierarchy;
 
@@ -411,6 +411,23 @@ enum Verdict {
     Forbidden(&'static str),
 }
 
+/// Whether a rule's required role `rule_role` is satisfied — `ROLE_`-prefix
+/// aware and consistent with [`Authentication::has_role`]: a bare or
+/// `ROLE_`-prefixed role in the (hierarchy-expanded) role set matches, as does a
+/// `ROLE_`-prefixed *authority* (how Spring stores roles). So a principal
+/// carrying `ROLE_ADMIN` satisfies a `require(..., &["ADMIN"])` rule on the URL
+/// chain just as it does `#[pre_authorize(role = "ADMIN")]`.
+fn role_matches(
+    rule_role: &str,
+    effective_roles: &BTreeSet<String>,
+    authorities: &[String],
+) -> bool {
+    let prefixed = format!("{ROLE_PREFIX}{rule_role}");
+    effective_roles.contains(rule_role)
+        || effective_roles.contains(&prefixed)
+        || authorities.iter().any(|a| a == &prefixed)
+}
+
 fn decide(rules: &[CompiledRule], hierarchy: Option<&RoleHierarchy>, req: &Request) -> Verdict {
     let method = req.method().as_str();
     let path = req.uri().path();
@@ -437,7 +454,12 @@ fn decide(rules: &[CompiledRule], hierarchy: Option<&RoleHierarchy>, req: &Reque
             Some(h) => h.expand(auth.roles.iter().cloned()),
             None => auth.roles.iter().cloned().collect(),
         };
-        if !rule.roles.is_empty() && !rule.roles.iter().any(|r| effective_roles.contains(r)) {
+        if !rule.roles.is_empty()
+            && !rule
+                .roles
+                .iter()
+                .any(|r| role_matches(r, &effective_roles, &auth.authorities))
+        {
             return Verdict::Forbidden("required role missing");
         }
         if !rule.authorities.is_empty()
@@ -525,6 +547,52 @@ mod tests {
         );
         assert_eq!(
             status_for(chain(), "GET", "/apixyz").await,
+            http::StatusCode::FORBIDDEN
+        );
+    }
+
+    // Review fix (H2 consistency): the URL-authorization role check must be
+    // ROLE_-prefix aware like `has_role`, so a `ROLE_ADMIN` principal satisfies
+    // a `require(..., ["ADMIN"])` rule (not only `#[pre_authorize]`).
+    #[tokio::test]
+    async fn role_rules_are_role_prefix_aware() {
+        use crate::Authentication;
+        async fn status(chain: FilterChain, auth: Authentication, path: &str) -> http::StatusCode {
+            let inner = tower::service_fn(|_r: Request| async {
+                Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+            });
+            let svc = chain.layer().layer(inner);
+            let mut req = Request::builder()
+                .method("GET")
+                .uri(path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            req.extensions_mut().insert(auth);
+            svc.oneshot(req).await.unwrap().status()
+        }
+        let role = |p: &str, r: &str| Authentication {
+            principal: p.into(),
+            roles: vec![r.into()],
+            ..Default::default()
+        };
+        let chain = || {
+            FilterChain::new()
+                .require_pattern("/admin/**", &["ADMIN"])
+                .any_request_permit()
+        };
+        // ROLE_-prefixed principal satisfies a bare "ADMIN" rule (Spring parity).
+        assert_eq!(
+            status(chain(), role("u1", "ROLE_ADMIN"), "/admin/x").await,
+            http::StatusCode::OK
+        );
+        // A bare role still works.
+        assert_eq!(
+            status(chain(), role("u2", "ADMIN"), "/admin/x").await,
+            http::StatusCode::OK
+        );
+        // A non-admin is still forbidden.
+        assert_eq!(
+            status(chain(), role("u3", "USER"), "/admin/x").await,
             http::StatusCode::FORBIDDEN
         );
     }

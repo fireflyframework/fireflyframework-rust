@@ -191,10 +191,22 @@ where
     }
 }
 
-/// Whether the request arrived over a secure (HTTPS) channel — directly or via
-/// a TLS-terminating proxy that set `X-Forwarded-Proto: https`. Shared with the
-/// CSRF layer's `Secure`-cookie gating.
+/// Marker inserted into request extensions by [`serve`](crate::serve) when the
+/// framework terminates TLS in-process (so `request_is_secure` recognises a
+/// direct HTTPS connection, whose origin-form request URI carries no scheme and
+/// whose connection sends no `X-Forwarded-Proto`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SecureRequest;
+
+/// Whether the request arrived over a secure (HTTPS) channel — recognised three
+/// ways: the in-process-TLS [`SecureRequest`] marker, a TLS-terminating proxy's
+/// `X-Forwarded-Proto: https`, or an absolute-form `https` request URI. Shared
+/// with the CSRF layer's `Secure`-cookie gating.
 pub(crate) fn request_is_secure(req: &Request<Body>) -> bool {
+    // In-process TLS termination (firefly's own `serve`) marks the request.
+    if req.extensions().get::<SecureRequest>().is_some() {
+        return true;
+    }
     if let Some(proto) = req
         .headers()
         .get("x-forwarded-proto")
@@ -242,6 +254,21 @@ mod tests {
             hsts_header(SecurityHeadersConfig::default(), Some("https")).await,
             "HSTS must be sent over HTTPS (X-Forwarded-Proto)"
         );
+    }
+
+    // Review fix: an in-process-TLS request (SecureRequest marker, no
+    // X-Forwarded-Proto, no URI scheme) is recognised as secure, so HSTS is
+    // emitted — previously it was silently dropped on direct-HTTPS deployments.
+    #[tokio::test]
+    async fn hsts_present_for_in_app_tls_marker() {
+        let inner = tower::service_fn(|_req: Request<Body>| async {
+            Ok::<Response, Infallible>(Response::new(Body::empty()))
+        });
+        let svc = SecurityHeadersLayer::new(SecurityHeadersConfig::default()).layer(inner);
+        let mut req = Request::builder().uri("/x").body(Body::empty()).unwrap();
+        req.extensions_mut().insert(SecureRequest);
+        let resp = svc.oneshot(req).await.unwrap();
+        assert!(resp.headers().contains_key("strict-transport-security"));
     }
 
     // H9: opt-in to always emit HSTS, even over plain HTTP.
