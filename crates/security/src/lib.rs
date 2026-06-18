@@ -151,6 +151,8 @@ mod password;
 mod problem;
 mod role_hierarchy;
 mod session_auth;
+#[cfg(feature = "webauthn")]
+mod webauthn;
 
 pub use authentication::{
     authentication_from, must_auth_from, with_authentication, Authentication, SecurityError,
@@ -185,6 +187,13 @@ pub use role_hierarchy::RoleHierarchy;
 pub use session_auth::{
     SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,
     SessionLoginSessionStore,
+};
+#[cfg(feature = "webauthn")]
+pub use webauthn::{
+    webauthn_routes, CeremonyStateStore, InMemoryCeremonyStore, InMemoryPasskeyRepository,
+    InMemoryUserEntityRepository, PasskeyCredentialRepository,
+    PublicKeyCredentialUserEntityRepository, WebAuthnError, WebAuthnProperties,
+    WebAuthnRelyingParty, WebAuthnState,
 };
 
 /// Framework version stamp.
