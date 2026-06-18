@@ -133,9 +133,14 @@ impl std::ops::Deref for TestRegistry {
 /// uniquely-named table (dropped when the returned handle is dropped). Does NOT
 /// call `init()`, so the lazy auto-DDL is exercised on first use.
 async fn registry(url: &str, table: &str) -> TestRegistry {
+    // These tests use synthetic (tiny) created_at values for deterministic
+    // ordering and assert register/list/count/deregister semantics — not entry
+    // expiry. Disable the TTL so the synthetic timestamps are never pruned;
+    // expiry is covered by the lib's `expired_sessions_are_pruned_from_the_count`.
     let r = PostgresSessionRegistry::connect_with_table(url, table)
         .await
-        .expect("connect to FIREFLY_TEST_POSTGRES_URL");
+        .expect("connect to FIREFLY_TEST_POSTGRES_URL")
+        .with_ttl(std::time::Duration::ZERO);
     TestRegistry {
         registry: r,
         _guard: TableGuard {
@@ -253,7 +258,9 @@ async fn evict_oldest_through_controller() {
     let r = Arc::new(
         PostgresSessionRegistry::connect_with_table(&url, &table)
             .await
-            .expect("connect to FIREFLY_TEST_POSTGRES_URL"),
+            .expect("connect to FIREFLY_TEST_POSTGRES_URL")
+            // Synthetic created_at ordering; expiry disabled (see `registry`).
+            .with_ttl(std::time::Duration::ZERO),
     );
     let _guard = TableGuard {
         url: url.clone(),

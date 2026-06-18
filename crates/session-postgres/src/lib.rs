@@ -123,19 +123,27 @@ pub const TABLE: &str = "firefly_session_registry";
 pub const DDL: &str = "CREATE TABLE IF NOT EXISTS firefly_session_registry (\n    \
      session_id  TEXT PRIMARY KEY,\n    \
      principal   TEXT NOT NULL,\n    \
-     created_at  BIGINT NOT NULL\n)";
+     created_at  BIGINT NOT NULL,\n    \
+     expires_at  BIGINT NOT NULL DEFAULT 0\n)";
 
 /// The supporting index on `principal`, created alongside the table — pyfly's
 /// `<table>_principal_idx`.
 pub const INDEX_DDL: &str = "CREATE INDEX IF NOT EXISTS firefly_session_registry_principal_idx \
      ON firefly_session_registry (principal)";
 
-/// `INSERT … ON CONFLICT (session_id) DO UPDATE` upsert — pyfly's `register`.
+/// Adds the `expires_at` column to a pre-existing table (idempotent), so an
+/// older deployment migrates on startup without a manual step.
+pub const ALTER_SQL: &str = "ALTER TABLE firefly_session_registry \
+     ADD COLUMN IF NOT EXISTS expires_at BIGINT NOT NULL DEFAULT 0";
+
+/// `INSERT … ON CONFLICT (session_id) DO UPDATE` upsert — pyfly's `register`,
+/// now also recording `expires_at`.
 pub const UPSERT_SQL: &str =
-    "INSERT INTO firefly_session_registry (session_id, principal, created_at) \
-     VALUES ($1, $2, $3) \
+    "INSERT INTO firefly_session_registry (session_id, principal, created_at, expires_at) \
+     VALUES ($1, $2, $3, $4) \
      ON CONFLICT (session_id) DO UPDATE \
-     SET principal = EXCLUDED.principal, created_at = EXCLUDED.created_at";
+     SET principal = EXCLUDED.principal, created_at = EXCLUDED.created_at, \
+         expires_at = EXCLUDED.expires_at";
 
 /// Single-session delete scoped to the principal — pyfly's `deregister`.
 pub const DELETE_SQL: &str =
@@ -147,6 +155,16 @@ pub const LIST_SQL: &str = "SELECT session_id, created_at FROM firefly_session_r
 
 /// Per-principal live-session count — pyfly's `count`.
 pub const COUNT_SQL: &str = "SELECT COUNT(*) FROM firefly_session_registry WHERE principal = $1";
+
+/// Deletes rows whose `expires_at` has passed (`0` = never expires). Pruning
+/// keeps the per-principal concurrency count accurate as sessions age out,
+/// instead of leaking orphaned rows forever (H12).
+pub const PRUNE_SQL: &str =
+    "DELETE FROM firefly_session_registry WHERE expires_at > 0 AND expires_at < $1";
+
+/// Default registry entry TTL (30 minutes), mirroring the session idle timeout.
+/// A registered session older than this is pruned so the count cannot drift.
+pub const DEFAULT_REGISTRY_TTL_MILLIS: i64 = 30 * 60 * 1000;
 
 /// A durable, distributed [`firefly_session::SessionRegistry`] backed by a
 /// single Postgres table, shared by every application instance.
@@ -161,6 +179,9 @@ pub struct PostgresSessionRegistry {
     /// Lazy create-table latch: `false` until the DDL has run once. Guarded by
     /// `ensure_lock` so two concurrent first calls don't both issue the DDL.
     ensured: Mutex<bool>,
+    /// Registry entry TTL in millis; an entry is pruned once
+    /// `created_at + ttl_millis` has passed. `0` disables expiry.
+    ttl_millis: i64,
 }
 
 /// The set of statements a registry runs, rendered once from a single validated
@@ -171,10 +192,12 @@ struct TableSql {
     table: String,
     ddl: String,
     index_ddl: String,
+    alter: String,
     upsert: String,
     delete: String,
     list: String,
     count: String,
+    prune: String,
 }
 
 impl TableSql {
@@ -187,16 +210,21 @@ impl TableSql {
                 "CREATE TABLE IF NOT EXISTS {table} (\n    \
                  session_id  TEXT PRIMARY KEY,\n    \
                  principal   TEXT NOT NULL,\n    \
-                 created_at  BIGINT NOT NULL\n)"
+                 created_at  BIGINT NOT NULL,\n    \
+                 expires_at  BIGINT NOT NULL DEFAULT 0\n)"
             ),
             index_ddl: format!(
                 "CREATE INDEX IF NOT EXISTS {table}_principal_idx ON {table} (principal)"
             ),
+            alter: format!(
+                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS expires_at BIGINT NOT NULL DEFAULT 0"
+            ),
             upsert: format!(
-                "INSERT INTO {table} (session_id, principal, created_at) \
-                 VALUES ($1, $2, $3) \
+                "INSERT INTO {table} (session_id, principal, created_at, expires_at) \
+                 VALUES ($1, $2, $3, $4) \
                  ON CONFLICT (session_id) DO UPDATE \
-                 SET principal = EXCLUDED.principal, created_at = EXCLUDED.created_at"
+                 SET principal = EXCLUDED.principal, created_at = EXCLUDED.created_at, \
+                     expires_at = EXCLUDED.expires_at"
             ),
             delete: format!("DELETE FROM {table} WHERE principal = $1 AND session_id = $2"),
             list: format!(
@@ -204,8 +232,18 @@ impl TableSql {
                  WHERE principal = $1 ORDER BY created_at ASC, session_id ASC"
             ),
             count: format!("SELECT COUNT(*) FROM {table} WHERE principal = $1"),
+            prune: format!("DELETE FROM {table} WHERE expires_at > 0 AND expires_at < $1"),
         }
     }
+}
+
+/// The current wall-clock time in epoch millis (the units the
+/// [`SessionRegistry`] contract uses for `created_at`).
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl std::fmt::Debug for PostgresSessionRegistry {
@@ -286,7 +324,18 @@ impl PostgresSessionRegistry {
             client,
             sql,
             ensured: Mutex::new(false),
+            ttl_millis: DEFAULT_REGISTRY_TTL_MILLIS,
         }
+    }
+
+    /// Overrides the registry entry TTL (default
+    /// [`DEFAULT_REGISTRY_TTL_MILLIS`]); a registered session is pruned once
+    /// `created_at + ttl` has passed. Pass a zero duration to disable expiry
+    /// (entries then live until explicitly deregistered).
+    #[must_use]
+    pub fn with_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.ttl_millis = ttl.as_millis() as i64;
+        self
     }
 
     /// The table this registry targets (the default [`TABLE`] unless built with
@@ -312,7 +361,8 @@ impl PostgresSessionRegistry {
         Ok(())
     }
 
-    /// Runs the table + index DDL (no latch handling).
+    /// Runs the table + index DDL, plus the idempotent `expires_at` column
+    /// migration for pre-existing tables (no latch handling).
     async fn run_ddl(&self) -> Result<(), RegistryError> {
         self.client
             .batch_execute(&self.sql.ddl)
@@ -321,7 +371,29 @@ impl PostgresSessionRegistry {
         self.client
             .batch_execute(&self.sql.index_ddl)
             .await
+            .map_err(backend_err)?;
+        self.client
+            .batch_execute(&self.sql.alter)
+            .await
             .map_err(backend_err)
+    }
+
+    /// Deletes expired rows assuming the table already exists (hot path: callers
+    /// have just run `ensure_table`).
+    async fn prune_now(&self) {
+        if let Err(e) = self.client.execute(&self.sql.prune, &[&now_millis()]).await {
+            tracing::warn!(error = %e, "session-postgres: prune of expired sessions failed");
+        }
+    }
+
+    /// Deletes expired registry rows (best-effort). Called automatically by
+    /// `register` / `count` / `list_sessions`; also exposed so a scheduled job
+    /// can sweep the table independently.
+    pub async fn prune_expired(&self) {
+        if self.ensure_table().await.is_err() {
+            return;
+        }
+        self.prune_now().await;
     }
 
     /// Lazily ensures the table exists, exactly once, behind the async latch —
@@ -360,13 +432,24 @@ impl SessionRegistry for PostgresSessionRegistry {
             tracing::warn!(principal, session_id, error = %e, "session-postgres: ensure-table failed; skipping register");
             return;
         }
+        // Stamp an expiry so an orphaned row (a session that ends without a
+        // deregister) ages out instead of inflating the count forever (H12).
+        let expires_at = if self.ttl_millis > 0 {
+            created_at.saturating_add(self.ttl_millis)
+        } else {
+            0
+        };
         if let Err(e) = self
             .client
-            .execute(&self.sql.upsert, &[&session_id, &principal, &created_at])
+            .execute(
+                &self.sql.upsert,
+                &[&session_id, &principal, &created_at, &expires_at],
+            )
             .await
         {
             tracing::warn!(principal, session_id, error = %e, "session-postgres: register upsert failed; concurrency cap not enforced for this login");
         }
+        self.prune_now().await;
     }
 
     /// `DELETE … WHERE principal = $1 AND session_id = $2` — pyfly's
@@ -395,6 +478,7 @@ impl SessionRegistry for PostgresSessionRegistry {
             tracing::warn!(principal, error = %e, "session-postgres: ensure-table failed; returning empty session list");
             return Vec::new();
         }
+        self.prune_now().await;
         match self.client.query(&self.sql.list, &[&principal]).await {
             Ok(rows) => rows
                 .iter()
@@ -414,6 +498,7 @@ impl SessionRegistry for PostgresSessionRegistry {
             tracing::warn!(principal, error = %e, "session-postgres: ensure-table failed; returning count 0");
             return 0;
         }
+        self.prune_now().await;
         match self.client.query_one(&self.sql.count, &[&principal]).await {
             Ok(row) => {
                 let n: i64 = row.get(0);
@@ -533,7 +618,17 @@ mod tests {
         assert!(DDL.contains("session_id  TEXT PRIMARY KEY"));
         assert!(DDL.contains("principal   TEXT NOT NULL"));
         assert!(DDL.contains("created_at  BIGINT NOT NULL"));
+        assert!(DDL.contains("expires_at  BIGINT NOT NULL DEFAULT 0"));
         assert_eq!(TABLE, "firefly_session_registry");
+    }
+
+    #[test]
+    fn expiry_sql_constants_are_well_formed() {
+        // H12: the migration adds the column idempotently...
+        assert!(ALTER_SQL.contains("ADD COLUMN IF NOT EXISTS expires_at BIGINT NOT NULL DEFAULT 0"));
+        // ...and pruning only ever deletes truly-expired rows (0 = never).
+        assert!(PRUNE_SQL.contains("WHERE expires_at > 0 AND expires_at < $1"));
+        assert_eq!(DEFAULT_REGISTRY_TTL_MILLIS, 30 * 60 * 1000);
     }
 
     #[test]
@@ -549,8 +644,12 @@ mod tests {
         assert!(UPSERT_SQL.contains("ON CONFLICT (session_id) DO UPDATE"));
         assert!(UPSERT_SQL.contains("principal = EXCLUDED.principal"));
         assert!(UPSERT_SQL.contains("created_at = EXCLUDED.created_at"));
+        assert!(UPSERT_SQL.contains("expires_at = EXCLUDED.expires_at"));
         assert!(
-            UPSERT_SQL.contains("$1") && UPSERT_SQL.contains("$2") && UPSERT_SQL.contains("$3")
+            UPSERT_SQL.contains("$1")
+                && UPSERT_SQL.contains("$2")
+                && UPSERT_SQL.contains("$3")
+                && UPSERT_SQL.contains("$4")
         );
     }
 
@@ -580,10 +679,49 @@ mod tests {
         assert_eq!(sql.table, TABLE);
         assert_eq!(sql.ddl, DDL);
         assert_eq!(sql.index_ddl, INDEX_DDL);
+        assert_eq!(sql.alter, ALTER_SQL);
         assert_eq!(sql.upsert, UPSERT_SQL);
         assert_eq!(sql.delete, DELETE_SQL);
         assert_eq!(sql.list, LIST_SQL);
         assert_eq!(sql.count, COUNT_SQL);
+        assert_eq!(sql.prune, PRUNE_SQL);
+    }
+
+    // H12 (real Postgres, env-gated): an expired registry entry is pruned so it
+    // never inflates the per-principal concurrency count. Runs only when
+    // FIREFLY_TEST_POSTGRES_URL points at a live database.
+    #[tokio::test]
+    async fn expired_sessions_are_pruned_from_the_count() {
+        let Ok(url) = std::env::var("FIREFLY_TEST_POSTGRES_URL") else {
+            eprintln!("skipping: FIREFLY_TEST_POSTGRES_URL not set");
+            return;
+        };
+        let reg = PostgresSessionRegistry::connect(&url)
+            .await
+            .expect("connect")
+            .with_ttl(std::time::Duration::from_secs(3600));
+        reg.init().await.expect("init");
+
+        let now = now_millis();
+        let principal = format!("h12-user-{now}");
+
+        // A session created now is live; one created 2h ago is already expired
+        // under the 1h TTL and must not survive.
+        reg.register(&principal, "s-live", now).await;
+        reg.register(&principal, "s-old", now - 2 * 3600 * 1000).await;
+
+        assert_eq!(
+            reg.count(&principal).await,
+            1,
+            "expired session must be pruned from the count"
+        );
+        let sessions = reg.list_sessions(&principal).await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].0, "s-live");
+
+        // Cleanup.
+        reg.deregister(&principal, "s-live").await;
+        assert_eq!(reg.count(&principal).await, 0);
     }
 
     #[test]
