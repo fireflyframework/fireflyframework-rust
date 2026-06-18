@@ -153,7 +153,7 @@ mod session_auth;
 
 pub use authentication::{
     authentication_from, must_auth_from, with_authentication, Authentication, SecurityError,
-    Verifier, VerifierFn, ANONYMOUS_ID,
+    Verifier, VerifierFn, ANONYMOUS_ID, ROLE_PREFIX,
 };
 pub use bearer::{BearerConfig, BearerLayer, BearerService, UnauthorizedHandler};
 pub use config::{
@@ -170,7 +170,9 @@ pub use csrf::{
 };
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
 pub use guards::{require, AuthorizationGuard};
-pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier};
+pub use jwks::{
+    claims_to_authentication, Algorithm, JwksVerifier, DEFAULT_CLOCK_SKEW_SECONDS,
+};
 pub use jwt::{authentication_from_claims, JwtService, DEFAULT_EXPIRATION_SECONDS};
 pub use password::{Argon2PasswordEncoder, BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
 pub use role_hierarchy::RoleHierarchy;

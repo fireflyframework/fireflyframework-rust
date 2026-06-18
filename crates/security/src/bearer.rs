@@ -87,11 +87,19 @@ impl BearerConfig {
     }
 
     /// Renders a rejection through the custom handler or the canonical
-    /// 401 problem envelope.
+    /// 401 problem envelope, with an RFC 6750 `WWW-Authenticate: Bearer`
+    /// challenge: a bare `Bearer` when no token was presented, or
+    /// `error="invalid_token"` when a token was present but unusable.
     fn reject(&self, req: &Request, err: &SecurityError) -> Response {
         match &self.unauthorized {
             Some(f) => f(req, err),
-            None => problem::unauthorized(&err.to_string()),
+            None => {
+                let error_code = match err {
+                    SecurityError::Unauthenticated => None,
+                    _ => Some("invalid_token"),
+                };
+                problem::unauthorized_bearer(&err.to_string(), error_code)
+            }
         }
     }
 }
@@ -205,5 +213,73 @@ where
                 Err(err) => Ok(cfg.reject(&req, &err)),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VerifierFn;
+    use http::header::WWW_AUTHENTICATE;
+    use tower::ServiceExt;
+
+    fn bearer_layer() -> BearerLayer {
+        let verifier = VerifierFn(|t: String| async move {
+            if t == "good" {
+                Ok(Authentication {
+                    principal: "u1".into(),
+                    ..Default::default()
+                })
+            } else {
+                Err(SecurityError::verification("bad token"))
+            }
+        });
+        BearerLayer::new(BearerConfig::new(verifier))
+    }
+
+    async fn run(req: Request) -> Response {
+        let inner = tower::service_fn(|_r: Request| async {
+            Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+        });
+        bearer_layer().layer(inner).oneshot(req).await.unwrap()
+    }
+
+    // H8: an invalid token yields RFC 6750 `WWW-Authenticate: Bearer
+    // error="invalid_token"` so OAuth2 clients can react correctly.
+    #[tokio::test]
+    async fn invalid_token_emits_bearer_invalid_token_challenge() {
+        let req = Request::builder()
+            .uri("/x")
+            .header("Authorization", "Bearer nope")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = run(req).await;
+        assert_eq!(resp.status(), http::StatusCode::UNAUTHORIZED);
+        let wa = resp
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .expect("WWW-Authenticate present")
+            .to_str()
+            .unwrap();
+        assert!(wa.starts_with("Bearer"), "got {wa}");
+        assert!(wa.contains("error=\"invalid_token\""), "got {wa}");
+    }
+
+    // H8: a missing token yields a plain `WWW-Authenticate: Bearer` challenge.
+    #[tokio::test]
+    async fn missing_token_emits_plain_bearer_challenge() {
+        let req = Request::builder()
+            .uri("/x")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = run(req).await;
+        assert_eq!(resp.status(), http::StatusCode::UNAUTHORIZED);
+        let wa = resp
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .expect("WWW-Authenticate present")
+            .to_str()
+            .unwrap();
+        assert_eq!(wa, "Bearer");
     }
 }

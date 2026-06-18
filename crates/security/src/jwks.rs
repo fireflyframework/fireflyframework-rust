@@ -15,11 +15,13 @@
 //! JWKS-based OAuth2 resource-server verifier (pyfly:
 //! `pyfly.security.oauth2.resource_server.JWKSTokenValidator`).
 //!
-//! [`JwksVerifier`] validates RS256-signed JWTs against a remote JWKS
-//! endpoint: it fetches the provider's public keys once, caches them by
-//! `kid`, and verifies signature, `exp` (required), and optional
-//! `iss`/`aud` claims. It implements the crate's [`Verifier`] port, so
-//! it drops straight into [`BearerLayer`](crate::BearerLayer).
+//! [`JwksVerifier`] validates asymmetrically-signed JWTs (RSA `RS*`/`PS*`,
+//! EC `ES256`/`ES384`, and `EdDSA`) against a remote JWKS endpoint: it
+//! fetches the provider's public keys once, caches them by `kid`, and
+//! verifies the signature, `exp` (required), `nbf` (when present), and the
+//! optional `iss`/`aud` claims with a configurable clock-skew leeway. It
+//! implements the crate's [`Verifier`] port, so it drops straight into
+//! [`BearerLayer`](crate::BearerLayer).
 
 use std::collections::HashMap;
 
@@ -33,18 +35,24 @@ use crate::authentication::{Authentication, SecurityError, Verifier};
 
 pub use jsonwebtoken::Algorithm;
 
-/// One key of a JWKS document (only the RSA members the verifier
-/// needs).
+/// One key of a JWKS document (the RSA, EC, and OKP/EdDSA members the
+/// verifier needs).
 #[derive(Debug, Deserialize)]
 struct Jwk {
     #[serde(default)]
     kty: String,
     #[serde(default)]
     kid: Option<String>,
+    // RSA components.
     #[serde(default)]
     n: Option<String>,
     #[serde(default)]
     e: Option<String>,
+    // EC (`x`/`y`) and OKP/EdDSA (`x`) components.
+    #[serde(default)]
+    x: Option<String>,
+    #[serde(default)]
+    y: Option<String>,
 }
 
 /// A JWKS document: `{"keys": [...]}`.
@@ -77,9 +85,14 @@ pub struct JwksVerifier {
     issuer: Option<String>,
     audience: Option<String>,
     algorithms: Vec<Algorithm>,
+    leeway_seconds: u64,
     http: reqwest::Client,
     keys: RwLock<HashMap<String, DecodingKey>>,
 }
+
+/// Default clock-skew tolerance (seconds) applied to `exp`/`nbf` validation —
+/// matches Spring's `JwtTimestampValidator` default of 60s.
+pub const DEFAULT_CLOCK_SKEW_SECONDS: u64 = 60;
 
 impl std::fmt::Debug for JwksVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -93,14 +106,30 @@ impl std::fmt::Debug for JwksVerifier {
 }
 
 impl JwksVerifier {
-    /// Builds a verifier for `jwks_uri` with pyfly defaults: no issuer
-    /// or audience validation, `RS256` only, `exp` required.
+    /// Builds a verifier for `jwks_uri` with Spring-resource-server defaults:
+    /// no issuer or audience validation; `exp` required; `nbf` validated when
+    /// present; a 60s clock-skew leeway; and the standard asymmetric JWS
+    /// algorithm family allowed (RSA `RS*`/`PS*`, EC `ES256`/`ES384`, and
+    /// `EdDSA`) — matching `NimbusJwtDecoder` deriving algorithms from the JWK
+    /// set. The symmetric `HS*` family is never allowed (it would enable an
+    /// algorithm-confusion attack against the public keys).
     pub fn new(jwks_uri: impl Into<String>) -> Self {
         Self {
             jwks_uri: jwks_uri.into(),
             issuer: None,
             audience: None,
-            algorithms: vec![Algorithm::RS256],
+            algorithms: vec![
+                Algorithm::RS256,
+                Algorithm::RS384,
+                Algorithm::RS512,
+                Algorithm::PS256,
+                Algorithm::PS384,
+                Algorithm::PS512,
+                Algorithm::ES256,
+                Algorithm::ES384,
+                Algorithm::EdDSA,
+            ],
+            leeway_seconds: DEFAULT_CLOCK_SKEW_SECONDS,
             http: reqwest::Client::new(),
             keys: RwLock::new(HashMap::new()),
         }
@@ -118,9 +147,18 @@ impl JwksVerifier {
         self
     }
 
-    /// Overrides the allowed signing algorithms (default `[RS256]`).
+    /// Overrides the allowed signing algorithms (default: the asymmetric
+    /// `RS*`/`PS*`/`ES256`/`ES384`/`EdDSA` family).
     pub fn algorithms(mut self, algorithms: Vec<Algorithm>) -> Self {
         self.algorithms = algorithms;
+        self
+    }
+
+    /// Overrides the clock-skew leeway in seconds applied to `exp`/`nbf`
+    /// validation (default [`DEFAULT_CLOCK_SKEW_SECONDS`]). Spring's
+    /// `JwtTimestampValidator` defaults to 60s.
+    pub fn clock_skew_seconds(mut self, seconds: u64) -> Self {
+        self.leeway_seconds = seconds;
         self
     }
 
@@ -141,7 +179,10 @@ impl JwksVerifier {
         let key = self.signing_key(&kid).await?;
 
         let mut validation = Validation::new(header.alg);
-        validation.leeway = 0;
+        validation.leeway = self.leeway_seconds;
+        // Reject not-yet-valid tokens (a future `nbf`), which jsonwebtoken
+        // does not check by default. `exp` is required and validated too.
+        validation.validate_nbf = true;
         validation.set_required_spec_claims(&["exp"]);
         if let Some(iss) = &self.issuer {
             validation.set_issuer(&[iss]);
@@ -194,13 +235,28 @@ impl JwksVerifier {
 
         let mut keys = HashMap::new();
         for jwk in doc.keys {
-            let (Some(kid), Some(n), Some(e)) = (jwk.kid, jwk.n, jwk.e) else {
+            let Some(kid) = jwk.kid else {
                 continue;
             };
-            if jwk.kty != "RSA" {
-                continue;
-            }
-            if let Ok(key) = DecodingKey::from_rsa_components(&n, &e) {
+            // Build the decoding key per key type. Unknown types or keys
+            // missing their components are skipped (not an error) so one bad
+            // entry never poisons the set.
+            let key = match jwk.kty.as_str() {
+                "RSA" => match (jwk.n.as_deref(), jwk.e.as_deref()) {
+                    (Some(n), Some(e)) => DecodingKey::from_rsa_components(n, e).ok(),
+                    _ => None,
+                },
+                "EC" => match (jwk.x.as_deref(), jwk.y.as_deref()) {
+                    (Some(x), Some(y)) => DecodingKey::from_ec_components(x, y).ok(),
+                    _ => None,
+                },
+                "OKP" => jwk
+                    .x
+                    .as_deref()
+                    .and_then(|x| DecodingKey::from_ed_components(x).ok()),
+                _ => None,
+            };
+            if let Some(key) = key {
                 keys.insert(kid, key);
             }
         }

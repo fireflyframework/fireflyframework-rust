@@ -51,6 +51,36 @@ pub(crate) fn forbidden(detail: &str) -> Response {
     write(StatusCode::FORBIDDEN, TYPE_FORBIDDEN, "Forbidden", detail)
 }
 
+/// Builds a 401 problem response carrying an RFC 6750
+/// `WWW-Authenticate: Bearer` challenge — what an OAuth2 resource server must
+/// emit so clients can distinguish "no credentials" from "invalid token".
+///
+/// `error_code` is the RFC 6750 error (`invalid_token` / `insufficient_scope`),
+/// or `None` for the bare `Bearer` challenge used when no token was presented.
+pub(crate) fn unauthorized_bearer(detail: &str, error_code: Option<&str>) -> Response {
+    let mut resp = unauthorized(detail);
+    let challenge = match error_code {
+        Some(code) => format!(
+            "Bearer error=\"{}\", error_description=\"{}\"",
+            sanitize(code),
+            sanitize(detail)
+        ),
+        None => "Bearer".to_string(),
+    };
+    if let Ok(value) = http::HeaderValue::from_str(&challenge) {
+        resp.headers_mut().insert(header::WWW_AUTHENTICATE, value);
+    }
+    resp
+}
+
+/// Strips characters that would break (or inject into) a `WWW-Authenticate`
+/// quoted-string value.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '"' && *c != '\\' && !c.is_control())
+        .collect()
+}
+
 /// Serializes the envelope. Members are inserted in alphabetical order
 /// so the byte layout is stable regardless of the `serde_json` map
 /// backend, matching Go's sorted map marshalling.
