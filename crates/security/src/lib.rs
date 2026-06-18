@@ -146,6 +146,7 @@ pub mod guards;
 mod jwks;
 mod jwt;
 pub mod oauth2;
+mod ott;
 mod password;
 mod problem;
 mod role_hierarchy;
@@ -174,6 +175,11 @@ pub use jwks::{
     claims_to_authentication, Algorithm, JwksVerifier, DEFAULT_CLOCK_SKEW_SECONDS,
 };
 pub use jwt::{authentication_from_claims, JwtService, DEFAULT_EXPIRATION_SECONDS};
+pub use ott::{
+    ott_login_routes, InMemoryOneTimeTokenService, LoggingOttHandler, OneTimeToken,
+    OneTimeTokenGenerationSuccessHandler, OneTimeTokenService, OttLoginState,
+    DEFAULT_OTT_TTL_SECONDS,
+};
 pub use password::{Argon2PasswordEncoder, BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
 pub use role_hierarchy::RoleHierarchy;
 pub use session_auth::{
