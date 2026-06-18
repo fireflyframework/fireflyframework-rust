@@ -568,6 +568,43 @@ async fn callback_rejects_id_token_with_wrong_nonce() {
     assert_eq!(body_json(resp).await["error"], "invalid_id_token");
 }
 
+// H6: an id_token present in the token response must NEVER be trusted without
+// validation. With no JWKS configured we cannot validate it, so the login must
+// fail rather than silently fall through to the (unverified) userinfo identity.
+#[tokio::test]
+async fn callback_rejects_id_token_when_no_jwks_configured() {
+    let (provider, provider_state) = spawn_provider(json!({"sub": "userinfo-user"})).await;
+    let reg = registration(&provider, false); // deliberately no jwks_uri
+    let (app, sessions) = login_app(reg);
+    let session = sessions.session();
+
+    app.clone()
+        .oneshot(get_req("/oauth2/authorization/acme"))
+        .await
+        .unwrap();
+    let state_param = session.get_attribute(SESSION_KEY_STATE).await.unwrap();
+
+    let id_token = make_id_token(json!({
+        "sub": "oidc-user",
+        "aud": "cid",
+        "exp": 9999999999u64,
+    }));
+    provider_state
+        .lock()
+        .unwrap()
+        .token_extra
+        .insert("id_token".into(), json!(id_token));
+
+    let resp = app
+        .oneshot(get_req(&format!(
+            "/login/oauth2/code/acme?code=c&state={state_param}"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(body_json(resp).await["error"], "invalid_id_token");
+}
+
 // ---------------------------------------------------------------------------
 // Logout
 // ---------------------------------------------------------------------------

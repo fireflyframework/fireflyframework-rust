@@ -81,6 +81,10 @@ pub struct JwtProperties {
     pub algorithm: String,
     /// Token TTL in seconds for the HMAC service; `0` leaves the default.
     pub expiration_seconds: u64,
+    /// Clock-skew tolerance in seconds applied to `exp`/`nbf` validation; `0`
+    /// (the default) leaves the verifier's built-in 60s (Spring's
+    /// `JwtTimestampValidator` default).
+    pub clock_skew_seconds: u64,
 }
 
 /// Bearer-middleware settings.
@@ -109,6 +113,9 @@ pub fn verifier_from_config(
         if !props.audience.trim().is_empty() {
             verifier = verifier.audience(props.audience.clone());
         }
+        if props.clock_skew_seconds > 0 {
+            verifier = verifier.clock_skew_seconds(props.clock_skew_seconds);
+        }
         return Ok(Some(Arc::new(verifier)));
     }
     if !props.secret.trim().is_empty() {
@@ -118,6 +125,9 @@ pub fn verifier_from_config(
         }
         if props.expiration_seconds > 0 {
             service = service.expiration_seconds(props.expiration_seconds);
+        }
+        if props.clock_skew_seconds > 0 {
+            service = service.clock_skew_seconds(props.clock_skew_seconds);
         }
         return Ok(Some(Arc::new(service)));
     }
@@ -197,6 +207,40 @@ mod tests {
             .expect("encode");
         let auth = verifier.verify(&token).await.expect("verify");
         assert_eq!(auth.principal, "alice");
+    }
+
+    // Batch 6: a configured clock-skew is applied to the built verifier. A
+    // token that expired 90s ago is rejected under the default 60s leeway but
+    // accepted once the config widens the skew to 120s.
+    #[tokio::test]
+    async fn configured_clock_skew_is_applied() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let signer = JwtService::new(b"shared");
+        let token = signer
+            .encode(serde_json::json!({ "sub": "u1", "exp": now - 90 }))
+            .expect("encode");
+
+        // Default skew (60s) rejects a 90s-expired token.
+        let default_v = verifier_from_config(&JwtProperties {
+            secret: "shared".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .unwrap();
+        assert!(default_v.verify(&token).await.is_err());
+
+        // Configured 120s skew accepts it.
+        let wide_v = verifier_from_config(&JwtProperties {
+            secret: "shared".into(),
+            clock_skew_seconds: 120,
+            ..Default::default()
+        })
+        .unwrap()
+        .unwrap();
+        assert!(wide_v.verify(&token).await.is_ok());
     }
 
     #[test]

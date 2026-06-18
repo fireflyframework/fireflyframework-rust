@@ -14,8 +14,16 @@ authorization tier**:
   resulting `Authentication` on the request extensions.
 * `FilterChain` — path-prefix-keyed RBAC matcher composable with the
   bearer layer; `FilterChain::layer()` yields the tower layer.
+  Path-segment-aware and `ROLE_`-prefix aware (Spring's `hasRole`).
 * `Authentication` — principal + authorities tuple persisted on the
   request for downstream handlers and CQRS handlers alike.
+* **Passwordless login** — `ott` (one-time-token / magic-link, Spring 6.4
+  `oneTimeTokenLogin()`) and the feature-gated `webauthn` module
+  (passkeys, Spring 6.4 `webAuthn()`; `--features webauthn`).
+* Spring Security 6-faithful hardening: JWKS RSA/EC/EdDSA with `nbf` +
+  configurable clock-skew, secure-only HSTS, scheme-aware CSRF `Secure`
+  cookie, RFC 6750 `WWW-Authenticate` challenge, `Argon2PasswordEncoder`.
+  See the book's **Spring Security Parity** appendix for the full matrix.
 
 ## Mental model
 

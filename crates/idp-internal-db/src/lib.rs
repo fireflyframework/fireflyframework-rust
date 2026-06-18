@@ -355,14 +355,25 @@ impl firefly_idp::Adapter for Adapter {
     /// Both an unknown username and a bcrypt mismatch surface as
     /// [`Error::InvalidCredentials`] — callers can't probe for usernames.
     async fn login(&self, username: &str, password: &str) -> Result<Token> {
-        let (user, hash) = {
+        let lookup = {
             let inner = self.inner.read().expect("user store lock poisoned");
-            let id = inner
+            inner
                 .by_username
                 .get(username)
-                .ok_or(Error::InvalidCredentials)?;
-            let record = inner.users.get(id).ok_or(Error::InvalidCredentials)?;
-            (record.user.clone(), record.hash.clone())
+                .and_then(|id| inner.users.get(id))
+                .map(|record| (record.user.clone(), record.hash.clone()))
+        };
+        let (user, hash) = match lookup {
+            Some(found) => found,
+            None => {
+                // Unknown username: spend comparable bcrypt time (one hash at
+                // the configured cost) so the not-found path is indistinguishable
+                // by latency from a wrong password — Spring's
+                // DaoAuthenticationProvider userNotFoundEncodedPassword guard,
+                // closing the user-enumeration timing oracle.
+                let _ = bcrypt::hash(password, self.cost);
+                return Err(Error::InvalidCredentials);
+            }
         };
         if !user.enabled {
             return Err(Error::InvalidCredentials);
@@ -941,6 +952,37 @@ mod tests {
         assert_eq!(
             a.login("nobody", "pw").await.unwrap_err(),
             Error::InvalidCredentials
+        );
+    }
+
+    // H13: an unknown username must run comparable bcrypt work to a wrong
+    // password so the two are indistinguishable by latency (no user
+    // enumeration oracle). Without the mitigation the not-found path returns
+    // ~instantly while the wrong-password path pays the bcrypt cost.
+    #[tokio::test]
+    async fn login_unknown_user_runs_comparable_bcrypt_work() {
+        use std::time::{Duration, Instant};
+        let a = test_adapter();
+        a.create_user(alice(), "pw").await.unwrap();
+
+        const ITERS: u32 = 5;
+        let mut unknown = Duration::ZERO;
+        let mut wrong = Duration::ZERO;
+        for _ in 0..ITERS {
+            let t = Instant::now();
+            let _ = a.login("nobody", "pw").await;
+            unknown += t.elapsed();
+
+            let t = Instant::now();
+            let _ = a.login("alice", "wrong-password").await;
+            wrong += t.elapsed();
+        }
+        // The unknown-user path must not be dramatically faster than the
+        // wrong-password path (generous 5x bound to stay non-flaky).
+        assert!(
+            unknown * 5 >= wrong,
+            "unknown-user login suspiciously fast: unknown={unknown:?} wrong={wrong:?} \
+             (timing oracle — bcrypt not run on the not-found path)"
         );
     }
 

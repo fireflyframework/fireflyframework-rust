@@ -220,28 +220,26 @@ async fn cors_wildcard_origin_without_credentials_reflects_star() {
     );
 }
 
+// H11: a wildcard origin (`"*"`, the default) combined with credentials is a
+// security foot-gun the browser ignores; Spring rejects it at config time.
+// Firefly now does too — `try_new` errors and `new` panics — while an explicit
+// origin + credentials is accepted (covered by other tests). (Previously this
+// silently echoed the origin, Starlette-style.)
 #[tokio::test]
-async fn cors_wildcard_with_credentials_echoes_origin() {
-    let app = hello_router().layer(CorsLayer::new(CorsConfig {
+async fn cors_wildcard_with_credentials_is_rejected() {
+    let result = CorsLayer::try_new(CorsConfig {
         allow_credentials: true,
         ..CorsConfig::default()
-    }));
-    let req = Request::builder()
-        .uri("/hello")
-        .header(header::ORIGIN, "http://app.test")
-        .body(Body::empty())
-        .unwrap();
-    let (_, headers, _) = send(app, req).await;
-    assert_eq!(
-        headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
-        "http://app.test"
-    );
-    assert_eq!(
-        headers
-            .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
-            .unwrap(),
-        "true"
-    );
+    });
+    assert!(result.is_err(), "wildcard origin + credentials must be rejected");
+
+    // An explicit origin + credentials is fine.
+    let ok = CorsLayer::try_new(CorsConfig {
+        allowed_origins: vec!["http://app.test".into()],
+        allow_credentials: true,
+        ..CorsConfig::default()
+    });
+    assert!(ok.is_ok());
 }
 
 #[tokio::test]
@@ -325,13 +323,15 @@ async fn cors_preflight_allows_safelisted_header_with_explicit_allow_list() {
     assert_eq!(String::from_utf8(body).unwrap(), "Disallowed CORS headers");
 }
 
-// Bug 2: wildcard origins + credentials echoes the specific request
-// origin on preflight, and MUST carry `Vary: Origin` (Starlette's
-// preflight_explicit_allow_origin = not allow_all_origins or
-// allow_credentials).
+// An *explicit* origin + credentials echoes the request origin on preflight
+// and MUST carry `Vary: Origin` (Starlette's preflight_explicit_allow_origin).
+// (Previously this used the wildcard-origin default + credentials, which H11
+// now rejects; switched to an explicit origin to keep covering the echo+Vary
+// path with a valid configuration.)
 #[tokio::test]
-async fn cors_preflight_wildcard_with_credentials_adds_vary_origin() {
+async fn cors_preflight_explicit_origin_with_credentials_adds_vary_origin() {
     let app = hello_router().layer(CorsLayer::new(CorsConfig {
+        allowed_origins: vec!["http://app.test".into()],
         allow_credentials: true,
         ..CorsConfig::default()
     }));
@@ -417,10 +417,19 @@ async fn cors_preflight_multi_failure_reason_and_headers() {
 
 // ========= Security headers (pyfly test_security_headers.py) =========
 
+fn https_req(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("x-forwarded-proto", "https")
+        .body(Body::empty())
+        .unwrap()
+}
+
 #[tokio::test]
 async fn security_headers_defaults_applied() {
-    let app = hello_router().layer(SecurityHeadersLayer::new(SecurityHeadersConfig::default()));
-    let (status, headers, _) = send(app, get_req("/hello")).await;
+    let make = || hello_router().layer(SecurityHeadersLayer::new(SecurityHeadersConfig::default()));
+    // Over HTTPS, all defaults — including HSTS — are present.
+    let (status, headers, _) = send(make(), https_req("/hello")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
     assert_eq!(headers.get("x-frame-options").unwrap(), "DENY");
@@ -433,6 +442,12 @@ async fn security_headers_defaults_applied() {
         headers.get("referrer-policy").unwrap(),
         "strict-origin-when-cross-origin"
     );
+
+    // H9: HSTS is omitted over plain HTTP by default (Spring's HstsHeaderWriter);
+    // the other headers are still present.
+    let (_, http_headers, _) = send(make(), get_req("/hello")).await;
+    assert!(http_headers.get("strict-transport-security").is_none());
+    assert_eq!(http_headers.get("x-frame-options").unwrap(), "DENY");
 }
 
 #[tokio::test]
@@ -445,7 +460,7 @@ async fn security_headers_custom_config() {
         ..SecurityHeadersConfig::default()
     };
     let app = hello_router().layer(SecurityHeadersLayer::new(config));
-    let (_, headers, _) = send(app, get_req("/hello")).await;
+    let (_, headers, _) = send(app, https_req("/hello")).await;
     assert_eq!(headers.get("x-frame-options").unwrap(), "SAMEORIGIN");
     assert_eq!(
         headers.get("strict-transport-security").unwrap(),
@@ -517,7 +532,8 @@ fn csrf_token_generation_and_validation() {
 
 #[tokio::test]
 async fn csrf_safe_method_sets_cookie() {
-    let (status, headers, _) = send(csrf_router(), get_req("/page")).await;
+    // Over HTTPS the cookie carries Secure (H4 Auto policy).
+    let (status, headers, _) = send(csrf_router(), https_req("/page")).await;
     assert_eq!(status, StatusCode::OK);
     let cookie = csrf_cookie_from(&headers).expect("XSRF-TOKEN cookie set");
     assert!(cookie.contains("Path=/"));
@@ -531,6 +547,12 @@ async fn csrf_safe_method_sets_cookie() {
         .trim_start_matches(&format!("{CSRF_COOKIE_NAME}="))
         .to_string();
     assert_eq!(token.len(), 43);
+
+    // H4: over plain HTTP the cookie omits Secure so the double-submit pair
+    // can still be established in development.
+    let (_, http_headers, _) = send(csrf_router(), get_req("/page")).await;
+    let http_cookie = csrf_cookie_from(&http_headers).expect("XSRF-TOKEN cookie set");
+    assert!(!http_cookie.contains("Secure"), "HTTP cookie: {http_cookie}");
 }
 
 #[tokio::test]

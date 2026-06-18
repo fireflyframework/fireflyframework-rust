@@ -866,3 +866,6 @@ métricas y el panel de administración.
   **[Cableado de dependencias](./04-dependency-wiring.md)**.
 - Dirige el router cableado en pruebas con `bootstrap()` en
   **[Pruebas](./18-testing.md)**.
+- Consulta el apéndice **[Paridad con Spring Security](./14a-spring-security-parity.md)**:
+  la matriz completa de cobertura de Spring Security 6, los comportamientos fieles
+  a Spring y el login sin contraseña (enlaces mágicos de un solo uso + passkeys WebAuthn).

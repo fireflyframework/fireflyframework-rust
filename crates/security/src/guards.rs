@@ -47,6 +47,10 @@ use crate::authentication::{Authentication, SecurityError, ANONYMOUS_ID};
 #[derive(Clone)]
 pub struct AuthorizationGuard {
     predicate: Arc<dyn Fn(&Authentication) -> bool + Send + Sync>,
+    /// When true, [`authorize`](AuthorizationGuard::authorize) admits even an
+    /// anonymous / absent principal — Spring's `permitAll()`. Set only by
+    /// [`permit_all`]; the `and`/`or`/`not` combinators reset it to `false`.
+    permit_anonymous: bool,
 }
 
 impl std::fmt::Debug for AuthorizationGuard {
@@ -63,6 +67,7 @@ where
 {
     AuthorizationGuard {
         predicate: Arc::new(predicate),
+        permit_anonymous: false,
     }
 }
 
@@ -78,6 +83,10 @@ impl AuthorizationGuard {
     /// [`SecurityError::Forbidden`] — the same split pyfly's
     /// method-security decorators produce (401 vs 403).
     pub fn authorize(&self, auth: Option<&Authentication>) -> Result<(), SecurityError> {
+        // `permitAll()` admits everyone, including anonymous / no principal.
+        if self.permit_anonymous {
+            return Ok(());
+        }
         let Some(auth) = auth else {
             return Err(SecurityError::Unauthenticated);
         };
@@ -116,11 +125,17 @@ pub fn authenticated() -> AuthorizationGuard {
     require(|_| true)
 }
 
-/// Always passes the predicate (SpEL `permitAll()`); note that
-/// [`AuthorizationGuard::authorize`] still rejects anonymous callers —
-/// use no guard at all for genuinely public surfaces.
+/// Admits every caller, including anonymous / no principal (SpEL `permitAll()`).
+///
+/// Unlike [`authenticated`], this short-circuits
+/// [`AuthorizationGuard::authorize`] to `Ok(())` regardless of the principal —
+/// matching Spring's `permitAll()`. The `and`/`or`/`not` combinators drop this
+/// property (they rebuild via [`require`]).
 pub fn permit_all() -> AuthorizationGuard {
-    require(|_| true)
+    AuthorizationGuard {
+        predicate: Arc::new(|_| true),
+        permit_anonymous: true,
+    }
 }
 
 /// Never passes (SpEL `denyAll()`).
@@ -205,6 +220,38 @@ mod tests {
         assert!(deny_all().not().check(&alice));
         assert!(permit_all().check(&alice));
         assert!(authenticated().check(&alice));
+    }
+
+    // H14: Spring's permitAll() admits even anonymous / no principal, unlike
+    // authenticated(). Previously permit_all().authorize(None) wrongly 401'd.
+    #[test]
+    fn permit_all_allows_anonymous_and_missing_principal() {
+        assert_eq!(permit_all().authorize(None), Ok(()));
+        assert_eq!(
+            permit_all().authorize(Some(&Authentication::anonymous())),
+            Ok(())
+        );
+        // authenticated() still rejects anonymous (unchanged).
+        assert_eq!(
+            authenticated().authorize(None),
+            Err(SecurityError::Unauthenticated)
+        );
+        assert_eq!(
+            authenticated().authorize(Some(&Authentication::anonymous())),
+            Err(SecurityError::Unauthenticated)
+        );
+    }
+
+    // The and/or/not combinators rebuild via require(), so they drop
+    // permit_all()'s anonymous-admitting property (documented behaviour).
+    #[test]
+    fn permit_all_combinators_reset_anonymity() {
+        assert_eq!(
+            permit_all().and(authenticated()).authorize(None),
+            Err(SecurityError::Unauthenticated)
+        );
+        // permit_all() alone still admits anonymous.
+        assert_eq!(permit_all().authorize(None), Ok(()));
     }
 
     #[test]

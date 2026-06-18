@@ -277,3 +277,114 @@ async fn rejects_disallowed_algorithm() {
     let err = verifier.validate(&token).await.unwrap_err();
     assert!(err.to_string().contains("not allowed"), "{err}");
 }
+
+// --- H5/H6/H7: EC + EdDSA JWKS keys, nbf validation, clock-skew leeway ---
+
+/// Static test EC P-256 key (PKCS8) + its public JWK coordinates.
+const TEST_EC_PKCS8_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgGBdQ2xtiX67nEJYc
+DmWSCUiQ3aHOBNHgTBVvjpf8VxGhRANCAARo6W+SxA2nlCoQeT+s2sk1OES7Yo8X
+4QB9PQLgH//hJLqWWEjx7kiPqlJUPo29nhDWrW5YBtUeJev0rN5+mN14
+-----END PRIVATE KEY-----
+";
+const TEST_EC_X: &str = "aOlvksQNp5QqEHk_rNrJNThEu2KPF-EAfT0C4B__4SQ";
+const TEST_EC_Y: &str = "upZYSPHuSI-qUlQ-jb2eENatblgG1R4l6_Ss3n6Y3Xg";
+
+/// Static test Ed25519 key (PKCS8) + its public JWK `x` coordinate.
+const TEST_ED_PKCS8_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIDVAlDQGWMmEiBkvbkZ7QK87MiDhldjFnHFW/bBHFziG
+-----END PRIVATE KEY-----
+";
+const TEST_ED_X: &str = "MMtWyDzux-mxoojPlUC2I0voVab24p-LpXk0GgWcWbc";
+
+/// Spawns an in-process JWKS server returning the given document body.
+async fn spawn_jwks_server_with(body: Value) -> String {
+    let app = Router::new().route(
+        "/.well-known/jwks.json",
+        get(move || {
+            let body = body.clone();
+            async move { Json(body) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}/.well-known/jwks.json")
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+// H5: an ES256 token signed with an EC key in the JWKS must verify.
+#[tokio::test]
+async fn validate_es256_token_from_ec_jwks() {
+    let body = json!({"keys":[
+        {"kty":"EC","kid":"ec-kid","crv":"P-256","x":TEST_EC_X,"y":TEST_EC_Y}
+    ]});
+    let uri = spawn_jwks_server_with(body).await;
+    let verifier = JwksVerifier::new(&uri);
+
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("ec-kid".to_string());
+    let token = jsonwebtoken::encode(
+        &header,
+        &json!({"sub": "ec-user", "exp": now() + 3600}),
+        &EncodingKey::from_ec_pem(TEST_EC_PKCS8_PEM).unwrap(),
+    )
+    .unwrap();
+
+    let payload = verifier.validate(&token).await.unwrap();
+    assert_eq!(payload["sub"], "ec-user");
+}
+
+// H5: an EdDSA token signed with an OKP key in the JWKS must verify.
+#[tokio::test]
+async fn validate_eddsa_token_from_okp_jwks() {
+    let body = json!({"keys":[
+        {"kty":"OKP","kid":"ed-kid","crv":"Ed25519","x":TEST_ED_X}
+    ]});
+    let uri = spawn_jwks_server_with(body).await;
+    let verifier = JwksVerifier::new(&uri);
+
+    let mut header = Header::new(Algorithm::EdDSA);
+    header.kid = Some("ed-kid".to_string());
+    let token = jsonwebtoken::encode(
+        &header,
+        &json!({"sub": "ed-user", "exp": now() + 3600}),
+        &EncodingKey::from_ed_pem(TEST_ED_PKCS8_PEM).unwrap(),
+    )
+    .unwrap();
+
+    let payload = verifier.validate(&token).await.unwrap();
+    assert_eq!(payload["sub"], "ed-user");
+}
+
+// H7: a token whose `nbf` is in the future (beyond leeway) must be rejected.
+#[tokio::test]
+async fn validate_rejects_future_nbf() {
+    let (uri, _) = spawn_jwks_server().await;
+    let verifier = JwksVerifier::new(&uri);
+    let token = make_token(
+        json!({"sub": "u1", "nbf": now() + 3600, "exp": now() + 7200}),
+        TEST_KID,
+    );
+    let err = verifier.validate(&token).await.unwrap_err();
+    assert!(err.to_string().contains("Token validation failed"), "{err}");
+}
+
+// H6: an `exp` just barely in the past (within the default 60s clock-skew
+// leeway) must still be accepted — Spring's JwtTimestampValidator default.
+#[tokio::test]
+async fn validate_allows_exp_within_clock_skew_leeway() {
+    let (uri, _) = spawn_jwks_server().await;
+    let verifier = JwksVerifier::new(&uri);
+    let token = make_token(json!({"sub": "u1", "exp": now() - 30}), TEST_KID);
+    let payload = verifier.validate(&token).await.unwrap();
+    assert_eq!(payload["sub"], "u1");
+}

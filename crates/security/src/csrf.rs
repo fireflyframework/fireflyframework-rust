@@ -122,11 +122,59 @@ fn csrf_forbidden(message: &str) -> Response {
         .expect("static csrf response must build")
 }
 
+/// Policy for the `Secure` attribute on the CSRF cookie. Spring's
+/// `CookieCsrfTokenRepository` only marks the cookie `Secure` on a secure
+/// request; a `Secure` cookie over plain HTTP is silently dropped, breaking the
+/// double-submit pair. [`Auto`](CookieSecure::Auto) reproduces that behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CookieSecure {
+    /// Mark `Secure` only when the request arrived over HTTPS (default).
+    #[default]
+    Auto,
+    /// Always mark the cookie `Secure`.
+    Always,
+    /// Never mark the cookie `Secure` (plain-HTTP dev only).
+    Never,
+}
+
+impl CookieSecure {
+    fn applies(self, req: &Request) -> bool {
+        match self {
+            CookieSecure::Auto => request_is_secure(req),
+            CookieSecure::Always => true,
+            CookieSecure::Never => false,
+        }
+    }
+}
+
+/// Whether the request arrived over HTTPS — directly or via a TLS-terminating
+/// proxy that set `X-Forwarded-Proto: https`.
+fn request_is_secure(req: &Request) -> bool {
+    if let Some(proto) = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+    {
+        if proto
+            .split(',')
+            .next()
+            .map(|s| s.trim().eq_ignore_ascii_case("https"))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    req.uri().scheme_str() == Some("https")
+}
+
 /// Sets (or rotates) the CSRF cookie on `resp` — readable by JS
-/// (`HttpOnly` off), `SameSite=Lax`, `Secure`, path `/`, mirroring the
-/// pyfly filter's cookie attributes.
-fn set_csrf_cookie(resp: &mut Response, token: &str) {
-    let cookie = format!("{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax; Secure");
+/// (`HttpOnly` off), `SameSite=Lax`, path `/`, and `Secure` only when
+/// `secure` (so the double-submit pair also works over plain-HTTP dev).
+fn set_csrf_cookie(resp: &mut Response, token: &str, secure: bool) {
+    let mut cookie = format!("{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax");
+    if secure {
+        cookie.push_str("; Secure");
+    }
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         resp.headers_mut().append(header::SET_COOKIE, value);
     }
@@ -144,12 +192,22 @@ fn set_csrf_cookie(resp: &mut Response, token: &str) {
 ///     .layer(CsrfLayer::new());
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct CsrfLayer;
+pub struct CsrfLayer {
+    cookie_secure: CookieSecure,
+}
 
 impl CsrfLayer {
-    /// Returns the CSRF protection layer.
+    /// Returns the CSRF protection layer with the request-driven
+    /// [`CookieSecure::Auto`] cookie policy.
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Sets the `Secure`-attribute policy for the CSRF cookie
+    /// (default [`CookieSecure::Auto`]).
+    pub fn cookie_secure(mut self, policy: CookieSecure) -> Self {
+        self.cookie_secure = policy;
+        self
     }
 }
 
@@ -157,7 +215,10 @@ impl<S> Layer<S> for CsrfLayer {
     type Service = CsrfService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        CsrfService { inner }
+        CsrfService {
+            inner,
+            cookie_secure: self.cookie_secure,
+        }
     }
 }
 
@@ -165,6 +226,7 @@ impl<S> Layer<S> for CsrfLayer {
 #[derive(Clone)]
 pub struct CsrfService<S> {
     inner: S,
+    cookie_secure: CookieSecure,
 }
 
 impl<S> Service<Request> for CsrfService<S>
@@ -183,12 +245,14 @@ where
     fn call(&mut self, req: Request) -> Self::Future {
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
+        let cookie_secure = self.cookie_secure;
 
         Box::pin(async move {
+            let secure = cookie_secure.applies(&req);
             // Safe methods — pass through and set/refresh the cookie.
             if is_safe_method(req.method()) {
                 let mut resp = inner.call(req).await?;
-                set_csrf_cookie(&mut resp, &generate_csrf_token());
+                set_csrf_cookie(&mut resp, &generate_csrf_token(), secure);
                 return Ok(resp);
             }
 
@@ -218,7 +282,7 @@ where
 
             // Valid — proceed and rotate the token.
             let mut resp = inner.call(req).await?;
-            set_csrf_cookie(&mut resp, &generate_csrf_token());
+            set_csrf_cookie(&mut resp, &generate_csrf_token(), secure);
             Ok(resp)
         })
     }
@@ -280,5 +344,39 @@ mod tests {
             .unwrap();
         assert_eq!(cookie_value(&req, CSRF_COOKIE_NAME).as_deref(), Some("tok"));
         assert_eq!(cookie_value(&req, "missing"), None);
+    }
+
+    // H4: the Secure attribute follows the request scheme under the default
+    // Auto policy, and can be forced or disabled.
+    #[tokio::test]
+    async fn cookie_secure_follows_scheme_and_policy() {
+        use tower::ServiceExt;
+
+        async fn cookie(layer: CsrfLayer, proto: Option<&str>) -> String {
+            let inner = tower::service_fn(|_r: Request| async {
+                Ok::<Response, Infallible>(Response::new(Body::empty()))
+            });
+            let svc = layer.layer(inner);
+            let mut b = Request::builder().method(Method::GET).uri("/p");
+            if let Some(p) = proto {
+                b = b.header("x-forwarded-proto", p);
+            }
+            let resp = svc.oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+            resp.headers()
+                .get(header::SET_COOKIE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string()
+        }
+
+        assert!(!cookie(CsrfLayer::new(), None).await.contains("Secure"));
+        assert!(cookie(CsrfLayer::new(), Some("https")).await.contains("Secure"));
+        assert!(cookie(CsrfLayer::new().cookie_secure(CookieSecure::Always), None)
+            .await
+            .contains("Secure"));
+        assert!(!cookie(CsrfLayer::new().cookie_secure(CookieSecure::Never), Some("https"))
+            .await
+            .contains("Secure"));
     }
 }

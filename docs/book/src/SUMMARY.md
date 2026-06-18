@@ -43,4 +43,5 @@
 # Appendices
 
 - [Module Index](./91-appendix-modules.md)
+- [Spring Security Parity](./14a-spring-security-parity.md)
 - [Glossary](./92-glossary.md)

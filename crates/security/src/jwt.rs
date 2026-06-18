@@ -71,6 +71,7 @@ pub const DEFAULT_EXPIRATION_SECONDS: u64 = 3600;
 pub struct JwtService {
     algorithm: Algorithm,
     expiration_seconds: u64,
+    leeway_seconds: u64,
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
 }
@@ -92,6 +93,7 @@ impl JwtService {
         Self {
             algorithm: Algorithm::HS256,
             expiration_seconds: DEFAULT_EXPIRATION_SECONDS,
+            leeway_seconds: crate::jwks::DEFAULT_CLOCK_SKEW_SECONDS,
             encoding_key: EncodingKey::from_secret(bytes),
             decoding_key: DecodingKey::from_secret(bytes),
         }
@@ -118,6 +120,15 @@ impl JwtService {
     /// payload carries no `exp` claim (pyfly: `expiration_seconds`).
     pub fn expiration_seconds(mut self, seconds: u64) -> Self {
         self.expiration_seconds = seconds;
+        self
+    }
+
+    /// Overrides the clock-skew leeway in seconds applied to `exp`/`nbf`
+    /// validation in [`Self::decode`] (default
+    /// [`DEFAULT_CLOCK_SKEW_SECONDS`](crate::DEFAULT_CLOCK_SKEW_SECONDS),
+    /// matching Spring's 60s `JwtTimestampValidator`).
+    pub fn clock_skew_seconds(mut self, seconds: u64) -> Self {
+        self.leeway_seconds = seconds;
         self
     }
 
@@ -161,9 +172,10 @@ impl JwtService {
     /// lacks `exp`.
     pub fn decode(&self, token: &str) -> Result<Map<String, Value>, SecurityError> {
         let mut validation = Validation::new(self.algorithm);
-        // No clock leeway — pyfly's PyJWT default rejects an `exp` in the
-        // past with no grace window; match it (the JWKS verifier does too).
-        validation.leeway = 0;
+        // Spring's JwtTimestampValidator allows a small clock-skew window
+        // (default 60s) on `exp`/`nbf`; the JWKS verifier matches.
+        validation.leeway = self.leeway_seconds;
+        validation.validate_nbf = true;
         validation.set_required_spec_claims(&["exp"]);
         validation.validate_aud = false;
         let data = decode::<Map<String, Value>>(token, &self.decoding_key, &validation)
@@ -350,6 +362,27 @@ mod tests {
             .unwrap();
         let err = svc.decode(&token).unwrap_err();
         assert!(err.to_string().starts_with("Invalid token:"), "got {err}");
+    }
+
+    // H6: an exp just barely in the past (within the default 60s clock-skew
+    // leeway) is still accepted, matching Spring's JwtTimestampValidator.
+    #[test]
+    fn decode_allows_exp_within_clock_skew_leeway() {
+        let svc = svc();
+        let token = svc
+            .encode(json!({ "sub": "u1", "exp": now_secs() - 30 }))
+            .unwrap();
+        assert!(svc.decode(&token).is_ok());
+    }
+
+    // H7: a token whose nbf is in the future (beyond leeway) is rejected.
+    #[test]
+    fn decode_rejects_future_nbf() {
+        let svc = svc();
+        let token = svc
+            .encode(json!({ "sub": "u1", "nbf": now_secs() + 3600, "exp": now_secs() + 7200 }))
+            .unwrap();
+        assert!(svc.decode(&token).is_err());
     }
 
     // Ported from pyfly: test_to_security_context

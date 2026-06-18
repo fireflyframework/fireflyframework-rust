@@ -484,16 +484,25 @@ async fn handle_callback(
     session.remove_attribute(SESSION_KEY_NONCE).await;
     let mut authentication: Option<Authentication> = None;
     if let Some(id_token) = token_response.get("id_token").and_then(Value::as_str) {
-        if !registration.jwks_uri.is_empty() {
-            match validate_id_token(&registration, id_token, nonce.as_deref()).await {
-                Some(auth) => authentication = Some(auth),
-                None => {
-                    return error_json(
-                        StatusCode::UNAUTHORIZED,
-                        "invalid_id_token",
-                        "ID token validation failed",
-                    );
-                }
+        // An id_token MUST be validated before any claim is trusted (OIDC
+        // signature/issuer/audience/nonce). If no JWKS is configured we cannot
+        // validate it, so refuse the login rather than silently falling through
+        // to the unverified userinfo identity.
+        if registration.jwks_uri.is_empty() {
+            return error_json(
+                StatusCode::UNAUTHORIZED,
+                "invalid_id_token",
+                "ID token present but no JWKS endpoint is configured to validate it",
+            );
+        }
+        match validate_id_token(&registration, id_token, nonce.as_deref()).await {
+            Some(auth) => authentication = Some(auth),
+            None => {
+                return error_json(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_id_token",
+                    "ID token validation failed",
+                );
             }
         }
     }

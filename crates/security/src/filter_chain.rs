@@ -30,7 +30,7 @@ use axum::response::Response;
 use globset::{GlobBuilder, GlobMatcher};
 use tower::{Layer, Service};
 
-use crate::authentication::{Authentication, ANONYMOUS_ID};
+use crate::authentication::{Authentication, SecurityError, ANONYMOUS_ID, ROLE_PREFIX};
 use crate::problem;
 use crate::role_hierarchy::RoleHierarchy;
 
@@ -94,19 +94,37 @@ impl CompiledRule {
         }
         match &self.glob {
             Some(glob) => glob.is_match(path),
-            None => path.starts_with(&self.rule.prefix),
+            None => prefix_matches(path, &self.rule.prefix),
         }
     }
 }
 
+/// Path-segment-aware prefix match — the Rust analog of Spring's
+/// `AntPathRequestMatcher`. A non-empty `prefix` matches `path` only when it
+/// ends at a path-segment boundary, so `/api` matches `/api` and `/api/...`
+/// but **not** `/api-internal` or `/apixyz` (where a raw `starts_with` leaks).
+/// An empty prefix matches every path (Go parity for the `""` prefix).
+fn prefix_matches(path: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
+    match path.strip_prefix(prefix) {
+        Some(rest) => rest.is_empty() || rest.starts_with('/') || prefix.ends_with('/'),
+        None => false,
+    }
+}
+
 /// Compiles `pattern` as an fnmatch-style glob (a `*` crosses `/`
-/// segments — pyfly's `fnmatch` semantics).
-fn compile_glob(pattern: &str) -> GlobMatcher {
-    GlobBuilder::new(pattern)
+/// segments — pyfly's `fnmatch` semantics), returning a recoverable
+/// [`SecurityError`] on an invalid pattern instead of panicking.
+fn compile_glob(pattern: &str) -> Result<GlobMatcher, SecurityError> {
+    Ok(GlobBuilder::new(pattern)
         .literal_separator(false)
         .build()
-        .unwrap_or_else(|e| panic!("firefly/security: invalid glob pattern {pattern:?}: {e}"))
-        .compile_matcher()
+        .map_err(|e| {
+            SecurityError::verification(format!("invalid glob pattern {pattern:?}: {e}"))
+        })?
+        .compile_matcher())
 }
 
 /// `FilterChain` is an ordered list of [`Rule`]s evaluated in
@@ -170,12 +188,13 @@ impl FilterChain {
     /// Appends a glob-pattern public rule (pyfly:
     /// `request_matchers(pattern).permit_all()`).
     ///
-    /// # Panics
+    /// # Errors / Panics
     ///
-    /// Panics if `pattern` is not a valid glob.
+    /// An invalid glob is surfaced when the chain is converted to a layer:
+    /// [`layer`](Self::layer) panics, while [`try_layer`](Self::try_layer)
+    /// returns a recoverable [`SecurityError`].
     pub fn permit_pattern(mut self, pattern: impl Into<String>) -> Self {
         let pattern = pattern.into();
-        compile_glob(&pattern); // eager validation
         self.rules.push(Rule {
             pattern: Some(pattern),
             allow: true,
@@ -199,12 +218,13 @@ impl FilterChain {
     /// `request_matchers(pattern).has_any_role(...)`); pass `&[]` for
     /// "any authenticated principal".
     ///
-    /// # Panics
+    /// # Errors / Panics
     ///
-    /// Panics if `pattern` is not a valid glob.
+    /// An invalid glob is surfaced when the chain is converted to a layer:
+    /// [`layer`](Self::layer) panics, while [`try_layer`](Self::try_layer)
+    /// returns a recoverable [`SecurityError`].
     pub fn require_pattern(mut self, pattern: impl Into<String>, roles: &[&str]) -> Self {
         let pattern = pattern.into();
-        compile_glob(&pattern);
         self.rules.push(Rule {
             pattern: Some(pattern),
             roles: roles.iter().map(|r| r.to_string()).collect(),
@@ -219,12 +239,13 @@ impl FilterChain {
     /// [`Authentication::authorities`] or as a (hierarchy-expanded)
     /// role.
     ///
-    /// # Panics
+    /// # Errors / Panics
     ///
-    /// Panics if `pattern` is not a valid glob.
+    /// An invalid glob is surfaced when the chain is converted to a layer:
+    /// [`layer`](Self::layer) panics, while [`try_layer`](Self::try_layer)
+    /// returns a recoverable [`SecurityError`].
     pub fn require_authority(mut self, pattern: impl Into<String>, authorities: &[&str]) -> Self {
         let pattern = pattern.into();
-        compile_glob(&pattern);
         self.rules.push(Rule {
             pattern: Some(pattern),
             authorities: authorities.iter().map(|a| a.to_string()).collect(),
@@ -236,12 +257,13 @@ impl FilterChain {
     /// Appends a glob-pattern "any authenticated principal" rule
     /// (pyfly: `request_matchers(pattern).authenticated()`).
     ///
-    /// # Panics
+    /// # Errors / Panics
     ///
-    /// Panics if `pattern` is not a valid glob.
+    /// An invalid glob is surfaced when the chain is converted to a layer:
+    /// [`layer`](Self::layer) panics, while [`try_layer`](Self::try_layer)
+    /// returns a recoverable [`SecurityError`].
     pub fn authenticated(mut self, pattern: impl Into<String>) -> Self {
         let pattern = pattern.into();
-        compile_glob(&pattern);
         self.rules.push(Rule {
             pattern: Some(pattern),
             ..Rule::default()
@@ -253,12 +275,13 @@ impl FilterChain {
     /// `request_matchers(pattern).deny_all()`); every matching request
     /// is rejected with 403, authenticated or not.
     ///
-    /// # Panics
+    /// # Errors / Panics
     ///
-    /// Panics if `pattern` is not a valid glob.
+    /// An invalid glob is surfaced when the chain is converted to a layer:
+    /// [`layer`](Self::layer) panics, while [`try_layer`](Self::try_layer)
+    /// returns a recoverable [`SecurityError`].
     pub fn deny(mut self, pattern: impl Into<String>) -> Self {
         let pattern = pattern.into();
-        compile_glob(&pattern);
         self.rules.push(Rule {
             pattern: Some(pattern),
             deny: true,
@@ -319,19 +342,33 @@ impl FilterChain {
     /// Converts the chain into a tower layer (Go: `Middleware()`).
     /// Auth must already have been populated by
     /// [`BearerLayer`](crate::BearerLayer) for non-`allow` rules.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any pattern rule has an invalid glob. Use
+    /// [`try_layer`](Self::try_layer) to surface that as a recoverable error.
     pub fn layer(self) -> FilterChainLayer {
-        let compiled = self
-            .rules
-            .into_iter()
-            .map(|rule| {
-                let glob = rule.pattern.as_deref().map(compile_glob);
-                CompiledRule { rule, glob }
-            })
-            .collect();
-        FilterChainLayer {
+        self.try_layer()
+            .expect("firefly/security: invalid glob pattern in FilterChain")
+    }
+
+    /// Converts the chain into a tower layer, returning a recoverable
+    /// [`SecurityError`] if any pattern rule has an invalid glob — the
+    /// fail-at-startup-gracefully analog of Spring rejecting bad matcher
+    /// config with an exception rather than aborting the process.
+    pub fn try_layer(self) -> Result<FilterChainLayer, SecurityError> {
+        let mut compiled = Vec::with_capacity(self.rules.len());
+        for rule in self.rules {
+            let glob = match rule.pattern.as_deref() {
+                Some(p) => Some(compile_glob(p)?),
+                None => None,
+            };
+            compiled.push(CompiledRule { rule, glob });
+        }
+        Ok(FilterChainLayer {
             rules: Arc::new(compiled),
             hierarchy: self.hierarchy,
-        }
+        })
     }
 }
 
@@ -374,6 +411,23 @@ enum Verdict {
     Forbidden(&'static str),
 }
 
+/// Whether a rule's required role `rule_role` is satisfied — `ROLE_`-prefix
+/// aware and consistent with [`Authentication::has_role`]: a bare or
+/// `ROLE_`-prefixed role in the (hierarchy-expanded) role set matches, as does a
+/// `ROLE_`-prefixed *authority* (how Spring stores roles). So a principal
+/// carrying `ROLE_ADMIN` satisfies a `require(..., &["ADMIN"])` rule on the URL
+/// chain just as it does `#[pre_authorize(role = "ADMIN")]`.
+fn role_matches(
+    rule_role: &str,
+    effective_roles: &BTreeSet<String>,
+    authorities: &[String],
+) -> bool {
+    let prefixed = format!("{ROLE_PREFIX}{rule_role}");
+    effective_roles.contains(rule_role)
+        || effective_roles.contains(&prefixed)
+        || authorities.iter().any(|a| a == &prefixed)
+}
+
 fn decide(rules: &[CompiledRule], hierarchy: Option<&RoleHierarchy>, req: &Request) -> Verdict {
     let method = req.method().as_str();
     let path = req.uri().path();
@@ -400,7 +454,12 @@ fn decide(rules: &[CompiledRule], hierarchy: Option<&RoleHierarchy>, req: &Reque
             Some(h) => h.expand(auth.roles.iter().cloned()),
             None => auth.roles.iter().cloned().collect(),
         };
-        if !rule.roles.is_empty() && !rule.roles.iter().any(|r| effective_roles.contains(r)) {
+        if !rule.roles.is_empty()
+            && !rule
+                .roles
+                .iter()
+                .any(|r| role_matches(r, &effective_roles, &auth.authorities))
+        {
             return Verdict::Forbidden("required role missing");
         }
         if !rule.authorities.is_empty()
@@ -447,5 +506,109 @@ where
                 Verdict::Forbidden(detail) => Ok(problem::forbidden(detail)),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    async fn status_for(chain: FilterChain, method: &str, path: &str) -> http::StatusCode {
+        let inner = tower::service_fn(|_req: Request| async {
+            Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+        });
+        let svc = chain.layer().layer(inner);
+        let req = Request::builder()
+            .method(method)
+            .uri(path)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        svc.oneshot(req).await.unwrap().status()
+    }
+
+    // H3: a prefix rule must be path-segment aware. `permit("/api")` must match
+    // `/api` and `/api/...` but NOT `/api-internal` / `/apixyz` (Spring's
+    // AntPathRequestMatcher), where the old raw `starts_with` leaked.
+    #[tokio::test]
+    async fn prefix_rule_is_path_segment_aware() {
+        let chain = || FilterChain::new().permit("/api").any_request_deny();
+        assert_eq!(
+            status_for(chain(), "GET", "/api").await,
+            http::StatusCode::OK
+        );
+        assert_eq!(
+            status_for(chain(), "GET", "/api/accounts").await,
+            http::StatusCode::OK
+        );
+        assert_eq!(
+            status_for(chain(), "GET", "/api-internal").await,
+            http::StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status_for(chain(), "GET", "/apixyz").await,
+            http::StatusCode::FORBIDDEN
+        );
+    }
+
+    // Review fix (H2 consistency): the URL-authorization role check must be
+    // ROLE_-prefix aware like `has_role`, so a `ROLE_ADMIN` principal satisfies
+    // a `require(..., ["ADMIN"])` rule (not only `#[pre_authorize]`).
+    #[tokio::test]
+    async fn role_rules_are_role_prefix_aware() {
+        use crate::Authentication;
+        async fn status(chain: FilterChain, auth: Authentication, path: &str) -> http::StatusCode {
+            let inner = tower::service_fn(|_r: Request| async {
+                Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+            });
+            let svc = chain.layer().layer(inner);
+            let mut req = Request::builder()
+                .method("GET")
+                .uri(path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            req.extensions_mut().insert(auth);
+            svc.oneshot(req).await.unwrap().status()
+        }
+        let role = |p: &str, r: &str| Authentication {
+            principal: p.into(),
+            roles: vec![r.into()],
+            ..Default::default()
+        };
+        let chain = || {
+            FilterChain::new()
+                .require_pattern("/admin/**", &["ADMIN"])
+                .any_request_permit()
+        };
+        // ROLE_-prefixed principal satisfies a bare "ADMIN" rule (Spring parity).
+        assert_eq!(
+            status(chain(), role("u1", "ROLE_ADMIN"), "/admin/x").await,
+            http::StatusCode::OK
+        );
+        // A bare role still works.
+        assert_eq!(
+            status(chain(), role("u2", "ADMIN"), "/admin/x").await,
+            http::StatusCode::OK
+        );
+        // A non-admin is still forbidden.
+        assert_eq!(
+            status(chain(), role("u3", "USER"), "/admin/x").await,
+            http::StatusCode::FORBIDDEN
+        );
+    }
+
+    // H10: an invalid glob must surface as a recoverable error via try_layer,
+    // not abort the process. A valid pattern still yields Ok (discriminating).
+    #[test]
+    fn try_layer_surfaces_invalid_glob_as_error() {
+        let ok = FilterChain::new()
+            .require_pattern("/api/**", &["ADMIN"])
+            .try_layer();
+        assert!(ok.is_ok());
+
+        let bad = FilterChain::new()
+            .require_pattern("/admin/[", &["ADMIN"])
+            .try_layer();
+        assert!(bad.is_err());
     }
 }

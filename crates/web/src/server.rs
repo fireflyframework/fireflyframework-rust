@@ -278,6 +278,15 @@ impl Server {
             Some(max) => router.layer(GlobalConcurrencyLimitLayer::new(max)),
             None => router,
         };
+        // When we terminate TLS in-process, mark every request as secure so the
+        // HSTS / CSRF-`Secure`-cookie gating (`request_is_secure`) recognises the
+        // connection — a direct HTTPS request carries no `X-Forwarded-Proto` and
+        // its origin-form URI has no scheme.
+        let app = if properties.tls.is_some() {
+            app.layer(axum::Extension(crate::headers::SecureRequest))
+        } else {
+            app
+        };
         let make_service = app.into_make_service();
 
         let handle = Handle::new();

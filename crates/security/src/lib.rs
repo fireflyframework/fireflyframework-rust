@@ -146,14 +146,17 @@ pub mod guards;
 mod jwks;
 mod jwt;
 pub mod oauth2;
+mod ott;
 mod password;
 mod problem;
 mod role_hierarchy;
 mod session_auth;
+#[cfg(feature = "webauthn")]
+mod webauthn;
 
 pub use authentication::{
     authentication_from, must_auth_from, with_authentication, Authentication, SecurityError,
-    Verifier, VerifierFn, ANONYMOUS_ID,
+    Verifier, VerifierFn, ANONYMOUS_ID, ROLE_PREFIX,
 };
 pub use bearer::{BearerConfig, BearerLayer, BearerService, UnauthorizedHandler};
 pub use config::{
@@ -165,18 +168,32 @@ pub use context::{
     with_authentication_scope_sync, AccessRule,
 };
 pub use csrf::{
-    generate_csrf_token, is_safe_method, validate_csrf_token, CsrfLayer, CsrfService,
+    generate_csrf_token, is_safe_method, validate_csrf_token, CookieSecure, CsrfLayer, CsrfService,
     CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SAFE_METHODS,
 };
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
 pub use guards::{require, AuthorizationGuard};
-pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier};
+pub use jwks::{
+    claims_to_authentication, Algorithm, JwksVerifier, DEFAULT_CLOCK_SKEW_SECONDS,
+};
 pub use jwt::{authentication_from_claims, JwtService, DEFAULT_EXPIRATION_SECONDS};
+pub use ott::{
+    ott_login_routes, InMemoryOneTimeTokenService, LoggingOttHandler, OneTimeToken,
+    OneTimeTokenGenerationSuccessHandler, OneTimeTokenService, OttLoginState,
+    DEFAULT_OTT_TTL_SECONDS,
+};
 pub use password::{Argon2PasswordEncoder, BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
 pub use role_hierarchy::RoleHierarchy;
 pub use session_auth::{
     SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,
     SessionLoginSessionStore,
+};
+#[cfg(feature = "webauthn")]
+pub use webauthn::{
+    webauthn_routes, CeremonyStateStore, InMemoryCeremonyStore, InMemoryPasskeyRepository,
+    InMemoryUserEntityRepository, PasskeyCredentialRepository,
+    PublicKeyCredentialUserEntityRepository, WebAuthnError, WebAuthnProperties,
+    WebAuthnRelyingParty, WebAuthnState,
 };
 
 /// Framework version stamp.

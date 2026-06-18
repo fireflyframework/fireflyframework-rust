@@ -206,7 +206,40 @@ impl CorsConfig {
     fn preflight_explicit_allow_origin(&self) -> bool {
         !self.allow_all_origins() || self.allow_credentials
     }
+
+    /// Validates the configuration, rejecting the unsafe combinations Spring
+    /// Security refuses at startup. Currently: a wildcard origin (`"*"`) with
+    /// `allow_credentials = true` (the browser ignores it and it is a security
+    /// foot-gun — configure explicit origins instead). The Rust analog of
+    /// Spring's `CorsConfiguration.validateAllowCredentials()`.
+    pub fn validate(&self) -> Result<(), CorsConfigError> {
+        if self.allow_all_origins() && self.allow_credentials {
+            return Err(CorsConfigError::WildcardOriginWithCredentials);
+        }
+        Ok(())
+    }
 }
+
+/// Why a [`CorsConfig`] was rejected at construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorsConfigError {
+    /// `allowed_origins` is (or contains) a bare `"*"` while
+    /// `allow_credentials` is `true`.
+    WildcardOriginWithCredentials,
+}
+
+impl std::fmt::Display for CorsConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WildcardOriginWithCredentials => f.write_str(
+                "CORS: a wildcard origin (\"*\") cannot be combined with \
+                 allow_credentials=true; configure explicit origins",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CorsConfigError {}
 
 /// CORS middleware — short-circuits preflight requests and decorates
 /// cross-origin responses according to a [`CorsConfig`]. Requests
@@ -219,10 +252,24 @@ pub struct CorsLayer {
 
 impl CorsLayer {
     /// Builds the layer from `config`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config` is invalid (see [`CorsConfig::validate`], e.g. a
+    /// wildcard origin with credentials). Use [`try_new`](Self::try_new) to
+    /// surface that as a recoverable error.
     pub fn new(config: CorsConfig) -> Self {
-        Self {
+        Self::try_new(config).expect("firefly/web: invalid CorsConfig")
+    }
+
+    /// Builds the layer, returning [`CorsConfigError`] if `config` is invalid
+    /// — the fail-at-startup-gracefully analog of Spring rejecting an unsafe
+    /// CORS configuration with an exception.
+    pub fn try_new(config: CorsConfig) -> Result<Self, CorsConfigError> {
+        config.validate()?;
+        Ok(Self {
             config: Arc::new(config),
-        }
+        })
     }
 }
 

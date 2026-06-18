@@ -8,6 +8,12 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Firefly Framework for Rust — Authentication context, bearer middleware, RBAC filter chain"
 
+[features]
+# WebAuthn / passkey login (Spring Security 6.4 `webAuthn()` parity). Opt-in
+# because it pulls in the `webauthn-rs` ceremony engine (and a system OpenSSL).
+# The default build does not compile the `webauthn` module at all.
+webauthn = ["dep:webauthn-rs", "dep:uuid"]
+
 [dependencies]
 axum = { workspace = true }
 tower = { workspace = true }
@@ -16,6 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+tracing = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 jsonwebtoken = { workspace = true }
@@ -31,7 +38,18 @@ bcrypt = { workspace = true }
 argon2 = { version = "0.5", features = ["std"] }
 firefly-session = { workspace = true }
 
+# --- `webauthn` feature ----------------------------------------------------
+# The WebAuthn/passkey ceremony engine (relying-party side). Optional so the
+# default build is untouched; enabled by the `webauthn` feature above.
+webauthn-rs = { version = "0.5.5", optional = true }
+# Stable per-user handles (`user.id` in the WebAuthn `PublicKeyCredentialUser`)
+# are random UUIDs; `serde` lets the in-memory handle map round-trip if needed.
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true }
 http-body-util = { workspace = true }
 tower = { workspace = true }
+# Software authenticator that drives the registration/authentication ceremonies
+# end to end in tests (mirrors a real browser/platform authenticator).
+webauthn-authenticator-rs = { version = "0.5.5", features = ["softpasskey"] }

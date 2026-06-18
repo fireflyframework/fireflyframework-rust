@@ -64,6 +64,7 @@ parts:
   - title: "Appendices"
     chapters:
       - {id: appb,     file: 91-appendix-modules.md, num: "A", title: "Crate & Module Index",             opener: art/openers/appb.svg}
+      - {id: appc,     file: 14a-spring-security-parity.md, num: "B", title: "Spring Security Parity",    opener: art/openers/appc.svg}
       - {id: glossary, file: 92-glossary.md,         num: "",  title: "Glossary"}
 
 back: []
