@@ -90,7 +90,7 @@ members = [
 ]
 
 [workspace.package]
-version = "26.6.28"
+version = "26.6.29"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/fireflyframework/fireflyframework-rust"
@@ -99,80 +99,80 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 # ---- internal crates ----
-firefly-reactive = { path = "crates/reactive", version = "26.6.28" }
-firefly-kernel = { path = "crates/kernel", version = "26.6.28" }
-firefly-utils = { path = "crates/utils", version = "26.6.28" }
-firefly-validators = { path = "crates/validators", version = "26.6.28" }
-firefly-web = { path = "crates/web", version = "26.6.28" }
-firefly-config = { path = "crates/config", version = "26.6.28" }
-firefly-i18n = { path = "crates/i18n", version = "26.6.28" }
-firefly-cache = { path = "crates/cache", version = "26.6.28" }
-firefly-observability = { path = "crates/observability", version = "26.6.28" }
-firefly-data = { path = "crates/data", version = "26.6.28" }
-firefly-cqrs = { path = "crates/cqrs", version = "26.6.28" }
-firefly-eda = { path = "crates/eda", version = "26.6.28" }
-firefly-eventsourcing = { path = "crates/eventsourcing", version = "26.6.28" }
-firefly-orchestration = { path = "crates/orchestration", version = "26.6.28" }
-firefly-rule-engine = { path = "crates/rule-engine", version = "26.6.28" }
-firefly-plugins = { path = "crates/plugins", version = "26.6.28" }
-firefly-lifecycle = { path = "crates/lifecycle", version = "26.6.28" }
-firefly-actuator = { path = "crates/actuator", version = "26.6.28" }
-firefly-scheduling = { path = "crates/scheduling", version = "26.6.28" }
-firefly-resilience = { path = "crates/resilience", version = "26.6.28" }
-firefly-security = { path = "crates/security", version = "26.6.28" }
-firefly-migrations = { path = "crates/migrations", version = "26.6.28" }
-firefly-openapi = { path = "crates/openapi", version = "26.6.28" }
-firefly-sse = { path = "crates/sse", version = "26.6.28" }
-firefly-transactional = { path = "crates/transactional", version = "26.6.28" }
-firefly-testkit = { path = "crates/testkit", version = "26.6.28" }
-firefly-client = { path = "crates/client", version = "26.6.28" }
-firefly-config-server = { path = "crates/config-server", version = "26.6.28" }
-firefly-idp = { path = "crates/idp", version = "26.6.28" }
-firefly-idp-internal-db = { path = "crates/idp-internal-db", version = "26.6.28" }
-firefly-idp-keycloak = { path = "crates/idp-keycloak", version = "26.6.28" }
-firefly-idp-azure-ad = { path = "crates/idp-azure-ad", version = "26.6.28" }
-firefly-idp-aws-cognito = { path = "crates/idp-aws-cognito", version = "26.6.28" }
-firefly-ecm = { path = "crates/ecm", version = "26.6.28" }
-firefly-ecm-storage-aws = { path = "crates/ecm-storage-aws", version = "26.6.28" }
-firefly-ecm-storage-azure = { path = "crates/ecm-storage-azure", version = "26.6.28" }
-firefly-ecm-esignature-docusign = { path = "crates/ecm-esignature-docusign", version = "26.6.28" }
-firefly-ecm-esignature-adobe-sign = { path = "crates/ecm-esignature-adobe-sign", version = "26.6.28" }
-firefly-ecm-esignature-logalty = { path = "crates/ecm-esignature-logalty", version = "26.6.28" }
-firefly-notifications = { path = "crates/notifications", version = "26.6.28" }
-firefly-notifications-sendgrid = { path = "crates/notifications-sendgrid", version = "26.6.28" }
-firefly-notifications-resend = { path = "crates/notifications-resend", version = "26.6.28" }
-firefly-notifications-twilio = { path = "crates/notifications-twilio", version = "26.6.28" }
-firefly-notifications-firebase = { path = "crates/notifications-firebase", version = "26.6.28" }
-firefly-callbacks = { path = "crates/callbacks", version = "26.6.28" }
-firefly-webhooks = { path = "crates/webhooks", version = "26.6.28" }
-firefly-starter-core = { path = "crates/starter-core", version = "26.6.28" }
-firefly-starter-application = { path = "crates/starter-application", version = "26.6.28" }
-firefly-starter-domain = { path = "crates/starter-domain", version = "26.6.28" }
-firefly-starter-data = { path = "crates/starter-data", version = "26.6.28" }
-firefly-backoffice = { path = "crates/backoffice", version = "26.6.28" }
-firefly-admin = { path = "crates/admin", version = "26.6.28" }
-firefly-aop = { path = "crates/aop", version = "26.6.28" }
-firefly-cli = { path = "crates/cli", version = "26.6.28" }
-firefly-container = { path = "crates/container", version = "26.6.28" }
-firefly-session = { path = "crates/session", version = "26.6.28" }
-firefly-shell = { path = "crates/shell", version = "26.6.28" }
-firefly-websocket = { path = "crates/websocket", version = "26.6.28" }
-firefly-notifications-smtp = { path = "crates/notifications-smtp", version = "26.6.28" }
-firefly-cache-redis = { path = "crates/cache-redis", version = "26.6.28" }
-firefly-eda-kafka = { path = "crates/eda-kafka", version = "26.6.28" }
-firefly-eda-rabbitmq = { path = "crates/eda-rabbitmq", version = "26.6.28" }
-firefly-eda-postgres = { path = "crates/eda-postgres", version = "26.6.28" }
-firefly-eda-redis = { path = "crates/eda-redis", version = "26.6.28" }
-firefly-cache-postgres = { path = "crates/cache-postgres", version = "26.6.28" }
-firefly-starter-web = { path = "crates/starter-web", version = "26.6.28" }
-firefly = { path = "crates/firefly", version = "26.6.28" }
-firefly-macros = { path = "crates/macros", version = "26.6.28" }
-firefly-data-sqlx = { path = "crates/data-sqlx", version = "26.6.28" }
-firefly-data-mongodb = { path = "crates/data-mongodb", version = "26.6.28" }
-firefly-session-redis = { path = "crates/session-redis", version = "26.6.28" }
-firefly-session-postgres = { path = "crates/session-postgres", version = "26.6.28" }
-firefly-session-mongodb = { path = "crates/session-mongodb", version = "26.6.28" }
-firefly-starter-experience = { path = "crates/starter-experience", version = "26.6.28" }
+firefly-reactive = { path = "crates/reactive", version = "26.6.29" }
+firefly-kernel = { path = "crates/kernel", version = "26.6.29" }
+firefly-utils = { path = "crates/utils", version = "26.6.29" }
+firefly-validators = { path = "crates/validators", version = "26.6.29" }
+firefly-web = { path = "crates/web", version = "26.6.29" }
+firefly-config = { path = "crates/config", version = "26.6.29" }
+firefly-i18n = { path = "crates/i18n", version = "26.6.29" }
+firefly-cache = { path = "crates/cache", version = "26.6.29" }
+firefly-observability = { path = "crates/observability", version = "26.6.29" }
+firefly-data = { path = "crates/data", version = "26.6.29" }
+firefly-cqrs = { path = "crates/cqrs", version = "26.6.29" }
+firefly-eda = { path = "crates/eda", version = "26.6.29" }
+firefly-eventsourcing = { path = "crates/eventsourcing", version = "26.6.29" }
+firefly-orchestration = { path = "crates/orchestration", version = "26.6.29" }
+firefly-rule-engine = { path = "crates/rule-engine", version = "26.6.29" }
+firefly-plugins = { path = "crates/plugins", version = "26.6.29" }
+firefly-lifecycle = { path = "crates/lifecycle", version = "26.6.29" }
+firefly-actuator = { path = "crates/actuator", version = "26.6.29" }
+firefly-scheduling = { path = "crates/scheduling", version = "26.6.29" }
+firefly-resilience = { path = "crates/resilience", version = "26.6.29" }
+firefly-security = { path = "crates/security", version = "26.6.29" }
+firefly-migrations = { path = "crates/migrations", version = "26.6.29" }
+firefly-openapi = { path = "crates/openapi", version = "26.6.29" }
+firefly-sse = { path = "crates/sse", version = "26.6.29" }
+firefly-transactional = { path = "crates/transactional", version = "26.6.29" }
+firefly-testkit = { path = "crates/testkit", version = "26.6.29" }
+firefly-client = { path = "crates/client", version = "26.6.29" }
+firefly-config-server = { path = "crates/config-server", version = "26.6.29" }
+firefly-idp = { path = "crates/idp", version = "26.6.29" }
+firefly-idp-internal-db = { path = "crates/idp-internal-db", version = "26.6.29" }
+firefly-idp-keycloak = { path = "crates/idp-keycloak", version = "26.6.29" }
+firefly-idp-azure-ad = { path = "crates/idp-azure-ad", version = "26.6.29" }
+firefly-idp-aws-cognito = { path = "crates/idp-aws-cognito", version = "26.6.29" }
+firefly-ecm = { path = "crates/ecm", version = "26.6.29" }
+firefly-ecm-storage-aws = { path = "crates/ecm-storage-aws", version = "26.6.29" }
+firefly-ecm-storage-azure = { path = "crates/ecm-storage-azure", version = "26.6.29" }
+firefly-ecm-esignature-docusign = { path = "crates/ecm-esignature-docusign", version = "26.6.29" }
+firefly-ecm-esignature-adobe-sign = { path = "crates/ecm-esignature-adobe-sign", version = "26.6.29" }
+firefly-ecm-esignature-logalty = { path = "crates/ecm-esignature-logalty", version = "26.6.29" }
+firefly-notifications = { path = "crates/notifications", version = "26.6.29" }
+firefly-notifications-sendgrid = { path = "crates/notifications-sendgrid", version = "26.6.29" }
+firefly-notifications-resend = { path = "crates/notifications-resend", version = "26.6.29" }
+firefly-notifications-twilio = { path = "crates/notifications-twilio", version = "26.6.29" }
+firefly-notifications-firebase = { path = "crates/notifications-firebase", version = "26.6.29" }
+firefly-callbacks = { path = "crates/callbacks", version = "26.6.29" }
+firefly-webhooks = { path = "crates/webhooks", version = "26.6.29" }
+firefly-starter-core = { path = "crates/starter-core", version = "26.6.29" }
+firefly-starter-application = { path = "crates/starter-application", version = "26.6.29" }
+firefly-starter-domain = { path = "crates/starter-domain", version = "26.6.29" }
+firefly-starter-data = { path = "crates/starter-data", version = "26.6.29" }
+firefly-backoffice = { path = "crates/backoffice", version = "26.6.29" }
+firefly-admin = { path = "crates/admin", version = "26.6.29" }
+firefly-aop = { path = "crates/aop", version = "26.6.29" }
+firefly-cli = { path = "crates/cli", version = "26.6.29" }
+firefly-container = { path = "crates/container", version = "26.6.29" }
+firefly-session = { path = "crates/session", version = "26.6.29" }
+firefly-shell = { path = "crates/shell", version = "26.6.29" }
+firefly-websocket = { path = "crates/websocket", version = "26.6.29" }
+firefly-notifications-smtp = { path = "crates/notifications-smtp", version = "26.6.29" }
+firefly-cache-redis = { path = "crates/cache-redis", version = "26.6.29" }
+firefly-eda-kafka = { path = "crates/eda-kafka", version = "26.6.29" }
+firefly-eda-rabbitmq = { path = "crates/eda-rabbitmq", version = "26.6.29" }
+firefly-eda-postgres = { path = "crates/eda-postgres", version = "26.6.29" }
+firefly-eda-redis = { path = "crates/eda-redis", version = "26.6.29" }
+firefly-cache-postgres = { path = "crates/cache-postgres", version = "26.6.29" }
+firefly-starter-web = { path = "crates/starter-web", version = "26.6.29" }
+firefly = { path = "crates/firefly", version = "26.6.29" }
+firefly-macros = { path = "crates/macros", version = "26.6.29" }
+firefly-data-sqlx = { path = "crates/data-sqlx", version = "26.6.29" }
+firefly-data-mongodb = { path = "crates/data-mongodb", version = "26.6.29" }
+firefly-session-redis = { path = "crates/session-redis", version = "26.6.29" }
+firefly-session-postgres = { path = "crates/session-postgres", version = "26.6.29" }
+firefly-session-mongodb = { path = "crates/session-mongodb", version = "26.6.29" }
+firefly-starter-experience = { path = "crates/starter-experience", version = "26.6.29" }
 
 # ---- async runtime + web ----
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-util", "net", "fs"] }

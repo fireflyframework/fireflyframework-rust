@@ -2,6 +2,78 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.29 — 2026-06-18
+
+A **Spring Security 6 parity** increment (Tier 0): an adversarially-verified
+audit of the security tier against Spring Security 6 / Spring Boot 3, followed
+by the hardening pass that closes the silent semantic divergences in shipping
+code, plus the two Spring Security 6.4 passwordless mechanisms. See the new
+**Spring Security Parity** book appendix for the full coverage matrix.
+
+### Added
+
+- **One-time-token (magic-link) login** — Spring 6.4 `oneTimeTokenLogin()`:
+  `OneTimeTokenService` (single-use, expiring; in-memory impl) +
+  `OneTimeTokenGenerationSuccessHandler` for out-of-band delivery +
+  `ott_login_routes` (`POST /ott/generate`, `GET /login/ott`) that redeems a
+  token, rotates the session id, and establishes the security context.
+- **WebAuthn / passkeys** — Spring 6.4 `webAuthn()`: a feature-gated `webauthn`
+  module with the registration and authentication ceremonies over `webauthn-rs`
+  and a pluggable credential repository (opt-in; off by default).
+- **EC + EdDSA JWKS keys** — `JwksVerifier` now verifies `ES256`/`ES384` and
+  `EdDSA` tokens in addition to RSA (`RS*`/`PS*`).
+- **`FilterChain::try_layer`** / **`CorsLayer::try_new`** — fallible builders
+  that surface invalid glob patterns / unsafe CORS config as a recoverable
+  error instead of panicking at startup.
+- **Configurable clock-skew** (`clock_skew_seconds`, default 60s) and **`nbf`
+  validation** on `JwksVerifier` and `JwtService`.
+- A **Spring Security Parity** appendix in the book (EN + ES).
+
+### Changed (Spring-faithful defaults — each with an escape hatch)
+
+- **Method security works behind every authentication mechanism.**
+  `SessionAuthenticationLayer` now scopes the task-local security context, so
+  `#[pre_authorize]` / `current_authentication()` work for session- and
+  OAuth2-login-authenticated callers (previously bearer-only).
+- **`hasRole('X')` matches the `ROLE_X` authority** (Spring's prefix) as well as
+  a bare role name.
+- **HSTS is sent only over secure requests** by default
+  (`hsts_include_insecure` to force it).
+- **The CSRF cookie is `Secure` only when the request is secure**
+  (`CookieSecure::{Auto,Always,Never}`, default `Auto`).
+- **A wildcard CORS origin with `allow_credentials` is rejected** at
+  construction.
+- **JWT/JWKS validation tolerates 60s clock skew** (was zero).
+- **Path-prefix authorization is segment-aware** — `permit("/api")` no longer
+  matches `/api-internal`.
+
+### Fixed (security)
+
+- **OIDC `id_token` is never trusted without validation** — the login fails if
+  it cannot be verified, instead of silently falling through to userinfo.
+- **Bearer rejections carry an RFC 6750 `WWW-Authenticate: Bearer` challenge**
+  (`error="invalid_token"` when a token was supplied).
+- **No user-enumeration timing oracle** — an unknown username runs comparable
+  bcrypt work to a wrong password (internal-db IdP).
+- **Postgres `SessionRegistry` rows expire** (opt-in absolute TTL + pruning, via
+  `with_ttl`) so an orphaned session can no longer inflate the per-principal
+  concurrency count. Pruning is **off by default** — a fixed TTL would wrongly
+  evict still-active *sliding* sessions, so enable it only with an absolute
+  session lifetime.
+
+### Known limitations (roadmap)
+
+- `request_is_secure` trusts `X-Forwarded-Proto` from any caller; deploy behind a
+  trusted proxy (or terminate TLS in-process, which Firefly marks automatically).
+  A trusted-proxy allowlist is planned.
+- WebAuthn `authenticate/options` reveals whether a username has registered
+  passkeys; use discoverable (usernameless) credentials to avoid enumeration.
+- Sliding-session expiry isn't synced into the distributed `SessionRegistry`
+  (no `HttpSessionEventPublisher` analog yet) — deregister on logout or set an
+  absolute TTL.
+- One-time-token magic links are redeemed via `GET` (token in the URL);
+  single-use + short expiry mitigate referer leakage.
+
 ## v26.6.28 — 2026-06-16
 
 A Spring Boot **parity** increment: the declarative HTTP-interface client — the
