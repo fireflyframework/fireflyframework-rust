@@ -310,20 +310,30 @@ mod tests {
     async fn cookie_secure_auto_follows_request_scheme() {
         let http = set_cookie_for(CsrfLayer::new(), None).await;
         assert!(http.contains("XSRF-TOKEN="), "{http}");
-        assert!(!http.contains("Secure"), "HTTP cookie must not be Secure: {http}");
+        assert!(
+            !http.contains("Secure"),
+            "HTTP cookie must not be Secure: {http}"
+        );
 
         let https = set_cookie_for(CsrfLayer::new(), Some("https")).await;
-        assert!(https.contains("Secure"), "HTTPS cookie must be Secure: {https}");
+        assert!(
+            https.contains("Secure"),
+            "HTTPS cookie must be Secure: {https}"
+        );
     }
 
     // H4: Always/Never override the request scheme.
     #[tokio::test]
     async fn cookie_secure_always_and_never_override() {
-        let always = set_cookie_for(CsrfLayer::new().cookie_secure(CookieSecure::Always), None).await;
+        let always =
+            set_cookie_for(CsrfLayer::new().cookie_secure(CookieSecure::Always), None).await;
         assert!(always.contains("Secure"), "{always}");
 
-        let never =
-            set_cookie_for(CsrfLayer::new().cookie_secure(CookieSecure::Never), Some("https")).await;
+        let never = set_cookie_for(
+            CsrfLayer::new().cookie_secure(CookieSecure::Never),
+            Some("https"),
+        )
+        .await;
         assert!(!never.contains("Secure"), "{never}");
     }
 }

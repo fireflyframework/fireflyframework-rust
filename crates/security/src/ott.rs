@@ -321,16 +321,22 @@ mod tests {
         let s = svc();
         // Insert a token whose expiry is already in the past — deterministically
         // expired (no reliance on wall-clock advancing during the test).
-        s.tokens
-            .lock()
-            .await
-            .insert("past".into(), ("carol".into(), now_secs().saturating_sub(10)));
-        assert_eq!(s.consume("past").await, None, "expired token must be rejected");
+        s.tokens.lock().await.insert(
+            "past".into(),
+            ("carol".into(), now_secs().saturating_sub(10)),
+        );
+        assert_eq!(
+            s.consume("past").await,
+            None,
+            "expired token must be rejected"
+        );
         // ...and it is removed on the attempt, so a retry also fails.
         assert_eq!(s.consume("past").await, None);
     }
 
-    fn router(captured: Arc<Mutex<Option<OneTimeToken>>>) -> (Router, Arc<dyn OneTimeTokenService>) {
+    fn router(
+        captured: Arc<Mutex<Option<OneTimeToken>>>,
+    ) -> (Router, Arc<dyn OneTimeTokenService>) {
         struct Capturing(Arc<Mutex<Option<OneTimeToken>>>);
         #[async_trait]
         impl OneTimeTokenGenerationSuccessHandler for Capturing {
@@ -360,8 +366,14 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         // The response body must not contain the token value.
-        let token = captured.lock().await.clone().expect("handler captured a token");
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let token = captured
+            .lock()
+            .await
+            .clone()
+            .expect("handler captured a token");
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert!(!String::from_utf8_lossy(&body).contains(&token.value));
         assert_eq!(token.username, "dave");
     }
@@ -385,7 +397,11 @@ mod tests {
         assert_eq!(resp.headers()[header::LOCATION], "/");
 
         // Anti-fixation: the session id must rotate on login.
-        assert_ne!(session.id().await, id_before, "session id must rotate on login");
+        assert_ne!(
+            session.id().await,
+            id_before,
+            "session id must rotate on login"
+        );
 
         // The security context is now stored on the session.
         let ctx = session

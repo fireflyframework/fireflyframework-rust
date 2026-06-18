@@ -121,9 +121,7 @@ fn compile_glob(pattern: &str) -> Result<GlobMatcher, SecurityError> {
     Ok(GlobBuilder::new(pattern)
         .literal_separator(false)
         .build()
-        .map_err(|e| {
-            SecurityError::verification(format!("invalid glob pattern {pattern:?}: {e}"))
-        })?
+        .map_err(|e| SecurityError::verification(format!("invalid glob pattern {pattern:?}: {e}")))?
         .compile_matcher())
 }
 

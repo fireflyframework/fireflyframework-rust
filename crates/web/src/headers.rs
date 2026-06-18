@@ -238,7 +238,10 @@ mod tests {
         if let Some(proto) = forwarded_proto {
             builder = builder.header("x-forwarded-proto", proto);
         }
-        let resp = svc.oneshot(builder.body(Body::empty()).unwrap()).await.unwrap();
+        let resp = svc
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         resp.headers().contains_key("strict-transport-security")
     }
 

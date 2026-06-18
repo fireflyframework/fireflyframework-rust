@@ -371,12 +371,19 @@ mod tests {
         }
 
         assert!(!cookie(CsrfLayer::new(), None).await.contains("Secure"));
-        assert!(cookie(CsrfLayer::new(), Some("https")).await.contains("Secure"));
-        assert!(cookie(CsrfLayer::new().cookie_secure(CookieSecure::Always), None)
+        assert!(cookie(CsrfLayer::new(), Some("https"))
             .await
             .contains("Secure"));
-        assert!(!cookie(CsrfLayer::new().cookie_secure(CookieSecure::Never), Some("https"))
-            .await
-            .contains("Secure"));
+        assert!(
+            cookie(CsrfLayer::new().cookie_secure(CookieSecure::Always), None)
+                .await
+                .contains("Secure")
+        );
+        assert!(!cookie(
+            CsrfLayer::new().cookie_secure(CookieSecure::Never),
+            Some("https")
+        )
+        .await
+        .contains("Secure"));
     }
 }

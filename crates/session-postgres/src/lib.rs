@@ -722,7 +722,8 @@ mod tests {
         // A session created now is live; one created 2h ago is already expired
         // under the 1h TTL and must not survive.
         reg.register(&principal, "s-live", now).await;
-        reg.register(&principal, "s-old", now - 2 * 3600 * 1000).await;
+        reg.register(&principal, "s-old", now - 2 * 3600 * 1000)
+            .await;
 
         assert_eq!(
             reg.count(&principal).await,
@@ -757,7 +758,8 @@ mod tests {
         reg.init().await.expect("init");
 
         let principal = format!("h12-default-{now}");
-        reg.register(&principal, "s-old", now - 100 * 3600 * 1000).await; // ~100h ago
+        reg.register(&principal, "s-old", now - 100 * 3600 * 1000)
+            .await; // ~100h ago
         assert_eq!(
             reg.count(&principal).await,
             1,

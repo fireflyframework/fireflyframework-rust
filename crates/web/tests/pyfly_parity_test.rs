@@ -231,7 +231,10 @@ async fn cors_wildcard_with_credentials_is_rejected() {
         allow_credentials: true,
         ..CorsConfig::default()
     });
-    assert!(result.is_err(), "wildcard origin + credentials must be rejected");
+    assert!(
+        result.is_err(),
+        "wildcard origin + credentials must be rejected"
+    );
 
     // An explicit origin + credentials is fine.
     let ok = CorsLayer::try_new(CorsConfig {
@@ -552,7 +555,10 @@ async fn csrf_safe_method_sets_cookie() {
     // can still be established in development.
     let (_, http_headers, _) = send(csrf_router(), get_req("/page")).await;
     let http_cookie = csrf_cookie_from(&http_headers).expect("XSRF-TOKEN cookie set");
-    assert!(!http_cookie.contains("Secure"), "HTTP cookie: {http_cookie}");
+    assert!(
+        !http_cookie.contains("Secure"),
+        "HTTP cookie: {http_cookie}"
+    );
 }
 
 #[tokio::test]

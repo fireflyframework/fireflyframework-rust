@@ -89,8 +89,8 @@ use tokio::sync::Mutex;
 
 use webauthn_rs::prelude::{
     AuthenticationResult, CreationChallengeResponse, Passkey, PasskeyAuthentication,
-    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential, RequestChallengeResponse,
-    Url, Uuid, Webauthn, WebauthnBuilder,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    RequestChallengeResponse, Url, Uuid, Webauthn, WebauthnBuilder,
 };
 
 use firefly_session::Session;
@@ -147,8 +147,8 @@ impl WebAuthnRelyingParty {
     /// valid URL, or the underlying [`WebauthnBuilder`] rejects the
     /// configuration (e.g. the origin's host does not match `rp_id`).
     pub fn new(rp_id: &str, rp_name: &str, origin: &str) -> Result<Self, WebAuthnError> {
-        let rp_origin = Url::parse(origin)
-            .map_err(|e| WebAuthnError::InvalidConfiguration(e.to_string()))?;
+        let rp_origin =
+            Url::parse(origin).map_err(|e| WebAuthnError::InvalidConfiguration(e.to_string()))?;
         let webauthn = WebauthnBuilder::new(rp_id, &rp_origin)
             .map_err(|e| WebAuthnError::InvalidConfiguration(e.to_string()))?
             .rp_name(rp_name)
@@ -495,10 +495,7 @@ impl WebAuthnState {
 
     /// Overrides the user-entity repository.
     #[must_use]
-    pub fn user_entities(
-        mut self,
-        repo: Arc<dyn PublicKeyCredentialUserEntityRepository>,
-    ) -> Self {
+    pub fn user_entities(mut self, repo: Arc<dyn PublicKeyCredentialUserEntityRepository>) -> Self {
         self.user_entities = repo;
         self
     }
@@ -839,7 +836,11 @@ mod tests {
             Some(session.clone()),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::FOUND, "login redirects on success");
+        assert_eq!(
+            resp.status(),
+            StatusCode::FOUND,
+            "login redirects on success"
+        );
         assert_eq!(resp.headers()[http::header::LOCATION], "/");
 
         let ctx = session
