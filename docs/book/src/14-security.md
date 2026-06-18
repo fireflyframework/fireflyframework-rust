@@ -827,3 +827,6 @@ admin dashboard.
 - Revisit how the framework discovers and wires beans like the `FilterChain` in
   **[Dependency Wiring](./04-dependency-wiring.md)**.
 - Drive the wired router in tests with `bootstrap()` in **[Testing](./18-testing.md)**.
+- See the **[Spring Security Parity](./14a-spring-security-parity.md)** appendix
+  for the full Spring Security 6 coverage matrix, the Spring-faithful behaviours,
+  and passwordless login (one-time-token magic links + WebAuthn passkeys).
