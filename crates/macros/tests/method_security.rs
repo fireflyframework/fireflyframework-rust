@@ -114,6 +114,51 @@ async fn pre_authorize_on_method_uses_authority() {
     assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
 }
 
+// --- pre_authorize: SpEL-style expression over arguments + principal -------
+
+/// Spring's `@PreAuthorize("#id == authentication.name")` — the caller may act
+/// only on their own id. A non-keyword argument is a boolean Rust expression
+/// evaluated with the method's parameters and `auth` (`&Authentication`) bound.
+#[firefly::pre_authorize(auth.principal == id)]
+async fn read_account(id: &str) -> Result<String, SvcErr> {
+    Ok(format!("account:{id}"))
+}
+
+/// Combines a role check with an ownership check over an argument.
+#[firefly::pre_authorize(auth.has_role("ADMIN") || auth.principal == owner)]
+async fn edit_doc(owner: &str) -> Result<&'static str, SvcErr> {
+    Ok("edited")
+}
+
+#[tokio::test]
+async fn pre_authorize_expression_binds_arguments_and_principal() {
+    // alice reading her own account → allowed.
+    let ok = with_authentication_scope(principal("alice", &[], &[]), read_account("alice")).await;
+    assert_eq!(ok.unwrap(), "account:alice");
+    // alice reading bob's account → forbidden.
+    let denied = with_authentication_scope(principal("alice", &[], &[]), read_account("bob")).await;
+    assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
+    // No ambient context → unauthenticated (the principal binding fails closed).
+    assert_eq!(
+        read_account("alice").await,
+        Err(SvcErr::Denied(SecurityError::Unauthenticated))
+    );
+}
+
+#[tokio::test]
+async fn pre_authorize_expression_combines_role_and_ownership() {
+    // The owner may edit their own doc.
+    let own = with_authentication_scope(principal("alice", &[], &[]), edit_doc("alice")).await;
+    assert_eq!(own, Ok("edited"));
+    // An ADMIN may edit anyone's doc.
+    let admin =
+        with_authentication_scope(principal("root", &["ADMIN"], &[]), edit_doc("bob")).await;
+    assert_eq!(admin, Ok("edited"));
+    // A non-owner non-admin is forbidden.
+    let denied = with_authentication_scope(principal("eve", &[], &[]), edit_doc("bob")).await;
+    assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
+}
+
 // --- post_authorize: returnObject ownership check --------------------------
 
 #[derive(Debug, Clone, PartialEq)]

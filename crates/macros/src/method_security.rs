@@ -28,15 +28,18 @@ use syn::{Expr, ItemFn, Lit, Meta, ReturnType};
 
 use crate::common::Facade;
 
-/// Expands `#[pre_authorize(<rule>)]` on a function that returns
+/// Expands `#[pre_authorize(<rule-or-expr>)]` on a function that returns
 /// `Result<T, E>` where `E: From<firefly_security::SecurityError>`.
 ///
-/// The rule is one of: `authenticated` (the default when the attribute is
-/// empty), `role = "X"`, `any_role = ["A", "B"]`, `authority = "X"`, or
-/// `any_authority = ["A", "B"]`.
+/// The argument is either a **keyword rule** — `authenticated` (the default
+/// when the attribute is empty), `role = "X"`, `any_role = ["A", "B"]`,
+/// `authority = "X"`, or `any_authority = ["A", "B"]` — or, for anything else, a
+/// boolean **Rust expression** evaluated *before* the body with the function's
+/// parameters and `auth` (a `&Authentication`) in scope (Spring's SpEL
+/// `@PreAuthorize("#id == authentication.name")`). A false expression denies
+/// with `Forbidden`; no ambient context denies with `Unauthenticated`.
 pub(crate) fn pre_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     let sec = Facade::default().security();
-    let rule = parse_rule(&sec, args)?;
 
     if matches!(func.sig.output, ReturnType::Default) {
         return Err(syn::Error::new_spanned(
@@ -47,12 +50,35 @@ pub(crate) fn pre_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Re
     }
 
     let block = &func.block;
-    // The `?` propagates the denial through `From<SecurityError>`; the granted
-    // `Authentication` it returns is intentionally discarded.
-    let new_block = quote! {
-        {
-            #sec::check_access(&#rule)?;
-            #block
+    let new_block = match classify_rule(&sec, args.clone())? {
+        // Keyword rule: `?` propagates the denial through `From<SecurityError>`;
+        // the granted `Authentication` it returns is intentionally discarded.
+        Some(rule) => quote! {
+            {
+                #sec::check_access(&#rule)?;
+                #block
+            }
+        },
+        // Expression form: bind the caller (deny-closed if absent), then
+        // evaluate the boolean expression with the parameters and `auth` bound.
+        None => {
+            let expr: Expr = syn::parse2(args)?;
+            quote! {
+                {
+                    let __auth = #sec::current_authentication()
+                        .ok_or(#sec::SecurityError::Unauthenticated)?;
+                    let __granted: bool = {
+                        let auth = &__auth;
+                        #expr
+                    };
+                    if !__granted {
+                        return ::core::result::Result::Err(::core::convert::From::from(
+                            #sec::SecurityError::Forbidden,
+                        ));
+                    }
+                    #block
+                }
+            }
         }
     };
     func.block = syn::parse2(new_block)?;
@@ -126,24 +152,28 @@ pub(crate) fn post_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::R
     Ok(quote!(#func))
 }
 
-/// Parses the `#[pre_authorize(...)]` attribute into an `AccessRule`
-/// constructor expression rooted at the security facade path `#sec`.
-fn parse_rule(sec: &TokenStream, args: TokenStream) -> syn::Result<TokenStream> {
+/// Classifies the `#[pre_authorize(...)]` argument: `Some(rule)` for a known
+/// keyword rule (an `AccessRule` constructor rooted at `#sec`), or `None` when
+/// the argument is not a keyword rule and should be treated as a boolean
+/// expression. Errors only for a *malformed* keyword rule (e.g. `role = 42`).
+fn classify_rule(sec: &TokenStream, args: TokenStream) -> syn::Result<Option<TokenStream>> {
     if args.is_empty() {
-        return Ok(quote!(#sec::AccessRule::Authenticated));
+        return Ok(Some(quote!(#sec::AccessRule::Authenticated)));
     }
-    let meta: Meta = syn::parse2(args)?;
+    // A keyword rule parses as a `Meta`; anything that does not (e.g.
+    // `auth.principal == id`) falls through to the expression form.
+    let Ok(meta) = syn::parse2::<Meta>(args) else {
+        return Ok(None);
+    };
     match &meta {
-        // `#[pre_authorize(authenticated)]`
+        // `#[pre_authorize(authenticated)]` — any other bare path is an
+        // expression (e.g. a boolean variable/const in scope).
         Meta::Path(path) if path.is_ident("authenticated") => {
-            Ok(quote!(#sec::AccessRule::Authenticated))
+            Ok(Some(quote!(#sec::AccessRule::Authenticated)))
         }
-        Meta::Path(path) => Err(syn::Error::new_spanned(
-            path,
-            "unknown rule; use `authenticated`, `role = \"..\"`, `any_role = [..]`, \
-             `authority = \"..\"`, or `any_authority = [..]`",
-        )),
-        // `key = value` forms.
+        Meta::Path(_) => Ok(None),
+        // `key = value` forms. An unknown key is treated as an expression
+        // (so e.g. `a == b` — already not a Meta — never reaches here).
         Meta::NameValue(nv) => {
             let key = nv
                 .path
@@ -153,33 +183,26 @@ fn parse_rule(sec: &TokenStream, args: TokenStream) -> syn::Result<TokenStream> 
             match key.as_str() {
                 "role" => {
                     let s = expect_str(&nv.value)?;
-                    Ok(quote!(#sec::AccessRule::Role(#s)))
+                    Ok(Some(quote!(#sec::AccessRule::Role(#s))))
                 }
                 "authority" => {
                     let s = expect_str(&nv.value)?;
-                    Ok(quote!(#sec::AccessRule::Authority(#s)))
+                    Ok(Some(quote!(#sec::AccessRule::Authority(#s))))
                 }
                 "any_role" => {
                     let items = expect_str_array(&nv.value)?;
-                    Ok(quote!(#sec::AccessRule::AnyRole(&[#(#items),*])))
+                    Ok(Some(quote!(#sec::AccessRule::AnyRole(&[#(#items),*]))))
                 }
                 "any_authority" => {
                     let items = expect_str_array(&nv.value)?;
-                    Ok(quote!(#sec::AccessRule::AnyAuthority(&[#(#items),*])))
+                    Ok(Some(quote!(#sec::AccessRule::AnyAuthority(&[#(#items),*]))))
                 }
-                other => Err(syn::Error::new_spanned(
-                    &nv.path,
-                    format!(
-                        "unknown rule key `{other}`; use `role`, `any_role`, `authority`, \
-                         or `any_authority`"
-                    ),
-                )),
+                _ => Ok(None),
             }
         }
-        Meta::List(list) => Err(syn::Error::new_spanned(
-            list,
-            "expected `authenticated` or `key = value`, not a nested list",
-        )),
+        // A nested list is not a keyword rule (e.g. a call expression like
+        // `has_permission(...)`); treat as an expression.
+        Meta::List(_) => Ok(None),
     }
 }
 
