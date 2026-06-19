@@ -17,11 +17,11 @@
 //! `OpenSaml4AuthenticationProvider`, `Saml2MetadataFilter`).
 //!
 //! This is the SP side of the SAML 2.0 Web-Browser-SSO profile. The heavy
-//! lifting — XML-signature verification, canonicalization, and the SAML profile
-//! checks (audience, recipient, `InResponseTo`, conditions, subject
-//! confirmation) — is delegated to the [`samael`] crate (which links the
-//! battle-tested `xmlsec`/`libxml2`/OpenSSL stack). This module is the
-//! Spring-faithful, **hardened** wrapper around it:
+//! lifting — XML-signature verification, canonicalization, and most SAML profile
+//! checks (recipient, `InResponseTo`, status, conditions, subject confirmation)
+//! — is delegated to the [`samael`] crate (which links the battle-tested
+//! `xmlsec`/`libxml2`/OpenSSL stack). This module is the Spring-faithful,
+//! **hardened** wrapper around it:
 //!
 //! 1. [`RelyingPartyRegistration`] holds one SP↔IdP relationship. Building one
 //!    **fails closed** when the asserting party (IdP) has no signing
@@ -30,11 +30,16 @@
 //! 2. Signature verification is pinned to a safe **allow-list of algorithms**
 //!    (RSA/ECDSA-SHA256+) — `samael`'s default of "all algorithms" is open to
 //!    algorithm-substitution attacks.
-//! 3. [`AssertionReplayCache`] adds **one-time-use** assertion-ID replay
+//! 3. The **audience restriction** is enforced fail-closed: `samael` skips it
+//!    when the assertion omits `AudienceRestriction`, so [`authenticate`] requires
+//!    this SP's entity id to be a listed audience.
+//! 4. [`AssertionReplayCache`] adds **one-time-use** assertion-ID replay
 //!    protection, which the SAML profile requires but `samael` does not do.
-//! 4. [`Saml2AuthenticationRequestRepository`] tracks outgoing `AuthnRequest`
+//! 5. [`Saml2AuthenticationRequestRepository`] tracks outgoing `AuthnRequest`
 //!    IDs (with a TTL) so a response's `InResponseTo` can be matched to a
 //!    request this SP actually issued.
+//!
+//! [`authenticate`]: RelyingPartyRegistration::authenticate
 //!
 //! Everything here is gated behind the opt-in `saml2` feature, so the default
 //! build keeps its pure-Rust / rustls posture.
@@ -138,6 +143,10 @@ pub struct RelyingPartyRegistration {
     registration_id: String,
     sp: ServiceProvider,
     sso_redirect_location: String,
+    /// The SP entity id, which is the SAML audience this SP requires. Kept here
+    /// so [`authenticate`](Self::authenticate) can enforce the AudienceRestriction
+    /// itself (`samael` skips that check when the restriction is absent).
+    audience: String,
     role_attributes: Vec<String>,
     role_prefix: String,
 }
@@ -199,20 +208,25 @@ impl RelyingPartyRegistration {
     /// `OpenSaml4AuthenticationProvider`.
     ///
     /// `samael` performs XML-signature verification (pinned to the IdP's
-    /// certificate and this registration's allowed algorithms) and every SAML
-    /// profile check — audience, recipient, status, `InResponseTo`, and the
-    /// response/assertion/subject-confirmation time conditions. On top of that,
-    /// this method enforces **one-time-use** of the assertion via `replay_cache`
-    /// (which `samael` does not track).
+    /// certificate and this registration's allowed algorithms), recipient,
+    /// status, `InResponseTo`, and the response/assertion/subject-confirmation
+    /// time conditions. On top of that, this method enforces the **audience
+    /// restriction** (fail-closed — `samael` skips it when the assertion omits
+    /// `AudienceRestriction`) and **one-time-use** of the assertion via
+    /// `replay_cache` (which `samael` does not track), and rejects an assertion
+    /// that carries no usable `NameID`.
     ///
     /// `expected_request_ids` are the `AuthnRequest` IDs this SP issued and is
-    /// still awaiting (see [`Saml2AuthenticationRequestRepository`]); the
-    /// response's `InResponseTo` must match one of them unless the registration
-    /// allows IdP-initiated SSO.
+    /// still awaiting; the response's `InResponseTo` must match one of them
+    /// unless the registration allows IdP-initiated SSO. The caller **must** pass
+    /// the actual per-login pending id(s) (never a static value) and, after a
+    /// successful call, retire the matched id via
+    /// [`Saml2AuthenticationRequestRepository::remove`] so the same `InResponseTo`
+    /// cannot be reused.
     ///
     /// # Errors
-    /// Any signature, profile, replay, or decoding failure — all surfaced as a
-    /// [`SecurityError::Verification`].
+    /// Any signature, profile, audience, replay, or decoding failure — all
+    /// surfaced as a [`SecurityError::Verification`].
     pub fn authenticate(
         &self,
         saml_response_b64: &str,
@@ -247,12 +261,29 @@ impl RelyingPartyRegistration {
             return Err(SecurityError::verification("saml2: assertion has no ID"));
         }
 
+        // Enforce the audience restriction ourselves: `samael` skips the check
+        // entirely when the assertion has no Conditions/AudienceRestriction, so
+        // require this SP's entity id to be a listed audience (fail closed).
+        if !audience_includes(&assertion, &self.audience) {
+            return Err(SecurityError::verification(
+                "saml2: assertion audience does not include this service provider",
+            ));
+        }
+
         // One-time-use: reject a replayed assertion (samael does not track this).
         // Retain the id slightly past its validity window to cover clock skew.
         let expires_at = assertion_expiry(&assertion).map(|t| t + REPLAY_SKEW_MARGIN);
         replay_cache.check_and_remember(&assertion.id, expires_at)?;
 
-        Ok(self.map_assertion(assertion))
+        let auth = self.map_assertion(assertion);
+        // A verified login must name a principal; an empty NameID is anonymous
+        // and would alias across logins, so reject it.
+        if auth.principal.trim().is_empty() {
+            return Err(SecurityError::verification(
+                "saml2: assertion carries no NameID / principal",
+            ));
+        }
+        Ok(auth)
     }
 
     /// Maps a verified [`Assertion`] to an [`Authentication`]: the `NameID`
@@ -268,7 +299,10 @@ impl RelyingPartyRegistration {
             .unwrap_or_default();
 
         let mut roles = Vec::new();
-        let mut claims = HashMap::new();
+        // Accumulate per attribute name so that duplicate `<Attribute>` blocks
+        // (a legal, if uncommon, IdP shape) merge rather than overwrite — keeping
+        // `claims` consistent with the roles gathered from every block.
+        let mut attribute_values: HashMap<String, Vec<String>> = HashMap::new();
         for statement in assertion.attribute_statements.iter().flatten() {
             for attr in &statement.attributes {
                 let Some(name) = attr.name.as_deref() else {
@@ -281,12 +315,21 @@ impl RelyingPartyRegistration {
                         roles.push(format!("{}{}", self.role_prefix, v));
                     }
                 }
-                claims.insert(
-                    name.to_string(),
-                    Value::Array(values.into_iter().map(Value::String).collect()),
-                );
+                attribute_values
+                    .entry(name.to_string())
+                    .or_default()
+                    .extend(values);
             }
         }
+        let claims = attribute_values
+            .into_iter()
+            .map(|(name, values)| {
+                (
+                    name,
+                    Value::Array(values.into_iter().map(Value::String).collect()),
+                )
+            })
+            .collect();
 
         Authentication {
             principal: principal.clone(),
@@ -296,6 +339,21 @@ impl RelyingPartyRegistration {
             claims,
         }
     }
+}
+
+/// Whether `assertion` carries an `AudienceRestriction` that lists `audience`.
+/// Returns `false` (fail-closed) when there is no `Conditions` /
+/// `AudienceRestriction` at all — `samael` would otherwise skip the check.
+fn audience_includes(assertion: &Assertion, audience: &str) -> bool {
+    assertion
+        .conditions
+        .as_ref()
+        .and_then(|c| c.audience_restrictions.as_ref())
+        .is_some_and(|restrictions| {
+            restrictions
+                .iter()
+                .any(|r| r.audience.iter().any(|a| a == audience))
+        })
 }
 
 /// The latest moment a verified assertion could still pass validation — the
@@ -414,6 +472,13 @@ impl RelyingPartyRegistrationBuilder {
     /// Allows IdP-initiated SSO (no matching `AuthnRequest`). Off by default —
     /// when off, a response whose `InResponseTo` matches no expected request id
     /// is rejected.
+    ///
+    /// **Caveat:** enabling this disables `InResponseTo` request-binding (per the
+    /// IdP-initiated profile — there is no SP request to bind to), so the
+    /// [`AssertionReplayCache`] becomes the **sole** freshness control. A
+    /// multi-instance / load-balanced deployment must then supply a *shared*
+    /// replay cache — the [`InMemoryAssertionReplayCache`] is per-process and
+    /// cannot stop a replay against a different instance.
     #[must_use]
     pub fn allow_idp_initiated(mut self, allow: bool) -> Self {
         self.allow_idp_initiated = allow;
@@ -457,6 +522,8 @@ impl RelyingPartyRegistrationBuilder {
         let entity_id = self
             .entity_id
             .ok_or_else(|| SecurityError::verification("saml2: SP entity id is required"))?;
+        // The SP entity id is the audience this SP requires of an assertion.
+        let audience = entity_id.clone();
         let acs_url = self
             .acs_url
             .ok_or_else(|| SecurityError::verification("saml2: ACS URL is required"))?;
@@ -502,6 +569,7 @@ impl RelyingPartyRegistrationBuilder {
             registration_id: self.registration_id,
             sp,
             sso_redirect_location,
+            audience,
             role_attributes: self.role_attributes,
             role_prefix: self.role_prefix,
         })
@@ -574,21 +642,21 @@ impl InMemorySaml2AuthenticationRequestRepository {
 impl Saml2AuthenticationRequestRepository for InMemorySaml2AuthenticationRequestRepository {
     fn save(&self, request_id: &str, ttl: Duration) {
         let expires_at = SystemTime::now() + ttl;
-        let mut pending = self.pending.lock().expect("request store poisoned");
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let now = SystemTime::now();
         pending.retain(|_, exp| *exp > now);
         pending.insert(request_id.to_string(), expires_at);
     }
 
     fn is_pending(&self, request_id: &str) -> bool {
-        let pending = self.pending.lock().expect("request store poisoned");
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending
             .get(request_id)
             .is_some_and(|exp| *exp > SystemTime::now())
     }
 
     fn remove(&self, request_id: &str) -> bool {
-        let mut pending = self.pending.lock().expect("request store poisoned");
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         match pending.remove(request_id) {
             Some(exp) => exp > SystemTime::now(),
             None => false,
@@ -612,6 +680,12 @@ pub trait AssertionReplayCache: Send + Sync {
 
 /// An in-memory [`AssertionReplayCache`]. Expired entries are purged lazily on
 /// each call, so the map stays bounded by the number of in-flight assertions.
+///
+/// **Per-process only:** it cannot detect a replay presented to a *different*
+/// instance. A multi-instance / load-balanced deployment should supply a shared
+/// (e.g. Redis-backed) [`AssertionReplayCache`] instead — especially with
+/// [IdP-initiated SSO](RelyingPartyRegistrationBuilder::allow_idp_initiated),
+/// where the cache is the only freshness control.
 #[derive(Default)]
 pub struct InMemoryAssertionReplayCache {
     seen: Mutex<HashMap<String, SystemTime>>,
@@ -633,7 +707,7 @@ impl AssertionReplayCache for InMemoryAssertionReplayCache {
     ) -> Result<(), SecurityError> {
         let now = SystemTime::now();
         let forget_at = expires_at.unwrap_or(now + REPLAY_FALLBACK_TTL);
-        let mut seen = self.seen.lock().expect("replay cache poisoned");
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         seen.retain(|_, exp| *exp > now);
         if seen.contains_key(assertion_id) {
             return Err(SecurityError::verification(
@@ -906,5 +980,72 @@ mod tests {
         let past = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
         assert!(cache.check_and_remember("assertion-3", Some(past)).is_ok());
         assert!(cache.check_and_remember("assertion-3", Some(past)).is_ok());
+    }
+
+    #[test]
+    fn audience_restriction_is_enforced_fail_closed() {
+        // A matching audience is accepted.
+        let matching = build_response("alice@example.com", SP_ENTITY_ID, "id", &[])
+            .assertion
+            .unwrap();
+        assert!(audience_includes(&matching, SP_ENTITY_ID));
+        // A different SP's audience is rejected.
+        let other = build_response(
+            "alice@example.com",
+            "https://other-sp.example/metadata",
+            "id",
+            &[],
+        )
+        .assertion
+        .unwrap();
+        assert!(!audience_includes(&other, SP_ENTITY_ID));
+        // No AudienceRestriction at all → fail closed (samael would skip it).
+        let mut absent = build_response("alice@example.com", SP_ENTITY_ID, "id", &[])
+            .assertion
+            .unwrap();
+        absent.conditions = None;
+        assert!(!audience_includes(&absent, SP_ENTITY_ID));
+    }
+
+    #[test]
+    fn missing_name_id_maps_to_an_anonymous_principal() {
+        // An assertion with no Subject/NameID maps to an empty principal, which
+        // is not authenticated (authenticate() rejects it before returning Ok).
+        let reg = registration();
+        let mut assertion = build_response("alice@example.com", SP_ENTITY_ID, "id", &["users"])
+            .assertion
+            .unwrap();
+        assertion.subject = None;
+        let auth = reg.map_assertion(assertion);
+        assert!(auth.principal.is_empty());
+        assert!(!auth.is_authenticated());
+    }
+
+    #[test]
+    fn duplicate_attribute_blocks_merge_into_claims() {
+        // `&["admins", "users"]` produces two <Attribute Name="groups"> blocks;
+        // both contribute roles AND both values survive in claims (not last-wins).
+        let reg = registration();
+        let assertion = build_response(
+            "alice@example.com",
+            SP_ENTITY_ID,
+            "id",
+            &["admins", "users"],
+        )
+        .assertion
+        .unwrap();
+        let auth = reg.map_assertion(assertion);
+        assert!(auth.has_role("admins"));
+        assert!(auth.has_role("users"));
+        let groups = auth
+            .claims
+            .get("groups")
+            .and_then(|v| v.as_array())
+            .expect("groups claim is an array");
+        assert_eq!(
+            groups.len(),
+            2,
+            "both attribute blocks must survive in claims"
+        );
     }
 }
