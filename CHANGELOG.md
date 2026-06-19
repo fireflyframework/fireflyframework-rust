@@ -2,6 +2,50 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.34 — 2026-06-19
+
+**Spring Security parity — Tier 5a: LDAP / Active Directory authentication.**
+The first of the Tier 5 "big subsystems", delivered as an opt-in feature. All
+additive (no behaviour change to existing code; the default build does not
+compile the new module). Adversarially reviewed before release.
+
+### Added
+
+- **`ldap` feature** (opt-in, pulls in `ldap3`) — Spring's
+  `ldapAuthentication()`:
+  - **`LdapAuthenticationProvider`** — bind authentication as an
+    `AuthenticationProvider` (plugs into `ProviderManager`): search the user DN
+    under a base+filter (`(uid={0})`, username RFC 4515-escaped), bind as that
+    DN with the password (the directory verifies it), then map group membership
+    (`(member={0})`) to `ROLE_<GROUP>` authorities — Spring's
+    `BindAuthenticator` + `DefaultLdapAuthoritiesPopulator`.
+  - **`ActiveDirectoryLdapAuthenticationProvider`** — binds as the
+    `userPrincipalName` (`user@domain`) and maps the user's `memberOf` groups to
+    roles.
+  - **`LdapOperations`** port (+ `escape_filter_value`, `cn_from_dn`,
+    `LdapEntry`) with the production **`Ldap3Operations`** adapter over `ldap3`.
+    The port makes the provider logic unit-testable without a live directory.
+- Security defaults: an **empty password is rejected before binding** (a simple
+  bind with an empty password is an anonymous bind that most directories accept
+  — an authentication bypass); the username/DN are RFC 4515-escaped in search
+  filters (LDAP-injection safe); unknown-user and wrong-password fail with the
+  same error value; a non-zero LDAP bind result code is an error (never a silent
+  success).
+- Hardened from the pre-release adversarial review: an **ambiguous user search**
+  (more than one matching entry) is rejected rather than binding against an
+  arbitrary first match (Spring's `IncorrectResultSizeDataAccessException`); a
+  **directory error while populating authorities** propagates and fails the
+  login instead of silently authenticating with no roles (Spring's
+  `DefaultLdapAuthoritiesPopulator` semantics); and a **malformed directory
+  entry** is caught and turned into a clean error rather than aborting the
+  authentication task.
+
+### Notes
+
+- The live `Ldap3Operations` adapter is exercised by an integration test gated
+  on `FIREFLY_TEST_LDAP_URL` (skipped when unset); the provider logic is fully
+  covered by mock-`LdapOperations` unit tests.
+
 ## v26.6.33 — 2026-06-19
 
 **Spring Security parity — Tier 4: the OAuth2 ecosystem.** The wider OAuth2
