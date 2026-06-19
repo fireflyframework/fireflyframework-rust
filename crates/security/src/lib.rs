@@ -152,6 +152,7 @@ mod password;
 mod problem;
 mod role_hierarchy;
 mod session_auth;
+mod userdetails;
 #[cfg(feature = "webauthn")]
 mod webauthn;
 
@@ -193,6 +194,10 @@ pub use role_hierarchy::RoleHierarchy;
 pub use session_auth::{
     SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,
     SessionLoginSessionStore,
+};
+pub use userdetails::{
+    AccountStatusUserDetailsChecker, DaoAuthenticationProvider, InMemoryUserDetailsService,
+    UserDetails, UserDetailsChecker, UserDetailsService,
 };
 #[cfg(feature = "webauthn")]
 pub use webauthn::{
