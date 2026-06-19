@@ -42,7 +42,10 @@ En la columna **Estado**, :status-supported: indica una función soportada,
 | `RequestCache` / `SavedRequest` | :status-supported: | `HttpSessionRequestCache` — la página previa al login se restaura tras autenticarse (solo redirección del mismo origen) |
 | `SessionCreationPolicy` | :status-supported: | `Always`/`IfRequired`/`Never`/`Stateless`; `Stateless` instala el repositorio de contexto nulo para APIs de tokens |
 | Múltiples cadenas de filtros | :status-supported: | `SecurityFilterChains` — gana el primer `RequestMatcher` que coincide (el `FilterChainProxy` de Spring) |
-| Cliente OAuth2 (`AuthorizedClientManager`) / Servidor de autorización | :status-planned: | Lado de login presente; cliente saliente y servidor de autorización montado en la hoja de ruta |
+| Cliente OAuth2 saliente (`AuthorizedClientManager`) | :status-supported: | `OAuth2AuthorizedClientManager` + `OAuth2AuthorizedClientService` — grants client-credentials / refresh-token, caché de tokens y auto-refresco para llamadas salientes |
+| Introspección de tokens opacos (RFC 7662) | :status-supported: | `RemoteTokenIntrospector` (`OpaqueTokenIntrospector`) — un `Verifier` de servidor de recursos intercambiable |
+| Logout iniciado por RP (OIDC) | :status-supported: | `oidc_logout_url` — el logout redirige al `end_session_endpoint` del proveedor (`OidcClientInitiatedLogoutSuccessHandler`) |
+| Servidor de autorización | :status-partial: | `AuthorizationServer` (client-credentials + refresh-token) montado vía `AuthorizationServerRouter` (`/oauth2/token`, metadatos RFC 8414); el grant authorization_code del lado servidor en la hoja de ruta |
 | ACL / seguridad de objetos de dominio · SAML2 · LDAP/AD | :status-planned: | Hoja de ruta (crates opcionales) |
 
 ## Comportamientos fieles a Spring que conviene conocer
@@ -138,6 +141,32 @@ palabra clave (`role = "ADMIN"`, `any_authority = [..]`), aceptan
 Las cuatro fallan en cerrado: sin contexto ambiente se deniega con
 `Unauthenticated`, y una expresión falsa con `Forbidden`.
 
+## Ecosistema OAuth2
+
+Más allá del flujo de login en navegador (auth-code + PKCE + OIDC), Firefly
+cubre el ecosistema OAuth2 más amplio:
+
+- **Introspección de tokens opacos (RFC 7662)** — `RemoteTokenIntrospector`
+  (el `OpaqueTokenIntrospector` de Spring) valida tokens bearer no-JWT contra el
+  endpoint `/introspect` del servidor de autorización y mapea la respuesta
+  `active` a un `Authentication`. Implementa `Verifier`, así que se conecta a un
+  `BearerLayer` como alternativa a la verificación JWT local. Falla en cerrado.
+- **Cliente saliente (`AuthorizedClientManager`)** —
+  `OAuth2AuthorizedClientManager` + `OAuth2AuthorizedClientService` obtienen,
+  **cachean** y **auto-refrescan** los tokens de acceso que la app necesita para
+  llamar a servicios aguas abajo (client-credentials para servicio-a-servicio,
+  refresh-token para llamadas delegadas), reusando un token hasta que se acerca
+  su caducidad.
+- **Logout iniciado por RP (OIDC)** — cuando el proveedor de login anuncia un
+  `end_session_endpoint`, `POST /logout` redirige el navegador allí con un
+  `id_token_hint` + `post_logout_redirect_uri` para que la sesión termine también
+  en el IdP (el `OidcClientInitiatedLogoutSuccessHandler` de Spring).
+- **Servidor de autorización** — `AuthorizationServer` (client-credentials +
+  refresh-token, HS256) se monta sobre HTTP con `AuthorizationServerRouter`:
+  `POST /oauth2/token` (RFC 6749) y `GET /.well-known/oauth-authorization-server`
+  (metadatos RFC 8414). El grant authorization_code del lado servidor es un
+  seguimiento.
+
 ## Login sin contraseña
 
 Firefly incluye los dos mecanismos sin contraseña de Spring Security 6.4:
@@ -168,8 +197,9 @@ La paridad se entrega por niveles, cada uno un incremento:
 4. **Profundidad de seguridad de método (hecho)** — enlace de
    argumentos/principal estilo SpEL, `@PreFilter`/`@PostFilter`,
    `PermissionEvaluator`.
-5. **Ecosistema OAuth2** — introspección de tokens opacos, gestor de clientes
-   autorizados salientes, logout iniciado por RP, servidor de autorización
-   montado.
+5. **Ecosistema OAuth2 (hecho)** — introspección de tokens opacos (RFC 7662),
+   el gestor de clientes autorizados salientes, logout iniciado por RP, y el
+   servidor de autorización montado sobre HTTP con metadatos RFC 8414. (El grant
+   authorization_code del lado servidor queda como seguimiento.)
 6. **Subsistemas grandes** — ACL / seguridad de objetos de dominio, LDAP /
    Active Directory, SAML2.

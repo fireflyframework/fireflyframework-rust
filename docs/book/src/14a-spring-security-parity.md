@@ -41,7 +41,10 @@ In the **Status** column, :status-supported: marks a supported feature,
 | `RequestCache` / `SavedRequest` | :status-supported: | `HttpSessionRequestCache` — the pre-login page restored after authentication (same-origin redirect only) |
 | `SessionCreationPolicy` | :status-supported: | `Always`/`IfRequired`/`Never`/`Stateless`; `Stateless` installs the null context repository for token APIs |
 | Multiple filter chains | :status-supported: | `SecurityFilterChains` — first matching `RequestMatcher` wins (Spring's `FilterChainProxy`) |
-| OAuth2 client (`AuthorizedClientManager`) / Authorization Server | :status-planned: | Login side present; outbound client + a mounted authorization server on the roadmap |
+| Outbound OAuth2 client (`AuthorizedClientManager`) | :status-supported: | `OAuth2AuthorizedClientManager` + `OAuth2AuthorizedClientService` — client-credentials / refresh-token grants, token cache + auto-refresh for downstream calls |
+| Opaque-token introspection (RFC 7662) | :status-supported: | `RemoteTokenIntrospector` (`OpaqueTokenIntrospector`) — a drop-in resource-server `Verifier` |
+| RP-initiated logout (OIDC) | :status-supported: | `oidc_logout_url` — logout redirects to the provider `end_session_endpoint` (`OidcClientInitiatedLogoutSuccessHandler`) |
+| Authorization server | :status-partial: | `AuthorizationServer` (client-credentials + refresh-token) mounted via `AuthorizationServerRouter` (`/oauth2/token`, RFC 8414 metadata); server-side authorization_code grant on the roadmap |
 | ACL / domain-object security · SAML2 · LDAP/AD | :status-planned: | Roadmap (opt-in crates) |
 
 ## Spring-faithful behaviours to know
@@ -131,6 +134,30 @@ Rust analog of Spring's SpEL:
 All four fail closed: no ambient context denies with `Unauthenticated`, a false
 expression with `Forbidden`.
 
+## OAuth2 ecosystem
+
+Beyond the browser login flow (auth-code + PKCE + OIDC), Firefly covers the
+wider OAuth2 ecosystem:
+
+- **Opaque-token introspection (RFC 7662)** — `RemoteTokenIntrospector`
+  (Spring's `OpaqueTokenIntrospector`) validates non-JWT bearer tokens against
+  the authorization server's `/introspect` endpoint and maps the `active`
+  response to an `Authentication`. It implements `Verifier`, so it drops into a
+  `BearerLayer` as an alternative to local JWT verification. Fails closed.
+- **Outbound client (`AuthorizedClientManager`)** —
+  `OAuth2AuthorizedClientManager` + `OAuth2AuthorizedClientService` obtain,
+  **cache**, and **auto-refresh** the access tokens the app needs to call
+  downstream services (client-credentials for service-to-service, refresh-token
+  for delegated calls), reusing a token until it nears expiry.
+- **RP-initiated logout (OIDC)** — when the login provider advertises an
+  `end_session_endpoint`, `POST /logout` redirects the browser there with an
+  `id_token_hint` + `post_logout_redirect_uri` so the session ends at the IdP
+  too (Spring's `OidcClientInitiatedLogoutSuccessHandler`).
+- **Authorization server** — `AuthorizationServer` (client-credentials +
+  refresh-token, HS256) is mounted over HTTP by `AuthorizationServerRouter`:
+  `POST /oauth2/token` (RFC 6749) and `GET /.well-known/oauth-authorization-server`
+  (RFC 8414 metadata). The server-side authorization_code grant is a follow-up.
+
 ## Passwordless login
 
 Firefly ships the two Spring Security 6.4 passwordless mechanisms:
@@ -159,8 +186,9 @@ Parity is delivered in tiers, each its own increment:
    chains.
 4. **Method-security depth (done)** — SpEL-style argument/principal binding,
    `@PreFilter`/`@PostFilter`, `PermissionEvaluator`.
-5. **OAuth2 ecosystem** — opaque-token introspection, the outbound
-   authorized-client manager, RP-initiated logout, a mounted authorization
-   server.
+5. **OAuth2 ecosystem (done)** — opaque-token introspection (RFC 7662), the
+   outbound authorized-client manager, RP-initiated logout, and the
+   authorization server mounted over HTTP with RFC 8414 metadata. (The
+   server-side authorization_code grant remains a follow-up.)
 6. **Big subsystems** — ACL / domain-object security, LDAP / Active Directory,
    SAML2.
