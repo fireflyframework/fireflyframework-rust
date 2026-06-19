@@ -185,7 +185,10 @@ pub use ott::{
     OneTimeTokenGenerationSuccessHandler, OneTimeTokenService, OttLoginState,
     DEFAULT_OTT_TTL_SECONDS,
 };
-pub use password::{Argon2PasswordEncoder, BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
+pub use password::{
+    Argon2PasswordEncoder, BcryptPasswordEncoder, DelegatingPasswordEncoder, NoOpPasswordEncoder,
+    PasswordEncoder, DEFAULT_PASSWORD_ENCODER_ID, DEFAULT_ROUNDS,
+};
 pub use role_hierarchy::RoleHierarchy;
 pub use session_auth::{
     SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,

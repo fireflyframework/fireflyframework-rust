@@ -228,6 +228,156 @@ impl PasswordEncoder for Argon2PasswordEncoder {
     }
 }
 
+/// The default encoder id used by [`DelegatingPasswordEncoder`] — Spring's
+/// `{bcrypt}` default.
+pub const DEFAULT_PASSWORD_ENCODER_ID: &str = "bcrypt";
+
+/// A no-op (plaintext) [`PasswordEncoder`] — Spring's `{noop}`. It stores and
+/// compares passwords verbatim, so it is for **tests / local development only**;
+/// never use it for real credentials.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoOpPasswordEncoder;
+
+impl PasswordEncoder for NoOpPasswordEncoder {
+    fn hash(&self, raw_password: &str) -> Result<String, SecurityError> {
+        Ok(raw_password.to_owned())
+    }
+
+    fn verify(&self, raw_password: &str, hashed_password: &str) -> Result<bool, SecurityError> {
+        Ok(raw_password == hashed_password)
+    }
+}
+
+/// Parses a Spring `{id}encoded` storage string into `(id, encoded)`; `None`
+/// when there is no leading `{id}` prefix (a legacy / bare hash).
+fn parse_encoder_id(stored: &str) -> Option<(&str, &str)> {
+    let rest = stored.strip_prefix('{')?;
+    let close = rest.find('}')?;
+    Some((&rest[..close], &rest[close + 1..]))
+}
+
+/// An `{id}`-prefixed multi-encoder — the Rust analog of Spring Security's
+/// `DelegatingPasswordEncoder` (`PasswordEncoderFactories.createDelegating…`),
+/// the **recommended** password-storage format.
+///
+/// * [`hash`](PasswordEncoder::hash) encodes with the configured default and
+///   prefixes the result with `{id}` (e.g. `{bcrypt}$2b$…`).
+/// * [`verify`](PasswordEncoder::verify) reads the `{id}` and delegates to the
+///   matching encoder; an unprefixed (legacy) hash is verified by the optional
+///   `unprefixed` fallback (Spring's `defaultPasswordEncoderForMatches`), or
+///   rejected when none is set.
+/// * [`upgrade_encoding`](Self::upgrade_encoding) reports whether a stored hash
+///   should be re-encoded on next login — true when its `{id}` differs from the
+///   current default, or it is unprefixed — so an application can transparently
+///   migrate `{argon2}` / legacy hashes to the current default.
+pub struct DelegatingPasswordEncoder {
+    default_id: String,
+    encoders: std::collections::HashMap<String, Box<dyn PasswordEncoder + Send + Sync>>,
+    unprefixed: Option<Box<dyn PasswordEncoder + Send + Sync>>,
+}
+
+impl std::fmt::Debug for DelegatingPasswordEncoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DelegatingPasswordEncoder")
+            .field("default_id", &self.default_id)
+            .field("ids", &self.encoders.keys().collect::<Vec<_>>())
+            .field("unprefixed", &self.unprefixed.is_some())
+            .finish()
+    }
+}
+
+impl DelegatingPasswordEncoder {
+    /// Builds with an explicit default id and encoder map (no unprefixed
+    /// fallback). The `default_id` must be a key of `encoders`.
+    #[must_use]
+    pub fn new(
+        default_id: impl Into<String>,
+        encoders: std::collections::HashMap<String, Box<dyn PasswordEncoder + Send + Sync>>,
+    ) -> Self {
+        Self {
+            default_id: default_id.into(),
+            encoders,
+            unprefixed: None,
+        }
+    }
+
+    /// The Spring-default factory: `{bcrypt}` (default) + `{argon2}` + `{noop}`
+    /// recognised, with legacy *unprefixed* hashes verified as bcrypt — so a
+    /// store of bare `$2b$…` hashes migrates seamlessly to the prefixed format.
+    #[must_use]
+    pub fn with_defaults() -> Self {
+        let mut encoders: std::collections::HashMap<
+            String,
+            Box<dyn PasswordEncoder + Send + Sync>,
+        > = std::collections::HashMap::new();
+        encoders.insert("bcrypt".into(), Box::new(BcryptPasswordEncoder::new()));
+        encoders.insert("argon2".into(), Box::new(Argon2PasswordEncoder::new()));
+        encoders.insert("noop".into(), Box::new(NoOpPasswordEncoder));
+        Self {
+            default_id: DEFAULT_PASSWORD_ENCODER_ID.to_owned(),
+            encoders,
+            unprefixed: Some(Box::new(BcryptPasswordEncoder::new())),
+        }
+    }
+
+    /// Sets the encoder used to verify legacy *unprefixed* hashes (Spring's
+    /// `setDefaultPasswordEncoderForMatches`); `None` rejects unprefixed hashes.
+    #[must_use]
+    pub fn with_unprefixed(
+        mut self,
+        encoder: Option<Box<dyn PasswordEncoder + Send + Sync>>,
+    ) -> Self {
+        self.unprefixed = encoder;
+        self
+    }
+
+    /// Whether `stored` should be re-encoded on next login: `true` when its
+    /// `{id}` differs from the current default, or it has no `{id}` prefix
+    /// (a legacy hash). Mirrors Spring's `upgradeEncoding`.
+    #[must_use]
+    pub fn upgrade_encoding(&self, stored: &str) -> bool {
+        match parse_encoder_id(stored) {
+            Some((id, _)) => id != self.default_id,
+            None => true,
+        }
+    }
+}
+
+impl PasswordEncoder for DelegatingPasswordEncoder {
+    fn hash(&self, raw_password: &str) -> Result<String, SecurityError> {
+        let encoder = self.encoders.get(&self.default_id).ok_or_else(|| {
+            SecurityError::verification(format!(
+                "DelegatingPasswordEncoder: no encoder for default id {{{}}}",
+                self.default_id
+            ))
+        })?;
+        Ok(format!(
+            "{{{}}}{}",
+            self.default_id,
+            encoder.hash(raw_password)?
+        ))
+    }
+
+    fn verify(&self, raw_password: &str, hashed_password: &str) -> Result<bool, SecurityError> {
+        match parse_encoder_id(hashed_password) {
+            Some((id, encoded)) => {
+                let encoder = self.encoders.get(id).ok_or_else(|| {
+                    SecurityError::verification(format!(
+                        "DelegatingPasswordEncoder: no encoder for id {{{id}}}"
+                    ))
+                })?;
+                encoder.verify(raw_password, encoded)
+            }
+            None => match &self.unprefixed {
+                Some(encoder) => encoder.verify(raw_password, hashed_password),
+                None => Err(SecurityError::verification(
+                    "DelegatingPasswordEncoder: stored hash has no {id} prefix",
+                )),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +385,80 @@ mod tests {
     // Low parameters keep the tests fast; production uses the OWASP defaults.
     fn argon() -> Argon2PasswordEncoder {
         Argon2PasswordEncoder::with_params(4096, 1, 1)
+    }
+
+    fn fast_delegating() -> DelegatingPasswordEncoder {
+        let mut encoders: std::collections::HashMap<
+            String,
+            Box<dyn PasswordEncoder + Send + Sync>,
+        > = std::collections::HashMap::new();
+        encoders.insert(
+            "bcrypt".into(),
+            Box::new(BcryptPasswordEncoder::with_rounds(4)),
+        );
+        encoders.insert(
+            "argon2".into(),
+            Box::new(Argon2PasswordEncoder::with_params(4096, 1, 1)),
+        );
+        encoders.insert("noop".into(), Box::new(NoOpPasswordEncoder));
+        DelegatingPasswordEncoder::new("bcrypt", encoders)
+            .with_unprefixed(Some(Box::new(BcryptPasswordEncoder::with_rounds(4))))
+    }
+
+    #[test]
+    fn delegating_prefixes_default_and_round_trips() {
+        let enc = fast_delegating();
+        let h = enc.hash("s3cret").unwrap();
+        assert!(h.starts_with("{bcrypt}$2b$"), "{h}");
+        assert!(enc.verify("s3cret", &h).unwrap());
+        assert!(!enc.verify("wrong", &h).unwrap());
+        // A default-encoded hash needs no upgrade.
+        assert!(!enc.upgrade_encoding(&h));
+    }
+
+    #[test]
+    fn delegating_verifies_argon2_and_flags_it_for_upgrade() {
+        let enc = fast_delegating();
+        let ah = format!("{{argon2}}{}", argon().hash("s3cret").unwrap());
+        assert!(enc.verify("s3cret", &ah).unwrap());
+        // {argon2} != default {bcrypt} -> re-encode on next login.
+        assert!(enc.upgrade_encoding(&ah));
+    }
+
+    #[test]
+    fn delegating_verifies_legacy_unprefixed_via_fallback_and_upgrades() {
+        let enc = fast_delegating();
+        let bare = BcryptPasswordEncoder::with_rounds(4)
+            .hash("s3cret")
+            .unwrap();
+        assert!(!bare.starts_with('{'));
+        assert!(enc.verify("s3cret", &bare).unwrap());
+        assert!(enc.upgrade_encoding(&bare));
+    }
+
+    #[test]
+    fn delegating_noop_and_unknown_id() {
+        let enc = fast_delegating();
+        assert!(enc.verify("plain", "{noop}plain").unwrap());
+        assert!(!enc.verify("plain", "{noop}other").unwrap());
+        // Unknown {id} is a structural error.
+        assert!(enc.verify("x", "{pbkdf2}whatever").is_err());
+        // No fallback -> unprefixed rejected.
+        let strict = DelegatingPasswordEncoder::new("noop", {
+            let mut m: std::collections::HashMap<String, Box<dyn PasswordEncoder + Send + Sync>> =
+                std::collections::HashMap::new();
+            m.insert("noop".into(), Box::new(NoOpPasswordEncoder));
+            m
+        });
+        assert!(strict.verify("x", "bare-no-prefix").is_err());
+    }
+
+    #[test]
+    fn with_defaults_upgrade_logic() {
+        let enc = DelegatingPasswordEncoder::with_defaults();
+        assert!(enc.upgrade_encoding("{argon2}$argon2id$v=19$m=19456,t=2,p=1$abc$def"));
+        assert!(enc.upgrade_encoding("$2b$12$bareLegacyHashValue000000000000000000000000"));
+        assert!(!enc.upgrade_encoding("{bcrypt}$2b$12$x"));
     }
 
     #[test]
