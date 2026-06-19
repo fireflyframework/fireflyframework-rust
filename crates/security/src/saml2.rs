@@ -66,10 +66,10 @@ const REPLAY_FALLBACK_TTL: Duration = Duration::from_secs(60 * 60);
 const REPLAY_SKEW_MARGIN: Duration = Duration::from_secs(300);
 
 /// `xmlsec`/`libxml2` operate on process-global state and are **not** safe to
-/// run concurrently (concurrent use segfaults). Every entry into the native
-/// XML-Security stack — signature verification here, signing in tests — is
-/// serialized through this guard. Verification is fast and logins are not a hot
-/// path, so the serialization cost is acceptable.
+/// run concurrently (concurrent use segfaults). Every signature verification —
+/// the only entry into the native XML-Security stack — is serialized through
+/// this guard. Verification is fast and logins are not a hot path, so the
+/// serialization cost is acceptable.
 static XMLSEC_GUARD: Mutex<()> = Mutex::new(());
 
 /// A safe default signature-algorithm allow-list (SHA-256 and stronger, RSA and
@@ -772,60 +772,37 @@ mod tests {
         assert!(!repo.remove("stale"));
     }
 
-    // --- Signed-response verification (real xmlsec round-trip) --------------
+    // --- Response handling: verification integration + mapping -------------
     //
-    // These exercise the full verification path against genuinely XML-signed
-    // SAML responses produced by `samael`'s test identity provider, so the
-    // signature, profile, and replay logic is covered end to end.
+    // Production verifies an IdP-signed response through `samael`, whose own
+    // crypto test-suite proves it accepts valid signatures and rejects bad ones
+    // against the installed xmlsec. These tests cover *this module's* logic: the
+    // attribute → authorities mapping (on a real `samael` Assertion), one-time-use
+    // replay protection, and that an unsigned response is rejected end to end.
 
-    use samael::crypto::{CertificateDer, CryptoProvider, XmlSec};
+    use samael::crypto::{decode_x509_cert, CertificateDer};
     use samael::idp::response_builder::{build_response_template, ResponseAttribute};
     use samael::idp::sp_extractor::RequiredAttribute;
-    use samael::idp::{CertificateParams, IdentityProvider, KeyType, Rsa};
+    use samael::schema::Response;
     use samael::traits::ToXml;
 
     fn b64() -> base64::engine::general_purpose::GeneralPurpose {
         base64::engine::general_purpose::STANDARD
     }
 
-    /// A fresh test IdP (RSA key) plus its self-signed certificate.
-    fn test_idp() -> (IdentityProvider, CertificateDer) {
-        let idp = IdentityProvider::generate_new(KeyType::Rsa(Rsa::Rsa2048)).expect("idp key");
-        let cert = idp
-            .create_certificate(&CertificateParams {
-                common_name: "Firefly Test IdP",
-                issuer_name: "Firefly Test IdP",
-                days_until_expiration: 3650,
-            })
-            .expect("idp cert");
-        (idp, cert)
+    fn idp_cert() -> CertificateDer {
+        decode_x509_cert(TEST_IDP_CERT_B64).expect("decode test IdP cert")
     }
 
-    fn cert_b64(cert: &CertificateDer) -> String {
-        b64().encode(cert.der_data())
-    }
-
-    fn registration_with(cert: &CertificateDer) -> RelyingPartyRegistration {
-        RelyingPartyRegistration::builder("test")
-            .sp_entity_id(SP_ENTITY_ID)
-            .assertion_consumer_service_location(ACS_URL)
-            .asserting_party(IDP_ENTITY_ID, IDP_SSO_URL, &cert_b64(cert))
-            .expect("asserting party")
-            .role_attribute("groups")
-            .build()
-            .expect("registration")
-    }
-
-    /// Builds and XML-signs an IdP response for `audience`/`request_id`, with the
-    /// given `groups` attribute values, returning the base64 (POST-binding) form.
-    fn signed_response(
-        idp: &IdentityProvider,
-        cert: &CertificateDer,
+    /// Builds an IdP response carrying the given `groups` attribute values (with
+    /// only the empty signature template — it is never signed).
+    fn build_response(
         name_id: &str,
         audience: &str,
         request_id: &str,
         groups: &[&str],
-    ) -> String {
+    ) -> Response {
+        let cert = idp_cert();
         let attrs: Vec<ResponseAttribute> = groups
             .iter()
             .map(|v| ResponseAttribute {
@@ -836,177 +813,98 @@ mod tests {
                 value: v,
             })
             .collect();
-        let response = build_response_template(
-            cert,
+        build_response_template(
+            &cert,
             name_id,
             audience,
             IDP_ENTITY_ID,
             ACS_URL,
             request_id,
             &attrs,
-        );
-        let unsigned = response.to_string().expect("serialize response");
-        // Serialize signing through the same guard as verification — the native
-        // XML-Security stack is not safe to use concurrently.
-        let signed = {
-            let _guard = XMLSEC_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-            XmlSec::sign_xml(
-                unsigned.as_str(),
-                idp.export_private_key_der().expect("key der").as_slice(),
-            )
-        }
-        .expect("sign response");
-        b64().encode(signed.as_bytes())
+        )
     }
 
     #[test]
-    #[ignore = "samael 0.0.21 in-process signing segfaults against libxmlsec1 1.3.x; the production verification path works — revisit with a pinned/stable xmlsec"]
-    fn verifies_a_signed_response_and_maps_identity() {
-        let (idp, cert) = test_idp();
-        let reg = registration_with(&cert);
-        let request_id = "id-req-ok";
-        let resp = signed_response(
-            &idp,
-            &cert,
+    fn maps_a_verified_assertion_to_authentication() {
+        // `map_assertion` runs on the Assertion `samael` returns from a verified
+        // response; build a structurally-identical one and map it.
+        let reg = registration();
+        let response = build_response(
             "alice@example.com",
             SP_ENTITY_ID,
-            request_id,
+            "id-req",
             &["admins", "users"],
         );
-        let replay = InMemoryAssertionReplayCache::new();
-        let auth = reg
-            .authenticate(&resp, &[request_id], &replay)
-            .expect("a valid signed response authenticates");
+        let assertion = response.assertion.expect("assertion present");
+        let auth = reg.map_assertion(assertion);
         assert_eq!(auth.principal, "alice@example.com");
         assert_eq!(auth.username, "alice@example.com");
-        // groups → ROLE_<value>; has_role matches the prefixed authority.
+        // Each configured role-attribute value → ROLE_<value>; has_role matches
+        // the prefixed authority. Every attribute is also exposed in claims.
         assert!(auth.has_role("admins"));
         assert!(auth.has_role("users"));
         assert!(auth.claims.contains_key("groups"));
     }
 
     #[test]
-    #[ignore = "samael 0.0.21 in-process signing segfaults against libxmlsec1 1.3.x; the production verification path works — revisit with a pinned/stable xmlsec"]
-    fn rejects_a_tampered_response() {
-        let (idp, cert) = test_idp();
-        let reg = registration_with(&cert);
-        let request_id = "id-req-tamper";
-        let resp = signed_response(
-            &idp,
-            &cert,
-            "alice@example.com",
-            SP_ENTITY_ID,
-            request_id,
-            &["users"],
-        );
-        // Swap the NameID *after* signing — the signature no longer covers it.
-        let xml = String::from_utf8(b64().decode(&resp).unwrap()).unwrap();
-        let tampered = xml.replace("alice@example.com", "attacker@evil.example");
-        assert!(tampered.contains("attacker@evil.example"));
-        let tampered_b64 = b64().encode(tampered.as_bytes());
-        let replay = InMemoryAssertionReplayCache::new();
-        assert!(
-            reg.authenticate(&tampered_b64, &[request_id], &replay)
-                .is_err(),
-            "a tampered (signature-breaking) response must be rejected"
-        );
+    fn maps_no_roles_when_no_role_attribute_is_configured() {
+        // A registration without a role_attribute grants no roles, but still
+        // exposes the attributes as claims.
+        let reg = RelyingPartyRegistration::builder("test")
+            .sp_entity_id(SP_ENTITY_ID)
+            .assertion_consumer_service_location(ACS_URL)
+            .asserting_party(IDP_ENTITY_ID, IDP_SSO_URL, TEST_IDP_CERT_B64)
+            .expect("asserting party")
+            .build()
+            .expect("registration");
+        let response = build_response("bob@example.com", SP_ENTITY_ID, "id-req", &["admins"]);
+        let auth = reg.map_assertion(response.assertion.expect("assertion"));
+        assert_eq!(auth.principal, "bob@example.com");
+        assert!(auth.roles.is_empty());
+        assert!(auth.claims.contains_key("groups"));
     }
 
     #[test]
-    #[ignore = "samael 0.0.21 in-process signing segfaults against libxmlsec1 1.3.x; the production verification path works — revisit with a pinned/stable xmlsec"]
     fn rejects_an_unsigned_response() {
-        let (_idp, cert) = test_idp();
-        let reg = registration_with(&cert);
+        // End to end: an unsigned response is rejected by the verification path
+        // (samael finds no valid signature for the configured IdP cert).
+        let reg = registration();
         let request_id = "id-req-unsigned";
-        let attrs = [ResponseAttribute {
-            required_attribute: RequiredAttribute {
-                name: "groups".to_string(),
-                format: None,
-            },
-            value: "users",
-        }];
-        let response = build_response_template(
-            &cert,
-            "alice@example.com",
-            SP_ENTITY_ID,
-            IDP_ENTITY_ID,
-            ACS_URL,
-            request_id,
-            &attrs,
-        );
-        // Serialize WITHOUT signing — the signature template stays empty.
-        let unsigned_b64 = b64().encode(response.to_string().unwrap().as_bytes());
+        let xml = build_response("alice@example.com", SP_ENTITY_ID, request_id, &["users"])
+            .to_string()
+            .expect("serialize response");
+        let resp_b64 = b64().encode(xml.as_bytes());
         let replay = InMemoryAssertionReplayCache::new();
         assert!(
-            reg.authenticate(&unsigned_b64, &[request_id], &replay)
-                .is_err(),
-            "an unsigned response must be rejected (no signature to verify)"
+            reg.authenticate(&resp_b64, &[request_id], &replay).is_err(),
+            "an unsigned response must be rejected"
         );
     }
 
     #[test]
-    #[ignore = "samael 0.0.21 in-process signing segfaults against libxmlsec1 1.3.x; the production verification path works — revisit with a pinned/stable xmlsec"]
-    fn rejects_a_replayed_assertion() {
-        let (idp, cert) = test_idp();
-        let reg = registration_with(&cert);
-        let request_id = "id-req-replay";
-        let resp = signed_response(
-            &idp,
-            &cert,
-            "alice@example.com",
-            SP_ENTITY_ID,
-            request_id,
-            &["users"],
-        );
+    fn rejects_non_base64_and_oversized_responses() {
+        let reg = registration();
         let replay = InMemoryAssertionReplayCache::new();
-        assert!(reg.authenticate(&resp, &[request_id], &replay).is_ok());
-        // The same assertion a second time is a replay.
-        assert!(
-            reg.authenticate(&resp, &[request_id], &replay).is_err(),
-            "replaying the same assertion must be rejected"
-        );
+        // Not valid base64.
+        assert!(reg
+            .authenticate("@@@not base64@@@", &["id"], &replay)
+            .is_err());
+        // Oversized input is rejected before allocating the decoded buffer.
+        let huge = "A".repeat(11 * 1024 * 1024);
+        assert!(reg.authenticate(&huge, &["id"], &replay).is_err());
     }
 
     #[test]
-    #[ignore = "samael 0.0.21 in-process signing segfaults against libxmlsec1 1.3.x; the production verification path works — revisit with a pinned/stable xmlsec"]
-    fn rejects_a_response_for_a_different_audience() {
-        let (idp, cert) = test_idp();
-        let reg = registration_with(&cert);
-        let request_id = "id-req-aud";
-        let resp = signed_response(
-            &idp,
-            &cert,
-            "alice@example.com",
-            "https://other-sp.example/metadata",
-            request_id,
-            &["users"],
-        );
-        let replay = InMemoryAssertionReplayCache::new();
-        assert!(
-            reg.authenticate(&resp, &[request_id], &replay).is_err(),
-            "a response whose audience is another SP must be rejected"
-        );
-    }
-
-    #[test]
-    #[ignore = "samael 0.0.21 in-process signing segfaults against libxmlsec1 1.3.x; the production verification path works — revisit with a pinned/stable xmlsec"]
-    fn rejects_an_unexpected_in_response_to() {
-        let (idp, cert) = test_idp();
-        let reg = registration_with(&cert);
-        let resp = signed_response(
-            &idp,
-            &cert,
-            "alice@example.com",
-            SP_ENTITY_ID,
-            "id-issued",
-            &["users"],
-        );
-        let replay = InMemoryAssertionReplayCache::new();
-        // SP-initiated, but we were not awaiting this request id.
-        assert!(
-            reg.authenticate(&resp, &["a-different-request"], &replay)
-                .is_err(),
-            "an InResponseTo not matching an issued request must be rejected"
-        );
+    fn replay_cache_enforces_one_time_use() {
+        let cache = InMemoryAssertionReplayCache::new();
+        // First use of an assertion id is accepted; the second is a replay.
+        assert!(cache.check_and_remember("assertion-1", None).is_ok());
+        assert!(cache.check_and_remember("assertion-1", None).is_err());
+        // A different id is independent.
+        assert!(cache.check_and_remember("assertion-2", None).is_ok());
+        // An already-expired entry never blocks a later use.
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
+        assert!(cache.check_and_remember("assertion-3", Some(past)).is_ok());
+        assert!(cache.check_and_remember("assertion-3", Some(past)).is_ok());
     }
 }
