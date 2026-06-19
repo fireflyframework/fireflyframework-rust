@@ -33,6 +33,7 @@ mod authorization_server;
 mod client;
 mod introspection;
 mod login;
+mod outbound;
 mod token_store;
 
 pub use authorization_server::{AuthorizationServer, OAuth2Error, TokenRequest, TokenResponse};
@@ -45,6 +46,10 @@ pub use login::{
     generate_pkce, pkce_challenge, FixedLoginSessionStore, InMemoryLoginSession, LoginSession,
     LoginSessionStore, OAuth2LoginHandler, SESSION_KEY_NONCE, SESSION_KEY_PKCE_VERIFIER,
     SESSION_KEY_REDIRECT_URI, SESSION_KEY_SECURITY_CONTEXT, SESSION_KEY_STATE,
+};
+pub use outbound::{
+    InMemoryOAuth2AuthorizedClientService, OAuth2AuthorizedClient, OAuth2AuthorizedClientManager,
+    OAuth2AuthorizedClientService, DEFAULT_CLOCK_SKEW_SECONDS,
 };
 pub use token_store::{
     validate_table_name, InMemoryTokenStore, PostgresTokenStore, RedisTokenStore, TokenStore,
