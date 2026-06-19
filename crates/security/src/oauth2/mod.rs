@@ -43,9 +43,10 @@ pub use client::{
 };
 pub use introspection::{RemoteTokenIntrospector, TokenIntrospector};
 pub use login::{
-    generate_pkce, pkce_challenge, FixedLoginSessionStore, InMemoryLoginSession, LoginSession,
-    LoginSessionStore, OAuth2LoginHandler, SESSION_KEY_NONCE, SESSION_KEY_PKCE_VERIFIER,
-    SESSION_KEY_REDIRECT_URI, SESSION_KEY_SECURITY_CONTEXT, SESSION_KEY_STATE,
+    generate_pkce, oidc_logout_url, pkce_challenge, FixedLoginSessionStore, InMemoryLoginSession,
+    LoginSession, LoginSessionStore, OAuth2LoginHandler, SESSION_KEY_ID_TOKEN, SESSION_KEY_NONCE,
+    SESSION_KEY_PKCE_VERIFIER, SESSION_KEY_REDIRECT_URI, SESSION_KEY_REGISTRATION_ID,
+    SESSION_KEY_SECURITY_CONTEXT, SESSION_KEY_STATE,
 };
 pub use outbound::{
     InMemoryOAuth2AuthorizedClientService, OAuth2AuthorizedClient, OAuth2AuthorizedClientManager,

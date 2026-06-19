@@ -29,7 +29,10 @@
 //!   audience + nonce), otherwise fetches userinfo, then stores the
 //!   resulting [`Authentication`] in the session (rotating the session
 //!   id against fixation).
-//! - `POST /logout` — invalidates the session and redirects to `/`.
+//! - `POST /logout` — invalidates the session and, when the login provider
+//!   advertises an OIDC `end_session_endpoint`, redirects the browser there for
+//!   RP-initiated logout (`id_token_hint` + `post_logout_redirect_uri`);
+//!   otherwise redirects to `/`.
 //!
 //! Session state goes through the local [`LoginSession`] /
 //! [`LoginSessionStore`] traits so `firefly-session` (or any cookie
@@ -68,6 +71,12 @@ pub const SESSION_KEY_PKCE_VERIFIER: &str = "oauth2_pkce_verifier";
 pub const SESSION_KEY_SECURITY_CONTEXT: &str = "SECURITY_CONTEXT";
 /// Session key holding the post-login redirect target.
 pub const SESSION_KEY_REDIRECT_URI: &str = "oauth2_redirect_uri";
+/// Session key holding the raw OIDC `id_token` from login, used as the
+/// `id_token_hint` for RP-initiated logout.
+pub const SESSION_KEY_ID_TOKEN: &str = "oauth2_id_token";
+/// Session key holding the `registration_id` the user logged in with, so
+/// logout can resolve the provider's `end_session_endpoint`.
+pub const SESSION_KEY_REGISTRATION_ID: &str = "oauth2_registration_id";
 
 /// Per-browser session state — the slice of pyfly's `HttpSession` the
 /// login flow needs. Values are strings; structured data (the security
@@ -557,6 +566,17 @@ async fn handle_callback(
         .set_attribute(SESSION_KEY_SECURITY_CONTEXT, serialized)
         .await;
 
+    // Remember the registration and id_token so RP-initiated logout can hint
+    // the provider's end_session_endpoint (OIDC).
+    session
+        .set_attribute(SESSION_KEY_REGISTRATION_ID, registration_id.clone())
+        .await;
+    if let Some(id_token) = token_response.get("id_token").and_then(Value::as_str) {
+        session
+            .set_attribute(SESSION_KEY_ID_TOKEN, id_token.to_owned())
+            .await;
+    }
+
     let redirect_uri = session
         .get_attribute(SESSION_KEY_REDIRECT_URI)
         .await
@@ -565,7 +585,10 @@ async fn handle_callback(
     redirect(&redirect_uri)
 }
 
-/// `POST /logout` — invalidate the session and redirect to the root.
+/// `POST /logout` — invalidate the local session and, when the login provider
+/// advertises an OIDC `end_session_endpoint`, redirect the browser there to end
+/// the session at the provider too (RP-initiated logout). Otherwise redirect to
+/// the root.
 async fn handle_logout(State(state): State<Arc<LoginState>>, headers: HeaderMap) -> Response {
     let session = state.sessions.session(&headers).await;
 
@@ -580,8 +603,53 @@ async fn handle_logout(State(state): State<Arc<LoginState>>, headers: HeaderMap)
         }
     }
 
+    // Resolve the RP-initiated logout URL (if the login provider supports it)
+    // BEFORE invalidating, since invalidation clears the session attributes.
+    let registration_id = session.get_attribute(SESSION_KEY_REGISTRATION_ID).await;
+    let id_token = session.get_attribute(SESSION_KEY_ID_TOKEN).await;
+    let logout_url = match registration_id.and_then(|id| state.clients.find_by_registration_id(&id))
+    {
+        Some(registration) => oidc_logout_url(&registration, id_token.as_deref(), None),
+        None => None,
+    };
+
     session.invalidate().await;
-    redirect("/")
+    redirect(&logout_url.unwrap_or_else(|| "/".to_string()))
+}
+
+/// Builds an OIDC RP-initiated-logout URL for `registration`, or `None` when the
+/// provider advertises no `end_session_endpoint`. Appends `id_token_hint`,
+/// `post_logout_redirect_uri` (the explicit argument, else the registration
+/// default), and `client_id` — the Rust analog of Spring's
+/// `OidcClientInitiatedLogoutSuccessHandler`.
+pub fn oidc_logout_url(
+    registration: &ClientRegistration,
+    id_token_hint: Option<&str>,
+    post_logout_redirect_uri: Option<&str>,
+) -> Option<String> {
+    if registration.end_session_endpoint.is_empty() {
+        return None;
+    }
+    let mut params: Vec<(&str, &str)> = Vec::new();
+    if let Some(hint) = id_token_hint {
+        params.push(("id_token_hint", hint));
+    }
+    let post_logout = post_logout_redirect_uri.unwrap_or(&registration.post_logout_redirect_uri);
+    if !post_logout.is_empty() {
+        params.push(("post_logout_redirect_uri", post_logout));
+    }
+    params.push(("client_id", &registration.client_id));
+    let separator = if registration.end_session_endpoint.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+    Some(format!(
+        "{}{}{}",
+        registration.end_session_endpoint,
+        separator,
+        urlencode_pairs(&params)
+    ))
 }
 
 /// Reads the principal from a session's stored `SECURITY_CONTEXT` attribute
@@ -760,6 +828,32 @@ mod tests {
 
         let auth = authentication_from_user_info(&serde_json::json!({"email": "x@y.z"}));
         assert!(auth.principal.is_empty());
+    }
+
+    #[test]
+    fn oidc_logout_url_builds_end_session_request() {
+        use super::super::client::ClientRegistration;
+
+        let reg = ClientRegistration::new("kc", "cid")
+            .end_session_endpoint("https://idp/logout")
+            .post_logout_redirect_uri("https://app/bye");
+        let url = oidc_logout_url(&reg, Some("id-tok"), None).expect("end_session set");
+        assert_eq!(
+            url,
+            "https://idp/logout?id_token_hint=id-tok\
+             &post_logout_redirect_uri=https%3A%2F%2Fapp%2Fbye&client_id=cid"
+        );
+
+        // An explicit post-logout URI overrides the registration default.
+        let url2 = oidc_logout_url(&reg, None, Some("https://other/done")).unwrap();
+        assert_eq!(
+            url2,
+            "https://idp/logout?post_logout_redirect_uri=https%3A%2F%2Fother%2Fdone&client_id=cid"
+        );
+
+        // No end_session_endpoint → no RP-initiated logout.
+        let plain = ClientRegistration::new("x", "cid");
+        assert!(oidc_logout_url(&plain, Some("id-tok"), None).is_none());
     }
 
     #[tokio::test]

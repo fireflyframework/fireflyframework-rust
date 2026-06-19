@@ -27,8 +27,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use firefly_security::oauth2::{
     pkce_challenge, ClientRegistration, FixedLoginSessionStore,
-    InMemoryClientRegistrationRepository, LoginSession, OAuth2LoginHandler, SESSION_KEY_NONCE,
-    SESSION_KEY_PKCE_VERIFIER, SESSION_KEY_SECURITY_CONTEXT, SESSION_KEY_STATE,
+    InMemoryClientRegistrationRepository, LoginSession, OAuth2LoginHandler, SESSION_KEY_ID_TOKEN,
+    SESSION_KEY_NONCE, SESSION_KEY_PKCE_VERIFIER, SESSION_KEY_REGISTRATION_ID,
+    SESSION_KEY_SECURITY_CONTEXT, SESSION_KEY_STATE,
 };
 use http::{header, Method, StatusCode};
 use http_body_util::BodyExt;
@@ -625,6 +626,48 @@ async fn logout_invalidates_session_and_redirects() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FOUND);
     assert_eq!(resp.headers()[header::LOCATION], "/");
+    assert_eq!(
+        session.get_attribute(SESSION_KEY_SECURITY_CONTEXT).await,
+        None
+    );
+}
+
+#[tokio::test]
+async fn logout_redirects_to_oidc_end_session_endpoint() {
+    // A provider that advertises RP-initiated logout.
+    let reg = registration("http://unused", false).end_session_endpoint("https://idp/logout");
+    let (app, sessions) = login_app(reg);
+    let session = sessions.session();
+    session
+        .set_attribute(SESSION_KEY_SECURITY_CONTEXT, "{}".into())
+        .await;
+    session
+        .set_attribute(SESSION_KEY_REGISTRATION_ID, "acme".into())
+        .await;
+    session
+        .set_attribute(SESSION_KEY_ID_TOKEN, "the-id-token".into())
+        .await;
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/logout")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    // Redirected to the provider's end_session_endpoint with the id_token hint.
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let location = resp.headers()[header::LOCATION].to_str().unwrap();
+    assert!(
+        location.starts_with("https://idp/logout?"),
+        "location: {location}"
+    );
+    assert!(
+        location.contains("id_token_hint=the-id-token"),
+        "{location}"
+    );
+    assert!(location.contains("client_id=cid"), "{location}");
+    // Local session still invalidated.
     assert_eq!(
         session.get_attribute(SESSION_KEY_SECURITY_CONTEXT).await,
         None
