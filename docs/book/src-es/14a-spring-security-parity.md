@@ -48,7 +48,7 @@ En la columna **Estado**, :status-supported: indica una función soportada,
 | Servidor de autorización | :status-partial: | `AuthorizationServer` (client-credentials + refresh-token) montado vía `AuthorizationServerRouter` (`/oauth2/token`, metadatos RFC 8414); el grant authorization_code del lado servidor en la hoja de ruta |
 | Autenticación LDAP / Active Directory | :status-partial: | Módulo `ldap` opcional: `LdapAuthenticationProvider` (bind auth + autoridades de grupo) + `ActiveDirectoryLdapAuthenticationProvider`, sobre `ldap3` (`ldapAuthentication()`) |
 | ACL / seguridad de objetos de dominio | :status-supported: | `Acl` / `AccessControlEntry` / `Permission` / `Sid` / `ObjectIdentity`, `AclService` + `InMemoryAclService`, y `AclPermissionEvaluator` que conecta `hasPermission(...)` con ACLs por objeto (`spring-security-acl`) |
-| SAML2 (`saml2Login()`) | :status-planned: | Implementación del lado SP (`RelyingPartyRegistration` + verificación de respuestas firmadas) tras una característica opcional; el *release* depende de una pila XML-Security de Rust estable |
+| SAML2 (`saml2Login()`) | :status-partial: | Módulo `saml2` opcional: `RelyingPartyRegistration` del lado SP, `AuthnRequest` iniciado por el SP, y verificación de respuestas firmadas (`OpenSaml4AuthenticationProvider`) con anti-repetición de un solo uso, sobre `samael` (quedan SLO / `AuthnRequest` firmado / aserciones cifradas) |
 
 ## Comportamientos fieles a Spring que conviene conocer
 
@@ -246,6 +246,44 @@ que un *deny* colocado antes de un *grant* tiene prioridad (la
 acotado, así que una cadena de padres cíclica o demasiado profunda termina (y
 deniega) en vez de quedar en bucle.
 
+## Inicio de sesión único SAML2
+
+El módulo `saml2` opcional (`--features saml2`) es el lado *Service Provider*
+del perfil SAML 2.0 Web-Browser-SSO — el `saml2Login()` de Spring. La
+verificación de firma XML, la canonicalización y las comprobaciones del perfil
+SAML (audiencia, *recipient*, `InResponseTo`, *status*, condiciones temporales)
+se delegan en la *crate* [`samael`] (que enlaza la pila probada
+`xmlsec`/`libxml2`/OpenSSL); este módulo es el envoltorio fiel a Spring y
+endurecido:
+
+- **`RelyingPartyRegistration`** (+ `InMemoryRelyingPartyRegistrationRepository`)
+  — una relación SP↔IdP, configurada desde metadatos del IdP o detalles
+  explícitos.
+- **`AuthnRequest` iniciado por el SP** — `authn_request_redirect` construye la
+  URL de *binding* HTTP-Redirect y devuelve el `ID` de la petición a recordar
+  (`Saml2AuthenticationRequestRepository`).
+- **`authenticate`** — verifica una respuesta *binding* POST y mapea el `NameID`
+  (y atributos configurados) a una `Authentication`
+  (el `OpenSaml4AuthenticationProvider` de Spring).
+- **Metadatos del SP** — `metadata_xml` (el `Saml2MetadataFilter` de Spring).
+
+Endurecimiento sobre `samael`:
+
+- **Falla en cerrado si falta el certificado de firma del IdP** — sin él
+  `samael` omitiría la verificación de firma (un *bypass* de autenticación).
+- **Lista de algoritmos de firma permitidos**, fijada a RSA/ECDSA-SHA256+
+  (`samael` acepta *todos* por defecto — riesgo de sustitución de algoritmo).
+- **Anti-repetición de un solo uso** (`AssertionReplayCache`) — el perfil SAML
+  la requiere pero `samael` no la rastrea.
+- Todas las llamadas a la pila nativa XML-Security se **serializan** (no es
+  segura para concurrencia).
+
+El *single-logout*, los `AuthnRequest` firmados y las aserciones cifradas quedan
+en la hoja de ruta. (`saml2` enlaza `libxml2` + `xmlsec1` + OpenSSL del sistema;
+la compilación por defecto no se ve afectada.)
+
+[`samael`]: https://crates.io/crates/samael
+
 ## Hoja de ruta
 
 La paridad se entrega por niveles, cada uno un incremento:
@@ -268,6 +306,7 @@ La paridad se entrega por niveles, cada uno un incremento:
 6. **Subsistemas grandes** — entregados de uno en uno (opcional). **LDAP /
    Active Directory (hecho)** — el módulo `ldap` opcional. **ACL / seguridad de
    objetos de dominio (hecho)** — paridad con `spring-security-acl`, en Rust puro.
-   **SAML2** tiene una implementación del lado SP (registro + verificación de
-   respuestas firmadas) tras una característica opcional, con *release* pendiente
-   de una pila XML-Security de Rust estable.
+   **SSO SAML2 (hecho)** — el módulo `saml2` opcional: registro del SP,
+   `AuthnRequest` iniciado por el SP y verificación de respuestas firmadas con
+   anti-repetición (quedan como seguimiento el *single-logout*, los
+   `AuthnRequest` firmados y las aserciones cifradas).

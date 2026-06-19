@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -641,6 +647,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.72.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+dependencies = [
+ "bitflags 2.13.0",
+ "cexpr",
+ "clang-sys",
+ "itertools",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex 1.3.0",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -795,7 +821,16 @@ dependencies = [
  "find-msvc-tools",
  "jobserver",
  "libc",
- "shlex",
+ "shlex 2.0.1",
+]
+
+[[package]]
+name = "cexpr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
+dependencies = [
+ "nom 7.1.3",
 ]
 
 [[package]]
@@ -847,6 +882,17 @@ checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
  "crypto-common 0.1.7",
  "inout",
+]
+
+[[package]]
+name = "clang-sys"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
+dependencies = [
+ "glob",
+ "libc",
+ "libloading",
 ]
 
 [[package]]
@@ -1059,6 +1105,15 @@ name = "crc-catalog"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
+
+[[package]]
+name = "crc32fast"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+dependencies = [
+ "cfg-if",
+]
 
 [[package]]
 name = "critical-section"
@@ -1326,6 +1381,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_builder"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "507dfb09ea8b7fa618fcf76e953f4f5e192547945816d5358edffe39f6f94947"
+dependencies = [
+ "derive_builder_macro",
+]
+
+[[package]]
+name = "derive_builder_core"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d5bcf7b024d6835cfb3d473887cd966994907effbe9227e8c8219824d06c4e8"
+dependencies = [
+ "darling 0.20.11",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "derive_builder_macro"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab63b0e2bf4d5928aff72e83a7dace85d7bba5fe12dcc3c5a572d78caffd3f3c"
+dependencies = [
+ "derive_builder_core",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1548,7 +1634,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "firefly"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "firefly-actuator",
@@ -1592,7 +1678,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-actuator"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -1609,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-admin"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -1638,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-aop"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "inventory",
@@ -1648,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-backoffice"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -1667,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cache"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-observability",
@@ -1679,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cache-postgres"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1691,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cache-redis"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-cache",
@@ -1703,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-callbacks"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -1729,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cli"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "chrono",
@@ -1750,7 +1836,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-client"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-stream",
  "axum",
@@ -1772,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-config"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "regex",
@@ -1787,7 +1873,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-config-server"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -1803,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-container"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "futures",
  "inventory",
@@ -1814,7 +1900,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-cqrs"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1837,7 +1923,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-data"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1854,7 +1940,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-data-mongodb"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1872,7 +1958,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-data-sqlx"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1894,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1910,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-esignature-adobe-sign"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -1927,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-esignature-docusign"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -1944,7 +2030,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-esignature-logalty"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -1961,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-storage-aws"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -1981,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-ecm-storage-azure"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2001,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2023,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda-kafka"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-eda",
@@ -2038,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda-postgres"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2056,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda-rabbitmq"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-eda",
@@ -2071,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eda-redis"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-eda",
@@ -2087,7 +2173,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-eventsourcing"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2105,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-i18n"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "http",
@@ -2120,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2136,7 +2222,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp-aws-cognito"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2157,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp-azure-ad"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2174,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp-internal-db"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2196,7 +2282,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-idp-keycloak"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2213,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-integration-tests"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2248,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-kernel"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "chrono",
  "serde",
@@ -2260,7 +2346,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-lifecycle"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "thiserror 1.0.69",
  "tokio",
@@ -2269,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-macros"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2293,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-migrations"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "chrono",
  "hex",
@@ -2306,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2321,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-firebase"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2337,7 +2423,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-resend"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2354,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-sendgrid"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2371,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-smtp"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2388,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-notifications-twilio"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2404,7 +2490,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-observability"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2428,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-openapi"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "chrono",
@@ -2444,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-orchestration"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2468,7 +2554,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-plugins"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2478,7 +2564,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-reactive"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-stream",
  "firefly-kernel",
@@ -2490,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-resilience"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-config",
@@ -2502,7 +2588,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-rule-engine"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2522,7 +2608,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-lumen"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2539,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-lumen-ledger-core"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2554,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-lumen-ledger-interfaces"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "chrono",
  "firefly",
@@ -2565,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-lumen-ledger-models"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "chrono",
  "firefly",
@@ -2578,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-lumen-ledger-sdk"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "firefly-client",
  "firefly-sample-lumen-ledger-interfaces",
@@ -2590,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-lumen-ledger-web"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "firefly",
@@ -2608,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-macro-quickstart"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "firefly",
@@ -2621,7 +2707,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-orders"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2644,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sample-reactive-banking"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2684,7 +2770,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-scheduling"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2705,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-security"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "argon2",
  "async-trait",
@@ -2722,6 +2808,7 @@ dependencies = [
  "rand 0.8.6",
  "redis",
  "reqwest",
+ "samael",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2737,7 +2824,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-session"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2762,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-session-mongodb"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-session",
@@ -2775,7 +2862,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-session-postgres"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-session",
@@ -2787,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-session-redis"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-session",
@@ -2799,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-shell"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "futures",
@@ -2809,7 +2896,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-spike-linkspike-core"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "firefly",
@@ -2817,7 +2904,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-spike-linkspike-web"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "firefly",
@@ -2829,7 +2916,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-sse"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "bytes",
@@ -2845,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-application"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-cqrs",
@@ -2859,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-core"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2885,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-data"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "firefly-cqrs",
@@ -2898,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-domain"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "firefly-eventsourcing",
@@ -2910,7 +2997,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-experience"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -2931,7 +3018,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-starter-web"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "firefly-kernel",
@@ -2946,7 +3033,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-testkit"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2965,7 +3052,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-transactional"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "inventory",
@@ -2976,7 +3063,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-utils"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -2992,7 +3079,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-validators"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "chrono",
  "firefly-kernel",
@@ -3003,7 +3090,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-web"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -3025,7 +3112,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "inventory",
- "quick-xml",
+ "quick-xml 0.36.2",
  "rand 0.8.6",
  "regex",
  "rustls 0.23.40",
@@ -3042,7 +3129,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-webhooks"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -3070,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "firefly-websocket"
-version = "26.6.35"
+version = "26.6.36"
 dependencies = [
  "async-trait",
  "axum",
@@ -3093,6 +3180,16 @@ name = "flagset"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
+
+[[package]]
+name = "flate2"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+]
 
 [[package]]
 name = "flume"
@@ -4198,6 +4295,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4222,6 +4329,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
 dependencies = [
  "cc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
+name = "libxml"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fe73cdec2bcb36d25a9fe3f607ffcd44bb8907ca0100c4098d1aa342d1e7bec"
+dependencies = [
+ "libc",
  "pkg-config",
  "vcpkg",
 ]
@@ -4387,6 +4505,16 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+ "simd-adler32",
+]
 
 [[package]]
 name = "mio"
@@ -5193,6 +5321,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.37.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5558,6 +5696,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-hash"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5758,6 +5902,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97a22f5af31f73a954c10289c93e8a50cc23d971e80ee446f1f6f7137a088213"
 dependencies = [
  "cipher",
+]
+
+[[package]]
+name = "samael"
+version = "0.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2111ff2928f84917f762410b9dfa8ae80cea92467334a2ffe83a959c29542cae"
+dependencies = [
+ "base64 0.22.1",
+ "bindgen",
+ "chrono",
+ "data-encoding",
+ "derive_builder",
+ "flate2",
+ "lazy_static",
+ "libc",
+ "libxml",
+ "openssl",
+ "openssl-probe 0.1.6",
+ "openssl-sys",
+ "pkg-config",
+ "quick-xml 0.37.5",
+ "rand 0.9.4",
+ "serde",
+ "thiserror 2.0.18",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -6028,6 +6199,12 @@ dependencies = [
 
 [[package]]
 name = "shlex"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
@@ -6051,6 +6228,12 @@ dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
 ]
+
+[[package]]
+name = "simd-adler32"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "simd_cesu8"

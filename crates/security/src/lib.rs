@@ -160,6 +160,8 @@ mod problem;
 mod remember_me;
 mod request_cache;
 mod role_hierarchy;
+#[cfg(feature = "saml2")]
+mod saml2;
 mod security_context;
 mod security_filter_chains;
 mod session_auth;
@@ -231,6 +233,13 @@ pub use request_cache::{
     SESSION_KEY_SAVED_REQUEST,
 };
 pub use role_hierarchy::RoleHierarchy;
+#[cfg(feature = "saml2")]
+pub use saml2::{
+    AllowedSignatureAlgorithm, AssertionReplayCache, AuthnRedirect, InMemoryAssertionReplayCache,
+    InMemoryRelyingPartyRegistrationRepository, InMemorySaml2AuthenticationRequestRepository,
+    RelyingPartyRegistration, RelyingPartyRegistrationBuilder, RelyingPartyRegistrationRepository,
+    Saml2AuthenticationRequestRepository,
+};
 pub use security_context::{
     HttpSessionSecurityContextRepository, NullSecurityContextRepository, SecurityContextRepository,
 };

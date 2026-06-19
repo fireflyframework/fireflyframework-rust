@@ -2,6 +2,51 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.36 — 2026-06-20
+
+**Spring Security parity — Tier 5b: SAML2 single sign-on (SP side).** The
+Service-Provider half of the SAML 2.0 Web-Browser-SSO profile — Spring's
+`saml2Login()` — delegating XML-signature verification to `samael` and adding a
+Spring-faithful, hardened wrapper. Opt-in `saml2` feature; the default build is
+unaffected. Adversarially reviewed before release.
+
+### Added
+
+- **`saml2` feature** (opt-in, pulls in `samael` + a system `libxml2` / `xmlsec1`
+  / OpenSSL):
+  - **`RelyingPartyRegistration`** + builder + **`InMemoryRelyingPartyRegistrationRepository`**
+    (Spring's `RelyingPartyRegistration` / repository) — configured from IdP
+    metadata XML or explicit asserting-party details.
+  - **SP-initiated `AuthnRequest`** — `authn_request_redirect` (HTTP-Redirect
+    binding) + **`Saml2AuthenticationRequestRepository`** (TTL'd outgoing
+    request-id store for `InResponseTo` matching).
+  - **`authenticate`** — verifies a POST-binding SAML `Response` (signature +
+    audience / recipient / `InResponseTo` / status / time conditions, via
+    `samael`) and maps the `NameID` + configured attributes to an
+    `Authentication` (Spring's `OpenSaml4AuthenticationProvider`).
+  - **`metadata_xml`** — SP metadata generation (Spring's `Saml2MetadataFilter`).
+  - **`AssertionReplayCache`** + **`InMemoryAssertionReplayCache`** — one-time-use
+    assertion replay protection.
+
+### Security
+
+- **Fail-closed on a missing IdP signing certificate**: building a registration
+  is rejected when the asserting party has no signing cert, because `samael`
+  would otherwise skip signature verification entirely (an authentication bypass).
+- **Signature-algorithm allow-list** pinned to SHA-256+ RSA/ECDSA by default
+  (`samael` otherwise accepts all algorithms — an algorithm-substitution risk).
+- **One-time-use replay protection** the SAML profile requires but `samael` does
+  not track; **size-bounded** response decoding; and all native XML-Security
+  calls are **serialized** (the stack is not concurrency-safe).
+
+### Notes
+
+- Single-logout, signed `AuthnRequest`s, and encrypted assertions are follow-ups.
+- Verification correctness rests on `samael` (whose own crypto suite covers
+  accept/reject of XML signatures); this module's registration, mapping, replay,
+  and rejection logic are unit-tested. The `saml2` feature's tests require the
+  XML-Security system libraries and so run only when the feature is enabled.
+
 ## v26.6.35 — 2026-06-20
 
 **Spring Security parity — Tier 5c: ACL / domain-object security.** The Rust
