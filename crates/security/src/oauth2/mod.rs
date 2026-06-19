@@ -34,6 +34,7 @@ mod client;
 mod introspection;
 mod login;
 mod outbound;
+mod server_endpoints;
 mod token_store;
 
 pub use authorization_server::{AuthorizationServer, OAuth2Error, TokenRequest, TokenResponse};
@@ -52,6 +53,7 @@ pub use outbound::{
     InMemoryOAuth2AuthorizedClientService, OAuth2AuthorizedClient, OAuth2AuthorizedClientManager,
     OAuth2AuthorizedClientService, DEFAULT_CLOCK_SKEW_SECONDS,
 };
+pub use server_endpoints::AuthorizationServerRouter;
 pub use token_store::{
     validate_table_name, InMemoryTokenStore, PostgresTokenStore, RedisTokenStore, TokenStore,
     POSTGRES_TOKEN_TABLE, REDIS_TOKEN_KEY_PREFIX,
