@@ -29,8 +29,12 @@
 //! The default — **no evaluator registered** — denies every permission
 //! (fail-closed), so wiring an evaluator is a deliberate opt-in. The target is
 //! erased to [`std::any::Any`] so a single registered evaluator can serve every
-//! domain type by downcasting, mirroring Spring's reflective contract while
-//! staying type-safe at the call site.
+//! domain type by downcasting, mirroring Spring's reflective contract. The
+//! erasure is sound (distinct types have distinct [`std::any::TypeId`]s, so
+//! there is no type confusion), but it is *not* a compile-time guarantee that
+//! the evaluator recognises the target: an unrecognised type — including the
+//! accidental `&&T` shape — simply **denies** ([`has_permission`] documents the
+//! footgun). Every miss fails closed.
 
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
@@ -59,7 +63,10 @@ static EVALUATOR: OnceLock<Arc<dyn PermissionEvaluator>> = OnceLock::new();
 /// # Errors
 ///
 /// Returns the passed-in `evaluator` unchanged if an evaluator is already
-/// registered.
+/// registered. Because exactly one evaluator authorizes the whole process, an
+/// `Err` means a *different* evaluator is already authoritative — handle it
+/// (log/abort startup) rather than ignoring it, or two components will disagree
+/// about who decides `has_permission`.
 pub fn set_permission_evaluator(
     evaluator: Arc<dyn PermissionEvaluator>,
 ) -> Result<(), Arc<dyn PermissionEvaluator>> {
@@ -72,6 +79,14 @@ pub fn set_permission_evaluator(
 /// Returns `false` (deny) when no evaluator is registered, so an unconfigured
 /// application fails closed. The `target` is taken by reference and erased to
 /// [`Any`] for the evaluator to downcast.
+///
+/// Pass a reference to the **owned** domain value (`&Account`), not a
+/// reference-to-a-reference. `T` is inferred from the argument, so an accidental
+/// extra `&` infers `T = &Account`, whose [`std::any::TypeId`] differs from
+/// `Account`'s — the evaluator's `downcast_ref::<Account>()` then misses and the
+/// call **silently denies** (fail-closed, but easy to misdiagnose). Inside a
+/// `#[pre_authorize]` / `#[post_authorize]` expression, pass the parameter
+/// directly (`has_permission(auth, account, "read")` where `account: &Account`).
 #[must_use]
 pub fn has_permission<T: Any>(auth: &Authentication, target: &T, permission: &str) -> bool {
     EVALUATOR

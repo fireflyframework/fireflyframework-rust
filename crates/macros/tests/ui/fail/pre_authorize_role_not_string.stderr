@@ -1,0 +1,5 @@
+error: expected a string literal, e.g. role = "ADMIN"
+  --> tests/ui/fail/pre_authorize_role_not_string.rs:13:33
+   |
+13 | #[firefly::pre_authorize(role = 42)]
+   |                                 ^^

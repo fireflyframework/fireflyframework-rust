@@ -40,6 +40,12 @@ use crate::common::Facade;
 /// parameters and `auth` (a `&Authentication`) in scope (Spring's SpEL
 /// `@PreAuthorize("#id == authentication.name")`). A false expression denies
 /// with `Forbidden`; no ambient context denies with `Unauthenticated`.
+///
+/// The expression must **borrow**, not move, its parameters (it runs before the
+/// body, which still needs them) — write reference comparisons
+/// (`auth.principal == *id`), not by-value calls that consume an argument. A
+/// parameter named `auth` is rejected at compile time (it would shadow the
+/// injected principal binding); rename it.
 pub(crate) fn pre_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     let sec = Facade::default().security();
 
@@ -64,6 +70,10 @@ pub(crate) fn pre_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Re
         // Expression form: bind the caller (deny-closed if absent), then
         // evaluate the boolean expression with the parameters and `auth` bound.
         None => {
+            // The expression sees a framework-injected `auth` binding; reject a
+            // colliding parameter rather than silently shadowing it (which would
+            // make the rule read the principal instead of the argument).
+            reject_reserved_params(&func, &["auth", "__auth", "__granted"], "#[pre_authorize]")?;
             let expr: Expr = syn::parse2(args)?;
             quote! {
                 {
@@ -95,6 +105,12 @@ pub(crate) fn pre_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Re
 /// Spring `returnObject`) and `auth` (a `&Authentication` of the caller). When
 /// it is `false` the call is denied with `Forbidden` and the value discarded;
 /// when no security context is active the call is `Unauthenticated`.
+///
+/// The body runs inside an `async move` block, so the predicate should reference
+/// only `result` and `auth`. Referencing another method parameter the body also
+/// uses works only if it is `Copy` (a non-`Copy` parameter is moved into the
+/// body and cannot be borrowed afterwards). Parameters named `result` or `auth`
+/// are rejected at compile time to prevent silent shadowing.
 pub(crate) fn post_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     let sec = Facade::default().security();
 
@@ -119,6 +135,13 @@ pub(crate) fn post_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::R
              e.g. #[post_authorize(result.owner == auth.principal)]",
         ));
     }
+    // The expression sees framework-injected `result` / `auth` bindings; reject
+    // colliding parameters rather than silently authorizing the wrong value.
+    reject_reserved_params(
+        &func,
+        &["result", "auth", "__value", "__granted", "__err"],
+        "#[post_authorize]",
+    )?;
     let check: Expr = syn::parse2(args)?;
 
     let block = &func.block;
@@ -163,6 +186,11 @@ pub(crate) fn post_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::R
 /// boolean over `element`, a `&T`, and `auth`, a `&Authentication`) is true; the
 /// rest are dropped from the returned collection. No ambient context denies the
 /// whole call with `Unauthenticated`.
+///
+/// The body runs inside an `async move` block, so the predicate should reference
+/// only `element` and `auth` (a non-`Copy` parameter the body also uses is moved
+/// and cannot be borrowed in the predicate). Parameters named `element` or
+/// `auth` are rejected at compile time to prevent silent shadowing.
 pub(crate) fn post_filter_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     let sec = Facade::default().security();
 
@@ -187,6 +215,13 @@ pub(crate) fn post_filter_impl(args: TokenStream, mut func: ItemFn) -> syn::Resu
              e.g. #[post_filter(element.owner == auth.principal)]",
         ));
     }
+    // The predicate sees framework-injected `element` / `auth` bindings; reject
+    // colliding parameters rather than silently shadowing them.
+    reject_reserved_params(
+        &func,
+        &["element", "auth", "__collection", "__auth", "__err"],
+        "#[post_filter]",
+    )?;
     let predicate: Expr = syn::parse2(args)?;
 
     let block = &func.block;
@@ -256,6 +291,11 @@ pub(crate) fn pre_filter_impl(args: TokenStream, mut func: ItemFn) -> syn::Resul
         };
     let predicate = &parsed[1];
 
+    // The predicate sees framework-injected `element` / `auth` bindings (and the
+    // generated `__auth`); reject colliding parameters — including the filtered
+    // one — rather than silently shadowing them.
+    reject_reserved_params(&func, &["element", "auth", "__auth"], "#[pre_filter]")?;
+
     let block = &func.block;
     let new_block = quote! {
         {
@@ -270,6 +310,34 @@ pub(crate) fn pre_filter_impl(args: TokenStream, mut func: ItemFn) -> syn::Resul
     };
     func.block = syn::parse2(new_block)?;
     Ok(quote!(#func))
+}
+
+/// Rejects a function parameter whose name collides with a binding the macro
+/// injects into the rule/predicate scope (e.g. `auth`, `result`, `element`, or
+/// an internal `__`-temporary). Without this, ordinary lexical shadowing would
+/// let the generated check read the framework value instead of the parameter
+/// the author intended — a silent authorization trap. The fix is to fail loudly
+/// at expansion time and ask the author to rename.
+fn reject_reserved_params(func: &ItemFn, reserved: &[&str], ctx: &str) -> syn::Result<()> {
+    for input in &func.sig.inputs {
+        let syn::FnArg::Typed(typed) = input else {
+            continue;
+        };
+        if let syn::Pat::Ident(pat_ident) = &*typed.pat {
+            let name = pat_ident.ident.to_string();
+            if reserved.contains(&name.as_str()) {
+                return Err(syn::Error::new_spanned(
+                    &pat_ident.ident,
+                    format!(
+                        "{ctx} injects a binding named `{name}` into the authorization \
+                         expression; rename this parameter so the rule cannot silently read the \
+                         framework value instead of your argument",
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Classifies the `#[pre_authorize(...)]` argument: `Some(rule)` for a known
