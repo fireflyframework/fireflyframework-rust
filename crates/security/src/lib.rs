@@ -153,6 +153,7 @@ pub mod oauth2;
 mod ott;
 mod password;
 mod problem;
+mod remember_me;
 mod role_hierarchy;
 mod security_context;
 mod session_auth;
@@ -202,6 +203,9 @@ pub use ott::{
 pub use password::{
     Argon2PasswordEncoder, BcryptPasswordEncoder, DelegatingPasswordEncoder, NoOpPasswordEncoder,
     PasswordEncoder, DEFAULT_PASSWORD_ENCODER_ID, DEFAULT_ROUNDS,
+};
+pub use remember_me::{
+    RememberMeServices, TokenBasedRememberMeServices, DEFAULT_REMEMBER_ME_SECONDS,
 };
 pub use role_hierarchy::RoleHierarchy;
 pub use security_context::{
