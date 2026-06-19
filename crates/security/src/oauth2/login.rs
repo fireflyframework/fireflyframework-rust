@@ -349,13 +349,17 @@ fn error_json(status: StatusCode, error: &str, message: &str) -> Response {
 }
 
 /// Renders a 302 redirect (pyfly uses 302, not axum's 303/307
-/// helpers).
+/// helpers). The `Location` value is built fallibly: a control char (CR/LF, …)
+/// in a misconfigured `end_session_endpoint` would make `HeaderValue` parsing
+/// fail, so fall back to `"/"` rather than panicking the request task.
 fn redirect(location: &str) -> Response {
+    let value = header::HeaderValue::from_str(location)
+        .unwrap_or_else(|_| header::HeaderValue::from_static("/"));
     Response::builder()
         .status(StatusCode::FOUND)
-        .header(header::LOCATION, location)
+        .header(header::LOCATION, value)
         .body(Body::empty())
-        .expect("static redirect must build")
+        .expect("redirect response with a valid header value must build")
 }
 
 /// `GET /oauth2/authorization/:registration_id` — redirect the user to

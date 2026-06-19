@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 /// provider as a client application. Build one with
 /// [`ClientRegistration::new`] + the fluent setters, or use the
 /// [`google`], [`github`], and [`keycloak`] presets.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientRegistration {
     /// Unique id this registration is looked up by.
@@ -64,6 +64,22 @@ pub struct ClientRegistration {
     /// Where the provider should send the browser back after RP-initiated
     /// logout (`post_logout_redirect_uri`).
     pub post_logout_redirect_uri: String,
+}
+
+// Manual `Debug` that redacts `client_secret` — the type is `Serialize` for
+// config round-trips, so a derived `Debug` would print the secret in any log /
+// span / panic that formats a registration.
+impl std::fmt::Debug for ClientRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientRegistration")
+            .field("registration_id", &self.registration_id)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .field("authorization_grant_type", &self.authorization_grant_type)
+            .field("provider_name", &self.provider_name)
+            .field("use_pkce", &self.use_pkce)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ClientRegistration {

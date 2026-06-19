@@ -47,9 +47,17 @@ use super::client::{ClientRegistration, ClientRegistrationRepository};
 /// call never races the actual expiry — mirrors Spring's 60s default.
 pub const DEFAULT_CLOCK_SKEW_SECONDS: u64 = 60;
 
+/// Conservative lifetime assumed when a token response omits `expires_in`
+/// (RFC 6749 §5.1 makes it optional, and "absent" means *unknown*, not
+/// *infinite*). Bounding it forces a re-fetch rather than caching the token
+/// forever.
+pub const DEFAULT_FALLBACK_TTL_SECONDS: u64 = 300;
+
 /// A token the application holds to call a downstream OAuth2-protected service
-/// — Spring's `OAuth2AuthorizedClient`.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// — Spring's `OAuth2AuthorizedClient`. Its `Debug` redacts the tokens; the
+/// `Serialize` form (for a persistent [`OAuth2AuthorizedClientService`]) carries
+/// them in clear, so persist only to a secured store.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OAuth2AuthorizedClient {
     /// The client registration this token was obtained for.
     pub registration_id: String,
@@ -64,6 +72,24 @@ pub struct OAuth2AuthorizedClient {
     pub expires_at: Option<u64>,
     /// The granted scopes.
     pub scopes: Vec<String>,
+}
+
+// Manual `Debug` that redacts the access/refresh tokens (live bearer
+// credentials), so logging/error context can never print them in clear.
+impl std::fmt::Debug for OAuth2AuthorizedClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuth2AuthorizedClient")
+            .field("registration_id", &self.registration_id)
+            .field("principal_name", &self.principal_name)
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("expires_at", &self.expires_at)
+            .field("scopes", &self.scopes)
+            .finish()
+    }
 }
 
 impl OAuth2AuthorizedClient {
@@ -156,7 +182,7 @@ impl OAuth2AuthorizedClientManager {
         Self {
             clients,
             service,
-            http: reqwest::Client::new(),
+            http: crate::default_http_client(),
             clock_skew_seconds: DEFAULT_CLOCK_SKEW_SECONDS,
         }
     }
@@ -289,6 +315,15 @@ impl OAuth2AuthorizedClientManager {
                 format!("token endpoint returned {}", response.status()),
             ));
         }
+        if response
+            .content_length()
+            .is_some_and(|len| len > crate::MAX_OAUTH2_RESPONSE_BYTES)
+        {
+            return Err(OAuth2Error::new(
+                "invalid_token_response",
+                "token response too large",
+            ));
+        }
         response
             .json()
             .await
@@ -320,10 +355,16 @@ pub(crate) fn authorized_client_from_token_response(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .or_else(|| previous_refresh.map(str::to_owned));
-    let expires_at = obj
-        .get("expires_in")
-        .and_then(Value::as_u64)
-        .map(|s| now.saturating_add(s));
+    // RFC 6749 §5.1: `expires_in` is optional, and its absence means the
+    // lifetime is unknown — assume a short, bounded one rather than caching the
+    // token forever (a missing/None expiry would otherwise read as non-expiring).
+    let expires_at = Some(
+        now.saturating_add(
+            obj.get("expires_in")
+                .and_then(Value::as_u64)
+                .unwrap_or(DEFAULT_FALLBACK_TTL_SECONDS),
+        ),
+    );
     let scopes = obj
         .get("scope")
         .and_then(Value::as_str)
@@ -372,8 +413,10 @@ mod tests {
 
     #[test]
     fn refresh_response_retains_previous_refresh_token_and_scope() {
-        // A refresh response omits refresh_token + scope: keep the old ones.
-        let resp = json!({ "access_token": "at-2", "expires_in": 60 });
+        // A refresh response omits refresh_token, scope, AND expires_in: keep the
+        // old refresh token + scope, and assume the bounded fallback lifetime
+        // (never an immortal token).
+        let resp = json!({ "access_token": "at-2" });
         let scopes = vec!["api".to_string()];
         let client = authorized_client_from_token_response(
             "reg",
@@ -387,6 +430,8 @@ mod tests {
         assert_eq!(client.access_token, "at-2");
         assert_eq!(client.refresh_token.as_deref(), Some("rt-old"));
         assert_eq!(client.scopes, vec!["api"]);
+        // Missing expires_in → bounded fallback expiry, not non-expiring.
+        assert_eq!(client.expires_at, Some(1000 + DEFAULT_FALLBACK_TTL_SECONDS));
     }
 
     #[test]

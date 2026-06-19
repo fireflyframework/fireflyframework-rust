@@ -69,7 +69,7 @@ impl RemoteTokenIntrospector {
             introspection_uri: introspection_uri.into(),
             client_id: client_id.into(),
             client_secret: client_secret.into(),
-            http: reqwest::Client::new(),
+            http: crate::default_http_client(),
         }
     }
 }
@@ -102,6 +102,16 @@ impl TokenIntrospector for RemoteTokenIntrospector {
                 "introspection endpoint returned {}",
                 response.status()
             )));
+        }
+        // Reject an over-large body before buffering it — a hostile endpoint
+        // could otherwise force unbounded allocation on the verification path.
+        if response
+            .content_length()
+            .is_some_and(|len| len > crate::MAX_OAUTH2_RESPONSE_BYTES)
+        {
+            return Err(SecurityError::verification(
+                "introspection response too large",
+            ));
         }
         let body: Value = response.json().await.map_err(|e| {
             SecurityError::verification(format!("introspection response not JSON: {e}"))

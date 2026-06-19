@@ -84,6 +84,18 @@ async fn token_endpoint(
     match state.server.token(&request).await {
         Ok(token) => (StatusCode::OK, Json(token)).into_response(),
         Err(error) => {
+            if error.code.eq_ignore_ascii_case("server_error") {
+                // An internal failure (e.g. token signing) is a 5xx; never echo
+                // the raw internal error detail to the caller.
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": "server_error",
+                        "error_description": "internal error",
+                    })),
+                )
+                    .into_response();
+            }
             // RFC 6749 §5.2: `invalid_client` is a `401`; other token errors a
             // `400`. Error codes are lowercased to the registered RFC names.
             let status = if error.code.eq_ignore_ascii_case("invalid_client") {
