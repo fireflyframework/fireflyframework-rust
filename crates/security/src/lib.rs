@@ -136,6 +136,7 @@
 //!     .layer(BearerLayer::new(BearerConfig::new(verifier)));
 //! ```
 
+mod acl;
 mod authentication;
 mod authentication_manager;
 mod bearer;
@@ -167,6 +168,10 @@ mod userdetails;
 #[cfg(feature = "webauthn")]
 mod webauthn;
 
+pub use acl::{
+    is_granted, AccessControlEntry, Acl, AclPermissionEvaluator, AclService, InMemoryAclService,
+    ObjectIdentity, Permission, Sid,
+};
 pub use authentication::{
     authentication_from, must_auth_from, with_authentication, Authentication, SecurityError,
     Verifier, VerifierFn, ANONYMOUS_ID, ROLE_PREFIX,
@@ -215,7 +220,9 @@ pub use password::{
     Argon2PasswordEncoder, BcryptPasswordEncoder, DelegatingPasswordEncoder, NoOpPasswordEncoder,
     PasswordEncoder, DEFAULT_PASSWORD_ENCODER_ID, DEFAULT_ROUNDS,
 };
-pub use permission::{has_permission, set_permission_evaluator, PermissionEvaluator};
+pub use permission::{
+    has_permission, has_permission_for_id, set_permission_evaluator, PermissionEvaluator,
+};
 pub use remember_me::{
     RememberMeServices, TokenBasedRememberMeServices, DEFAULT_REMEMBER_ME_SECONDS,
 };
