@@ -235,3 +235,64 @@ async fn post_authorize_filters_on_return_value() {
         Err(SvcErr::Denied(SecurityError::Unauthenticated))
     );
 }
+
+// --- post_filter / pre_filter: collection filtering ------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+struct Owned {
+    owner: String,
+}
+
+fn owned(owner: &str) -> Owned {
+    Owned {
+        owner: owner.into(),
+    }
+}
+
+/// Spring's `@PostFilter("filterObject.owner == authentication.name")` — keep
+/// only the elements the caller owns.
+#[firefly::post_filter(element.owner == auth.principal)]
+async fn list_docs() -> Result<Vec<Owned>, SvcErr> {
+    Ok(vec![owned("alice"), owned("bob"), owned("alice")])
+}
+
+#[tokio::test]
+async fn post_filter_retains_only_owned_elements() {
+    // alice sees only her own rows.
+    let mine = with_authentication_scope(principal("alice", &[], &[]), list_docs())
+        .await
+        .unwrap();
+    assert_eq!(mine, vec![owned("alice"), owned("alice")]);
+    // bob sees only his (one).
+    let bobs = with_authentication_scope(principal("bob", &[], &[]), list_docs())
+        .await
+        .unwrap();
+    assert_eq!(bobs, vec![owned("bob")]);
+    // No ambient context → unauthenticated (the whole call fails closed).
+    assert_eq!(
+        list_docs().await,
+        Err(SvcErr::Denied(SecurityError::Unauthenticated))
+    );
+}
+
+/// Spring's `@PreFilter` — drop the elements the caller does not own from the
+/// `mut` argument before the body runs.
+#[firefly::pre_filter(items, element.owner == auth.principal)]
+async fn ingest(mut items: Vec<Owned>) -> Result<Vec<Owned>, SvcErr> {
+    Ok(items)
+}
+
+#[tokio::test]
+async fn pre_filter_drops_unowned_arguments_before_body() {
+    let input = vec![owned("alice"), owned("bob"), owned("carol")];
+    // The body only ever sees alice's elements.
+    let kept = with_authentication_scope(principal("alice", &[], &[]), ingest(input.clone()))
+        .await
+        .unwrap();
+    assert_eq!(kept, vec![owned("alice")]);
+    // No ambient context → unauthenticated, body never runs.
+    assert_eq!(
+        ingest(input).await,
+        Err(SvcErr::Denied(SecurityError::Unauthenticated))
+    );
+}

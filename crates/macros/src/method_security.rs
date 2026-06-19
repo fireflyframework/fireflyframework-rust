@@ -24,7 +24,9 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Expr, ItemFn, Lit, Meta, ReturnType};
+use syn::parse::Parser;
+use syn::punctuated::Punctuated;
+use syn::{Expr, ItemFn, Lit, Meta, ReturnType, Token};
 
 use crate::common::Facade;
 
@@ -146,6 +148,124 @@ pub(crate) fn post_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::R
                 },
                 __err => __err,
             }
+        }
+    };
+    func.block = syn::parse2(new_block)?;
+    Ok(quote!(#func))
+}
+
+/// Expands `#[post_filter(<expr>)]` on an `async fn` returning `Result<C, E>`
+/// where `C` is a collection with `retain(impl FnMut(&T) -> bool)` (e.g.
+/// `Vec<T>`) and `E: From<firefly_security::SecurityError>` — Spring's
+/// `@PostFilter("filterObject.owner == authentication.name")`.
+///
+/// After a successful call, each element is retained only when `<expr>` (a
+/// boolean over `element`, a `&T`, and `auth`, a `&Authentication`) is true; the
+/// rest are dropped from the returned collection. No ambient context denies the
+/// whole call with `Unauthenticated`.
+pub(crate) fn post_filter_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
+    let sec = Facade::default().security();
+
+    if func.sig.asyncness.is_none() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[post_filter] requires an `async fn` — the body is awaited before its result is \
+             filtered",
+        ));
+    }
+    if matches!(func.sig.output, ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[post_filter] requires an `async fn` returning `Result<C, E>` where `C` is a \
+             collection (e.g. `Vec<T>`) and `E: From<firefly_security::SecurityError>`",
+        ));
+    }
+    if args.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[post_filter(<expr>)] needs a boolean expression over `element` (a `&T`) and `auth`, \
+             e.g. #[post_filter(element.owner == auth.principal)]",
+        ));
+    }
+    let predicate: Expr = syn::parse2(args)?;
+
+    let block = &func.block;
+    let new_block = quote! {
+        {
+            match (async move #block).await {
+                ::core::result::Result::Ok(mut __collection) => {
+                    match #sec::current_authentication() {
+                        ::core::option::Option::Some(__auth) => {
+                            {
+                                let auth = &__auth;
+                                __collection.retain(|element| { #predicate });
+                            }
+                            ::core::result::Result::Ok(__collection)
+                        }
+                        ::core::option::Option::None => ::core::result::Result::Err(
+                            ::core::convert::From::from(#sec::SecurityError::Unauthenticated),
+                        ),
+                    }
+                }
+                __err => __err,
+            }
+        }
+    };
+    func.block = syn::parse2(new_block)?;
+    Ok(quote!(#func))
+}
+
+/// Expands `#[pre_filter(<param>, <expr>)]` — Spring's
+/// `@PreFilter("filterObject...")`. Filters the named **owned `mut`**
+/// collection parameter `<param>` *before* the body runs, retaining only the
+/// elements for which `<expr>` (over `element`, a `&T`, and `auth`) is true.
+///
+/// The function must return `Result<_, E>` with
+/// `E: From<firefly_security::SecurityError>`; no ambient context denies with
+/// `Unauthenticated`. Declare the parameter `mut`, e.g.
+/// `async fn ingest(&self, mut items: Vec<Order>) -> Result<(), E>`.
+pub(crate) fn pre_filter_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
+    let sec = Facade::default().security();
+
+    if matches!(func.sig.output, ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[pre_filter] requires a function returning `Result<_, E>` where \
+             `E: From<firefly_security::SecurityError>`",
+        ));
+    }
+
+    // Parse `<param>, <predicate>`: exactly two comma-separated expressions, the
+    // first a bare parameter identifier.
+    let parsed = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(args)?;
+    if parsed.len() != 2 {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[pre_filter(<param>, <expr>)] needs the collection parameter to filter and a \
+             boolean expression over `element` and `auth`, e.g. \
+             #[pre_filter(items, element.owner == auth.principal)]",
+        ));
+    }
+    let param =
+        match &parsed[0] {
+            Expr::Path(p) if p.path.get_ident().is_some() => p.path.get_ident().unwrap().clone(),
+            other => return Err(syn::Error::new_spanned(
+                other,
+                "the first argument to #[pre_filter] must be a parameter name (a bare identifier)",
+            )),
+        };
+    let predicate = &parsed[1];
+
+    let block = &func.block;
+    let new_block = quote! {
+        {
+            let __auth = #sec::current_authentication()
+                .ok_or(#sec::SecurityError::Unauthenticated)?;
+            {
+                let auth = &__auth;
+                #param.retain(|element| { #predicate });
+            }
+            #block
         }
     };
     func.block = syn::parse2(new_block)?;

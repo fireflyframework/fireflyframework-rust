@@ -629,6 +629,45 @@ pub fn post_authorize(args: TokenStream, item: TokenStream) -> TokenStream {
     emit(method_security::post_authorize_impl(args.into(), item))
 }
 
+/// Filters a method's *returned collection* — Spring Security's `@PostFilter`.
+///
+/// The `async fn` body runs first; then each element of the returned collection
+/// (a `Vec<T>` or any type with `retain(impl FnMut(&T) -> bool)`) is kept only
+/// when the boolean expression is true, with `element` (a `&T`, the
+/// `filterObject`) and `auth` (a `&Authentication`) in scope. The function must
+/// return `Result<C, E>` with `E: From<firefly_security::SecurityError>`; no
+/// caller present denies with `Unauthenticated`.
+///
+/// ```ignore
+/// #[firefly::post_filter(element.owner == auth.principal)]
+/// async fn list(&self) -> Result<Vec<Wallet>, MyError> { /* ... */ }
+/// ```
+#[proc_macro_attribute]
+pub fn post_filter(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(method_security::post_filter_impl(args.into(), item))
+}
+
+/// Filters a method's *collection argument* before it runs — Spring Security's
+/// `@PreFilter`.
+///
+/// Names an owned `mut` collection parameter and a predicate; before the body
+/// runs, the parameter retains only the elements for which the expression is
+/// true, with `element` (a `&T`) and `auth` (a `&Authentication`) in scope. The
+/// function must return `Result<_, E>` with
+/// `E: From<firefly_security::SecurityError>`; no caller present denies with
+/// `Unauthenticated`.
+///
+/// ```ignore
+/// #[firefly::pre_filter(orders, element.owner == auth.principal)]
+/// async fn ingest(&self, mut orders: Vec<Order>) -> Result<(), MyError> { /* ... */ }
+/// ```
+#[proc_macro_attribute]
+pub fn pre_filter(args: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    emit(method_security::pre_filter_impl(args.into(), item))
+}
+
 /// Derives a fluent builder — Lombok's `@Builder`.
 ///
 /// `T::builder().field(v)…​.build()` returns `Result<T, String>`; required
