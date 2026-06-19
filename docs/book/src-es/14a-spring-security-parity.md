@@ -29,8 +29,8 @@ comportamiento de Spring, sea cual sea su forma.
 | Login con token de un solo uso (enlace mágico) | ✅ | `oneTimeTokenLogin()` de Spring 6.4 — `OneTimeTokenService` + manejador de entrega + `/ott/generate` + `/login/ott` |
 | WebAuthn / passkeys | 🧩 | `webAuthn()` de Spring 6.4 — módulo `webauthn` opcional (ceremonias de registro y autenticación) |
 | Adaptadores de IdP | ✅ | Internal-DB, Keycloak, Azure AD / Entra, AWS Cognito |
-| Arquitectura de autenticación (`AuthenticationManager`, `SecurityContextRepository`) | 🚧 | Primitivas presentes; abstracción completa de proveedor/gestor en la hoja de ruta |
-| Codificador de contraseñas delegado (migración `{id}`) | 🚧 | Hoja de ruta |
+| Arquitectura de autenticación | ✅ | `AuthenticationManager`/`ProviderManager`/`AuthenticationProvider`, `UserDetails`+`DaoAuthenticationProvider`, `SecurityContextRepository`, `AuthenticationEventPublisher`, `AuthenticationEntryPoint`/`AccessDeniedHandler` conectables |
+| Codificador de contraseñas delegado (migración `{id}`) | ✅ | `DelegatingPasswordEncoder` (`{bcrypt}`/`{argon2}`/`{noop}`) con re-hash en login (`upgrade_encoding`) |
 | Form login / HTTP Basic / remember-me | 🚧 | Hoja de ruta |
 | Cliente OAuth2 (`AuthorizedClientManager`) / Servidor de autorización | 🚧 | Lado de login presente; cliente saliente y servidor de autorización montado en la hoja de ruta |
 | ACL / seguridad de objetos de dominio · SAML2 · LDAP/AD | 🚧 | Hoja de ruta (crates opcionales) |
@@ -82,10 +82,10 @@ Firefly incluye los dos mecanismos sin contraseña de Spring Security 6.4:
 La paridad se entrega por niveles, cada uno un incremento:
 
 1. **Endurecimiento (hecho)** — los comportamientos fieles a Spring anteriores.
-2. **Columna vertebral de autenticación** — `AuthenticationManager` /
-   `ProviderManager`, `SecurityContextRepository`, `DelegatingPasswordEncoder`,
-   indicadores de estado completos de `UserDetails`, eventos de autenticación,
-   manejadores conectables de entry-point / access-denied.
+2. **Columna vertebral de autenticación (hecho)** — `AuthenticationManager` /
+   `ProviderManager`, `DaoAuthenticationProvider` + `UserDetails`,
+   `SecurityContextRepository`, `DelegatingPasswordEncoder`, eventos de
+   autenticación, manejadores conectables de entry-point / access-denied.
 3. **Mecanismos web** — form login, HTTP Basic, remember-me, `RequestCache`,
    `SessionCreationPolicy`, múltiples cadenas de filtros.
 4. **Profundidad de seguridad de método** — enlace de argumentos/principal estilo

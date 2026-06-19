@@ -137,10 +137,12 @@
 //! ```
 
 mod authentication;
+mod authentication_manager;
 mod bearer;
 mod config;
 mod context;
 mod csrf;
+mod exception;
 mod filter_chain;
 pub mod guards;
 mod jwks;
@@ -150,13 +152,20 @@ mod ott;
 mod password;
 mod problem;
 mod role_hierarchy;
+mod security_context;
 mod session_auth;
+mod userdetails;
 #[cfg(feature = "webauthn")]
 mod webauthn;
 
 pub use authentication::{
     authentication_from, must_auth_from, with_authentication, Authentication, SecurityError,
     Verifier, VerifierFn, ANONYMOUS_ID, ROLE_PREFIX,
+};
+pub use authentication_manager::{
+    AuthenticationEvent, AuthenticationEventPublisher, AuthenticationManager,
+    AuthenticationProvider, AuthenticationRequest, BearerTokenAuthenticationProvider,
+    LoggingAuthenticationEventPublisher, ProviderManager,
 };
 pub use bearer::{BearerConfig, BearerLayer, BearerService, UnauthorizedHandler};
 pub use config::{
@@ -171,6 +180,10 @@ pub use csrf::{
     generate_csrf_token, is_safe_method, validate_csrf_token, CookieSecure, CsrfLayer, CsrfService,
     CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SAFE_METHODS,
 };
+pub use exception::{
+    AccessDeniedHandler, AuthenticationEntryPoint, ProblemAccessDeniedHandler,
+    ProblemAuthenticationEntryPoint,
+};
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
 pub use guards::{require, AuthorizationGuard};
 pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier, DEFAULT_CLOCK_SKEW_SECONDS};
@@ -180,11 +193,21 @@ pub use ott::{
     OneTimeTokenGenerationSuccessHandler, OneTimeTokenService, OttLoginState,
     DEFAULT_OTT_TTL_SECONDS,
 };
-pub use password::{Argon2PasswordEncoder, BcryptPasswordEncoder, PasswordEncoder, DEFAULT_ROUNDS};
+pub use password::{
+    Argon2PasswordEncoder, BcryptPasswordEncoder, DelegatingPasswordEncoder, NoOpPasswordEncoder,
+    PasswordEncoder, DEFAULT_PASSWORD_ENCODER_ID, DEFAULT_ROUNDS,
+};
 pub use role_hierarchy::RoleHierarchy;
+pub use security_context::{
+    HttpSessionSecurityContextRepository, NullSecurityContextRepository, SecurityContextRepository,
+};
 pub use session_auth::{
     SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,
     SessionLoginSessionStore,
+};
+pub use userdetails::{
+    AccountStatusUserDetailsChecker, DaoAuthenticationProvider, InMemoryUserDetailsService,
+    UserDetails, UserDetailsChecker, UserDetailsService,
 };
 #[cfg(feature = "webauthn")]
 pub use webauthn::{

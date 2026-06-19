@@ -70,7 +70,8 @@ use firefly_session::{
 };
 
 use crate::authentication::Authentication;
-use crate::oauth2::{LoginSession, LoginSessionStore, SESSION_KEY_SECURITY_CONTEXT};
+use crate::oauth2::{LoginSession, LoginSessionStore};
+use crate::security_context::{HttpSessionSecurityContextRepository, SecurityContextRepository};
 
 /// Tower [`Layer`] that restores an [`Authentication`] from the request's
 /// [`firefly_session::Session`] — the Rust port of pyfly's
@@ -102,18 +103,22 @@ use crate::oauth2::{LoginSession, LoginSessionStore, SESSION_KEY_SECURITY_CONTEX
 ///     .layer(SessionAuthenticationLayer::new())
 ///     .layer(SessionLayer::new(store));
 /// ```
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SessionAuthenticationLayer {
     anonymous_fallback: bool,
+    repository: Arc<dyn SecurityContextRepository>,
 }
 
 impl SessionAuthenticationLayer {
     /// Builds the layer with pyfly defaults: an [`Authentication::anonymous`]
-    /// is inserted when the session carries no authenticated context.
+    /// is inserted when the session carries no authenticated context, and the
+    /// context is loaded via the default
+    /// [`HttpSessionSecurityContextRepository`].
     #[must_use]
     pub fn new() -> Self {
         Self {
             anonymous_fallback: true,
+            repository: Arc::new(HttpSessionSecurityContextRepository::new()),
         }
     }
 
@@ -126,6 +131,22 @@ impl SessionAuthenticationLayer {
     pub fn anonymous_fallback(mut self, enabled: bool) -> Self {
         self.anonymous_fallback = enabled;
         self
+    }
+
+    /// Sets the [`SecurityContextRepository`] used to load the per-request
+    /// context (default [`HttpSessionSecurityContextRepository`]). Use a
+    /// [`NullSecurityContextRepository`](crate::NullSecurityContextRepository)
+    /// for a stateless surface, or a custom-keyed repository.
+    #[must_use]
+    pub fn with_repository(mut self, repository: Arc<dyn SecurityContextRepository>) -> Self {
+        self.repository = repository;
+        self
+    }
+}
+
+impl Default for SessionAuthenticationLayer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -144,6 +165,7 @@ impl<S> Layer<S> for SessionAuthenticationLayer {
         SessionAuthenticationService {
             inner,
             anonymous_fallback: self.anonymous_fallback,
+            repository: self.repository.clone(),
         }
     }
 }
@@ -153,6 +175,7 @@ impl<S> Layer<S> for SessionAuthenticationLayer {
 pub struct SessionAuthenticationService<S> {
     inner: S,
     anonymous_fallback: bool,
+    repository: Arc<dyn SecurityContextRepository>,
 }
 
 impl<S> Service<Request> for SessionAuthenticationService<S>
@@ -173,6 +196,7 @@ where
 
     fn call(&mut self, mut req: Request) -> Self::Future {
         let anonymous_fallback = self.anonymous_fallback;
+        let repository = self.repository.clone();
         // Standard tower buffering: invoke the version we drove to readiness.
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
@@ -184,7 +208,10 @@ where
         let already_present = req.extensions().get::<Authentication>().is_some();
 
         Box::pin(async move {
-            let restored = restore_authentication(session).await;
+            let restored = match session {
+                Some(session) => repository.load(&session).await,
+                None => None,
+            };
             // Make the context ambient two ways: insert it into the request
             // extensions (read by `FilterChain` / `guards` / handlers) AND scope
             // the task-local `CURRENT_AUTH` around the downstream call (read by
@@ -210,41 +237,6 @@ where
             }
         })
     }
-}
-
-/// Reads the stored [`Authentication`] from a request's
-/// [`firefly_session::Session`] handle, if present and authenticated.
-/// Returns `None` when there is no session handle, no `SECURITY_CONTEXT`
-/// attribute, the attribute fails to deserialize, or the deserialized
-/// principal is the anonymous/empty placeholder (mirroring pyfly's
-/// `is_authenticated` guard).
-async fn restore_authentication(session: Option<Session>) -> Option<Authentication> {
-    let session = session?;
-    // The OAuth2 login handler stores the security context as a JSON *string*
-    // (`serde_json::to_string(&auth)`); read it back the same way. Fall back
-    // to a directly-stored object for callers that set the attribute as a
-    // typed value.
-    let auth = match session
-        .attribute::<String>(SESSION_KEY_SECURITY_CONTEXT)
-        .await
-    {
-        Some(serialized) => serde_json::from_str::<Authentication>(&serialized).ok()?,
-        None => {
-            session
-                .attribute::<Authentication>(SESSION_KEY_SECURITY_CONTEXT)
-                .await?
-        }
-    };
-    if is_authenticated(&auth) {
-        Some(auth)
-    } else {
-        None
-    }
-}
-
-/// Whether `auth` names a real principal (pyfly: `SecurityContext.is_authenticated`).
-fn is_authenticated(auth: &Authentication) -> bool {
-    !auth.principal.is_empty() && auth.principal != crate::authentication::ANONYMOUS_ID
 }
 
 /// A [`LoginSession`] backed by a real [`firefly_session::Session`] handle.
@@ -454,64 +446,13 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oauth2::SESSION_KEY_SECURITY_CONTEXT;
     use firefly_session::MemorySessionStore;
 
-    #[tokio::test]
-    async fn restores_authenticated_context_from_session() {
-        let session = Session::new(SessionInner::new("sid"));
-        let auth = Authentication {
-            principal: "u1".into(),
-            username: "alice".into(),
-            roles: vec!["ADMIN".into()],
-            ..Default::default()
-        };
-        // The login handler stores the JSON string of the Authentication.
-        let serialized = serde_json::to_string(&auth).unwrap();
-        session
-            .set_attribute(SESSION_KEY_SECURITY_CONTEXT, serialized)
-            .await
-            .unwrap();
-
-        let restored = restore_authentication(Some(session)).await.unwrap();
-        assert_eq!(restored.principal, "u1");
-        assert_eq!(restored.username, "alice");
-        assert!(restored.has_role("ADMIN"));
-    }
-
-    #[tokio::test]
-    async fn no_context_returns_none() {
-        let session = Session::new(SessionInner::new("sid"));
-        assert!(restore_authentication(Some(session)).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn anonymous_stored_context_is_not_restored() {
-        let session = Session::new(SessionInner::new("sid"));
-        let anon = Authentication::anonymous();
-        session
-            .set_attribute(
-                SESSION_KEY_SECURITY_CONTEXT,
-                serde_json::to_string(&anon).unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(restore_authentication(Some(session)).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn missing_session_handle_returns_none() {
-        assert!(restore_authentication(None).await.is_none());
-    }
-
-    #[test]
-    fn is_authenticated_rejects_anonymous_and_empty() {
-        assert!(is_authenticated(&Authentication {
-            principal: "u1".into(),
-            ..Default::default()
-        }));
-        assert!(!is_authenticated(&Authentication::anonymous()));
-        assert!(!is_authenticated(&Authentication::default()));
-    }
+    // Context load/restore semantics now live in `security_context.rs`
+    // (HttpSessionSecurityContextRepository) and are exercised there; the
+    // SessionAuthenticationLayer's use of the repository is covered by the
+    // `service_scopes_*` tests below.
 
     #[test]
     fn cookie_value_parses_pairs() {
@@ -647,6 +588,57 @@ mod tests {
             .unwrap();
 
         assert_eq!(seen.lock().unwrap().as_deref(), Some("u1"));
+    }
+
+    // T1.4: the layer loads the context through its SecurityContextRepository,
+    // not a hardcoded key. With a NullSecurityContextRepository, a session that
+    // *does* hold a context is ignored (the default HttpSession repo would have
+    // restored "u1") — proving the repository seam is actually wired.
+    #[tokio::test]
+    async fn with_repository_swaps_the_context_source() {
+        use crate::NullSecurityContextRepository;
+        use std::sync::Mutex;
+        use tower::ServiceExt;
+
+        let session = Session::new(SessionInner::new("sid"));
+        let auth = Authentication {
+            principal: "u1".into(),
+            ..Default::default()
+        };
+        session
+            .set_attribute(
+                SESSION_KEY_SECURITY_CONTEXT,
+                serde_json::to_string(&auth).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let probe = seen.clone();
+        let inner = tower::service_fn(move |_req: Request| {
+            let probe = probe.clone();
+            async move {
+                *probe.lock().unwrap() = crate::current_authentication().map(|a| a.principal);
+                Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+            }
+        });
+
+        let mut req = Request::new(axum::body::Body::empty());
+        req.extensions_mut().insert(session);
+
+        let _ = SessionAuthenticationLayer::new()
+            .with_repository(Arc::new(NullSecurityContextRepository))
+            .layer(inner)
+            .oneshot(req)
+            .await
+            .unwrap();
+
+        // Null repo restores nothing -> the anonymous fallback applies, so the
+        // stored "u1" context is NOT seen.
+        assert_eq!(
+            seen.lock().unwrap().as_deref(),
+            Some(crate::authentication::ANONYMOUS_ID)
+        );
     }
 
     // H1 (anonymous path): with the default anonymous fallback, the layer

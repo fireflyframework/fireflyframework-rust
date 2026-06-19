@@ -87,6 +87,14 @@ impl Authentication {
             ..Self::default()
         }
     }
+
+    /// Whether this names a real, non-anonymous principal — Spring's
+    /// `Authentication.isAuthenticated()` for a fully-authenticated context
+    /// (the empty/default and [`anonymous`](Self::anonymous) contexts are not).
+    #[must_use]
+    pub fn is_authenticated(&self) -> bool {
+        !self.principal.is_empty() && self.principal != ANONYMOUS_ID
+    }
 }
 
 /// `ANONYMOUS_ID` is the principal id used when no auth is present and
@@ -246,6 +254,13 @@ mod tests {
         let mut d = auth(&[]);
         d.authorities = vec!["ADMIN".into()];
         assert!(!d.has_role("ADMIN"));
+    }
+
+    #[test]
+    fn is_authenticated_only_for_a_real_principal() {
+        assert!(auth(&["USER"]).is_authenticated());
+        assert!(!Authentication::anonymous().is_authenticated());
+        assert!(!Authentication::default().is_authenticated());
     }
 
     #[test]
