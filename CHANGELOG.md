@@ -2,6 +2,41 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.30 — 2026-06-19
+
+**Spring Security parity — Tier 1: the authentication spine.** The core of
+Spring Security's authentication architecture, the foundation later tiers build
+on. All additive (no behaviour change to existing code).
+
+### Added
+
+- **Authentication manager spine** — `AuthenticationManager` / `ProviderManager`
+  / `AuthenticationProvider` (Spring's authentication architecture). An
+  `AuthenticationRequest` (`UsernamePassword` / `BearerToken`, `#[non_exhaustive]`)
+  is resolved by the first supporting provider; `BearerTokenAuthenticationProvider`
+  adapts the existing `Verifier` into the spine.
+- **`UserDetails` + DAO authentication** — `UserDetails` (with the four Spring
+  account-status flags), `UserDetailsService`, `UserDetailsChecker` /
+  `AccountStatusUserDetailsChecker`, `InMemoryUserDetailsService`, and
+  `DaoAuthenticationProvider` (an enumeration-safe username/password provider:
+  unknown user and wrong password both fail as `Bad credentials` with comparable
+  bcrypt work).
+- **`DelegatingPasswordEncoder`** — Spring's recommended `{id}`-prefixed password
+  storage (`{bcrypt}`/`{argon2}`/`{noop}`), `upgrade_encoding` for re-hash-on-login,
+  and seamless migration of legacy bare hashes; plus `NoOpPasswordEncoder`.
+- **`SecurityContextRepository`** — the pluggable between-request context store
+  (`HttpSessionSecurityContextRepository` default, `NullSecurityContextRepository`
+  for stateless surfaces). `SessionAuthenticationLayer` now loads the context
+  through a swappable repository instead of a hardcoded session key; added
+  `Authentication::is_authenticated()`.
+- **`AuthenticationEventPublisher`** — `AuthenticationEvent::{Success,Failure}`
+  published by `ProviderManager` for every outcome (`LoggingAuthenticationEvent-
+  Publisher` default).
+- **Pluggable `AuthenticationEntryPoint` / `AccessDeniedHandler`** (Spring's
+  `ExceptionTranslationFilter` seam) — `FilterChain` renders its `401`/`403`
+  through them, defaulting to the canonical problem+json and overridable via
+  `with_authentication_entry_point` / `with_access_denied_handler`.
+
 ## v26.6.29 — 2026-06-18
 
 A **Spring Security 6 parity** increment (Tier 0): an adversarially-verified

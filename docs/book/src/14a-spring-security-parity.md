@@ -28,8 +28,8 @@ servlet filters, traits instead of interfaces, builder functions instead of the
 | One-time-token login (magic link) | ✅ | Spring 6.4 `oneTimeTokenLogin()` — `OneTimeTokenService` + delivery handler + `/ott/generate` + `/login/ott` |
 | WebAuthn / passkeys | 🧩 | Spring 6.4 `webAuthn()` — feature-gated `webauthn` module (registration + authentication ceremonies) |
 | IdP adapters | ✅ | Internal-DB, Keycloak, Azure AD / Entra, AWS Cognito |
-| Authentication architecture (`AuthenticationManager`, `SecurityContextRepository`) | 🚧 | Core primitives present; full provider/manager abstraction on the roadmap |
-| Delegating password encoder (`{id}` migration) | 🚧 | Roadmap |
+| Authentication architecture | ✅ | `AuthenticationManager`/`ProviderManager`/`AuthenticationProvider`, `UserDetails`+`DaoAuthenticationProvider`, `SecurityContextRepository`, `AuthenticationEventPublisher`, pluggable `AuthenticationEntryPoint`/`AccessDeniedHandler` |
+| Delegating password encoder (`{id}` migration) | ✅ | `DelegatingPasswordEncoder` (`{bcrypt}`/`{argon2}`/`{noop}`) with `upgrade_encoding` re-hash-on-login |
 | Form login / HTTP Basic / remember-me | 🚧 | Roadmap |
 | OAuth2 client (`AuthorizedClientManager`) / Authorization Server | 🚧 | Login side present; outbound client + a mounted authorization server on the roadmap |
 | ACL / domain-object security · SAML2 · LDAP/AD | 🚧 | Roadmap (opt-in crates) |
@@ -79,10 +79,10 @@ Firefly ships the two Spring Security 6.4 passwordless mechanisms:
 Parity is delivered in tiers, each its own increment:
 
 1. **Hardening (done)** — the Spring-faithful behaviours above.
-2. **Authentication spine** — `AuthenticationManager` / `ProviderManager`,
-   `SecurityContextRepository`, `DelegatingPasswordEncoder`, full `UserDetails`
-   status flags, authentication events, pluggable entry-point / access-denied
-   handlers.
+2. **Authentication spine (done)** — `AuthenticationManager` / `ProviderManager`,
+   `DaoAuthenticationProvider` + `UserDetails`, `SecurityContextRepository`,
+   `DelegatingPasswordEncoder`, authentication events, pluggable entry-point /
+   access-denied handlers.
 3. **Web mechanisms** — form login, HTTP Basic, remember-me, `RequestCache`,
    `SessionCreationPolicy`, multiple filter chains.
 4. **Method-security depth** — SpEL-style argument/principal binding,
