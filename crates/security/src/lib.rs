@@ -144,6 +144,7 @@ mod context;
 mod csrf;
 mod exception;
 mod filter_chain;
+mod form_login;
 pub mod guards;
 mod http_basic;
 mod jwks;
@@ -186,6 +187,9 @@ pub use exception::{
     ProblemAccessDeniedHandler, ProblemAuthenticationEntryPoint,
 };
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
+pub use form_login::{
+    form_login_routes, FormLoginFailureHandler, FormLoginState, FormLoginSuccessHandler,
+};
 pub use guards::{require, AuthorizationGuard};
 pub use http_basic::{HttpBasicLayer, HttpBasicService};
 pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier, DEFAULT_CLOCK_SKEW_SECONDS};
