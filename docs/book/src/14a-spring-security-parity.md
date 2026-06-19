@@ -47,7 +47,7 @@ In the **Status** column, :status-supported: marks a supported feature,
 | Authorization server | :status-partial: | `AuthorizationServer` (client-credentials + refresh-token) mounted via `AuthorizationServerRouter` (`/oauth2/token`, RFC 8414 metadata); server-side authorization_code grant on the roadmap |
 | LDAP / Active Directory authentication | :status-partial: | Feature-gated `ldap`: `LdapAuthenticationProvider` (bind auth + group authorities) + `ActiveDirectoryLdapAuthenticationProvider`, over `ldap3` (`ldapAuthentication()`) |
 | ACL / domain-object security | :status-supported: | `Acl` / `AccessControlEntry` / `Permission` / `Sid` / `ObjectIdentity`, `AclService` + `InMemoryAclService`, and `AclPermissionEvaluator` wiring `hasPermission(...)` to per-object ACLs (`spring-security-acl`) |
-| SAML2 (`saml2Login()`) | :status-planned: | SP-side `RelyingPartyRegistration` + signed-response verification implemented behind an opt-in feature; release pending a stable Rust XML-Security stack |
+| SAML2 (`saml2Login()`) | :status-partial: | Feature-gated `saml2`: SP-side `RelyingPartyRegistration`, SP-initiated `AuthnRequest` redirect, and signed-response verification (`OpenSaml4AuthenticationProvider`) with one-time-use replay, over `samael` (SLO / signed-AuthnRequest / encrypted-assertions remain) |
 
 ## Spring-faithful behaviours to know
 
@@ -234,6 +234,45 @@ precedence (Spring's `DefaultPermissionGrantingStrategy`). The inheritance walk
 is bounded, so a cyclic or pathologically deep parent chain terminates (and
 denies) rather than looping.
 
+## SAML2 single sign-on
+
+The feature-gated `saml2` module (opt-in: `--features saml2`) is the
+Service-Provider side of the SAML 2.0 Web-Browser-SSO profile — Spring's
+`saml2Login()`. The XML-signature verification, canonicalization, and SAML
+profile checks (audience, recipient, `InResponseTo`, status, time conditions)
+are delegated to the [`samael`] crate (which links the battle-tested
+`xmlsec`/`libxml2`/OpenSSL stack); this module is the Spring-faithful, hardened
+wrapper:
+
+- **`RelyingPartyRegistration`** (+ `InMemoryRelyingPartyRegistrationRepository`)
+  — one SP↔IdP relationship, configured from IdP metadata or explicit
+  asserting-party details (Spring's `RelyingPartyRegistration`).
+- **SP-initiated `AuthnRequest`** — `authn_request_redirect` builds the
+  HTTP-Redirect-binding URL and returns the request `ID` to remember
+  (`Saml2AuthenticationRequestRepository`).
+- **`authenticate`** — verifies a POST-binding response and maps the `NameID`
+  (and configured attributes) to an `Authentication` (Spring's
+  `OpenSaml4AuthenticationProvider`).
+- **SP metadata** — `metadata_xml` (Spring's `Saml2MetadataFilter`).
+
+Hardening on top of `samael`:
+
+- **Fail-closed on a missing IdP signing certificate** — without one `samael`
+  would skip signature verification entirely (an authentication bypass), so
+  building a registration refuses it.
+- **Signature-algorithm allow-list** pinned to SHA-256+ RSA/ECDSA (`samael`
+  otherwise accepts *all* algorithms — an algorithm-substitution risk).
+- **One-time-use replay protection** (`AssertionReplayCache`) — the SAML
+  profile requires it but `samael` does not track it.
+- All native XML-Security calls are **serialized** (the stack is not
+  concurrency-safe).
+
+Single-logout, signed `AuthnRequest`s, and encrypted assertions remain on the
+roadmap. (`saml2` links a system `libxml2` + `xmlsec1` + OpenSSL; the default
+build is unaffected.)
+
+[`samael`]: https://crates.io/crates/samael
+
 ## Roadmap
 
 Parity is delivered in tiers, each its own increment:
@@ -255,6 +294,7 @@ Parity is delivered in tiers, each its own increment:
 6. **Big subsystems** — delivered one opt-in subsystem at a time. **LDAP /
    Active Directory (done)** — the feature-gated `ldap` module. **ACL /
    domain-object security (done)** — `spring-security-acl` parity, pure Rust.
-   **SAML2** has an SP-side implementation (registration + signed-response
-   verification) behind an opt-in feature, with release pending a stable Rust
-   XML-Security stack.
+   **SAML2 SSO (done)** — the feature-gated `saml2` module: SP registration,
+   SP-initiated `AuthnRequest`, and signed-response verification with replay
+   protection (single-logout, signed `AuthnRequest`s, and encrypted assertions
+   remain follow-ups).
