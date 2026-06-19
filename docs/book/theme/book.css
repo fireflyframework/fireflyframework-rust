@@ -99,6 +99,8 @@ td code,th code{ background:#f3ecdf; }
   margin:0 0 .32rem; display:flex; align-items:center; gap:.42rem;
   font-family:"Avenir Next",Avenir,Helvetica,Arial,sans-serif; }
 .adm-ico{ flex:none; width:15px; height:15px; }
+/* Status icons in capability/coverage matrices (see md.py _STATUS_ICON). */
+.status-ico{ width:16px; height:16px; vertical-align:-0.18em; }
 .admonition.note{ background:var(--note-bg); border-color:#cfe0fb; border-left-color:var(--note); }
 .admonition.note>.admonition-title{ color:var(--note); }
 .admonition.tip{ background:var(--tip-bg); border-color:#cdeccd; border-left-color:var(--tip); }

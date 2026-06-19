@@ -13,27 +13,36 @@ comportamiento de Spring, sea cual sea su forma.
 
 ## Cobertura de un vistazo
 
+En la columna **Estado**, :status-supported: indica una función soportada,
+:status-partial: un módulo soportado pero opcional (activable por *feature*), y
+:status-planned: un elemento de la hoja de ruta.
+
 | Área | Estado | Notas |
 |------|--------|-------|
-| Autorización de peticiones HTTP (`FilterChain`, RBAC, jerarquía de roles) | ✅ | Coincidencia por segmentos de ruta, denegar por defecto, gana la primera regla |
-| Servidor de recursos Bearer / OAuth2 (JWT) | ✅ | JWKS con RSA + **EC (ES256/384)** + **EdDSA**; validación de `iss`/`aud`/`exp`/`nbf`; tolerancia de reloj de 60 s; *challenge* `WWW-Authenticate` (RFC 6750) |
-| JWT simétrico (`JwtService`) | ✅ | HS256/384/512, `exp` obligatorio, tolerancia de reloj |
-| Seguridad de método (`#[pre_authorize]` / `#[post_authorize]`) | ✅ | Funciona igual con autenticación **bearer *y* de sesión/OAuth2-login** |
-| Comprobación de roles (`hasRole`) | ✅ | Acepta el prefijo `ROLE_` de Spring *y* nombres de rol sin prefijo |
-| CORS | ✅ | Rechaza la combinación insegura de origen comodín + credenciales |
-| Cabeceras de respuesta de seguridad | ✅ | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; **HSTS solo en peticiones seguras** por defecto |
-| CSRF (cookie de doble envío) | ✅ | El atributo `Secure` sigue el esquema de la petición; *bypass* para Bearer |
-| Gestión de sesiones | ✅ | Rotación anti-fijación, control de concurrencia, registros distribuidos (Redis / **Postgres, con purga por TTL** / Mongo) |
-| Codificación de contraseñas | ✅ | BCrypt + Argon2id; login en tiempo constante (sin oráculo temporal de enumeración de usuarios) |
-| Login OAuth2 / OIDC | ✅ | Código de autorización + PKCE + state/nonce; **el `id_token` siempre se valida** (nunca se omite en silencio) |
-| Login con token de un solo uso (enlace mágico) | ✅ | `oneTimeTokenLogin()` de Spring 6.4 — `OneTimeTokenService` + manejador de entrega + `/ott/generate` + `/login/ott` |
-| WebAuthn / passkeys | 🧩 | `webAuthn()` de Spring 6.4 — módulo `webauthn` opcional (ceremonias de registro y autenticación) |
-| Adaptadores de IdP | ✅ | Internal-DB, Keycloak, Azure AD / Entra, AWS Cognito |
-| Arquitectura de autenticación | ✅ | `AuthenticationManager`/`ProviderManager`/`AuthenticationProvider`, `UserDetails`+`DaoAuthenticationProvider`, `SecurityContextRepository`, `AuthenticationEventPublisher`, `AuthenticationEntryPoint`/`AccessDeniedHandler` conectables |
-| Codificador de contraseñas delegado (migración `{id}`) | ✅ | `DelegatingPasswordEncoder` (`{bcrypt}`/`{argon2}`/`{noop}`) con re-hash en login (`upgrade_encoding`) |
-| Form login / HTTP Basic / remember-me | 🚧 | Hoja de ruta |
-| Cliente OAuth2 (`AuthorizedClientManager`) / Servidor de autorización | 🚧 | Lado de login presente; cliente saliente y servidor de autorización montado en la hoja de ruta |
-| ACL / seguridad de objetos de dominio · SAML2 · LDAP/AD | 🚧 | Hoja de ruta (crates opcionales) |
+| Autorización de peticiones HTTP (`FilterChain`, RBAC, jerarquía de roles) | :status-supported: | Coincidencia por segmentos de ruta, denegar por defecto, gana la primera regla |
+| Servidor de recursos Bearer / OAuth2 (JWT) | :status-supported: | JWKS con RSA + **EC (ES256/384)** + **EdDSA**; validación de `iss`/`aud`/`exp`/`nbf`; tolerancia de reloj de 60 s; *challenge* `WWW-Authenticate` (RFC 6750) |
+| JWT simétrico (`JwtService`) | :status-supported: | HS256/384/512, `exp` obligatorio, tolerancia de reloj |
+| Seguridad de método (`#[pre_authorize]` / `#[post_authorize]`) | :status-supported: | Funciona igual con autenticación **bearer *y* de sesión/OAuth2-login** |
+| Comprobación de roles (`hasRole`) | :status-supported: | Acepta el prefijo `ROLE_` de Spring *y* nombres de rol sin prefijo |
+| CORS | :status-supported: | Rechaza la combinación insegura de origen comodín + credenciales |
+| Cabeceras de respuesta de seguridad | :status-supported: | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; **HSTS solo en peticiones seguras** por defecto |
+| CSRF (cookie de doble envío) | :status-supported: | El atributo `Secure` sigue el esquema de la petición; *bypass* para Bearer |
+| Gestión de sesiones | :status-supported: | Rotación anti-fijación, control de concurrencia, registros distribuidos (Redis / **Postgres, con purga por TTL** / Mongo) |
+| Codificación de contraseñas | :status-supported: | BCrypt + Argon2id; login en tiempo constante (sin oráculo temporal de enumeración de usuarios) |
+| Login OAuth2 / OIDC | :status-supported: | Código de autorización + PKCE + state/nonce; **el `id_token` siempre se valida** (nunca se omite en silencio) |
+| Login con token de un solo uso (enlace mágico) | :status-supported: | `oneTimeTokenLogin()` de Spring 6.4 — `OneTimeTokenService` + manejador de entrega + `/ott/generate` + `/login/ott` |
+| WebAuthn / passkeys | :status-partial: | `webAuthn()` de Spring 6.4 — módulo `webauthn` opcional (ceremonias de registro y autenticación) |
+| Adaptadores de IdP | :status-supported: | Internal-DB, Keycloak, Azure AD / Entra, AWS Cognito |
+| Arquitectura de autenticación | :status-supported: | `AuthenticationManager`/`ProviderManager`/`AuthenticationProvider`, `UserDetails`+`DaoAuthenticationProvider`, `SecurityContextRepository`, `AuthenticationEventPublisher`, `AuthenticationEntryPoint`/`AccessDeniedHandler` conectables |
+| Codificador de contraseñas delegado (migración `{id}`) | :status-supported: | `DelegatingPasswordEncoder` (`{bcrypt}`/`{argon2}`/`{noop}`) con re-hash en login (`upgrade_encoding`) |
+| HTTP Basic (`httpBasic()`) | :status-supported: | `HttpBasicLayer` sobre la columna de autenticación; cabecera ausente pasa de largo, inválida/malformada → `401` + `WWW-Authenticate: Basic realm=…` |
+| Form login (`formLogin()`) | :status-supported: | `form_login_routes` (`POST /login`), rotación del id de sesión (anti-fijación), manejadores de éxito/fallo conectables, redirección consciente de la petición guardada |
+| Remember-me (`rememberMe()`) | :status-supported: | `TokenBasedRememberMeServices` — token firmado, con caducidad y ligado al hash de la contraseña; niveles de confianza `is_remembered()` / `is_fully_authenticated()` |
+| `RequestCache` / `SavedRequest` | :status-supported: | `HttpSessionRequestCache` — la página previa al login se restaura tras autenticarse (solo redirección del mismo origen) |
+| `SessionCreationPolicy` | :status-supported: | `Always`/`IfRequired`/`Never`/`Stateless`; `Stateless` instala el repositorio de contexto nulo para APIs de tokens |
+| Múltiples cadenas de filtros | :status-supported: | `SecurityFilterChains` — gana el primer `RequestMatcher` que coincide (el `FilterChainProxy` de Spring) |
+| Cliente OAuth2 (`AuthorizedClientManager`) / Servidor de autorización | :status-planned: | Lado de login presente; cliente saliente y servidor de autorización montado en la hoja de ruta |
+| ACL / seguridad de objetos de dominio · SAML2 · LDAP/AD | :status-planned: | Hoja de ruta (crates opcionales) |
 
 ## Comportamientos fieles a Spring que conviene conocer
 
@@ -62,6 +71,45 @@ un port ingenuo — cada uno tiene una vía de escape por configuración:
 - **El login con usuario desconocido consume un tiempo de bcrypt comparable** al
   de una contraseña incorrecta, cerrando el oráculo temporal de enumeración.
 
+## Form login, HTTP Basic y remember-me
+
+Los mecanismos clásicos de autenticación web, fieles a los valores por defecto
+de Spring:
+
+- **HTTP Basic** — `HttpBasicLayer::new(manager)` lee `Authorization: Basic …` y
+  autentica mediante el `AuthenticationManager` del Nivel 1. Una cabecera
+  **ausente** pasa de largo (para que una capa de sesión o bearer tome el
+  relevo); una **inválida o malformada** se rechaza con `401` y un *challenge*
+  `WWW-Authenticate: Basic realm="…"` — el `BasicAuthenticationFilter` de Spring.
+- **Form login** — `form_login_routes(state)` monta `POST /login`
+  (`username` + `password` codificados como formulario), rota el id de sesión al
+  tener éxito (anti-fijación) **antes** de persistir el contexto, y luego
+  redirige. Las respuestas de éxito/fallo son intercambiables
+  (`FormLoginSuccessHandler` / `FormLoginFailureHandler`) y el camino de éxito es
+  consciente de la petición guardada.
+- **Remember-me** — `TokenBasedRememberMeServices` acuña un token de cookie
+  firmado y con caducidad, ligado al hash de la contraseña del usuario y a una
+  clave del servidor (el `TokenBasedRememberMeServices` de Spring): un cambio de
+  contraseña, un reloj más allá de la caducidad, un token manipulado o una clave
+  incorrecta lo rechazan. Un contexto recordado está *autenticado pero no
+  totalmente autenticado* — `is_remembered()` es `true` e
+  `is_fully_authenticated()` es `false`, de modo que una ruta sensible puede
+  exigir un login fresco (`isFullyAuthenticated()` de Spring).
+- **Caché de peticiones** — cuando el *entry point* envía a un usuario no
+  autenticado a iniciar sesión, `HttpSessionRequestCache` recuerda la página que
+  quería; el form login lo devuelve allí en lugar del destino por defecto (el
+  `SavedRequestAwareAuthenticationSuccessHandler` de Spring). Solo se respetan
+  destinos del **mismo origen** — una ruta guardada se rechaza si pudiera
+  redirigir fuera del sitio.
+- **Política de creación de sesión** — `SessionCreationPolicy::{Always,
+  IfRequired, Never, Stateless}` elige si la capa de seguridad persiste su
+  contexto en la sesión; `Stateless` (APIs de tokens) instala el repositorio de
+  contexto nulo.
+- **Múltiples cadenas de filtros** — `SecurityFilterChains` enruta cada petición
+  a la primera cadena cuyo `RequestMatcher` (p. ej.
+  `PathRequestMatcher::new("/api")`) coincide, de modo que un `/api/**` blindado
+  y una superficie web permisiva coexisten — el `FilterChainProxy` de Spring.
+
 ## Login sin contraseña
 
 Firefly incluye los dos mecanismos sin contraseña de Spring Security 6.4:
@@ -86,8 +134,9 @@ La paridad se entrega por niveles, cada uno un incremento:
    `ProviderManager`, `DaoAuthenticationProvider` + `UserDetails`,
    `SecurityContextRepository`, `DelegatingPasswordEncoder`, eventos de
    autenticación, manejadores conectables de entry-point / access-denied.
-3. **Mecanismos web** — form login, HTTP Basic, remember-me, `RequestCache`,
-   `SessionCreationPolicy`, múltiples cadenas de filtros.
+3. **Mecanismos web (hecho)** — form login, HTTP Basic, remember-me,
+   `RequestCache` / `SavedRequest`, `SessionCreationPolicy`, múltiples cadenas de
+   filtros.
 4. **Profundidad de seguridad de método** — enlace de argumentos/principal estilo
    SpEL, `@PreFilter`/`@PostFilter`, `PermissionEvaluator`.
 5. **Ecosistema OAuth2** — introspección de tokens opacos, gestor de clientes

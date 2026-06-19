@@ -12,32 +12,36 @@ servlet filters, traits instead of interfaces, builder functions instead of the
 
 ## Coverage at a glance
 
+In the **Status** column, :status-supported: marks a supported feature,
+:status-partial: a supported but opt-in (feature-gated) module, and
+:status-planned: a roadmap item.
+
 | Area | Status | Notes |
 |------|--------|-------|
-| HTTP request authorization (`FilterChain`, RBAC, role hierarchy) | ✅ | Path-segment-aware matching, deny-by-default, first-match-wins |
-| Bearer / OAuth2 resource server (JWT) | ✅ | JWKS with RSA + **EC (ES256/384)** + **EdDSA**; `iss`/`aud`/`exp`/`nbf` validation; 60 s clock-skew leeway; RFC 6750 `WWW-Authenticate` challenge |
-| Symmetric JWT (`JwtService`) | ✅ | HS256/384/512, `exp` required, clock-skew leeway |
-| Method security (`#[pre_authorize]` / `#[post_authorize]`) | ✅ | Works uniformly across **bearer *and* session/OAuth2-login** auth |
-| Role checks (`hasRole`) | ✅ | Accepts Spring's `ROLE_` prefix *and* bare role names |
-| CORS | ✅ | Rejects the unsafe wildcard-origin + credentials combination |
-| Security response headers | ✅ | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; **HSTS is secure-request-only** by default |
-| CSRF (double-submit cookie) | ✅ | `Secure` cookie follows the request scheme; Bearer bypass |
-| Session management | ✅ | Fixation rotation, concurrency control, distributed registries (Redis / **Postgres, with TTL pruning** / Mongo) |
-| Password encoding | ✅ | BCrypt + Argon2id; constant-time login (no user-enumeration timing oracle) |
-| OAuth2 / OIDC login | ✅ | Auth-code + PKCE + state/nonce; **`id_token` is always validated** (never silently skipped) |
-| One-time-token login (magic link) | ✅ | Spring 6.4 `oneTimeTokenLogin()` — `OneTimeTokenService` + delivery handler + `/ott/generate` + `/login/ott` |
-| WebAuthn / passkeys | 🧩 | Spring 6.4 `webAuthn()` — feature-gated `webauthn` module (registration + authentication ceremonies) |
-| IdP adapters | ✅ | Internal-DB, Keycloak, Azure AD / Entra, AWS Cognito |
-| Authentication architecture | ✅ | `AuthenticationManager`/`ProviderManager`/`AuthenticationProvider`, `UserDetails`+`DaoAuthenticationProvider`, `SecurityContextRepository`, `AuthenticationEventPublisher`, pluggable `AuthenticationEntryPoint`/`AccessDeniedHandler` |
-| Delegating password encoder (`{id}` migration) | ✅ | `DelegatingPasswordEncoder` (`{bcrypt}`/`{argon2}`/`{noop}`) with `upgrade_encoding` re-hash-on-login |
-| HTTP Basic (`httpBasic()`) | ✅ | `HttpBasicLayer` over the auth spine; absent header passes through, invalid/malformed → `401` + `WWW-Authenticate: Basic realm=…` |
-| Form login (`formLogin()`) | ✅ | `form_login_routes` (`POST /login`), session-id rotation (anti-fixation), pluggable success/failure handlers, saved-request-aware redirect |
-| Remember-me (`rememberMe()`) | ✅ | `TokenBasedRememberMeServices` — signed, expiring, password-hash-bound token; `is_remembered()` / `is_fully_authenticated()` trust levels |
-| `RequestCache` / `SavedRequest` | ✅ | `HttpSessionRequestCache` — the pre-login page restored after authentication (same-origin redirect only) |
-| `SessionCreationPolicy` | ✅ | `Always`/`IfRequired`/`Never`/`Stateless`; `Stateless` installs the null context repository for token APIs |
-| Multiple filter chains | ✅ | `SecurityFilterChains` — first matching `RequestMatcher` wins (Spring's `FilterChainProxy`) |
-| OAuth2 client (`AuthorizedClientManager`) / Authorization Server | 🚧 | Login side present; outbound client + a mounted authorization server on the roadmap |
-| ACL / domain-object security · SAML2 · LDAP/AD | 🚧 | Roadmap (opt-in crates) |
+| HTTP request authorization (`FilterChain`, RBAC, role hierarchy) | :status-supported: | Path-segment-aware matching, deny-by-default, first-match-wins |
+| Bearer / OAuth2 resource server (JWT) | :status-supported: | JWKS with RSA + **EC (ES256/384)** + **EdDSA**; `iss`/`aud`/`exp`/`nbf` validation; 60 s clock-skew leeway; RFC 6750 `WWW-Authenticate` challenge |
+| Symmetric JWT (`JwtService`) | :status-supported: | HS256/384/512, `exp` required, clock-skew leeway |
+| Method security (`#[pre_authorize]` / `#[post_authorize]`) | :status-supported: | Works uniformly across **bearer *and* session/OAuth2-login** auth |
+| Role checks (`hasRole`) | :status-supported: | Accepts Spring's `ROLE_` prefix *and* bare role names |
+| CORS | :status-supported: | Rejects the unsafe wildcard-origin + credentials combination |
+| Security response headers | :status-supported: | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; **HSTS is secure-request-only** by default |
+| CSRF (double-submit cookie) | :status-supported: | `Secure` cookie follows the request scheme; Bearer bypass |
+| Session management | :status-supported: | Fixation rotation, concurrency control, distributed registries (Redis / **Postgres, with TTL pruning** / Mongo) |
+| Password encoding | :status-supported: | BCrypt + Argon2id; constant-time login (no user-enumeration timing oracle) |
+| OAuth2 / OIDC login | :status-supported: | Auth-code + PKCE + state/nonce; **`id_token` is always validated** (never silently skipped) |
+| One-time-token login (magic link) | :status-supported: | Spring 6.4 `oneTimeTokenLogin()` — `OneTimeTokenService` + delivery handler + `/ott/generate` + `/login/ott` |
+| WebAuthn / passkeys | :status-partial: | Spring 6.4 `webAuthn()` — feature-gated `webauthn` module (registration + authentication ceremonies) |
+| IdP adapters | :status-supported: | Internal-DB, Keycloak, Azure AD / Entra, AWS Cognito |
+| Authentication architecture | :status-supported: | `AuthenticationManager`/`ProviderManager`/`AuthenticationProvider`, `UserDetails`+`DaoAuthenticationProvider`, `SecurityContextRepository`, `AuthenticationEventPublisher`, pluggable `AuthenticationEntryPoint`/`AccessDeniedHandler` |
+| Delegating password encoder (`{id}` migration) | :status-supported: | `DelegatingPasswordEncoder` (`{bcrypt}`/`{argon2}`/`{noop}`) with `upgrade_encoding` re-hash-on-login |
+| HTTP Basic (`httpBasic()`) | :status-supported: | `HttpBasicLayer` over the auth spine; absent header passes through, invalid/malformed → `401` + `WWW-Authenticate: Basic realm=…` |
+| Form login (`formLogin()`) | :status-supported: | `form_login_routes` (`POST /login`), session-id rotation (anti-fixation), pluggable success/failure handlers, saved-request-aware redirect |
+| Remember-me (`rememberMe()`) | :status-supported: | `TokenBasedRememberMeServices` — signed, expiring, password-hash-bound token; `is_remembered()` / `is_fully_authenticated()` trust levels |
+| `RequestCache` / `SavedRequest` | :status-supported: | `HttpSessionRequestCache` — the pre-login page restored after authentication (same-origin redirect only) |
+| `SessionCreationPolicy` | :status-supported: | `Always`/`IfRequired`/`Never`/`Stateless`; `Stateless` installs the null context repository for token APIs |
+| Multiple filter chains | :status-supported: | `SecurityFilterChains` — first matching `RequestMatcher` wins (Spring's `FilterChainProxy`) |
+| OAuth2 client (`AuthorizedClientManager`) / Authorization Server | :status-planned: | Login side present; outbound client + a mounted authorization server on the roadmap |
+| ACL / domain-object security · SAML2 · LDAP/AD | :status-planned: | Roadmap (opt-in crates) |
 
 ## Spring-faithful behaviours to know
 
