@@ -137,6 +137,7 @@
 //! ```
 
 mod authentication;
+mod authentication_manager;
 mod bearer;
 mod config;
 mod context;
@@ -157,6 +158,10 @@ mod webauthn;
 pub use authentication::{
     authentication_from, must_auth_from, with_authentication, Authentication, SecurityError,
     Verifier, VerifierFn, ANONYMOUS_ID, ROLE_PREFIX,
+};
+pub use authentication_manager::{
+    AuthenticationManager, AuthenticationProvider, AuthenticationRequest,
+    BearerTokenAuthenticationProvider, ProviderManager,
 };
 pub use bearer::{BearerConfig, BearerLayer, BearerService, UnauthorizedHandler};
 pub use config::{
