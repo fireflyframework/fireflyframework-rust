@@ -31,6 +31,7 @@
 
 mod authorization_server;
 mod client;
+mod introspection;
 mod login;
 mod token_store;
 
@@ -39,6 +40,7 @@ pub use client::{
     github, google, keycloak, ClientRegistration, ClientRegistrationRepository,
     InMemoryClientRegistrationRepository,
 };
+pub use introspection::{RemoteTokenIntrospector, TokenIntrospector};
 pub use login::{
     generate_pkce, pkce_challenge, FixedLoginSessionStore, InMemoryLoginSession, LoginSession,
     LoginSessionStore, OAuth2LoginHandler, SESSION_KEY_NONCE, SESSION_KEY_PKCE_VERIFIER,
