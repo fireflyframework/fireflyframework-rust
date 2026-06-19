@@ -96,6 +96,33 @@ _ADM_ICON = {
                'transform="rotate(120 10 10)"/></svg>',
 }
 
+# Professional inline SVG status icons for capability/coverage matrices (no
+# emoji). Authored in Markdown as the tokens `:status-supported:`,
+# `:status-partial:`, `:status-planned:` and substituted into the rendered HTML
+# (see `render_markdown`); the distinct shapes (filled check / half disc / dashed
+# ring) carry meaning without relying on colour alone. Each carries a <title> for
+# assistive technology.
+_STATUS_ICON = {
+    ":status-supported:":
+        '<svg class="status-ico status-supported" xmlns="http://www.w3.org/2000/svg" '
+        'viewBox="0 0 20 20" role="img" aria-label="Supported"><title>Supported</title>'
+        '<circle cx="10" cy="10" r="8.3" fill="none" stroke="#1f8a4c" stroke-width="1.6"/>'
+        '<path d="M5.9 10.4l2.7 2.7 5.5-5.7" fill="none" stroke="#1f8a4c" stroke-width="1.8" '
+        'stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    ":status-partial:":
+        '<svg class="status-ico status-partial" xmlns="http://www.w3.org/2000/svg" '
+        'viewBox="0 0 20 20" role="img" aria-label="Partial — opt-in module">'
+        '<title>Partial — opt-in module</title>'
+        '<circle cx="10" cy="10" r="8.3" fill="none" stroke="#b45309" stroke-width="1.6"/>'
+        '<path d="M10 1.7a8.3 8.3 0 0 1 0 16.6z" fill="#b45309"/></svg>',
+    ":status-planned:":
+        '<svg class="status-ico status-planned" xmlns="http://www.w3.org/2000/svg" '
+        'viewBox="0 0 20 20" role="img" aria-label="Roadmap — planned">'
+        '<title>Roadmap — planned</title>'
+        '<circle cx="10" cy="10" r="8.3" fill="none" stroke="#64748b" stroke-width="1.6" '
+        'stroke-dasharray="2.4 2.2"/></svg>',
+}
+
 _FENCE_RE = re.compile(r"^```+([^\n`]*)$")
 # leading "**Note**" / "**Spring parity.**" / "**Spring parity:**" possibly
 # followed by "—" / "-" / ":". The chapter style ends the bold leader with a
@@ -244,4 +271,11 @@ def render_markdown(text: str, base: Path) -> str:
         extensions=["extra", "sane_lists", _FireflyExtension()],
         output_format="xhtml",
     )
-    return _to_xml_entities(md.convert(text))
+    out = _to_xml_entities(md.convert(text))
+    # Substitute status-icon tokens with inline SVG after rendering, so the SVG
+    # is never mangled by the Markdown inline parser (the tokens pass through as
+    # literal text inside table cells). The SVG has no named entities, so it is
+    # already well-formed XML for the EPUB build.
+    for token, svg in _STATUS_ICON.items():
+        out = out.replace(token, svg)
+    return out

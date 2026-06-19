@@ -1,0 +1,377 @@
+// Copyright 2026 Firefly Software Foundation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Form login — the Rust analog of Spring Security's `formLogin()`
+//! (`UsernamePasswordAuthenticationFilter`).
+//!
+//! [`form_login_routes`] mounts a `POST /login` endpoint that takes a
+//! url-encoded `username` + `password`, authenticates them through the Tier 1
+//! [`AuthenticationManager`](crate::AuthenticationManager) spine, and — on
+//! success — rotates the session id (anti-fixation), persists the
+//! [`Authentication`](crate::Authentication) through a
+//! [`SecurityContextRepository`](crate::SecurityContextRepository) (so
+//! [`SessionAuthenticationLayer`](crate::SessionAuthenticationLayer) restores it
+//! on later requests), and redirects to the success URL. A failed login
+//! redirects to the failure URL. Both URLs are configurable, and the success/
+//! failure rendering can be swapped via [`FormLoginSuccessHandler`] /
+//! [`FormLoginFailureHandler`].
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use axum::extract::{Form, State};
+use axum::response::Response;
+use axum::{Extension, Router};
+use http::{header, StatusCode};
+use serde::Deserialize;
+
+use firefly_session::Session;
+
+use crate::authentication::{Authentication, SecurityError};
+use crate::authentication_manager::{AuthenticationManager, AuthenticationRequest};
+use crate::request_cache::{HttpSessionRequestCache, RequestCache};
+use crate::security_context::{HttpSessionSecurityContextRepository, SecurityContextRepository};
+
+/// Renders the response after a **successful** form login — Spring's
+/// `AuthenticationSuccessHandler`.
+#[async_trait]
+pub trait FormLoginSuccessHandler: Send + Sync {
+    /// Builds the success response (default: a 302 redirect).
+    async fn on_success(&self, auth: &Authentication) -> Response;
+}
+
+/// Renders the response after a **failed** form login — Spring's
+/// `AuthenticationFailureHandler`.
+#[async_trait]
+pub trait FormLoginFailureHandler: Send + Sync {
+    /// Builds the failure response (default: a 302 redirect).
+    async fn on_failure(&self, error: &SecurityError) -> Response;
+}
+
+/// Default success handler: 302 redirect to a fixed URL.
+struct RedirectSuccess(String);
+#[async_trait]
+impl FormLoginSuccessHandler for RedirectSuccess {
+    async fn on_success(&self, _auth: &Authentication) -> Response {
+        redirect(&self.0)
+    }
+}
+
+/// Default failure handler: 302 redirect to a fixed URL.
+struct RedirectFailure(String);
+#[async_trait]
+impl FormLoginFailureHandler for RedirectFailure {
+    async fn on_failure(&self, _error: &SecurityError) -> Response {
+        redirect(&self.0)
+    }
+}
+
+/// Shared state for the form-login route.
+pub struct FormLoginState {
+    manager: Arc<dyn AuthenticationManager>,
+    repository: Arc<dyn SecurityContextRepository>,
+    request_cache: Arc<dyn RequestCache>,
+    success: Arc<dyn FormLoginSuccessHandler>,
+    failure: Arc<dyn FormLoginFailureHandler>,
+}
+
+impl FormLoginState {
+    /// Builds the state over the Tier 1 [`AuthenticationManager`], persisting
+    /// the context with the default
+    /// [`HttpSessionSecurityContextRepository`], redirecting to `"/"` on
+    /// success and `"/login?error"` on failure (Spring's defaults). On success
+    /// it prefers any pre-login [`SavedRequest`](crate::SavedRequest) held by
+    /// the default [`HttpSessionRequestCache`] — Spring's
+    /// `SavedRequestAwareAuthenticationSuccessHandler`.
+    #[must_use]
+    pub fn new(manager: Arc<dyn AuthenticationManager>) -> Self {
+        Self {
+            manager,
+            repository: Arc::new(HttpSessionSecurityContextRepository::new()),
+            request_cache: Arc::new(HttpSessionRequestCache::new()),
+            success: Arc::new(RedirectSuccess("/".to_string())),
+            failure: Arc::new(RedirectFailure("/login?error".to_string())),
+        }
+    }
+
+    /// Sets the post-login success redirect target.
+    #[must_use]
+    pub fn success_url(mut self, url: impl Into<String>) -> Self {
+        self.success = Arc::new(RedirectSuccess(url.into()));
+        self
+    }
+
+    /// Sets the failure redirect target.
+    #[must_use]
+    pub fn failure_url(mut self, url: impl Into<String>) -> Self {
+        self.failure = Arc::new(RedirectFailure(url.into()));
+        self
+    }
+
+    /// Overrides the [`SecurityContextRepository`] used to persist the context.
+    #[must_use]
+    pub fn repository(mut self, repository: Arc<dyn SecurityContextRepository>) -> Self {
+        self.repository = repository;
+        self
+    }
+
+    /// Overrides the [`RequestCache`] consulted for a pre-login
+    /// [`SavedRequest`](crate::SavedRequest). Set a
+    /// [`NullRequestCache`](crate::NullRequestCache) to always use the
+    /// configured success target.
+    #[must_use]
+    pub fn request_cache(mut self, request_cache: Arc<dyn RequestCache>) -> Self {
+        self.request_cache = request_cache;
+        self
+    }
+
+    /// Overrides the success handler.
+    #[must_use]
+    pub fn success_handler(mut self, handler: Arc<dyn FormLoginSuccessHandler>) -> Self {
+        self.success = handler;
+        self
+    }
+
+    /// Overrides the failure handler.
+    #[must_use]
+    pub fn failure_handler(mut self, handler: Arc<dyn FormLoginFailureHandler>) -> Self {
+        self.failure = handler;
+        self
+    }
+}
+
+#[derive(Deserialize)]
+struct LoginForm {
+    username: String,
+    password: String,
+}
+
+/// `POST /login` — authenticate username/password, establish the session
+/// security context (rotating the id), and hand off to the success/failure
+/// handler.
+async fn handle_login(
+    State(state): State<Arc<FormLoginState>>,
+    Extension(session): Extension<Session>,
+    Form(form): Form<LoginForm>,
+) -> Response {
+    match state
+        .manager
+        .authenticate(AuthenticationRequest::username_password(
+            form.username,
+            form.password,
+        ))
+        .await
+    {
+        Ok(auth) => {
+            // Anti-fixation: rotate the session id on authentication, then
+            // persist the context where SessionAuthenticationLayer restores it.
+            session.rotate_id().await;
+            state.repository.save(&session, &auth).await;
+            // Saved-request-aware: prefer the page the user originally wanted
+            // (cached by the entry point) over the configured success target —
+            // but only for a safe same-origin target, so a crafted off-site
+            // saved path can never turn login into an open redirect.
+            if let Some(saved) = state.request_cache.get_request(&session).await {
+                state.request_cache.remove_request(&session).await;
+                if saved.is_safe_redirect() {
+                    return redirect(saved.redirect_url());
+                }
+            }
+            state.success.on_success(&auth).await
+        }
+        Err(error) => state.failure.on_failure(&error).await,
+    }
+}
+
+/// Builds the form-login route (`POST /login`). Mount behind a
+/// [`firefly_session::SessionLayer`]; pair with a
+/// [`SessionAuthenticationLayer`](crate::SessionAuthenticationLayer) to restore
+/// the established context on subsequent requests.
+pub fn form_login_routes(state: Arc<FormLoginState>) -> Router {
+    Router::new()
+        .route("/login", axum::routing::post(handle_login))
+        .with_state(state)
+}
+
+/// 302 redirect to `location`. The `Location` header value is built fallibly —
+/// a `location` carrying a control character (CR/LF, …) would otherwise make
+/// the response builder fail; rather than panic, fall back to `"/"` (so a
+/// crafted or misconfigured target degrades safely instead of crashing the
+/// request, and cannot split the response header).
+fn redirect(location: &str) -> Response {
+    let value = header::HeaderValue::from_str(location)
+        .unwrap_or_else(|_| header::HeaderValue::from_static("/"));
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(header::LOCATION, value)
+        .body(axum::body::Body::empty())
+        .expect("redirect response with a valid header value must build")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::authentication_manager::ProviderManager;
+    use crate::oauth2::SESSION_KEY_SECURITY_CONTEXT;
+    use crate::password::{BcryptPasswordEncoder, PasswordEncoder};
+    use crate::userdetails::{DaoAuthenticationProvider, InMemoryUserDetailsService, UserDetails};
+    use firefly_session::SessionInner;
+    use tower::ServiceExt;
+
+    fn manager() -> Arc<dyn AuthenticationManager> {
+        let hash = BcryptPasswordEncoder::with_rounds(4).hash("pw").unwrap();
+        let uds = Arc::new(
+            InMemoryUserDetailsService::new().with_user(UserDetails::new(
+                "alice",
+                hash,
+                vec!["USER".into()],
+            )),
+        );
+        let provider = Arc::new(DaoAuthenticationProvider::new(
+            uds,
+            Arc::new(BcryptPasswordEncoder::with_rounds(4)),
+        ));
+        Arc::new(ProviderManager::new(vec![provider]))
+    }
+
+    async fn post_login(body: &str) -> (Response, Session) {
+        let state = Arc::new(FormLoginState::new(manager()).success_url("/home"));
+        let app = form_login_routes(state);
+        let session = Session::new(SessionInner::new("sid"));
+        let mut req = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/login")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from(body.to_owned()))
+            .unwrap();
+        req.extensions_mut().insert(session.clone());
+        let resp = app.oneshot(req).await.unwrap();
+        (resp, session)
+    }
+
+    #[tokio::test]
+    async fn valid_login_sets_context_and_rotates_session() {
+        let session_id_before;
+        let (resp, session) = {
+            // Build the session first so we can read its id before/after.
+            let state = Arc::new(FormLoginState::new(manager()).success_url("/home"));
+            let app = form_login_routes(state);
+            let session = Session::new(SessionInner::new("sid"));
+            session_id_before = session.id().await;
+            let mut req = http::Request::builder()
+                .method(http::Method::POST)
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(axum::body::Body::from("username=alice&password=pw"))
+                .unwrap();
+            req.extensions_mut().insert(session.clone());
+            (app.oneshot(req).await.unwrap(), session)
+        };
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()[header::LOCATION], "/home");
+        // Session id rotated (anti-fixation).
+        assert_ne!(session.id().await, session_id_before);
+        // Security context persisted.
+        let ctx = session
+            .attribute::<String>(SESSION_KEY_SECURITY_CONTEXT)
+            .await
+            .expect("context stored");
+        let auth: Authentication = serde_json::from_str(&ctx).unwrap();
+        assert_eq!(auth.principal, "alice");
+    }
+
+    #[tokio::test]
+    async fn invalid_login_redirects_to_failure_without_context() {
+        let (resp, session) = post_login("username=alice&password=wrong").await;
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()[header::LOCATION], "/login?error");
+        assert!(session
+            .attribute::<String>(SESSION_KEY_SECURITY_CONTEXT)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn valid_login_returns_to_the_saved_request() {
+        use crate::request_cache::{HttpSessionRequestCache, SavedRequest};
+
+        let state = Arc::new(FormLoginState::new(manager()).success_url("/home"));
+        let app = form_login_routes(state);
+        let session = Session::new(SessionInner::new("sid"));
+        // The entry point cached the page the user originally asked for.
+        let cache = HttpSessionRequestCache::new();
+        cache
+            .save_request(&session, SavedRequest::new("GET", "/reports?y=2026"))
+            .await;
+
+        let mut req = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/login")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from("username=alice&password=pw"))
+            .unwrap();
+        req.extensions_mut().insert(session.clone());
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Redirected to the saved page, not the default success URL...
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()[header::LOCATION], "/reports?y=2026");
+        // ...and the saved request was consumed.
+        assert!(cache.get_request(&session).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn unsafe_saved_request_does_not_open_redirect() {
+        use crate::request_cache::{HttpSessionRequestCache, SavedRequest};
+
+        let state = Arc::new(FormLoginState::new(manager()).success_url("/home"));
+        let app = form_login_routes(state);
+        let session = Session::new(SessionInner::new("sid"));
+        // A crafted protocol-relative path that would redirect off-site.
+        let cache = HttpSessionRequestCache::new();
+        cache
+            .save_request(&session, SavedRequest::new("GET", "//evil.com"))
+            .await;
+
+        let mut req = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/login")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from("username=alice&password=pw"))
+            .unwrap();
+        req.extensions_mut().insert(session.clone());
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Falls back to the configured (same-origin) success URL, never //evil.com...
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()[header::LOCATION], "/home");
+        // ...and the poisoned saved request is still consumed.
+        assert!(cache.get_request(&session).await.is_none());
+    }
+
+    #[test]
+    fn redirect_does_not_panic_on_a_control_char_location() {
+        // A control char would make HeaderValue construction fail; redirect()
+        // must fall back to "/" rather than panic the request thread.
+        let resp = redirect("/x\r\nSet-Cookie: evil=1");
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()[header::LOCATION], "/");
+        // A normal target is untouched.
+        assert_eq!(
+            redirect("/dashboard").headers()[header::LOCATION],
+            "/dashboard"
+        );
+    }
+}

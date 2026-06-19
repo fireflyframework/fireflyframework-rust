@@ -105,7 +105,7 @@ impl CompiledRule {
 /// ends at a path-segment boundary, so `/api` matches `/api` and `/api/...`
 /// but **not** `/api-internal` or `/apixyz` (where a raw `starts_with` leaks).
 /// An empty prefix matches every path (Go parity for the `""` prefix).
-fn prefix_matches(path: &str, prefix: &str) -> bool {
+pub(crate) fn prefix_matches(path: &str, prefix: &str) -> bool {
     if prefix.is_empty() {
         return true;
     }

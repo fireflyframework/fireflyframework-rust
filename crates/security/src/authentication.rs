@@ -95,6 +95,25 @@ impl Authentication {
     pub fn is_authenticated(&self) -> bool {
         !self.principal.is_empty() && self.principal != ANONYMOUS_ID
     }
+
+    /// Whether this context was established by a *remember-me* token rather than
+    /// a fresh credential presentation (marked by the [`REMEMBERED_CLAIM`]).
+    /// The Rust analog of a `RememberMeAuthenticationToken`.
+    #[must_use]
+    pub fn is_remembered(&self) -> bool {
+        self.claims
+            .get(REMEMBERED_CLAIM)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// Whether this is a *fully* authenticated principal — authenticated by a
+    /// fresh credential, not anonymous and not remember-me — Spring's
+    /// `isFullyAuthenticated()`. Sensitive operations can require this.
+    #[must_use]
+    pub fn is_fully_authenticated(&self) -> bool {
+        self.is_authenticated() && !self.is_remembered()
+    }
 }
 
 /// `ANONYMOUS_ID` is the principal id used when no auth is present and
@@ -106,6 +125,10 @@ pub const ANONYMOUS_ID: &str = "anonymous";
 /// [`Authentication::has_role`] treats `hasRole('X')` as matching the authority
 /// `ROLE_X` (and, for backward compatibility, a bare `X`).
 pub const ROLE_PREFIX: &str = "ROLE_";
+
+/// Claim key marking an [`Authentication`] as established by a remember-me
+/// token (a boolean `true`); see [`Authentication::is_remembered`].
+pub const REMEMBERED_CLAIM: &str = "firefly:remembered";
 
 /// `SecurityError` is the typed error family of the security tier.
 ///

@@ -144,16 +144,22 @@ mod context;
 mod csrf;
 mod exception;
 mod filter_chain;
+mod form_login;
 pub mod guards;
+mod http_basic;
 mod jwks;
 mod jwt;
 pub mod oauth2;
 mod ott;
 mod password;
 mod problem;
+mod remember_me;
+mod request_cache;
 mod role_hierarchy;
 mod security_context;
+mod security_filter_chains;
 mod session_auth;
+mod session_policy;
 mod userdetails;
 #[cfg(feature = "webauthn")]
 mod webauthn;
@@ -181,11 +187,15 @@ pub use csrf::{
     CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SAFE_METHODS,
 };
 pub use exception::{
-    AccessDeniedHandler, AuthenticationEntryPoint, ProblemAccessDeniedHandler,
-    ProblemAuthenticationEntryPoint,
+    AccessDeniedHandler, AuthenticationEntryPoint, BasicAuthenticationEntryPoint,
+    ProblemAccessDeniedHandler, ProblemAuthenticationEntryPoint,
 };
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
+pub use form_login::{
+    form_login_routes, FormLoginFailureHandler, FormLoginState, FormLoginSuccessHandler,
+};
 pub use guards::{require, AuthorizationGuard};
+pub use http_basic::{HttpBasicLayer, HttpBasicService};
 pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier, DEFAULT_CLOCK_SKEW_SECONDS};
 pub use jwt::{authentication_from_claims, JwtService, DEFAULT_EXPIRATION_SECONDS};
 pub use ott::{
@@ -197,14 +207,26 @@ pub use password::{
     Argon2PasswordEncoder, BcryptPasswordEncoder, DelegatingPasswordEncoder, NoOpPasswordEncoder,
     PasswordEncoder, DEFAULT_PASSWORD_ENCODER_ID, DEFAULT_ROUNDS,
 };
+pub use remember_me::{
+    RememberMeServices, TokenBasedRememberMeServices, DEFAULT_REMEMBER_ME_SECONDS,
+};
+pub use request_cache::{
+    HttpSessionRequestCache, NullRequestCache, RequestCache, SavedRequest,
+    SESSION_KEY_SAVED_REQUEST,
+};
 pub use role_hierarchy::RoleHierarchy;
 pub use security_context::{
     HttpSessionSecurityContextRepository, NullSecurityContextRepository, SecurityContextRepository,
+};
+pub use security_filter_chains::{
+    AnyRequestMatcher, PathRequestMatcher, RequestMatcher, SecurityFilterChains,
+    SecurityFilterChainsLayer, SecurityFilterChainsService,
 };
 pub use session_auth::{
     SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,
     SessionLoginSessionStore,
 };
+pub use session_policy::SessionCreationPolicy;
 pub use userdetails::{
     AccountStatusUserDetailsChecker, DaoAuthenticationProvider, InMemoryUserDetailsService,
     UserDetails, UserDetailsChecker, UserDetailsService,

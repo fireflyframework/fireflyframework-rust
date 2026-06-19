@@ -2,6 +2,69 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.31 — 2026-06-19
+
+**Spring Security parity — Tier 2: the web authentication mechanisms.** The
+classic browser/login surface from Spring's `HttpSecurity`, built on the Tier 1
+authentication spine. All additive (no behaviour change to existing code).
+Adversarially reviewed before release; the review's six confirmed findings are
+fixed in this release.
+
+### Added
+
+- **HTTP Basic (`httpBasic()`)** — `HttpBasicLayer` reads
+  `Authorization: Basic …` and authenticates through the `AuthenticationManager`
+  spine. An **absent** header passes through (so a session/bearer layer can take
+  over); an **invalid or malformed** one is rejected with `401` and a
+  `WWW-Authenticate: Basic realm="…"` challenge (configurable realm, pluggable
+  `BasicAuthenticationEntryPoint`) — Spring's `BasicAuthenticationFilter`.
+- **Form login (`formLogin()`)** — `form_login_routes` mounts `POST /login`
+  (url-encoded `username` + `password`), rotates the session id on success
+  (anti-fixation) **before** persisting the context through a
+  `SecurityContextRepository`, then redirects. Success/failure responses are
+  swappable (`FormLoginSuccessHandler` / `FormLoginFailureHandler`), and the
+  success path is saved-request-aware.
+- **Remember-me (`rememberMe()`)** — `TokenBasedRememberMeServices` mints a
+  signed, expiring cookie token whose signature is an **HMAC-SHA256** keyed by a
+  server secret over the username, expiry, and the user's stored password hash:
+  a password change, an expired clock, a tampered token, or the wrong key all
+  reject. New trust-level methods on `Authentication` —
+  `is_remembered()` / `is_fully_authenticated()` (+ `REMEMBERED_CLAIM`) — so a
+  remembered context is authenticated but **not** fully authenticated (Spring's
+  `isFullyAuthenticated()`), and a sensitive route can demand a fresh login.
+- **`RequestCache` / `SavedRequest`** — `HttpSessionRequestCache` remembers the
+  page an unauthenticated user wanted; form login returns them there after
+  login instead of the default target (Spring's
+  `SavedRequestAwareAuthenticationSuccessHandler`). Only **same-origin** targets
+  are honoured (`SavedRequest::is_safe_redirect`): a protocol-relative,
+  backslash-tricked, absolute, or control-char target falls back to the
+  configured success URL, so the login flow can't be turned into an open
+  redirect. `NullRequestCache` for stateless surfaces.
+- **`SessionCreationPolicy`** — `Always` / `IfRequired` (default) / `Never` /
+  `Stateless` (Spring's `sessionManagement().sessionCreationPolicy(...)`).
+  `SessionAuthenticationLayer::session_creation_policy(...)` installs the implied
+  `SecurityContextRepository`; `Stateless` uses the null repository (no session
+  context) for token-only APIs.
+- **Multiple filter chains** — `SecurityFilterChains` routes each request to the
+  first chain whose `RequestMatcher` (`AnyRequestMatcher` /
+  `PathRequestMatcher`, segment-aware, optional method) matches, so a
+  locked-down `/api/**` and a permissive web surface coexist (Spring's
+  `FilterChainProxy`); an unmatched request passes through. The dispatcher
+  honours tower's readiness contract for a backpressure-bearing inner service.
+
+### Known limitations (roadmap)
+
+- `TokenBasedRememberMeServices` is the **stateless** of Spring's two
+  remember-me strategies: a captured cookie replays for the full validity window
+  (default 14 days) until the embedded expiry passes or the user's password hash
+  changes — there is no per-token series/rotation theft detection (Spring's
+  `PersistentTokenBasedRememberMeServices`) and no server-side revocation list.
+  Use a short `token_validity_seconds` and serve the cookie `HttpOnly` + `Secure`
+  + `SameSite`. A persistent/series variant is a follow-up.
+- `RequestCache::save_request` is provided for an authentication entry point to
+  call before redirecting to login; wiring an entry point that auto-saves the
+  request is left to the application (the consume side is wired into form login).
+
 ## v26.6.30 — 2026-06-19
 
 **Spring Security parity — Tier 1: the authentication spine.** The core of
