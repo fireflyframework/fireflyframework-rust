@@ -151,6 +151,7 @@ mod ott;
 mod password;
 mod problem;
 mod role_hierarchy;
+mod security_context;
 mod session_auth;
 mod userdetails;
 #[cfg(feature = "webauthn")]
@@ -191,6 +192,9 @@ pub use password::{
     PasswordEncoder, DEFAULT_PASSWORD_ENCODER_ID, DEFAULT_ROUNDS,
 };
 pub use role_hierarchy::RoleHierarchy;
+pub use security_context::{
+    HttpSessionSecurityContextRepository, NullSecurityContextRepository, SecurityContextRepository,
+};
 pub use session_auth::{
     SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,
     SessionLoginSessionStore,

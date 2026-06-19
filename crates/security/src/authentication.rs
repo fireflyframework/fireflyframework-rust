@@ -87,6 +87,14 @@ impl Authentication {
             ..Self::default()
         }
     }
+
+    /// Whether this names a real, non-anonymous principal — Spring's
+    /// `Authentication.isAuthenticated()` for a fully-authenticated context
+    /// (the empty/default and [`anonymous`](Self::anonymous) contexts are not).
+    #[must_use]
+    pub fn is_authenticated(&self) -> bool {
+        !self.principal.is_empty() && self.principal != ANONYMOUS_ID
+    }
 }
 
 /// `ANONYMOUS_ID` is the principal id used when no auth is present and
