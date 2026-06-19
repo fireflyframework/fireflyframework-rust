@@ -41,6 +41,13 @@
 //! granting ACE is found (locally or via the inheritance chain); the first ACE
 //! matching a `(sid, permission)` wins, so a deny ACE placed before a grant
 //! takes precedence (Spring's `DefaultPermissionGrantingStrategy`).
+//!
+//! An ACE matches by **bit-containment** ([`Permission::contains`]): a granting
+//! entry for a cumulative mask satisfies a request for any permission it
+//! includes (a grant of `READ|WRITE` satisfies a `READ` check). This is a
+//! deliberate divergence from Spring's *exact-mask-equality* default — it is the
+//! behaviour of Spring's documented bitwise `PermissionGrantingStrategy` override
+//! — chosen so a cumulative grant means "holds each of these permissions".
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -92,9 +99,13 @@ impl Permission {
     }
 
     /// Whether this (cumulative) permission contains every bit of `required`.
+    ///
+    /// A `required` mask of `0` (no bits — a meaningless permission, only
+    /// reachable via [`from_mask`](Permission::from_mask)) is **never** contained:
+    /// it would otherwise be satisfied by any entry, defeating default-deny.
     #[must_use]
     pub const fn contains(self, required: Permission) -> bool {
-        (self.0 & required.0) == required.0
+        required.0 != 0 && (self.0 & required.0) == required.0
     }
 
     /// Parses a base-permission name (case-insensitive), the bridge from a
@@ -244,9 +255,13 @@ impl Acl {
 }
 
 /// Looks up [`Acl`]s by [`ObjectIdentity`] — Spring's `AclService`.
+///
+/// ACLs are handed out behind an [`Arc`] so a lookup (and each inheritance hop)
+/// is a cheap reference-count bump rather than a deep copy, keeping a store's
+/// lock held only briefly.
 pub trait AclService: Send + Sync {
     /// Reads the ACL for `object_identity`, if one exists.
-    fn read_acl(&self, object_identity: &ObjectIdentity) -> Option<Acl>;
+    fn read_acl(&self, object_identity: &ObjectIdentity) -> Option<Arc<Acl>>;
 }
 
 /// Resolves whether `sids` are granted `permission` on `object_identity`,
@@ -279,7 +294,7 @@ pub fn is_granted(
 /// An in-memory, mutable [`AclService`] — Spring's `MutableAclService`.
 #[derive(Default)]
 pub struct InMemoryAclService {
-    acls: Mutex<HashMap<(String, String), Acl>>,
+    acls: Mutex<HashMap<(String, String), Arc<Acl>>>,
 }
 
 impl InMemoryAclService {
@@ -295,7 +310,7 @@ impl InMemoryAclService {
         self.acls
             .lock()
             .expect("acl store poisoned")
-            .insert(key, acl);
+            .insert(key, Arc::new(acl));
     }
 
     /// Removes the ACL for `object_identity`, returning whether one existed.
@@ -309,7 +324,7 @@ impl InMemoryAclService {
 }
 
 impl AclService for InMemoryAclService {
-    fn read_acl(&self, object_identity: &ObjectIdentity) -> Option<Acl> {
+    fn read_acl(&self, object_identity: &ObjectIdentity) -> Option<Arc<Acl>> {
         self.acls
             .lock()
             .expect("acl store poisoned")
@@ -339,12 +354,21 @@ impl AclPermissionEvaluator {
         Self { service }
     }
 
-    /// The SIDs an authentication presents: its principal, plus a
+    /// The SIDs an authentication presents: its principal (only when
+    /// [authenticated](Authentication::is_authenticated)), plus a
     /// [`Sid::Authority`] for every role and authority. Each bare role also
     /// yields its `ROLE_`-prefixed form (and vice versa) so an ACE configured
     /// either way matches.
+    ///
+    /// An unauthenticated / anonymous caller contributes **no** principal SID, so
+    /// it can never match a `Sid::Principal("")` / `Sid::Principal("anonymous")`
+    /// ACE (fail-closed); deliberate anonymous access is granted via a
+    /// [`Sid::Authority`] entry instead.
     fn sids_for(auth: &Authentication) -> Vec<Sid> {
-        let mut sids = vec![Sid::Principal(auth.principal.clone())];
+        let mut sids = Vec::new();
+        if auth.is_authenticated() {
+            sids.push(Sid::Principal(auth.principal.clone()));
+        }
         let mut push_authority = |value: &str| {
             let sid = Sid::Authority(value.to_string());
             if !sids.contains(&sid) {
@@ -540,5 +564,83 @@ mod tests {
         assert!(!eval.has_permission(&alice, &"a string", "read"));
         // Unknown permission name denies.
         assert!(!eval.has_permission_for_id(&alice, ACCOUNT, "1", "teleport"));
+    }
+
+    #[test]
+    fn zero_mask_permission_is_never_granted() {
+        let svc = InMemoryAclService::new();
+        let oid = ObjectIdentity::new(ACCOUNT, "1");
+        let alice = Sid::Principal("alice".into());
+        let acl = Acl::new(oid.clone(), alice.clone()).grant(alice.clone(), Permission::READ);
+        // A zero (no-bits) required permission matches no ACE…
+        assert_eq!(
+            acl.local_decision(Permission::from_mask(0), std::slice::from_ref(&alice)),
+            None
+        );
+        svc.save(acl);
+        // …so it is default-denied even with a granting ACE for the sid.
+        assert!(!is_granted(
+            &svc,
+            &oid,
+            Permission::from_mask(0),
+            std::slice::from_ref(&alice)
+        ));
+    }
+
+    #[test]
+    fn unauthenticated_and_anonymous_principals_are_denied() {
+        let oid = ObjectIdentity::new(ACCOUNT, "1");
+        // A misconfigured ACL that grants the blank and anonymous principal SIDs.
+        let svc = Arc::new(InMemoryAclService::new());
+        svc.save(
+            Acl::new(oid.clone(), Sid::Principal(String::new()))
+                .grant(Sid::Principal(String::new()), Permission::READ)
+                .grant(Sid::Principal("anonymous".into()), Permission::READ),
+        );
+        let eval = AclPermissionEvaluator::new(svc);
+        // A default (empty-principal) and an explicit anonymous Authentication
+        // contribute no principal SID, so neither matches the misconfigured ACEs.
+        assert!(!eval.has_permission_for_id(&Authentication::default(), ACCOUNT, "1", "read"));
+        assert!(!eval.has_permission_for_id(&Authentication::anonymous(), ACCOUNT, "1", "read"));
+        // A real principal with a matching ACE is still granted.
+        let svc2 = Arc::new(InMemoryAclService::new());
+        svc2.save(
+            Acl::new(oid, Sid::Principal("alice".into()))
+                .grant(Sid::Principal("alice".into()), Permission::READ),
+        );
+        let eval2 = AclPermissionEvaluator::new(svc2);
+        assert!(eval2.has_permission_for_id(&principal("alice", &[]), ACCOUNT, "1", "read"));
+    }
+
+    #[test]
+    fn cumulative_grant_satisfies_a_component_request() {
+        // Deliberate divergence from Spring's exact-mask default: a cumulative
+        // grant satisfies a request for any permission it includes.
+        let svc = InMemoryAclService::new();
+        let oid = ObjectIdentity::new(ACCOUNT, "1");
+        let alice = Sid::Principal("alice".into());
+        let all = Permission::READ
+            .union(Permission::WRITE)
+            .union(Permission::ADMINISTRATION);
+        svc.save(Acl::new(oid.clone(), alice.clone()).grant(alice.clone(), all));
+        assert!(is_granted(
+            &svc,
+            &oid,
+            Permission::READ,
+            std::slice::from_ref(&alice)
+        ));
+        assert!(is_granted(
+            &svc,
+            &oid,
+            Permission::ADMINISTRATION,
+            std::slice::from_ref(&alice)
+        ));
+        // A permission not in the cumulative mask is still denied.
+        assert!(!is_granted(
+            &svc,
+            &oid,
+            Permission::DELETE,
+            std::slice::from_ref(&alice)
+        ));
     }
 }
