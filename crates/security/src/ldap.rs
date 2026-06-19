@@ -41,6 +41,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use ldap3::{LdapConnAsync, Scope, SearchEntry};
 
 use crate::authentication::{Authentication, SecurityError, ROLE_PREFIX};
 use crate::authentication_manager::{AuthenticationProvider, AuthenticationRequest};
@@ -240,6 +241,227 @@ impl AuthenticationProvider for LdapAuthenticationProvider {
     }
 }
 
+/// The leading `CN` (relative-DN) value of a distinguished name, e.g.
+/// `"CN=Admins,OU=Groups,DC=ex,DC=com"` → `"Admins"`. Used to turn an Active
+/// Directory `memberOf` group DN into a role name.
+#[must_use]
+pub fn cn_from_dn(dn: &str) -> Option<&str> {
+    let rdn = dn.split(',').next()?.trim();
+    let (key, value) = rdn.split_once('=')?;
+    key.trim().eq_ignore_ascii_case("cn").then(|| value.trim())
+}
+
+/// Active Directory authentication — the Rust analog of Spring's
+/// `ActiveDirectoryLdapAuthenticationProvider`.
+///
+/// AD authenticates by binding as the user's `userPrincipalName`
+/// (`username@domain`); the directory verifies the password. The provider then
+/// reads the user's `memberOf` group DNs and maps each leading `CN` to a
+/// `ROLE_<CN>` authority. As with [`LdapAuthenticationProvider`], an empty
+/// password is rejected (anonymous-bind bypass) and a bad credential fails
+/// uniformly.
+pub struct ActiveDirectoryLdapAuthenticationProvider {
+    ops: Arc<dyn LdapOperations>,
+    domain: String,
+    root_dn: String,
+    role_prefix: String,
+}
+
+impl ActiveDirectoryLdapAuthenticationProvider {
+    /// Builds the provider for AD `domain` (e.g. `"example.com"`), searching
+    /// under `root_dn` (e.g. `"dc=example,dc=com"`) for the authenticated user's
+    /// `memberOf` groups.
+    #[must_use]
+    pub fn new(
+        ops: Arc<dyn LdapOperations>,
+        domain: impl Into<String>,
+        root_dn: impl Into<String>,
+    ) -> Self {
+        Self {
+            ops,
+            domain: domain.into(),
+            root_dn: root_dn.into(),
+            role_prefix: ROLE_PREFIX.to_string(),
+        }
+    }
+
+    /// Overrides the role prefix prepended to each group name (default `ROLE_`).
+    #[must_use]
+    pub fn role_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.role_prefix = prefix.into();
+        self
+    }
+}
+
+#[async_trait]
+impl AuthenticationProvider for ActiveDirectoryLdapAuthenticationProvider {
+    fn supports(&self, request: &AuthenticationRequest) -> bool {
+        matches!(request, AuthenticationRequest::UsernamePassword { .. })
+    }
+
+    async fn authenticate(
+        &self,
+        request: &AuthenticationRequest,
+    ) -> Result<Authentication, SecurityError> {
+        let AuthenticationRequest::UsernamePassword { username, password } = request else {
+            return Err(SecurityError::verification("unsupported credential kind"));
+        };
+        if password.is_empty() {
+            return Err(SecurityError::verification("Bad credentials"));
+        }
+
+        // The bind principal is the userPrincipalName (username@domain), unless
+        // the caller already supplied a full UPN.
+        let upn = if username.contains('@') {
+            username.clone()
+        } else {
+            format!("{username}@{}", self.domain)
+        };
+
+        // Bind as the user — AD verifies the password.
+        self.ops
+            .bind(&upn, password)
+            .await
+            .map_err(|_| SecurityError::verification("Bad credentials"))?;
+
+        // Read the user's DN + memberOf groups.
+        let filter = format!(
+            "(&(objectClass=user)(userPrincipalName={}))",
+            escape_filter_value(&upn)
+        );
+        let entry = self
+            .ops
+            .search(&self.root_dn, &filter, &["memberOf"])
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .next();
+
+        let (principal, roles) = match entry {
+            Some(entry) => {
+                let roles = entry
+                    .attrs
+                    .get("memberOf")
+                    .map(|dns| {
+                        dns.iter()
+                            .filter_map(|dn| cn_from_dn(dn))
+                            .map(|cn| format!("{}{}", self.role_prefix, cn.to_uppercase()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (
+                    if entry.dn.is_empty() {
+                        upn.clone()
+                    } else {
+                        entry.dn
+                    },
+                    roles,
+                )
+            }
+            None => (upn.clone(), Vec::new()),
+        };
+
+        Ok(Authentication {
+            principal,
+            username: username.clone(),
+            roles,
+            ..Default::default()
+        })
+    }
+}
+
+/// The production [`LdapOperations`] adapter, backed by [`ldap3`].
+///
+/// Each operation opens a fresh async connection to the directory `url`.
+/// Searches bind first with the configured manager DN/password (set via
+/// [`with_manager`](Self::with_manager)) when present, else search anonymously;
+/// [`bind`](LdapOperations::bind) opens its own connection to test the user's
+/// credentials, so a failed user bind never disturbs the search binding.
+pub struct Ldap3Operations {
+    url: String,
+    manager_dn: Option<String>,
+    manager_password: Option<String>,
+}
+
+impl Ldap3Operations {
+    /// Builds the adapter for the directory at `url` (e.g.
+    /// `"ldaps://ad.example.com:636"`), searching anonymously until
+    /// [`with_manager`](Self::with_manager) sets a search binding.
+    #[must_use]
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            manager_dn: None,
+            manager_password: None,
+        }
+    }
+
+    /// Sets the manager DN/password used to bind before searches.
+    #[must_use]
+    pub fn with_manager(mut self, dn: impl Into<String>, password: impl Into<String>) -> Self {
+        self.manager_dn = Some(dn.into());
+        self.manager_password = Some(password.into());
+        self
+    }
+}
+
+/// Maps an `ldap3` error to a [`SecurityError`].
+fn ldap_err(e: impl std::fmt::Display) -> SecurityError {
+    SecurityError::verification(format!("ldap: {e}"))
+}
+
+#[async_trait]
+impl LdapOperations for Ldap3Operations {
+    async fn search(
+        &self,
+        base: &str,
+        filter: &str,
+        attrs: &[&str],
+    ) -> Result<Vec<LdapEntry>, SecurityError> {
+        let (conn, mut ldap) = LdapConnAsync::new(&self.url).await.map_err(ldap_err)?;
+        ldap3::drive!(conn);
+        if let (Some(dn), Some(pw)) = (&self.manager_dn, &self.manager_password) {
+            ldap.simple_bind(dn, pw)
+                .await
+                .map_err(ldap_err)?
+                .success()
+                .map_err(ldap_err)?;
+        }
+        let (rs, _res) = ldap
+            .search(base, Scope::Subtree, filter, attrs.to_vec())
+            .await
+            .map_err(ldap_err)?
+            .success()
+            .map_err(ldap_err)?;
+        let entries = rs
+            .into_iter()
+            .map(|e| {
+                let se = SearchEntry::construct(e);
+                LdapEntry {
+                    dn: se.dn,
+                    attrs: se.attrs,
+                }
+            })
+            .collect();
+        let _ = ldap.unbind().await;
+        Ok(entries)
+    }
+
+    async fn bind(&self, dn: &str, password: &str) -> Result<(), SecurityError> {
+        let (conn, mut ldap) = LdapConnAsync::new(&self.url).await.map_err(ldap_err)?;
+        ldap3::drive!(conn);
+        // `success()` turns a non-zero LDAP result code (e.g. invalidCredentials)
+        // into an error, so a failed bind is a clean `Err`.
+        let result = ldap
+            .simple_bind(dn, password)
+            .await
+            .map_err(ldap_err)?
+            .success();
+        let _ = ldap.unbind().await;
+        result.map(|_| ()).map_err(ldap_err)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +478,8 @@ mod tests {
         valid_bind: Option<(String, String)>,
         /// Group `cn`s the group search returns.
         group_cns: Vec<String>,
+        /// `memberOf` group DNs attached to the user entry (Active Directory).
+        member_of: Vec<String>,
         /// Every filter passed to `search`, for injection-escaping assertions.
         seen_filters: Mutex<Vec<String>>,
     }
@@ -270,12 +494,16 @@ mod tests {
         ) -> Result<Vec<LdapEntry>, SecurityError> {
             self.seen_filters.lock().unwrap().push(filter.to_string());
             if base == self.user_search_base {
+                let mut attrs = HashMap::new();
+                if !self.member_of.is_empty() {
+                    attrs.insert("memberOf".to_string(), self.member_of.clone());
+                }
                 Ok(self
                     .user_dn
                     .clone()
                     .map(|dn| LdapEntry {
                         dn,
-                        attrs: HashMap::new(),
+                        attrs: attrs.clone(),
                     })
                     .into_iter()
                     .collect())
@@ -392,5 +620,95 @@ mod tests {
     fn escape_filter_value_covers_rfc4515_specials() {
         assert_eq!(escape_filter_value("a*b(c)d\\e"), "a\\2ab\\28c\\29d\\5ce");
         assert_eq!(escape_filter_value("plain"), "plain");
+    }
+
+    #[test]
+    fn cn_from_dn_extracts_leading_cn() {
+        assert_eq!(
+            cn_from_dn("CN=Admins,OU=Groups,DC=ex,DC=com"),
+            Some("Admins")
+        );
+        assert_eq!(cn_from_dn("cn=Ops Team, ou=g"), Some("Ops Team"));
+        // A non-CN leading RDN yields nothing.
+        assert_eq!(cn_from_dn("OU=Groups,DC=ex"), None);
+        assert_eq!(cn_from_dn("garbage"), None);
+    }
+
+    // --- Active Directory provider -----------------------------------------
+
+    #[tokio::test]
+    async fn active_directory_binds_upn_and_maps_member_of_to_roles() {
+        let mock = Arc::new(MockLdap {
+            // AD searches under the root DN for the user's memberOf.
+            user_search_base: "dc=example,dc=com".into(),
+            user_dn: Some("CN=Alice,OU=People,DC=example,DC=com".into()),
+            // The bind principal is the userPrincipalName (alice@example.com).
+            valid_bind: Some(("alice@example.com".into(), "pw".into())),
+            member_of: vec![
+                "CN=Admins,OU=Groups,DC=example,DC=com".into(),
+                "CN=Users,OU=Groups,DC=example,DC=com".into(),
+            ],
+            ..MockLdap::default()
+        });
+        let provider = ActiveDirectoryLdapAuthenticationProvider::new(
+            mock,
+            "example.com",
+            "dc=example,dc=com",
+        );
+
+        let auth = provider
+            .authenticate(&up("alice", "pw"))
+            .await
+            .expect("authenticated");
+        assert_eq!(auth.principal, "CN=Alice,OU=People,DC=example,DC=com");
+        assert!(auth.has_role("ADMINS"));
+        assert!(auth.has_role("USERS"));
+
+        // Wrong password → the UPN bind fails → Bad credentials.
+        let mock2 = Arc::new(MockLdap {
+            valid_bind: Some(("alice@example.com".into(), "pw".into())),
+            ..MockLdap::default()
+        });
+        let provider2 = ActiveDirectoryLdapAuthenticationProvider::new(
+            mock2,
+            "example.com",
+            "dc=example,dc=com",
+        );
+        assert!(provider2.authenticate(&up("alice", "nope")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn active_directory_rejects_empty_password() {
+        let mock = Arc::new(MockLdap {
+            valid_bind: Some(("alice@example.com".into(), String::new())),
+            ..MockLdap::default()
+        });
+        let provider = ActiveDirectoryLdapAuthenticationProvider::new(
+            mock,
+            "example.com",
+            "dc=example,dc=com",
+        );
+        assert!(provider.authenticate(&up("alice", "")).await.is_err());
+    }
+
+    // Live `ldap3` adapter smoke test — skipped unless FIREFLY_TEST_LDAP_URL is
+    // set (e.g. a test OpenLDAP/AD), mirroring the env-gated Postgres tests.
+    #[tokio::test]
+    async fn ldap3_adapter_binds_against_a_live_directory() {
+        let Ok(url) = std::env::var("FIREFLY_TEST_LDAP_URL") else {
+            eprintln!("skipping ldap3 adapter test: set FIREFLY_TEST_LDAP_URL to run");
+            return;
+        };
+        let (Ok(dn), Ok(pw)) = (
+            std::env::var("FIREFLY_TEST_LDAP_BIND_DN"),
+            std::env::var("FIREFLY_TEST_LDAP_BIND_PW"),
+        ) else {
+            eprintln!("skipping: set FIREFLY_TEST_LDAP_BIND_DN / _PW to run");
+            return;
+        };
+        let ops = Ldap3Operations::new(url);
+        // A correct bind succeeds; a wrong password fails closed.
+        ops.bind(&dn, &pw).await.expect("valid bind succeeds");
+        assert!(ops.bind(&dn, "definitely-wrong").await.is_err());
     }
 }
