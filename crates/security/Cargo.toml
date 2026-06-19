@@ -19,6 +19,12 @@ webauthn = ["dep:webauthn-rs", "dep:uuid"]
 # not compile the `ldap` module at all.
 ldap = ["dep:ldap3"]
 
+# SAML 2.0 Service Provider (Spring Security `saml2Login()` parity). Opt-in
+# because it pulls in `samael` and its XML-Security C stack (libxml2 + xmlsec1 +
+# OpenSSL) for XML-signature verification. The default build does not compile
+# the `saml2` module at all and keeps the pure-Rust / rustls posture.
+saml2 = ["dep:samael"]
+
 [dependencies]
 axum = { workspace = true }
 tower = { workspace = true }
@@ -58,6 +64,14 @@ uuid = { version = "1", features = ["v4", "serde"], optional = true }
 ldap3 = { version = "0.11", optional = true, default-features = false, features = [
     "tls-rustls",
 ] }
+
+# --- `saml2` feature -------------------------------------------------------
+# SAML 2.0 SP toolkit: entity descriptors / metadata, AuthnRequest generation,
+# and signed-Response verification via xmlsec (the `xmlsec` feature, on by
+# default in samael, is what performs XML-signature validation). Optional so the
+# default build is untouched; enabled by the `saml2` feature. Links a system
+# dependency on libxml2 + xmlsec1 + OpenSSL.
+samael = { version = "0.0.21", optional = true, features = ["xmlsec"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
