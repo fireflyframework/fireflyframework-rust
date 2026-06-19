@@ -45,7 +45,8 @@ In the **Status** column, :status-supported: marks a supported feature,
 | Opaque-token introspection (RFC 7662) | :status-supported: | `RemoteTokenIntrospector` (`OpaqueTokenIntrospector`) — a drop-in resource-server `Verifier` |
 | RP-initiated logout (OIDC) | :status-supported: | `oidc_logout_url` — logout redirects to the provider `end_session_endpoint` (`OidcClientInitiatedLogoutSuccessHandler`) |
 | Authorization server | :status-partial: | `AuthorizationServer` (client-credentials + refresh-token) mounted via `AuthorizationServerRouter` (`/oauth2/token`, RFC 8414 metadata); server-side authorization_code grant on the roadmap |
-| ACL / domain-object security · SAML2 · LDAP/AD | :status-planned: | Roadmap (opt-in crates) |
+| LDAP / Active Directory authentication | :status-partial: | Feature-gated `ldap`: `LdapAuthenticationProvider` (bind auth + group authorities) + `ActiveDirectoryLdapAuthenticationProvider`, over `ldap3` (`ldapAuthentication()`) |
+| ACL / domain-object security · SAML2 | :status-planned: | Roadmap (opt-in) |
 
 ## Spring-faithful behaviours to know
 
@@ -172,6 +173,40 @@ Firefly ships the two Spring Security 6.4 passwordless mechanisms:
   `/webauthn/register`, `/webauthn/authenticate/options`, `/login/webauthn`)
   built on `webauthn-rs`, storing credentials through a pluggable repository.
 
+## LDAP / Active Directory
+
+The feature-gated `ldap` module (opt-in: `--features ldap`, pulls in `ldap3`)
+authenticates username/password credentials against a directory — Spring's
+`ldapAuthentication()`. Both providers are
+[`AuthenticationProvider`](#)s, so they plug straight into the Tier 1
+`ProviderManager`:
+
+- **`LdapAuthenticationProvider`** — **bind authentication**: search the user's
+  DN under a base with a filter (`(uid={0})`, the username RFC 4515-escaped),
+  bind as that DN with the password (the directory verifies it), then map group
+  membership (`(member={0})`) to `ROLE_<GROUP>` authorities (Spring's
+  `BindAuthenticator` + `DefaultLdapAuthoritiesPopulator`).
+- **`ActiveDirectoryLdapAuthenticationProvider`** — binds as the
+  `userPrincipalName` (`user@domain`) and maps the user's `memberOf` groups to
+  roles (Spring's `ActiveDirectoryLdapAuthenticationProvider`).
+
+The LDAP wire operations sit behind an `LdapOperations` port (real adapter:
+`Ldap3Operations`), so the provider logic is unit-tested without a live
+directory. Safety behaviours, Spring-faithful and verified by a pre-release
+adversarial review:
+
+- An **empty password is rejected before binding** — a simple bind with an empty
+  password is an anonymous bind that most directories accept (an authentication
+  bypass).
+- The username/DN is **RFC 4515-escaped** in every filter (LDAP-injection safe),
+  and unknown-user / wrong-password return the **same error value**.
+- An **ambiguous user search** (more than one matching entry) is rejected rather
+  than binding against an arbitrary first match — Spring's
+  `IncorrectResultSizeDataAccessException`.
+- A **directory error while populating authorities** fails the login instead of
+  silently authenticating with no roles, and a **malformed directory entry** is
+  turned into a clean error rather than aborting the request.
+
 ## Roadmap
 
 Parity is delivered in tiers, each its own increment:
@@ -190,5 +225,6 @@ Parity is delivered in tiers, each its own increment:
    outbound authorized-client manager, RP-initiated logout, and the
    authorization server mounted over HTTP with RFC 8414 metadata. (The
    server-side authorization_code grant remains a follow-up.)
-6. **Big subsystems** — ACL / domain-object security, LDAP / Active Directory,
-   SAML2.
+6. **Big subsystems** — delivered one opt-in subsystem at a time. **LDAP /
+   Active Directory (done)** — the feature-gated `ldap` module. **SAML2** and
+   **ACL / domain-object security** remain.

@@ -149,6 +149,8 @@ pub mod guards;
 mod http_basic;
 mod jwks;
 mod jwt;
+#[cfg(feature = "ldap")]
+mod ldap;
 pub mod oauth2;
 mod ott;
 mod password;
@@ -199,6 +201,11 @@ pub use guards::{require, AuthorizationGuard};
 pub use http_basic::{HttpBasicLayer, HttpBasicService};
 pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier, DEFAULT_CLOCK_SKEW_SECONDS};
 pub use jwt::{authentication_from_claims, JwtService, DEFAULT_EXPIRATION_SECONDS};
+#[cfg(feature = "ldap")]
+pub use ldap::{
+    cn_from_dn, escape_filter_value, ActiveDirectoryLdapAuthenticationProvider, Ldap3Operations,
+    LdapAuthenticationProvider, LdapEntry, LdapOperations,
+};
 pub use ott::{
     ott_login_routes, InMemoryOneTimeTokenService, LoggingOttHandler, OneTimeToken,
     OneTimeTokenGenerationSuccessHandler, OneTimeTokenService, OttLoginState,

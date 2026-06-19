@@ -14,6 +14,11 @@ description = "Firefly Framework for Rust — Authentication context, bearer mid
 # The default build does not compile the `webauthn` module at all.
 webauthn = ["dep:webauthn-rs", "dep:uuid"]
 
+# LDAP / Active Directory authentication (Spring Security `ldapAuthentication()`
+# parity). Opt-in because it pulls in the `ldap3` client. The default build does
+# not compile the `ldap` module at all.
+ldap = ["dep:ldap3"]
+
 [dependencies]
 axum = { workspace = true }
 tower = { workspace = true }
@@ -46,6 +51,13 @@ webauthn-rs = { version = "0.5.5", optional = true }
 # Stable per-user handles (`user.id` in the WebAuthn `PublicKeyCredentialUser`)
 # are random UUIDs; `serde` lets the in-memory handle map round-trip if needed.
 uuid = { version = "1", features = ["v4", "serde"], optional = true }
+
+# --- `ldap` feature --------------------------------------------------------
+# Async LDAP/AD client (search + bind) for `LdapAuthenticationProvider`.
+# Optional so the default build is untouched; enabled by the `ldap` feature.
+ldap3 = { version = "0.11", optional = true, default-features = false, features = [
+    "tls-rustls",
+] }
 
 [dev-dependencies]
 tokio = { workspace = true }

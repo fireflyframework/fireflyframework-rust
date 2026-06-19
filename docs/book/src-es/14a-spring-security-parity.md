@@ -46,7 +46,8 @@ En la columna **Estado**, :status-supported: indica una función soportada,
 | Introspección de tokens opacos (RFC 7662) | :status-supported: | `RemoteTokenIntrospector` (`OpaqueTokenIntrospector`) — un `Verifier` de servidor de recursos intercambiable |
 | Logout iniciado por RP (OIDC) | :status-supported: | `oidc_logout_url` — el logout redirige al `end_session_endpoint` del proveedor (`OidcClientInitiatedLogoutSuccessHandler`) |
 | Servidor de autorización | :status-partial: | `AuthorizationServer` (client-credentials + refresh-token) montado vía `AuthorizationServerRouter` (`/oauth2/token`, metadatos RFC 8414); el grant authorization_code del lado servidor en la hoja de ruta |
-| ACL / seguridad de objetos de dominio · SAML2 · LDAP/AD | :status-planned: | Hoja de ruta (crates opcionales) |
+| Autenticación LDAP / Active Directory | :status-partial: | Módulo `ldap` opcional: `LdapAuthenticationProvider` (bind auth + autoridades de grupo) + `ActiveDirectoryLdapAuthenticationProvider`, sobre `ldap3` (`ldapAuthentication()`) |
+| ACL / seguridad de objetos de dominio · SAML2 | :status-planned: | Hoja de ruta (opcional) |
 
 ## Comportamientos fieles a Spring que conviene conocer
 
@@ -182,6 +183,41 @@ Firefly incluye los dos mecanismos sin contraseña de Spring Security 6.4:
   sobre `webauthn-rs`, almacenando credenciales mediante un repositorio
   conectable.
 
+## LDAP / Active Directory
+
+El módulo `ldap` opcional (`--features ldap`, trae `ldap3`) autentica
+credenciales usuario/contraseña contra un directorio — el `ldapAuthentication()`
+de Spring. Ambos proveedores son `AuthenticationProvider`, así que se conectan
+al `ProviderManager` del Nivel 1:
+
+- **`LdapAuthenticationProvider`** — **autenticación por bind**: busca el DN del
+  usuario bajo una base con un filtro (`(uid={0})`, el usuario escapado según
+  RFC 4515), hace bind como ese DN con la contraseña (el directorio la verifica),
+  y luego mapea la pertenencia a grupos (`(member={0})`) a autoridades
+  `ROLE_<GRUPO>` (el `BindAuthenticator` + `DefaultLdapAuthoritiesPopulator` de
+  Spring).
+- **`ActiveDirectoryLdapAuthenticationProvider`** — hace bind como el
+  `userPrincipalName` (`usuario@dominio`) y mapea los grupos `memberOf` del
+  usuario a roles.
+
+Las operaciones LDAP están tras un puerto `LdapOperations` (adaptador real:
+`Ldap3Operations`), de modo que la lógica se prueba sin un directorio real.
+Comportamientos de seguridad, fieles a Spring y verificados por una revisión
+adversarial previa al *release*:
+
+- Una **contraseña vacía se rechaza antes del bind** — un bind simple con
+  contraseña vacía es un bind anónimo que la mayoría de directorios aceptan (un
+  *bypass* de autenticación).
+- El usuario/DN se **escapa según RFC 4515** en cada filtro (a salvo de
+  inyección LDAP), y usuario-desconocido / contraseña-incorrecta devuelven el
+  **mismo valor de error**.
+- Una **búsqueda de usuario ambigua** (más de una entrada coincidente) se rechaza
+  en vez de hacer bind contra una primera coincidencia arbitraria — la
+  `IncorrectResultSizeDataAccessException` de Spring.
+- Un **error de directorio al poblar autoridades** falla el inicio de sesión en
+  lugar de autenticar en silencio sin roles, y una **entrada de directorio
+  malformada** se convierte en un error limpio en vez de abortar la petición.
+
 ## Hoja de ruta
 
 La paridad se entrega por niveles, cada uno un incremento:
@@ -201,5 +237,6 @@ La paridad se entrega por niveles, cada uno un incremento:
    el gestor de clientes autorizados salientes, logout iniciado por RP, y el
    servidor de autorización montado sobre HTTP con metadatos RFC 8414. (El grant
    authorization_code del lado servidor queda como seguimiento.)
-6. **Subsistemas grandes** — ACL / seguridad de objetos de dominio, LDAP /
-   Active Directory, SAML2.
+6. **Subsistemas grandes** — entregados de uno en uno (opcional). **LDAP /
+   Active Directory (hecho)** — el módulo `ldap` opcional. Quedan **SAML2** y
+   **ACL / seguridad de objetos de dominio**.
