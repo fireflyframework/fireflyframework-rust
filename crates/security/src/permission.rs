@@ -50,6 +50,22 @@ use crate::authentication::Authentication;
 pub trait PermissionEvaluator: Send + Sync {
     /// Whether `auth` may perform `permission` on `target`.
     fn has_permission(&self, auth: &Authentication, target: &dyn Any, permission: &str) -> bool;
+
+    /// Whether `auth` may perform `permission` on the domain object identified by
+    /// (`object_type`, `identifier`) — Spring's id-based
+    /// `hasPermission(authentication, targetId, targetType, permission)` overload,
+    /// used when the object is referenced by identity rather than loaded (the
+    /// natural entry point for ACL-backed evaluators). Defaults to deny
+    /// (fail-closed); ACL-style evaluators override it.
+    fn has_permission_for_id(
+        &self,
+        _auth: &Authentication,
+        _object_type: &str,
+        _identifier: &str,
+        _permission: &str,
+    ) -> bool {
+        false
+    }
 }
 
 /// The process-wide evaluator, set once at startup (Spring's single
@@ -92,6 +108,25 @@ pub fn has_permission<T: Any>(auth: &Authentication, target: &T, permission: &st
     EVALUATOR
         .get()
         .is_some_and(|e| e.has_permission(auth, target, permission))
+}
+
+/// Whether `auth` may perform `permission` on the domain object identified by
+/// (`object_type`, `identifier`), per the registered [`PermissionEvaluator`] —
+/// Spring's id-based `hasPermission(targetId, targetType, permission)`.
+///
+/// Returns `false` (deny) when no evaluator is registered. This is the form to
+/// use when you hold an object's identity (type + id) rather than the loaded
+/// object — e.g. an ACL-backed [`AclPermissionEvaluator`](crate::AclPermissionEvaluator).
+#[must_use]
+pub fn has_permission_for_id(
+    auth: &Authentication,
+    object_type: &str,
+    identifier: &str,
+    permission: &str,
+) -> bool {
+    EVALUATOR
+        .get()
+        .is_some_and(|e| e.has_permission_for_id(auth, object_type, identifier, permission))
 }
 
 #[cfg(test)]
