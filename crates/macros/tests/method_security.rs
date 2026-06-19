@@ -159,6 +159,50 @@ async fn pre_authorize_expression_combines_role_and_ownership() {
     assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
 }
 
+// --- pre_authorize: hasPermission via a PermissionEvaluator ----------------
+
+struct Account {
+    owner: String,
+}
+
+/// Grants `read` on an `Account` to its owner — Spring's `PermissionEvaluator`.
+struct AccountPermissions;
+impl firefly::security::PermissionEvaluator for AccountPermissions {
+    fn has_permission(
+        &self,
+        auth: &Authentication,
+        target: &dyn std::any::Any,
+        permission: &str,
+    ) -> bool {
+        target
+            .downcast_ref::<Account>()
+            .is_some_and(|a| permission == "read" && a.owner == auth.principal)
+    }
+}
+
+/// Spring's `@PreAuthorize("hasPermission(#account, 'read')")` — the expression
+/// form calls the registered evaluator with the bound `auth` and an argument.
+#[firefly::pre_authorize(firefly::security::has_permission(auth, account, "read"))]
+async fn read_statement(account: &Account) -> Result<&'static str, SvcErr> {
+    Ok("statement")
+}
+
+#[tokio::test]
+async fn pre_authorize_has_permission_consults_the_evaluator() {
+    // This is the only test in this binary that registers the evaluator.
+    let _ = firefly::security::set_permission_evaluator(std::sync::Arc::new(AccountPermissions));
+
+    let acct = Account {
+        owner: "alice".into(),
+    };
+    // The owner may read.
+    let ok = with_authentication_scope(principal("alice", &[], &[]), read_statement(&acct)).await;
+    assert_eq!(ok, Ok("statement"));
+    // A non-owner is forbidden.
+    let denied = with_authentication_scope(principal("bob", &[], &[]), read_statement(&acct)).await;
+    assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
+}
+
 // --- post_authorize: returnObject ownership check --------------------------
 
 #[derive(Debug, Clone, PartialEq)]
