@@ -145,6 +145,7 @@ mod csrf;
 mod exception;
 mod filter_chain;
 pub mod guards;
+mod http_basic;
 mod jwks;
 mod jwt;
 pub mod oauth2;
@@ -181,11 +182,12 @@ pub use csrf::{
     CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SAFE_METHODS,
 };
 pub use exception::{
-    AccessDeniedHandler, AuthenticationEntryPoint, ProblemAccessDeniedHandler,
-    ProblemAuthenticationEntryPoint,
+    AccessDeniedHandler, AuthenticationEntryPoint, BasicAuthenticationEntryPoint,
+    ProblemAccessDeniedHandler, ProblemAuthenticationEntryPoint,
 };
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
 pub use guards::{require, AuthorizationGuard};
+pub use http_basic::{HttpBasicLayer, HttpBasicService};
 pub use jwks::{claims_to_authentication, Algorithm, JwksVerifier, DEFAULT_CLOCK_SKEW_SECONDS};
 pub use jwt::{authentication_from_claims, JwtService, DEFAULT_EXPIRATION_SECONDS};
 pub use ott::{

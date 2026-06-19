@@ -25,6 +25,7 @@
 
 use axum::extract::Request;
 use axum::response::Response;
+use http::header;
 
 use crate::problem;
 
@@ -62,4 +63,52 @@ impl AccessDeniedHandler for ProblemAccessDeniedHandler {
     fn handle(&self, _request: &Request, detail: &str) -> Response {
         problem::forbidden(detail)
     }
+}
+
+/// An [`AuthenticationEntryPoint`] that issues an HTTP Basic challenge — the
+/// Rust analog of Spring's `BasicAuthenticationEntryPoint`. Renders the
+/// canonical `401` plus `WWW-Authenticate: Basic realm="<realm>",
+/// charset="UTF-8"`, prompting the browser/client for credentials.
+#[derive(Debug, Clone)]
+pub struct BasicAuthenticationEntryPoint {
+    realm: String,
+}
+
+impl BasicAuthenticationEntryPoint {
+    /// Builds the entry point for `realm`.
+    #[must_use]
+    pub fn new(realm: impl Into<String>) -> Self {
+        Self {
+            realm: realm.into(),
+        }
+    }
+}
+
+impl Default for BasicAuthenticationEntryPoint {
+    fn default() -> Self {
+        Self::new("Realm")
+    }
+}
+
+impl AuthenticationEntryPoint for BasicAuthenticationEntryPoint {
+    fn commence(&self, _request: &Request, detail: &str) -> Response {
+        let mut response = problem::unauthorized(detail);
+        let realm = sanitize_realm(&self.realm);
+        let challenge = format!("Basic realm=\"{realm}\", charset=\"UTF-8\"");
+        if let Ok(value) = http::HeaderValue::from_str(&challenge) {
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, value);
+        }
+        response
+    }
+}
+
+/// Strips characters that would break (or inject into) the `WWW-Authenticate`
+/// quoted-string `realm`.
+fn sanitize_realm(realm: &str) -> String {
+    realm
+        .chars()
+        .filter(|c| *c != '"' && *c != '\\' && !c.is_control())
+        .collect()
 }
