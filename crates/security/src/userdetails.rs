@@ -33,7 +33,7 @@ use async_trait::async_trait;
 
 use crate::authentication::{Authentication, SecurityError};
 use crate::authentication_manager::{AuthenticationProvider, AuthenticationRequest};
-use crate::password::PasswordEncoder;
+use crate::password::{BcryptPasswordEncoder, PasswordEncoder};
 
 /// A user record for DAO authentication — the Rust analog of Spring's
 /// `UserDetails`: the stored (encoded) credential plus the four account-status
@@ -225,8 +225,13 @@ impl DaoAuthenticationProvider {
         user_details_service: Arc<dyn UserDetailsService>,
         password_encoder: Arc<dyn PasswordEncoder + Send + Sync>,
     ) -> Self {
+        // Pre-encode a throwaway password for the not-found timing path. If the
+        // configured encoder cannot hash (a misconfiguration), fall back to a
+        // bcrypt hash so the dummy is never empty — an empty hash would verify
+        // near-instantly and reopen the user-enumeration timing oracle.
         let user_not_found_encoded = password_encoder
             .hash("firefly-user-not-found-placeholder")
+            .or_else(|_| BcryptPasswordEncoder::new().hash("firefly-user-not-found-placeholder"))
             .unwrap_or_default();
         Self {
             user_details_service,
@@ -390,5 +395,26 @@ mod tests {
         let mgr = ProviderManager::new(vec![Arc::new(provider(service_with(alice())))]);
         let auth = mgr.authenticate(req()).await.unwrap();
         assert_eq!(auth.principal, "alice");
+    }
+
+    // A UserDetailsService backend failure (not a missing user) propagates as an
+    // error, distinct from the enumeration-safe "Bad credentials".
+    #[tokio::test]
+    async fn backend_error_propagates() {
+        struct Failing;
+        #[async_trait]
+        impl UserDetailsService for Failing {
+            async fn load_user_by_username(
+                &self,
+                _username: &str,
+            ) -> Result<Option<UserDetails>, SecurityError> {
+                Err(SecurityError::verification("db down"))
+            }
+        }
+        let p = DaoAuthenticationProvider::new(Arc::new(Failing), encoder());
+        assert_eq!(
+            p.authenticate(&req()).await.unwrap_err().to_string(),
+            "db down"
+        );
     }
 }

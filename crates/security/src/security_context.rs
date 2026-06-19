@@ -179,6 +179,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_falls_back_to_a_typed_object() {
+        // A caller that stored the Authentication as a typed value (not a JSON
+        // string) is read via the object fallback branch.
+        let session = Session::new(SessionInner::new("sid"));
+        session
+            .set_attribute(SESSION_KEY_SECURITY_CONTEXT, user("typed"))
+            .await
+            .unwrap();
+        let loaded = HttpSessionSecurityContextRepository::new()
+            .load(&session)
+            .await
+            .expect("loaded via the typed-object fallback");
+        assert_eq!(loaded.principal, "typed");
+    }
+
+    #[tokio::test]
     async fn custom_key_is_isolated() {
         let repo = HttpSessionSecurityContextRepository::with_key("CUSTOM_CTX");
         let session = Session::new(SessionInner::new("sid"));

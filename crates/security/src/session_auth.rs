@@ -590,6 +590,57 @@ mod tests {
         assert_eq!(seen.lock().unwrap().as_deref(), Some("u1"));
     }
 
+    // T1.4: the layer loads the context through its SecurityContextRepository,
+    // not a hardcoded key. With a NullSecurityContextRepository, a session that
+    // *does* hold a context is ignored (the default HttpSession repo would have
+    // restored "u1") — proving the repository seam is actually wired.
+    #[tokio::test]
+    async fn with_repository_swaps_the_context_source() {
+        use crate::NullSecurityContextRepository;
+        use std::sync::Mutex;
+        use tower::ServiceExt;
+
+        let session = Session::new(SessionInner::new("sid"));
+        let auth = Authentication {
+            principal: "u1".into(),
+            ..Default::default()
+        };
+        session
+            .set_attribute(
+                SESSION_KEY_SECURITY_CONTEXT,
+                serde_json::to_string(&auth).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let probe = seen.clone();
+        let inner = tower::service_fn(move |_req: Request| {
+            let probe = probe.clone();
+            async move {
+                *probe.lock().unwrap() = crate::current_authentication().map(|a| a.principal);
+                Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+            }
+        });
+
+        let mut req = Request::new(axum::body::Body::empty());
+        req.extensions_mut().insert(session);
+
+        let _ = SessionAuthenticationLayer::new()
+            .with_repository(Arc::new(NullSecurityContextRepository))
+            .layer(inner)
+            .oneshot(req)
+            .await
+            .unwrap();
+
+        // Null repo restores nothing -> the anonymous fallback applies, so the
+        // stored "u1" context is NOT seen.
+        assert_eq!(
+            seen.lock().unwrap().as_deref(),
+            Some(crate::authentication::ANONYMOUS_ID)
+        );
+    }
+
     // H1 (anonymous path): with the default anonymous fallback, the layer
     // should scope an anonymous context so downstream method security sees a
     // present-but-anonymous principal (Spring's AnonymousAuthenticationFilter).

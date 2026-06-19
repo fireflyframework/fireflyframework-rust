@@ -257,6 +257,13 @@ mod tests {
     }
 
     #[test]
+    fn is_authenticated_only_for_a_real_principal() {
+        assert!(auth(&["USER"]).is_authenticated());
+        assert!(!Authentication::anonymous().is_authenticated());
+        assert!(!Authentication::default().is_authenticated());
+    }
+
+    #[test]
     fn anonymous_has_anonymous_principal_and_nothing_else() {
         let a = Authentication::anonymous();
         assert_eq!(a.principal, ANONYMOUS_ID);

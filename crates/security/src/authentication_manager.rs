@@ -443,6 +443,14 @@ mod tests {
             &events[1],
             AuthenticationEvent::Failure { username: Some(u), .. } if u == "alice"
         ));
+
+        // A bearer failure (no supporting provider) -> Failure{username: None}.
+        let _ = mgr.authenticate(AuthenticationRequest::bearer("x")).await;
+        let events = recorder.0.lock().unwrap().clone();
+        assert!(matches!(
+            events.last(),
+            Some(AuthenticationEvent::Failure { username: None, .. })
+        ));
     }
 
     #[tokio::test]

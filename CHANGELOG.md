@@ -37,6 +37,20 @@ on. All additive (no behaviour change to existing code).
   through them, defaulting to the canonical problem+json and overridable via
   `with_authentication_entry_point` / `with_access_denied_handler`.
 
+### Known limitations (roadmap)
+
+- `ProviderManager` continues to the next supporting provider after a failure
+  (Spring rethrows an `AccountStatusException` immediately). With one provider
+  per credential kind — the norm — the outcome is identical; a terminal/continue
+  error taxonomy is a follow-up.
+- `DelegatingPasswordEncoder::upgrade_encoding` compares the stored `{id}` only
+  (algorithm migration); it does not yet flag a within-algorithm work-factor
+  increase for re-hash.
+- `with_defaults()` registers `{noop}` (plaintext — dev only, as Spring does)
+  and verifies legacy *unprefixed* hashes as bcrypt to ease migration; disable
+  the latter with `with_unprefixed(None)` for Spring's stricter reject-on-bare
+  behaviour.
+
 ## v26.6.29 — 2026-06-18
 
 A **Spring Security 6 parity** increment (Tier 0): an adversarially-verified
