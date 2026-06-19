@@ -57,7 +57,7 @@ use std::task::{Context, Poll};
 use axum::extract::Request;
 use axum::response::Response;
 use http::Method;
-use tower::{Layer, Service};
+use tower::{Layer, Service, ServiceExt};
 
 use crate::authentication::SecurityError;
 use crate::filter_chain::{prefix_matches, FilterChain, FilterChainLayer, FilterChainService};
@@ -225,10 +225,14 @@ where
         let selected = self.chains.iter().position(|(m, _)| m.matches(&req));
         match selected {
             Some(i) => {
-                // Standard tower buffering: call a fresh clone of the chosen
-                // chain service.
+                // Call a fresh clone of the chosen chain service, but honor
+                // tower's readiness contract first: `poll_ready` above only
+                // readied `self.inner` (used on the no-match branch), so drive
+                // this clone ready (its `poll_ready` readies its own wrapped
+                // inner) before `call` — correct even for a backpressure-bearing
+                // inner service, not only always-ready ones.
                 let mut svc = self.chains[i].1.clone();
-                Box::pin(async move { svc.call(req).await })
+                Box::pin(async move { svc.ready().await?.call(req).await })
             }
             None => {
                 let clone = self.inner.clone();
@@ -341,5 +345,56 @@ mod tests {
             .any(FilterChain::new().require_pattern("/admin/[", &["ADMIN"]))
             .try_layer();
         assert!(bad.is_err());
+    }
+
+    // An inner service that requires the tower readiness handshake: `call`
+    // panics unless `poll_ready` was driven on the same instance first (like
+    // tower's Buffer/ConcurrencyLimit, which reserve a permit in poll_ready).
+    #[derive(Clone)]
+    struct ReadinessGated {
+        ready: bool,
+    }
+
+    impl Service<Request> for ReadinessGated {
+        type Response = Response;
+        type Error = Infallible;
+        type Future = Pin<Box<dyn Future<Output = Result<Response, Infallible>> + Send>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.ready = true;
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _req: Request) -> Self::Future {
+            assert!(
+                self.ready,
+                "call() invoked before poll_ready() — readiness contract violated"
+            );
+            self.ready = false;
+            Box::pin(async { Ok(Response::new(axum::body::Body::empty())) })
+        }
+    }
+
+    #[tokio::test]
+    async fn matched_chain_drives_inner_to_readiness_before_calling() {
+        // Regression: the matched-chain dispatch path must drive the chosen
+        // chain service ready before calling it. With a readiness-gated inner,
+        // a missing handshake panics in `call`.
+        let proxy = SecurityFilterChains::new()
+            .chain(
+                PathRequestMatcher::new("/api"),
+                FilterChain::new().any_request_permit(),
+            )
+            .layer();
+        let svc = proxy.layer(ReadinessGated { ready: false });
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/users")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            svc.oneshot(req).await.unwrap().status(),
+            http::StatusCode::OK
+        );
     }
 }

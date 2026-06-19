@@ -15,10 +15,11 @@
 //! Remember-me authentication — the Rust analog of Spring Security's
 //! `rememberMe()` (`TokenBasedRememberMeServices`).
 //!
-//! [`TokenBasedRememberMeServices`] mints a signed, expiring token from the
-//! username, an expiry, and the user's stored password hash plus a server key —
-//! so the token auto-expires, can't be forged without the key, and is
-//! invalidated by a password change. [`auto_login`](RememberMeServices::auto_login)
+//! [`TokenBasedRememberMeServices`] mints a signed, expiring token whose
+//! signature is an **HMAC-SHA256** keyed by a server secret over the username,
+//! an expiry, and the user's stored password hash — so the token auto-expires,
+//! can't be forged without the key, and is invalidated by a password change.
+//! [`auto_login`](RememberMeServices::auto_login)
 //! validates the token (signature + expiry, against the
 //! [`UserDetailsService`](crate::UserDetailsService)) and returns an
 //! [`Authentication`] marked **remembered** (`is_remembered()` → `true`,
@@ -31,8 +32,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use hmac::{Hmac, Mac};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 use crate::authentication::{Authentication, REMEMBERED_CLAIM};
 use crate::csrf::constant_time_eq;
@@ -53,10 +55,13 @@ pub trait RememberMeServices: Send + Sync {
 
 /// Hash-based remember-me — Spring's `TokenBasedRememberMeServices`.
 ///
-/// Token = `base64url(username:expiry:signature)` where
-/// `signature = base64url(SHA-256(username:expiry:password:key))`. The password
-/// (stored hash) in the signature means changing the password invalidates every
-/// outstanding token; the `key` means only this server can mint one.
+/// Token = `base64url(username:expiry:signature)` where `signature =
+/// base64url(HMAC-SHA256(key, "username:expiry:password"))`. Using an HMAC keyed
+/// by the server `key` (rather than hashing the key as a message field) gives a
+/// proper keyed MAC with no length-extension or delimiter-injection concerns;
+/// binding the user's stored password hash means changing the password
+/// invalidates every outstanding token, and the `key` means only this server
+/// can mint one.
 pub struct TokenBasedRememberMeServices {
     key: String,
     token_validity_seconds: u64,
@@ -87,16 +92,20 @@ impl TokenBasedRememberMeServices {
     /// opted in to "remember me".
     #[must_use]
     pub fn make_token(&self, username: &str, password: &str) -> String {
-        let expiry = now_secs().saturating_add(self.token_validity_seconds);
+        let expiry = now_secs()
+            .unwrap_or(0)
+            .saturating_add(self.token_validity_seconds);
         let signature = self.sign(username, expiry, password);
         URL_SAFE_NO_PAD.encode(format!("{username}:{expiry}:{signature}"))
     }
 
-    /// The signature over `username:expiry:password:key`.
+    /// The HMAC-SHA256 signature, keyed by the server `key`, over the message
+    /// `username:expiry:password`.
     fn sign(&self, username: &str, expiry: u64, password: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{username}:{expiry}:{password}:{}", self.key).as_bytes());
-        URL_SAFE_NO_PAD.encode(hasher.finalize())
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.key.as_bytes())
+            .expect("HMAC accepts a key of any length");
+        mac.update(format!("{username}:{expiry}:{password}").as_bytes());
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
     }
 }
 
@@ -110,7 +119,8 @@ impl RememberMeServices for TokenBasedRememberMeServices {
         let signature = parts.next()?;
         let expiry: u64 = parts.next()?.parse().ok()?;
         let username = parts.next()?;
-        if now_secs() > expiry {
+        // Fail closed on a clock error (a pre-UNIX-EPOCH clock): `?` rejects.
+        if now_secs()? > expiry {
             return None;
         }
         let user = self
@@ -130,12 +140,14 @@ impl RememberMeServices for TokenBasedRememberMeServices {
     }
 }
 
-/// The current wall-clock time in epoch seconds.
-fn now_secs() -> u64 {
+/// The current wall-clock time in epoch seconds, or `None` if the system clock
+/// is set before the UNIX epoch. Validation treats `None` as "reject" (fail
+/// closed) so a broken clock can never disable the expiry check.
+fn now_secs() -> Option<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
+        .ok()
         .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -175,7 +187,7 @@ mod tests {
     async fn expired_token_is_rejected() {
         let svc = service().token_validity_seconds(0);
         // Forge an already-past expiry directly (deterministic).
-        let past = now_secs().saturating_sub(10);
+        let past = now_secs().unwrap().saturating_sub(10);
         let sig = svc.sign("alice", past, "stored-hash-v1");
         let token = URL_SAFE_NO_PAD.encode(format!("alice:{past}:{sig}"));
         assert!(svc.auto_login(&token).await.is_none());
@@ -226,8 +238,9 @@ mod tests {
     #[tokio::test]
     async fn unknown_user_token_is_rejected() {
         let svc = service();
-        let sig = svc.sign("ghost", now_secs() + 100, "x");
-        let token = URL_SAFE_NO_PAD.encode(format!("ghost:{}:{sig}", now_secs() + 100));
+        let future = now_secs().unwrap() + 100;
+        let sig = svc.sign("ghost", future, "x");
+        let token = URL_SAFE_NO_PAD.encode(format!("ghost:{future}:{sig}"));
         assert!(svc.auto_login(&token).await.is_none());
     }
 }

@@ -2661,6 +2661,7 @@ dependencies = [
  "bcrypt",
  "firefly-session",
  "globset",
+ "hmac 0.12.1",
  "http",
  "http-body-util",
  "jsonwebtoken",

@@ -77,6 +77,22 @@ impl SavedRequest {
         &self.uri
     }
 
+    /// Whether [`redirect_url`](Self::redirect_url) is a safe **same-origin**
+    /// target: a rooted absolute path (`/…`) that is neither protocol-relative
+    /// (`//host`) nor backslash-tricked (`/\host`, which some browsers treat as
+    /// `//host`), and contains no control characters (which would enable header
+    /// injection). A post-login redirect should honour the saved request only
+    /// when this holds, so a crafted off-site or header-splitting path can never
+    /// turn the login flow into an open redirect.
+    #[must_use]
+    pub fn is_safe_redirect(&self) -> bool {
+        let p = self.uri.as_bytes();
+        p.first() == Some(&b'/')
+            && p.get(1) != Some(&b'/')
+            && p.get(1) != Some(&b'\\')
+            && !self.uri.bytes().any(|b| b.is_ascii_control())
+    }
+
     /// Whether `incoming` is the same request that was saved (method + target),
     /// used by [`RequestCache::get_matching_request`] to recognize a replay.
     #[must_use]
@@ -209,6 +225,20 @@ mod tests {
         assert_eq!(saved.method, "GET");
         assert_eq!(saved.uri, "/dashboard?tab=1");
         assert_eq!(saved.redirect_url(), "/dashboard?tab=1");
+    }
+
+    #[test]
+    fn is_safe_redirect_rejects_off_site_targets() {
+        // Same-origin rooted paths are safe.
+        assert!(SavedRequest::new("GET", "/").is_safe_redirect());
+        assert!(SavedRequest::new("GET", "/dashboard?tab=1").is_safe_redirect());
+        // Protocol-relative, backslash-tricked, absolute, empty, and
+        // control-char (header-injection) targets are not.
+        assert!(!SavedRequest::new("GET", "//evil.com").is_safe_redirect());
+        assert!(!SavedRequest::new("GET", "/\\evil.com").is_safe_redirect());
+        assert!(!SavedRequest::new("GET", "https://evil.com").is_safe_redirect());
+        assert!(!SavedRequest::new("GET", "").is_safe_redirect());
+        assert!(!SavedRequest::new("GET", "/x\r\nSet-Cookie: evil=1").is_safe_redirect());
     }
 
     #[tokio::test]

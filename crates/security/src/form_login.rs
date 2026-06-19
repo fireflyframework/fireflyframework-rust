@@ -179,10 +179,14 @@ async fn handle_login(
             session.rotate_id().await;
             state.repository.save(&session, &auth).await;
             // Saved-request-aware: prefer the page the user originally wanted
-            // (cached by the entry point) over the configured success target.
+            // (cached by the entry point) over the configured success target —
+            // but only for a safe same-origin target, so a crafted off-site
+            // saved path can never turn login into an open redirect.
             if let Some(saved) = state.request_cache.get_request(&session).await {
                 state.request_cache.remove_request(&session).await;
-                return redirect(saved.redirect_url());
+                if saved.is_safe_redirect() {
+                    return redirect(saved.redirect_url());
+                }
             }
             state.success.on_success(&auth).await
         }
@@ -200,13 +204,19 @@ pub fn form_login_routes(state: Arc<FormLoginState>) -> Router {
         .with_state(state)
 }
 
-/// 302 redirect to `location`.
+/// 302 redirect to `location`. The `Location` header value is built fallibly —
+/// a `location` carrying a control character (CR/LF, …) would otherwise make
+/// the response builder fail; rather than panic, fall back to `"/"` (so a
+/// crafted or misconfigured target degrades safely instead of crashing the
+/// request, and cannot split the response header).
 fn redirect(location: &str) -> Response {
+    let value = header::HeaderValue::from_str(location)
+        .unwrap_or_else(|_| header::HeaderValue::from_static("/"));
     Response::builder()
         .status(StatusCode::FOUND)
-        .header(header::LOCATION, location)
+        .header(header::LOCATION, value)
         .body(axum::body::Body::empty())
-        .expect("static redirect response must build")
+        .expect("redirect response with a valid header value must build")
 }
 
 #[cfg(test)]
@@ -320,5 +330,48 @@ mod tests {
         assert_eq!(resp.headers()[header::LOCATION], "/reports?y=2026");
         // ...and the saved request was consumed.
         assert!(cache.get_request(&session).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn unsafe_saved_request_does_not_open_redirect() {
+        use crate::request_cache::{HttpSessionRequestCache, SavedRequest};
+
+        let state = Arc::new(FormLoginState::new(manager()).success_url("/home"));
+        let app = form_login_routes(state);
+        let session = Session::new(SessionInner::new("sid"));
+        // A crafted protocol-relative path that would redirect off-site.
+        let cache = HttpSessionRequestCache::new();
+        cache
+            .save_request(&session, SavedRequest::new("GET", "//evil.com"))
+            .await;
+
+        let mut req = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/login")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from("username=alice&password=pw"))
+            .unwrap();
+        req.extensions_mut().insert(session.clone());
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Falls back to the configured (same-origin) success URL, never //evil.com...
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()[header::LOCATION], "/home");
+        // ...and the poisoned saved request is still consumed.
+        assert!(cache.get_request(&session).await.is_none());
+    }
+
+    #[test]
+    fn redirect_does_not_panic_on_a_control_char_location() {
+        // A control char would make HeaderValue construction fail; redirect()
+        // must fall back to "/" rather than panic the request thread.
+        let resp = redirect("/x\r\nSet-Cookie: evil=1");
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()[header::LOCATION], "/");
+        // A normal target is untouched.
+        assert_eq!(
+            redirect("/dashboard").headers()[header::LOCATION],
+            "/dashboard"
+        );
     }
 }
