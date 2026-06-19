@@ -22,7 +22,8 @@ En la columna **Estado**, :status-supported: indica una función soportada,
 | Autorización de peticiones HTTP (`FilterChain`, RBAC, jerarquía de roles) | :status-supported: | Coincidencia por segmentos de ruta, denegar por defecto, gana la primera regla |
 | Servidor de recursos Bearer / OAuth2 (JWT) | :status-supported: | JWKS con RSA + **EC (ES256/384)** + **EdDSA**; validación de `iss`/`aud`/`exp`/`nbf`; tolerancia de reloj de 60 s; *challenge* `WWW-Authenticate` (RFC 6750) |
 | JWT simétrico (`JwtService`) | :status-supported: | HS256/384/512, `exp` obligatorio, tolerancia de reloj |
-| Seguridad de método (`#[pre_authorize]` / `#[post_authorize]`) | :status-supported: | Funciona igual con autenticación **bearer *y* de sesión/OAuth2-login** |
+| Seguridad de método (`#[pre_authorize]` / `#[post_authorize]`) | :status-supported: | Funciona igual con autenticación **bearer *y* de sesión/OAuth2-login**; reglas por palabra clave **y** expresiones estilo SpEL sobre argumentos + principal |
+| Profundidad de seguridad de método (`@PreFilter`/`@PostFilter`, `PermissionEvaluator`) | :status-supported: | Filtrado de colecciones `#[pre_filter]` / `#[post_filter]`; `PermissionEvaluator` + `has_permission` (`hasPermission(...)`), utilizable dentro de las expresiones |
 | Comprobación de roles (`hasRole`) | :status-supported: | Acepta el prefijo `ROLE_` de Spring *y* nombres de rol sin prefijo |
 | CORS | :status-supported: | Rechaza la combinación insegura de origen comodín + credenciales |
 | Cabeceras de respuesta de seguridad | :status-supported: | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; **HSTS solo en peticiones seguras** por defecto |
@@ -110,6 +111,33 @@ de Spring:
   `PathRequestMatcher::new("/api")`) coincide, de modo que un `/api/**` blindado
   y una superficie web permisiva coexisten — el `FilterChainProxy` de Spring.
 
+## Seguridad de método
+
+`#[pre_authorize]` / `#[post_authorize]` protegen un método de servicio frente
+al principal ambiente — sin `Request` en la firma. Además de las reglas por
+palabra clave (`role = "ADMIN"`, `any_authority = [..]`), aceptan
+**expresiones**, el análogo en Rust del SpEL de Spring:
+
+- **Enlace de argumentos + principal** — un `#[pre_authorize(...)]` que no es una
+  palabra clave es una expresión booleana de Rust evaluada *antes* del cuerpo con
+  los parámetros del método y `auth` (un `&Authentication`) a la vista:
+  `#[pre_authorize(auth.has_role("ADMIN") || auth.principal == owner)]`
+  (el `@PreAuthorize("#owner == authentication.name")` de Spring).
+  `#[post_authorize]` enlaza `result` + `auth` sobre el valor de retorno.
+- **`PermissionEvaluator`** — registra uno a nivel de proceso con
+  `set_permission_evaluator` y luego llama a
+  `has_permission(auth, target, permission)` dentro de cualquier expresión
+  pre/post (el `hasPermission(#obj, 'read')` de Spring). Sin evaluador
+  registrado, todo permiso se **deniega** (cierre seguro).
+- **`#[pre_filter]` / `#[post_filter]`** — filtran una colección por un predicado
+  por elemento: `#[post_filter(element.owner == auth.principal)]` descarta del
+  `Vec` devuelto las filas que el llamante no posee; `#[pre_filter(items, …)]`
+  hace lo mismo con un argumento `mut` antes del cuerpo (el
+  `@PreFilter`/`@PostFilter` de Spring, donde `element` es el `filterObject`).
+
+Las cuatro fallan en cerrado: sin contexto ambiente se deniega con
+`Unauthenticated`, y una expresión falsa con `Forbidden`.
+
 ## Login sin contraseña
 
 Firefly incluye los dos mecanismos sin contraseña de Spring Security 6.4:
@@ -137,8 +165,9 @@ La paridad se entrega por niveles, cada uno un incremento:
 3. **Mecanismos web (hecho)** — form login, HTTP Basic, remember-me,
    `RequestCache` / `SavedRequest`, `SessionCreationPolicy`, múltiples cadenas de
    filtros.
-4. **Profundidad de seguridad de método** — enlace de argumentos/principal estilo
-   SpEL, `@PreFilter`/`@PostFilter`, `PermissionEvaluator`.
+4. **Profundidad de seguridad de método (hecho)** — enlace de
+   argumentos/principal estilo SpEL, `@PreFilter`/`@PostFilter`,
+   `PermissionEvaluator`.
 5. **Ecosistema OAuth2** — introspección de tokens opacos, gestor de clientes
    autorizados salientes, logout iniciado por RP, servidor de autorización
    montado.
