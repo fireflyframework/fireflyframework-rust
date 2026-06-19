@@ -157,7 +157,9 @@ mod remember_me;
 mod request_cache;
 mod role_hierarchy;
 mod security_context;
+mod security_filter_chains;
 mod session_auth;
+mod session_policy;
 mod userdetails;
 #[cfg(feature = "webauthn")]
 mod webauthn;
@@ -216,10 +218,15 @@ pub use role_hierarchy::RoleHierarchy;
 pub use security_context::{
     HttpSessionSecurityContextRepository, NullSecurityContextRepository, SecurityContextRepository,
 };
+pub use security_filter_chains::{
+    AnyRequestMatcher, PathRequestMatcher, RequestMatcher, SecurityFilterChains,
+    SecurityFilterChainsLayer, SecurityFilterChainsService,
+};
 pub use session_auth::{
     SessionAuthenticationLayer, SessionAuthenticationService, SessionLoginSession,
     SessionLoginSessionStore,
 };
+pub use session_policy::SessionCreationPolicy;
 pub use userdetails::{
     AccountStatusUserDetailsChecker, DaoAuthenticationProvider, InMemoryUserDetailsService,
     UserDetails, UserDetailsChecker, UserDetailsService,

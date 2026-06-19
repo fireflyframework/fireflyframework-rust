@@ -72,6 +72,7 @@ use firefly_session::{
 use crate::authentication::Authentication;
 use crate::oauth2::{LoginSession, LoginSessionStore};
 use crate::security_context::{HttpSessionSecurityContextRepository, SecurityContextRepository};
+use crate::session_policy::SessionCreationPolicy;
 
 /// Tower [`Layer`] that restores an [`Authentication`] from the request's
 /// [`firefly_session::Session`] — the Rust port of pyfly's
@@ -140,6 +141,21 @@ impl SessionAuthenticationLayer {
     #[must_use]
     pub fn with_repository(mut self, repository: Arc<dyn SecurityContextRepository>) -> Self {
         self.repository = repository;
+        self
+    }
+
+    /// Selects the [`SecurityContextRepository`] from a
+    /// [`SessionCreationPolicy`] — Spring's
+    /// `sessionManagement().sessionCreationPolicy(...)`.
+    /// [`Stateless`](SessionCreationPolicy::Stateless) installs the
+    /// [`NullSecurityContextRepository`](crate::NullSecurityContextRepository)
+    /// (no session context); the others keep the session-backed repository. For
+    /// a token-only API, combine with
+    /// [`anonymous_fallback(false)`](Self::anonymous_fallback) so a following
+    /// [`BearerLayer`](crate::BearerLayer) governs the request.
+    #[must_use]
+    pub fn session_creation_policy(mut self, policy: SessionCreationPolicy) -> Self {
+        self.repository = policy.security_context_repository();
         self
     }
 }
@@ -635,6 +651,57 @@ mod tests {
 
         // Null repo restores nothing -> the anonymous fallback applies, so the
         // stored "u1" context is NOT seen.
+        assert_eq!(
+            seen.lock().unwrap().as_deref(),
+            Some(crate::authentication::ANONYMOUS_ID)
+        );
+    }
+
+    // T2.5: SessionCreationPolicy::Stateless installs the Null repository, so a
+    // session that *does* hold a context is ignored (Spring's STATELESS) — the
+    // same proof as `with_repository_swaps_the_context_source`, via the policy.
+    #[tokio::test]
+    async fn stateless_policy_ignores_session_context() {
+        use std::sync::Mutex;
+        use tower::ServiceExt;
+
+        let session = Session::new(SessionInner::new("sid"));
+        let auth = Authentication {
+            principal: "u1".into(),
+            ..Default::default()
+        };
+        session
+            .set_attribute(
+                SESSION_KEY_SECURITY_CONTEXT,
+                serde_json::to_string(&auth).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let probe = seen.clone();
+        let inner = tower::service_fn(move |_req: Request| {
+            let probe = probe.clone();
+            async move {
+                *probe.lock().unwrap() = crate::current_authentication().map(|a| a.principal);
+                Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+            }
+        });
+
+        let mut req = Request::new(axum::body::Body::empty());
+        req.extensions_mut().insert(session);
+
+        let _ = SessionAuthenticationLayer::new()
+            .session_creation_policy(SessionCreationPolicy::Stateless)
+            // A token API would disable the anonymous fallback; keep it on here
+            // to prove the *stored* context is what gets ignored.
+            .layer(inner)
+            .oneshot(req)
+            .await
+            .unwrap();
+
+        // STATELESS reads nothing from the session, so the anonymous fallback
+        // applies and the stored "u1" is NOT seen.
         assert_eq!(
             seen.lock().unwrap().as_deref(),
             Some(crate::authentication::ANONYMOUS_ID)
