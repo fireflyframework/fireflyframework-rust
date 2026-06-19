@@ -31,6 +31,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use tower::{Layer, Service};
 
 use crate::authentication::{Authentication, SecurityError, ANONYMOUS_ID, ROLE_PREFIX};
+use crate::exception::{AccessDeniedHandler, AuthenticationEntryPoint};
 use crate::problem;
 use crate::role_hierarchy::RoleHierarchy;
 
@@ -150,10 +151,23 @@ fn compile_glob(pattern: &str) -> Result<GlobMatcher, SecurityError> {
 /// (pyfly `any_request().permit_all()`). A chain with **no** rules at
 /// all is a no-op and passes every request through, so it never becomes
 /// a blanket lockout.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct FilterChain {
     rules: Vec<Rule>,
     hierarchy: Option<Arc<RoleHierarchy>>,
+    entry_point: Option<Arc<dyn AuthenticationEntryPoint>>,
+    access_denied: Option<Arc<dyn AccessDeniedHandler>>,
+}
+
+impl std::fmt::Debug for FilterChain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilterChain")
+            .field("rules", &self.rules.len())
+            .field("hierarchy", &self.hierarchy.is_some())
+            .field("custom_entry_point", &self.entry_point.is_some())
+            .field("custom_access_denied", &self.access_denied.is_some())
+            .finish()
+    }
 }
 
 impl FilterChain {
@@ -332,6 +346,24 @@ impl FilterChain {
         self
     }
 
+    /// Sets the [`AuthenticationEntryPoint`] that renders the `401` for an
+    /// unauthenticated request (default: the canonical problem+json envelope).
+    pub fn with_authentication_entry_point(
+        mut self,
+        entry_point: Arc<dyn AuthenticationEntryPoint>,
+    ) -> Self {
+        self.entry_point = Some(entry_point);
+        self
+    }
+
+    /// Sets the [`AccessDeniedHandler`] that renders the `403` for an
+    /// authenticated-but-forbidden request (default: the canonical problem+json
+    /// envelope).
+    pub fn with_access_denied_handler(mut self, handler: Arc<dyn AccessDeniedHandler>) -> Self {
+        self.access_denied = Some(handler);
+        self
+    }
+
     /// The declared rules, in evaluation order.
     pub fn rules(&self) -> &[Rule] {
         &self.rules
@@ -366,6 +398,8 @@ impl FilterChain {
         Ok(FilterChainLayer {
             rules: Arc::new(compiled),
             hierarchy: self.hierarchy,
+            entry_point: self.entry_point,
+            access_denied: self.access_denied,
         })
     }
 }
@@ -375,6 +409,8 @@ impl FilterChain {
 pub struct FilterChainLayer {
     rules: Arc<Vec<CompiledRule>>,
     hierarchy: Option<Arc<RoleHierarchy>>,
+    entry_point: Option<Arc<dyn AuthenticationEntryPoint>>,
+    access_denied: Option<Arc<dyn AccessDeniedHandler>>,
 }
 
 impl<S> Layer<S> for FilterChainLayer {
@@ -385,6 +421,8 @@ impl<S> Layer<S> for FilterChainLayer {
             inner,
             rules: Arc::clone(&self.rules),
             hierarchy: self.hierarchy.clone(),
+            entry_point: self.entry_point.clone(),
+            access_denied: self.access_denied.clone(),
         }
     }
 }
@@ -400,6 +438,8 @@ pub struct FilterChainService<S> {
     inner: S,
     rules: Arc<Vec<CompiledRule>>,
     hierarchy: Option<Arc<RoleHierarchy>>,
+    entry_point: Option<Arc<dyn AuthenticationEntryPoint>>,
+    access_denied: Option<Arc<dyn AccessDeniedHandler>>,
 }
 
 /// The decision a matched rule produced.
@@ -497,11 +537,21 @@ where
         let verdict = decide(&self.rules, self.hierarchy.as_deref(), &req);
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
+        let entry_point = self.entry_point.clone();
+        let access_denied = self.access_denied.clone();
         Box::pin(async move {
             match verdict {
                 Verdict::Pass => inner.call(req).await,
-                Verdict::Unauthorized => Ok(problem::unauthorized("authentication required")),
-                Verdict::Forbidden(detail) => Ok(problem::forbidden(detail)),
+                // Render rejections through the configured handlers, falling
+                // back to the canonical RFC 7807 problem+json envelopes.
+                Verdict::Unauthorized => Ok(match &entry_point {
+                    Some(ep) => ep.commence(&req, "authentication required"),
+                    None => problem::unauthorized("authentication required"),
+                }),
+                Verdict::Forbidden(detail) => Ok(match &access_denied {
+                    Some(handler) => handler.handle(&req, detail),
+                    None => problem::forbidden(detail),
+                }),
             }
         })
     }
@@ -592,6 +642,70 @@ mod tests {
         assert_eq!(
             status(chain(), role("u3", "USER"), "/admin/x").await,
             http::StatusCode::FORBIDDEN
+        );
+    }
+
+    // T1.5: a custom AccessDeniedHandler / AuthenticationEntryPoint renders the
+    // rejection instead of the default problem+json (Spring's
+    // ExceptionTranslationFilter seam).
+    #[tokio::test]
+    async fn custom_exception_handlers_render_rejections() {
+        use crate::exception::{AccessDeniedHandler, AuthenticationEntryPoint};
+
+        struct Teapot;
+        impl AccessDeniedHandler for Teapot {
+            fn handle(&self, _req: &Request, _detail: &str) -> Response {
+                Response::builder()
+                    .status(http::StatusCode::IM_A_TEAPOT)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }
+        }
+        impl AuthenticationEntryPoint for Teapot {
+            fn commence(&self, _req: &Request, _detail: &str) -> Response {
+                Response::builder()
+                    .status(http::StatusCode::PAYMENT_REQUIRED)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }
+        }
+
+        async fn status(chain: FilterChain, auth: Option<Authentication>) -> http::StatusCode {
+            let inner = tower::service_fn(|_r: Request| async {
+                Ok::<Response, Infallible>(Response::new(axum::body::Body::empty()))
+            });
+            let svc = chain.layer().layer(inner);
+            let mut req = Request::builder()
+                .method("GET")
+                .uri("/admin/x")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            if let Some(a) = auth {
+                req.extensions_mut().insert(a);
+            }
+            svc.oneshot(req).await.unwrap().status()
+        }
+
+        let chain = || {
+            FilterChain::new()
+                .require_pattern("/admin/**", &["ADMIN"])
+                .with_access_denied_handler(Arc::new(Teapot))
+                .with_authentication_entry_point(Arc::new(Teapot))
+        };
+        // Authenticated but missing role -> custom AccessDeniedHandler (418).
+        let user = Authentication {
+            principal: "u1".into(),
+            roles: vec!["USER".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            status(chain(), Some(user)).await,
+            http::StatusCode::IM_A_TEAPOT
+        );
+        // Unauthenticated -> custom AuthenticationEntryPoint (402).
+        assert_eq!(
+            status(chain(), None).await,
+            http::StatusCode::PAYMENT_REQUIRED
         );
     }
 

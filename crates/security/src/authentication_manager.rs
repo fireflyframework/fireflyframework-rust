@@ -109,13 +109,17 @@ pub trait AuthenticationManager: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ProviderManager {
     providers: Vec<Arc<dyn AuthenticationProvider>>,
+    event_publisher: Option<Arc<dyn AuthenticationEventPublisher>>,
 }
 
 impl ProviderManager {
     /// Builds a manager over `providers`, tried in declaration order.
     #[must_use]
     pub fn new(providers: Vec<Arc<dyn AuthenticationProvider>>) -> Self {
-        Self { providers }
+        Self {
+            providers,
+            event_publisher: None,
+        }
     }
 
     /// Appends a provider (builder style).
@@ -123,6 +127,42 @@ impl ProviderManager {
     pub fn with_provider(mut self, provider: Arc<dyn AuthenticationProvider>) -> Self {
         self.providers.push(provider);
         self
+    }
+
+    /// Installs an [`AuthenticationEventPublisher`] notified of every
+    /// authentication success and failure (Spring's `AuthenticationEventPublisher`).
+    #[must_use]
+    pub fn with_event_publisher(
+        mut self,
+        publisher: Arc<dyn AuthenticationEventPublisher>,
+    ) -> Self {
+        self.event_publisher = Some(publisher);
+        self
+    }
+
+    async fn publish_success(&self, auth: &Authentication) {
+        if let Some(publisher) = &self.event_publisher {
+            publisher
+                .publish(AuthenticationEvent::Success {
+                    principal: auth.principal.clone(),
+                })
+                .await;
+        }
+    }
+
+    async fn publish_failure(&self, request: &AuthenticationRequest, error: &SecurityError) {
+        if let Some(publisher) = &self.event_publisher {
+            let username = match request {
+                AuthenticationRequest::UsernamePassword { username, .. } => Some(username.clone()),
+                _ => None,
+            };
+            publisher
+                .publish(AuthenticationEvent::Failure {
+                    username,
+                    error: error.to_string(),
+                })
+                .await;
+        }
     }
 }
 
@@ -148,16 +188,22 @@ impl AuthenticationManager for ProviderManager {
             }
             supported = true;
             match provider.authenticate(&request).await {
-                Ok(auth) => return Ok(auth),
+                Ok(auth) => {
+                    self.publish_success(&auth).await;
+                    return Ok(auth);
+                }
                 Err(err) => last_err = Some(err),
             }
         }
-        if !supported {
-            return Err(SecurityError::verification(
+        let error = if supported {
+            last_err.unwrap_or(SecurityError::Unauthenticated)
+        } else {
+            SecurityError::verification(
                 "no AuthenticationProvider supports the presented credentials",
-            ));
-        }
-        Err(last_err.unwrap_or(SecurityError::Unauthenticated))
+            )
+        };
+        self.publish_failure(&request, &error).await;
+        Err(error)
     }
 }
 
@@ -201,10 +247,57 @@ impl AuthenticationProvider for BearerTokenAuthenticationProvider {
     }
 }
 
+/// An authentication outcome — the Rust analog of Spring's
+/// `AuthenticationSuccessEvent` / `AbstractAuthenticationFailureEvent`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthenticationEvent {
+    /// A principal authenticated successfully.
+    Success {
+        /// The authenticated principal.
+        principal: String,
+    },
+    /// An authentication attempt failed.
+    Failure {
+        /// The attempted username, when the credential kind carries one.
+        username: Option<String>,
+        /// The failure reason (the `SecurityError`'s display).
+        error: String,
+    },
+}
+
+/// Receives authentication outcome events — Spring's
+/// `AuthenticationEventPublisher`. Install one on a [`ProviderManager`] via
+/// [`with_event_publisher`](ProviderManager::with_event_publisher).
+#[async_trait]
+pub trait AuthenticationEventPublisher: Send + Sync {
+    /// Handles an authentication [`AuthenticationEvent`].
+    async fn publish(&self, event: AuthenticationEvent);
+}
+
+/// The default [`AuthenticationEventPublisher`]: logs successes at `info` and
+/// failures at `warn` (never logging credentials).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LoggingAuthenticationEventPublisher;
+
+#[async_trait]
+impl AuthenticationEventPublisher for LoggingAuthenticationEventPublisher {
+    async fn publish(&self, event: AuthenticationEvent) {
+        match event {
+            AuthenticationEvent::Success { principal } => {
+                tracing::info!(principal = %principal, "authentication success");
+            }
+            AuthenticationEvent::Failure { username, error } => {
+                tracing::warn!(username = ?username, error = %error, "authentication failure");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::VerifierFn;
+    use std::sync::Mutex;
 
     fn auth(principal: &str) -> Authentication {
         Authentication {
@@ -314,6 +407,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(a.principal, "alice");
+    }
+
+    #[tokio::test]
+    async fn publishes_success_and_failure_events() {
+        #[derive(Default)]
+        struct Recorder(Mutex<Vec<AuthenticationEvent>>);
+        #[async_trait]
+        impl AuthenticationEventPublisher for Recorder {
+            async fn publish(&self, event: AuthenticationEvent) {
+                self.0.lock().unwrap().push(event);
+            }
+        }
+        let recorder = Arc::new(Recorder::default());
+        let mgr = ProviderManager::new(vec![Arc::new(PasswordProvider)])
+            .with_event_publisher(recorder.clone());
+
+        // Success -> Success{principal}.
+        mgr.authenticate(AuthenticationRequest::username_password("alice", "pw"))
+            .await
+            .unwrap();
+        // Failure -> Failure{username, error}.
+        let _ = mgr
+            .authenticate(AuthenticationRequest::username_password("alice", "bad"))
+            .await;
+
+        let events = recorder.0.lock().unwrap().clone();
+        assert_eq!(
+            events[0],
+            AuthenticationEvent::Success {
+                principal: "alice".into()
+            }
+        );
+        assert!(matches!(
+            &events[1],
+            AuthenticationEvent::Failure { username: Some(u), .. } if u == "alice"
+        ));
     }
 
     #[tokio::test]

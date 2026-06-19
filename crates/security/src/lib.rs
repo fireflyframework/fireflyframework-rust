@@ -142,6 +142,7 @@ mod bearer;
 mod config;
 mod context;
 mod csrf;
+mod exception;
 mod filter_chain;
 pub mod guards;
 mod jwks;
@@ -162,8 +163,9 @@ pub use authentication::{
     Verifier, VerifierFn, ANONYMOUS_ID, ROLE_PREFIX,
 };
 pub use authentication_manager::{
-    AuthenticationManager, AuthenticationProvider, AuthenticationRequest,
-    BearerTokenAuthenticationProvider, ProviderManager,
+    AuthenticationEvent, AuthenticationEventPublisher, AuthenticationManager,
+    AuthenticationProvider, AuthenticationRequest, BearerTokenAuthenticationProvider,
+    LoggingAuthenticationEventPublisher, ProviderManager,
 };
 pub use bearer::{BearerConfig, BearerLayer, BearerService, UnauthorizedHandler};
 pub use config::{
@@ -177,6 +179,10 @@ pub use context::{
 pub use csrf::{
     generate_csrf_token, is_safe_method, validate_csrf_token, CookieSecure, CsrfLayer, CsrfService,
     CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SAFE_METHODS,
+};
+pub use exception::{
+    AccessDeniedHandler, AuthenticationEntryPoint, ProblemAccessDeniedHandler,
+    ProblemAuthenticationEntryPoint,
 };
 pub use filter_chain::{FilterChain, FilterChainLayer, FilterChainService, Rule};
 pub use guards::{require, AuthorizationGuard};
