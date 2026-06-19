@@ -47,7 +47,8 @@ En la columna **Estado**, :status-supported: indica una función soportada,
 | Logout iniciado por RP (OIDC) | :status-supported: | `oidc_logout_url` — el logout redirige al `end_session_endpoint` del proveedor (`OidcClientInitiatedLogoutSuccessHandler`) |
 | Servidor de autorización | :status-partial: | `AuthorizationServer` (client-credentials + refresh-token) montado vía `AuthorizationServerRouter` (`/oauth2/token`, metadatos RFC 8414); el grant authorization_code del lado servidor en la hoja de ruta |
 | Autenticación LDAP / Active Directory | :status-partial: | Módulo `ldap` opcional: `LdapAuthenticationProvider` (bind auth + autoridades de grupo) + `ActiveDirectoryLdapAuthenticationProvider`, sobre `ldap3` (`ldapAuthentication()`) |
-| ACL / seguridad de objetos de dominio · SAML2 | :status-planned: | Hoja de ruta (opcional) |
+| ACL / seguridad de objetos de dominio | :status-supported: | `Acl` / `AccessControlEntry` / `Permission` / `Sid` / `ObjectIdentity`, `AclService` + `InMemoryAclService`, y `AclPermissionEvaluator` que conecta `hasPermission(...)` con ACLs por objeto (`spring-security-acl`) |
+| SAML2 (`saml2Login()`) | :status-planned: | Implementación del lado SP (`RelyingPartyRegistration` + verificación de respuestas firmadas) tras una característica opcional; el *release* depende de una pila XML-Security de Rust estable |
 
 ## Comportamientos fieles a Spring que conviene conocer
 
@@ -218,6 +219,33 @@ adversarial previa al *release*:
   lugar de autenticar en silencio sin roles, y una **entrada de directorio
   malformada** se convierte en un error limpio en vez de abortar la petición.
 
+## Seguridad de objetos de dominio (ACL)
+
+Donde el [`PermissionEvaluator`](#) responde "¿puede este principal hacer X
+sobre este objeto?" con código arbitrario, una **ACL** lo responde a partir de
+listas de control de acceso por objeto — el análogo en Rust de
+`spring-security-acl`. Es Rust puro (sin dependencias extra):
+
+- **`Permission`** — la máscara de bits `BasePermission` (`READ`, `WRITE`,
+  `CREATE`, `DELETE`, `ADMINISTRATION`), combinable en una máscara acumulativa.
+- **`Sid`** — una identidad de seguridad: un `Principal` (usuario) o una
+  `Authority` (rol), el `PrincipalSid` / `GrantedAuthoritySid` de Spring.
+- **`ObjectIdentity`** — la clave `(tipo, identificador)` de un objeto de dominio.
+- **`Acl`** — un propietario, más **`AccessControlEntry`s** ordenadas (conceden o
+  deniegan un permiso a un sid), más un padre opcional para **herencia**.
+- **`AclService`** / **`InMemoryAclService`** — buscan una ACL por identidad
+  (el `MutableAclService` de Spring).
+- **`AclPermissionEvaluator`** — conecta un `AclService` con la expresión
+  `hasPermission(...)` de seguridad de métodos, por referencia y por `(tipo, id)`.
+
+La evaluación es **denegar por defecto**: un permiso se concede solo cuando se
+encuentra una entrada *concedente* aplicable, local o subiendo por la cadena de
+herencia; **gana la primera entrada que coincide con `(sid, permiso)`**, de modo
+que un *deny* colocado antes de un *grant* tiene prioridad (la
+`DefaultPermissionGrantingStrategy` de Spring). El recorrido de herencia está
+acotado, así que una cadena de padres cíclica o demasiado profunda termina (y
+deniega) en vez de quedar en bucle.
+
 ## Hoja de ruta
 
 La paridad se entrega por niveles, cada uno un incremento:
@@ -238,5 +266,8 @@ La paridad se entrega por niveles, cada uno un incremento:
    servidor de autorización montado sobre HTTP con metadatos RFC 8414. (El grant
    authorization_code del lado servidor queda como seguimiento.)
 6. **Subsistemas grandes** — entregados de uno en uno (opcional). **LDAP /
-   Active Directory (hecho)** — el módulo `ldap` opcional. Quedan **SAML2** y
-   **ACL / seguridad de objetos de dominio**.
+   Active Directory (hecho)** — el módulo `ldap` opcional. **ACL / seguridad de
+   objetos de dominio (hecho)** — paridad con `spring-security-acl`, en Rust puro.
+   **SAML2** tiene una implementación del lado SP (registro + verificación de
+   respuestas firmadas) tras una característica opcional, con *release* pendiente
+   de una pila XML-Security de Rust estable.
