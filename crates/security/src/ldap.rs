@@ -102,6 +102,25 @@ pub fn escape_filter_value(value: &str) -> String {
     out
 }
 
+/// Collapses a search result to its single entry, mirroring Spring's
+/// `IncorrectResultSizeDataAccessException`: `Ok(None)` for no match,
+/// `Ok(Some(entry))` for exactly one, and `Err` when the search is **ambiguous**
+/// (more than one entry).
+///
+/// An ambiguous user search must never silently bind against — or read
+/// authorities from — an arbitrary first match (RFC 4511 leaves result ordering
+/// unspecified), so the providers fail closed instead.
+fn single_entry(entries: Vec<LdapEntry>) -> Result<Option<LdapEntry>, SecurityError> {
+    let mut it = entries.into_iter();
+    let first = it.next();
+    if it.next().is_some() {
+        return Err(SecurityError::verification(
+            "ambiguous directory search: more than one entry matched",
+        ));
+    }
+    Ok(first)
+}
+
 /// Bind-authentication provider over a directory — Spring's
 /// `LdapAuthenticationProvider` with a `BindAuthenticator` +
 /// `DefaultLdapAuthoritiesPopulator`.
@@ -169,10 +188,19 @@ impl LdapAuthenticationProvider {
 
     /// Collects `ROLE_<GROUP>` authorities for `user_dn` / `username` from the
     /// configured group search (empty when group search is disabled).
-    async fn authorities_for(&self, user_dn: &str, username: &str) -> Vec<String> {
+    ///
+    /// A directory error is **propagated**, not swallowed: Spring's
+    /// `DefaultLdapAuthoritiesPopulator` surfaces the search exception rather
+    /// than silently authenticating with zero roles, which would be a hard-to-
+    /// diagnose privilege loss on a transient directory hiccup.
+    async fn authorities_for(
+        &self,
+        user_dn: &str,
+        username: &str,
+    ) -> Result<Vec<String>, SecurityError> {
         let (Some(base), Some(filter)) = (&self.group_search_base, &self.group_search_filter)
         else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let filter = filter
             .replace("{0}", &escape_filter_value(user_dn))
@@ -180,13 +208,12 @@ impl LdapAuthenticationProvider {
         let groups = self
             .ops
             .search(base, &filter, &[self.group_role_attribute.as_str()])
-            .await
-            .unwrap_or_default();
-        groups
+            .await?;
+        Ok(groups
             .iter()
             .filter_map(|g| g.first(&self.group_role_attribute))
             .map(|name| format!("{}{}", self.role_prefix, name.to_uppercase()))
-            .collect()
+            .collect())
     }
 }
 
@@ -209,19 +236,21 @@ impl AuthenticationProvider for LdapAuthenticationProvider {
             return Err(SecurityError::verification("Bad credentials"));
         }
 
-        // 1. Resolve the user DN (enumeration-safe: an unknown user fails the
-        //    same way as a wrong password).
+        // 1. Resolve the user DN. An unknown user fails with the same error
+        //    *value* as a wrong password (no text-based enumeration). Note: as
+        //    in Spring's `BindAuthenticator`, the unknown-user path skips the
+        //    bind, so a residual *timing* channel remains — search-then-bind
+        //    authentication cannot bind a DN it never found.
         let filter = self
             .user_search_filter
             .replace("{0}", &escape_filter_value(username));
-        let user_dn = self
-            .ops
-            .search(&self.user_search_base, &filter, &[])
-            .await?
-            .into_iter()
-            .next()
-            .map(|e| e.dn)
-            .ok_or_else(|| SecurityError::verification("Bad credentials"))?;
+        let user_dn = single_entry(
+            self.ops
+                .search(&self.user_search_base, &filter, &[])
+                .await?,
+        )?
+        .map(|e| e.dn)
+        .ok_or_else(|| SecurityError::verification("Bad credentials"))?;
 
         // 2. Bind as the user — the directory verifies the password.
         self.ops
@@ -229,8 +258,9 @@ impl AuthenticationProvider for LdapAuthenticationProvider {
             .await
             .map_err(|_| SecurityError::verification("Bad credentials"))?;
 
-        // 3. Group authorities.
-        let roles = self.authorities_for(&user_dn, username).await;
+        // 3. Group authorities (a directory error here fails the login rather
+        //    than silently dropping the user's roles).
+        let roles = self.authorities_for(&user_dn, username).await?;
 
         Ok(Authentication {
             principal: user_dn,
@@ -324,18 +354,18 @@ impl AuthenticationProvider for ActiveDirectoryLdapAuthenticationProvider {
             .await
             .map_err(|_| SecurityError::verification("Bad credentials"))?;
 
-        // Read the user's DN + memberOf groups.
+        // Read the user's DN + memberOf groups. A directory error propagates
+        // (no silent role loss) and an ambiguous result is rejected rather than
+        // reading authorities from an arbitrary first entry.
         let filter = format!(
             "(&(objectClass=user)(userPrincipalName={}))",
             escape_filter_value(&upn)
         );
-        let entry = self
-            .ops
-            .search(&self.root_dn, &filter, &["memberOf"])
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .next();
+        let entry = single_entry(
+            self.ops
+                .search(&self.root_dn, &filter, &["memberOf"])
+                .await?,
+        )?;
 
         let (principal, roles) = match entry {
             Some(entry) => {
@@ -433,18 +463,24 @@ impl LdapOperations for Ldap3Operations {
             .map_err(ldap_err)?
             .success()
             .map_err(ldap_err)?;
-        let entries = rs
+        // `SearchEntry::construct` panics on a malformed / non-schema-conformant
+        // entry and `ldap3` 0.11 offers no fallible variant; a compromised or
+        // MITM'd directory could send one. Catch the unwind so a bad entry
+        // becomes a clean `Err` (fail closed) rather than aborting the in-flight
+        // authentication task.
+        let entries: Result<Vec<LdapEntry>, SecurityError> = rs
             .into_iter()
             .map(|e| {
-                let se = SearchEntry::construct(e);
-                LdapEntry {
-                    dn: se.dn,
-                    attrs: se.attrs,
-                }
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| SearchEntry::construct(e)))
+                    .map(|se| LdapEntry {
+                        dn: se.dn,
+                        attrs: se.attrs,
+                    })
+                    .map_err(|_| SecurityError::verification("ldap: malformed directory entry"))
             })
             .collect();
         let _ = ldap.unbind().await;
-        Ok(entries)
+        entries
     }
 
     async fn bind(&self, dn: &str, password: &str) -> Result<(), SecurityError> {
@@ -480,6 +516,10 @@ mod tests {
         group_cns: Vec<String>,
         /// `memberOf` group DNs attached to the user entry (Active Directory).
         member_of: Vec<String>,
+        /// When set, the user search returns a SECOND entry (ambiguous result).
+        duplicate_user: bool,
+        /// When set, the group search fails with a directory error.
+        fail_group_search: bool,
         /// Every filter passed to `search`, for injection-escaping assertions.
         seen_filters: Mutex<Vec<String>>,
     }
@@ -498,16 +538,25 @@ mod tests {
                 if !self.member_of.is_empty() {
                     attrs.insert("memberOf".to_string(), self.member_of.clone());
                 }
-                Ok(self
-                    .user_dn
-                    .clone()
-                    .map(|dn| LdapEntry {
-                        dn,
-                        attrs: attrs.clone(),
-                    })
-                    .into_iter()
-                    .collect())
+                let Some(dn) = self.user_dn.clone() else {
+                    return Ok(Vec::new());
+                };
+                let mut entries = vec![LdapEntry {
+                    dn,
+                    attrs: attrs.clone(),
+                }];
+                if self.duplicate_user {
+                    // A second, attacker-controlled entry matching the same filter.
+                    entries.push(LdapEntry {
+                        dn: "uid=evil,ou=people,dc=ex,dc=com".into(),
+                        attrs,
+                    });
+                }
+                Ok(entries)
             } else if base == self.group_search_base {
+                if self.fail_group_search {
+                    return Err(SecurityError::verification("group search failed"));
+                }
                 Ok(self
                     .group_cns
                     .iter()
@@ -573,7 +622,7 @@ mod tests {
             .await
             .is_err());
 
-        // Unknown user → no search hit, fails the same way (enumeration-safe).
+        // Unknown user → no search hit, fails with the same error value.
         let unknown = Arc::new(MockLdap {
             user_search_base: "ou=people,dc=ex,dc=com".into(),
             user_dn: None,
@@ -595,6 +644,42 @@ mod tests {
             ..MockLdap::default()
         });
         assert!(provider(mock).authenticate(&up("alice", "")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ambiguous_user_search_is_rejected() {
+        // Two entries match the user filter → fail closed (Spring's
+        // IncorrectResultSizeDataAccessException), never bind an arbitrary first
+        // match even when its password would succeed.
+        let mock = Arc::new(MockLdap {
+            user_search_base: "ou=people,dc=ex,dc=com".into(),
+            user_dn: Some("uid=alice,ou=people,dc=ex,dc=com".into()),
+            valid_bind: Some(("uid=alice,ou=people,dc=ex,dc=com".into(), "pw".into())),
+            duplicate_user: true,
+            ..MockLdap::default()
+        });
+        assert!(provider(mock)
+            .authenticate(&up("alice", "pw"))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn group_search_error_fails_the_login_not_silent_role_loss() {
+        // A directory error during authorities population must propagate, not
+        // authenticate the user with an empty (under-privileged) role set.
+        let mock = Arc::new(MockLdap {
+            user_search_base: "ou=people,dc=ex,dc=com".into(),
+            group_search_base: "ou=groups,dc=ex,dc=com".into(),
+            user_dn: Some("uid=alice,ou=people,dc=ex,dc=com".into()),
+            valid_bind: Some(("uid=alice,ou=people,dc=ex,dc=com".into(), "pw".into())),
+            fail_group_search: true,
+            ..MockLdap::default()
+        });
+        assert!(provider(mock)
+            .authenticate(&up("alice", "pw"))
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -689,6 +774,25 @@ mod tests {
             "dc=example,dc=com",
         );
         assert!(provider.authenticate(&up("alice", "")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn active_directory_rejects_ambiguous_member_of_search() {
+        // The UPN bind succeeds, but the post-bind directory search is ambiguous
+        // → refuse to read authorities from an arbitrary entry; fail the login.
+        let mock = Arc::new(MockLdap {
+            user_search_base: "dc=example,dc=com".into(),
+            user_dn: Some("CN=Alice,OU=People,DC=example,DC=com".into()),
+            valid_bind: Some(("alice@example.com".into(), "pw".into())),
+            duplicate_user: true,
+            ..MockLdap::default()
+        });
+        let provider = ActiveDirectoryLdapAuthenticationProvider::new(
+            mock,
+            "example.com",
+            "dc=example,dc=com",
+        );
+        assert!(provider.authenticate(&up("alice", "pw")).await.is_err());
     }
 
     // Live `ldap3` adapter smoke test — skipped unless FIREFLY_TEST_LDAP_URL is
