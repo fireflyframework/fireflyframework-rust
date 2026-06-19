@@ -40,6 +40,7 @@ use firefly_session::Session;
 
 use crate::authentication::{Authentication, SecurityError};
 use crate::authentication_manager::{AuthenticationManager, AuthenticationRequest};
+use crate::request_cache::{HttpSessionRequestCache, RequestCache};
 use crate::security_context::{HttpSessionSecurityContextRepository, SecurityContextRepository};
 
 /// Renders the response after a **successful** form login — Spring's
@@ -80,6 +81,7 @@ impl FormLoginFailureHandler for RedirectFailure {
 pub struct FormLoginState {
     manager: Arc<dyn AuthenticationManager>,
     repository: Arc<dyn SecurityContextRepository>,
+    request_cache: Arc<dyn RequestCache>,
     success: Arc<dyn FormLoginSuccessHandler>,
     failure: Arc<dyn FormLoginFailureHandler>,
 }
@@ -88,12 +90,16 @@ impl FormLoginState {
     /// Builds the state over the Tier 1 [`AuthenticationManager`], persisting
     /// the context with the default
     /// [`HttpSessionSecurityContextRepository`], redirecting to `"/"` on
-    /// success and `"/login?error"` on failure (Spring's defaults).
+    /// success and `"/login?error"` on failure (Spring's defaults). On success
+    /// it prefers any pre-login [`SavedRequest`](crate::SavedRequest) held by
+    /// the default [`HttpSessionRequestCache`] — Spring's
+    /// `SavedRequestAwareAuthenticationSuccessHandler`.
     #[must_use]
     pub fn new(manager: Arc<dyn AuthenticationManager>) -> Self {
         Self {
             manager,
             repository: Arc::new(HttpSessionSecurityContextRepository::new()),
+            request_cache: Arc::new(HttpSessionRequestCache::new()),
             success: Arc::new(RedirectSuccess("/".to_string())),
             failure: Arc::new(RedirectFailure("/login?error".to_string())),
         }
@@ -117,6 +123,16 @@ impl FormLoginState {
     #[must_use]
     pub fn repository(mut self, repository: Arc<dyn SecurityContextRepository>) -> Self {
         self.repository = repository;
+        self
+    }
+
+    /// Overrides the [`RequestCache`] consulted for a pre-login
+    /// [`SavedRequest`](crate::SavedRequest). Set a
+    /// [`NullRequestCache`](crate::NullRequestCache) to always use the
+    /// configured success target.
+    #[must_use]
+    pub fn request_cache(mut self, request_cache: Arc<dyn RequestCache>) -> Self {
+        self.request_cache = request_cache;
         self
     }
 
@@ -162,6 +178,12 @@ async fn handle_login(
             // persist the context where SessionAuthenticationLayer restores it.
             session.rotate_id().await;
             state.repository.save(&session, &auth).await;
+            // Saved-request-aware: prefer the page the user originally wanted
+            // (cached by the entry point) over the configured success target.
+            if let Some(saved) = state.request_cache.get_request(&session).await {
+                state.request_cache.remove_request(&session).await;
+                return redirect(saved.redirect_url());
+            }
             state.success.on_success(&auth).await
         }
         Err(error) => state.failure.on_failure(&error).await,
@@ -269,5 +291,34 @@ mod tests {
             .attribute::<String>(SESSION_KEY_SECURITY_CONTEXT)
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn valid_login_returns_to_the_saved_request() {
+        use crate::request_cache::{HttpSessionRequestCache, SavedRequest};
+
+        let state = Arc::new(FormLoginState::new(manager()).success_url("/home"));
+        let app = form_login_routes(state);
+        let session = Session::new(SessionInner::new("sid"));
+        // The entry point cached the page the user originally asked for.
+        let cache = HttpSessionRequestCache::new();
+        cache
+            .save_request(&session, SavedRequest::new("GET", "/reports?y=2026"))
+            .await;
+
+        let mut req = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/login")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from("username=alice&password=pw"))
+            .unwrap();
+        req.extensions_mut().insert(session.clone());
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Redirected to the saved page, not the default success URL...
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(resp.headers()[header::LOCATION], "/reports?y=2026");
+        // ...and the saved request was consumed.
+        assert!(cache.get_request(&session).await.is_none());
     }
 }

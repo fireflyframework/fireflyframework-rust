@@ -154,6 +154,7 @@ mod ott;
 mod password;
 mod problem;
 mod remember_me;
+mod request_cache;
 mod role_hierarchy;
 mod security_context;
 mod session_auth;
@@ -206,6 +207,10 @@ pub use password::{
 };
 pub use remember_me::{
     RememberMeServices, TokenBasedRememberMeServices, DEFAULT_REMEMBER_ME_SECONDS,
+};
+pub use request_cache::{
+    HttpSessionRequestCache, NullRequestCache, RequestCache, SavedRequest,
+    SESSION_KEY_SAVED_REQUEST,
 };
 pub use role_hierarchy::RoleHierarchy;
 pub use security_context::{
