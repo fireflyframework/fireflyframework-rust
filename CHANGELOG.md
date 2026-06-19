@@ -2,6 +2,59 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.33 — 2026-06-19
+
+**Spring Security parity — Tier 4: the OAuth2 ecosystem.** The wider OAuth2
+surface beyond the browser login flow. All additive (no behaviour change to
+existing code). Adversarially reviewed before release.
+
+### Added
+
+- **Opaque-token introspection (RFC 7662)** — `RemoteTokenIntrospector`
+  (Spring's `OpaqueTokenIntrospector`): POSTs a non-JWT bearer token to the
+  authorization server's introspection endpoint (HTTP Basic client auth) and,
+  on `active: true`, maps the response to an `Authentication`. Implements
+  `Verifier`, so it drops into a `BearerLayer` as an alternative to local JWT
+  verification. Fails closed (transport error / non-2xx / non-JSON /
+  `active: false`/absent all reject).
+- **Outbound OAuth2 client (`AuthorizedClientManager`)** —
+  `OAuth2AuthorizedClientManager` + `OAuth2AuthorizedClientService` (+
+  `InMemoryOAuth2AuthorizedClientService`) obtain, cache, and auto-refresh the
+  access tokens the app needs to call downstream services: the client-credentials
+  grant (service-to-service) and the refresh-token grant, reusing a cached
+  `OAuth2AuthorizedClient` until it is within the clock-skew window of expiry.
+- **RP-initiated logout (OIDC)** — `oidc_logout_url` + `ClientRegistration`'s new
+  `end_session_endpoint` / `post_logout_redirect_uri`: `POST /logout` invalidates
+  the local session and, when the provider advertises an `end_session_endpoint`,
+  redirects to it with `id_token_hint` + `post_logout_redirect_uri` (Spring's
+  `OidcClientInitiatedLogoutSuccessHandler`). The login callback now stores the
+  `registration_id` + `id_token` for the hint.
+- **Authorization-server HTTP endpoints** — `AuthorizationServerRouter` mounts
+  the previously callable-only `AuthorizationServer` as `POST /oauth2/token`
+  (RFC 6749; client-credentials + refresh-token, `client_secret_post`; RFC 6749
+  §5.2 error envelope) and `GET /.well-known/oauth-authorization-server` (RFC 8414
+  metadata).
+
+### Security notes & known limitations (roadmap)
+
+- The OAuth2 HTTP clients (introspection, outbound token, JWKS, login) now apply
+  connect/read timeouts and cap the response body, so a slow or hostile endpoint
+  cannot hang the bearer-verification path or force unbounded allocation; a token
+  response with no `expires_in` is assumed short-lived (bounded fallback), never
+  immortal. `ClientRegistration` and `OAuth2AuthorizedClient` redact their
+  secrets/tokens in `Debug`.
+- The authorization server signs HS256 (symmetric), so no `jwks_uri` is
+  published; the server-side **authorization_code grant + PKCE**, an `/authorize`
+  endpoint, and a client-authenticated `/oauth2/revoke` (RFC 7009) remain a
+  follow-up.
+- `OAuth2AuthorizedClientManager` does not single-flight concurrent
+  authorizations for the same registration: concurrent callers may each hit the
+  token endpoint, and against an authorization server that *rotates* refresh
+  tokens, concurrent refreshes can lose a rotated token (last-writer-wins).
+  Serialize refreshes for the same client if your AS rotates. Token-endpoint
+  failures surface as the HTTP status (the structured RFC 6749 §5.2 error body is
+  not yet parsed back).
+
 ## v26.6.32 — 2026-06-19
 
 **Spring Security parity — Tier 3: method-security depth.** Expression-based

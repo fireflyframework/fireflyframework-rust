@@ -243,3 +243,21 @@ pub use webauthn::{
 
 /// Framework version stamp.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Builds the `reqwest` client used for the security tier's outbound calls
+/// (OAuth2 token / introspection / userinfo / JWKS endpoints) with sane
+/// timeouts, so a slow, half-open, or hostile endpoint cannot hang the request
+/// indefinitely — important because token introspection sits on the inbound
+/// bearer-verification hot path. A timeout surfaces as a fail-closed error.
+pub(crate) fn default_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// The maximum response body (bytes) the security tier will buffer from an
+/// OAuth2 endpoint before parsing — an RFC 7662 / RFC 6749 response is tiny, so
+/// this caps a hostile endpoint's memory amplification while leaving ample room.
+pub(crate) const MAX_OAUTH2_RESPONSE_BYTES: u64 = 1 << 20; // 1 MiB

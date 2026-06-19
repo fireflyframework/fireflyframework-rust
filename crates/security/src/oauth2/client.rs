@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 /// provider as a client application. Build one with
 /// [`ClientRegistration::new`] + the fluent setters, or use the
 /// [`google`], [`github`], and [`keycloak`] presets.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientRegistration {
     /// Unique id this registration is looked up by.
@@ -58,6 +58,28 @@ pub struct ClientRegistration {
     /// Recommended for public clients (no client_secret); harmless and
     /// more secure for confidential clients too.
     pub use_pkce: bool,
+    /// The OIDC RP-initiated-logout `end_session_endpoint`; when set, logout
+    /// redirects the browser here to also end the session at the provider.
+    pub end_session_endpoint: String,
+    /// Where the provider should send the browser back after RP-initiated
+    /// logout (`post_logout_redirect_uri`).
+    pub post_logout_redirect_uri: String,
+}
+
+// Manual `Debug` that redacts `client_secret` — the type is `Serialize` for
+// config round-trips, so a derived `Debug` would print the secret in any log /
+// span / panic that formats a registration.
+impl std::fmt::Debug for ClientRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientRegistration")
+            .field("registration_id", &self.registration_id)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .field("authorization_grant_type", &self.authorization_grant_type)
+            .field("provider_name", &self.provider_name)
+            .field("use_pkce", &self.use_pkce)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ClientRegistration {
@@ -138,6 +160,19 @@ impl ClientRegistration {
         self.use_pkce = enabled;
         self
     }
+
+    /// Sets the OIDC `end_session_endpoint` for RP-initiated logout.
+    pub fn end_session_endpoint(mut self, uri: impl Into<String>) -> Self {
+        self.end_session_endpoint = uri.into();
+        self
+    }
+
+    /// Sets the `post_logout_redirect_uri` the provider returns to after
+    /// RP-initiated logout.
+    pub fn post_logout_redirect_uri(mut self, uri: impl Into<String>) -> Self {
+        self.post_logout_redirect_uri = uri.into();
+        self
+    }
 }
 
 /// Creates a [`ClientRegistration`] pre-configured for Google OAuth2.
@@ -185,6 +220,7 @@ pub fn keycloak(
         .user_info_uri(format!("{base}/protocol/openid-connect/userinfo"))
         .jwks_uri(format!("{base}/protocol/openid-connect/certs"))
         .issuer_uri(issuer_uri)
+        .end_session_endpoint(format!("{base}/protocol/openid-connect/logout"))
         .provider_name("Keycloak")
 }
 

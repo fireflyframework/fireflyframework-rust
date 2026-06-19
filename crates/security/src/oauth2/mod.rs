@@ -31,7 +31,10 @@
 
 mod authorization_server;
 mod client;
+mod introspection;
 mod login;
+mod outbound;
+mod server_endpoints;
 mod token_store;
 
 pub use authorization_server::{AuthorizationServer, OAuth2Error, TokenRequest, TokenResponse};
@@ -39,11 +42,18 @@ pub use client::{
     github, google, keycloak, ClientRegistration, ClientRegistrationRepository,
     InMemoryClientRegistrationRepository,
 };
+pub use introspection::{RemoteTokenIntrospector, TokenIntrospector};
 pub use login::{
-    generate_pkce, pkce_challenge, FixedLoginSessionStore, InMemoryLoginSession, LoginSession,
-    LoginSessionStore, OAuth2LoginHandler, SESSION_KEY_NONCE, SESSION_KEY_PKCE_VERIFIER,
-    SESSION_KEY_REDIRECT_URI, SESSION_KEY_SECURITY_CONTEXT, SESSION_KEY_STATE,
+    generate_pkce, oidc_logout_url, pkce_challenge, FixedLoginSessionStore, InMemoryLoginSession,
+    LoginSession, LoginSessionStore, OAuth2LoginHandler, SESSION_KEY_ID_TOKEN, SESSION_KEY_NONCE,
+    SESSION_KEY_PKCE_VERIFIER, SESSION_KEY_REDIRECT_URI, SESSION_KEY_REGISTRATION_ID,
+    SESSION_KEY_SECURITY_CONTEXT, SESSION_KEY_STATE,
 };
+pub use outbound::{
+    InMemoryOAuth2AuthorizedClientService, OAuth2AuthorizedClient, OAuth2AuthorizedClientManager,
+    OAuth2AuthorizedClientService, DEFAULT_CLOCK_SKEW_SECONDS,
+};
+pub use server_endpoints::AuthorizationServerRouter;
 pub use token_store::{
     validate_table_name, InMemoryTokenStore, PostgresTokenStore, RedisTokenStore, TokenStore,
     POSTGRES_TOKEN_TABLE, REDIS_TOKEN_KEY_PREFIX,
