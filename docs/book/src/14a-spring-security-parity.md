@@ -46,7 +46,8 @@ In the **Status** column, :status-supported: marks a supported feature,
 | RP-initiated logout (OIDC) | :status-supported: | `oidc_logout_url` — logout redirects to the provider `end_session_endpoint` (`OidcClientInitiatedLogoutSuccessHandler`) |
 | Authorization server | :status-partial: | `AuthorizationServer` (client-credentials + refresh-token) mounted via `AuthorizationServerRouter` (`/oauth2/token`, RFC 8414 metadata); server-side authorization_code grant on the roadmap |
 | LDAP / Active Directory authentication | :status-partial: | Feature-gated `ldap`: `LdapAuthenticationProvider` (bind auth + group authorities) + `ActiveDirectoryLdapAuthenticationProvider`, over `ldap3` (`ldapAuthentication()`) |
-| ACL / domain-object security · SAML2 | :status-planned: | Roadmap (opt-in) |
+| ACL / domain-object security | :status-supported: | `Acl` / `AccessControlEntry` / `Permission` / `Sid` / `ObjectIdentity`, `AclService` + `InMemoryAclService`, and `AclPermissionEvaluator` wiring `hasPermission(...)` to per-object ACLs (`spring-security-acl`) |
+| SAML2 (`saml2Login()`) | :status-planned: | SP-side `RelyingPartyRegistration` + signed-response verification implemented behind an opt-in feature; release pending a stable Rust XML-Security stack |
 
 ## Spring-faithful behaviours to know
 
@@ -207,6 +208,32 @@ adversarial review:
   silently authenticating with no roles, and a **malformed directory entry** is
   turned into a clean error rather than aborting the request.
 
+## Domain-object security (ACL)
+
+Where the [`PermissionEvaluator`](#) answers "may this principal do X to this
+object?" with arbitrary code, an **ACL** answers it from per-object
+access-control lists — the Rust analog of `spring-security-acl`. It is pure Rust
+(no extra dependencies):
+
+- **`Permission`** — the `BasePermission` bitmask (`READ`, `WRITE`, `CREATE`,
+  `DELETE`, `ADMINISTRATION`), combinable into a cumulative mask.
+- **`Sid`** — a security identity: a `Principal` (username) or an `Authority`
+  (role), Spring's `PrincipalSid` / `GrantedAuthoritySid`.
+- **`ObjectIdentity`** — a domain object's `(type, identifier)` key.
+- **`Acl`** — an owner plus ordered **`AccessControlEntry`s** (grant or deny a
+  permission to a sid) plus an optional parent for **inheritance**.
+- **`AclService`** / **`InMemoryAclService`** — look an ACL up by identity
+  (Spring's `MutableAclService`).
+- **`AclPermissionEvaluator`** — wires an `AclService` into the method-security
+  `hasPermission(...)` expression, by both object reference and `(type, id)`.
+
+Evaluation is **default-deny**: a permission is granted only when an applicable
+*granting* entry is found locally or up the inheritance chain; the **first entry
+matching a `(sid, permission)` wins**, so a deny placed before a grant takes
+precedence (Spring's `DefaultPermissionGrantingStrategy`). The inheritance walk
+is bounded, so a cyclic or pathologically deep parent chain terminates (and
+denies) rather than looping.
+
 ## Roadmap
 
 Parity is delivered in tiers, each its own increment:
@@ -226,5 +253,8 @@ Parity is delivered in tiers, each its own increment:
    authorization server mounted over HTTP with RFC 8414 metadata. (The
    server-side authorization_code grant remains a follow-up.)
 6. **Big subsystems** — delivered one opt-in subsystem at a time. **LDAP /
-   Active Directory (done)** — the feature-gated `ldap` module. **SAML2** and
-   **ACL / domain-object security** remain.
+   Active Directory (done)** — the feature-gated `ldap` module. **ACL /
+   domain-object security (done)** — `spring-security-acl` parity, pure Rust.
+   **SAML2** has an SP-side implementation (registration + signed-response
+   verification) behind an opt-in feature, with release pending a stable Rust
+   XML-Security stack.

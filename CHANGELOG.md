@@ -2,6 +2,43 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.35 — 2026-06-20
+
+**Spring Security parity — Tier 5c: ACL / domain-object security.** The Rust
+analog of `spring-security-acl`, answering `hasPermission(object, permission)`
+from per-object access-control lists. Pure Rust — no new dependencies. All
+additive. Adversarially reviewed before release.
+
+### Added
+
+- **ACL core** (`spring-security-acl` parity):
+  - **`Permission`** — the `BasePermission` bitmask (`READ`=1, `WRITE`=2,
+    `CREATE`=4, `DELETE`=8, `ADMINISTRATION`=16), with cumulative `union`,
+    bit-`contains`, and case-insensitive name parsing.
+  - **`Sid`** (`Principal` / `Authority` — Spring's `PrincipalSid` /
+    `GrantedAuthoritySid`), **`ObjectIdentity`** (`type` + `identifier`),
+    **`AccessControlEntry`** (sid + permission + granting), and **`Acl`** (owner
+    + ordered ACEs + optional parent for inheritance).
+  - **`AclService`** + **`InMemoryAclService`** (Spring's `MutableAclService`),
+    and the free **`is_granted`** resolver.
+- **`AclPermissionEvaluator`** — bridges an `AclService` to the Tier 3
+  `PermissionEvaluator`, resolving `hasPermission(...)` against per-object ACLs
+  by object reference *or* `(type, id)`. The principal and its roles/authorities
+  map to `PrincipalSid` / `GrantedAuthoritySid` (each role matched both bare and
+  `ROLE_`-prefixed).
+- **`PermissionEvaluator::has_permission_for_id`** + the free
+  **`has_permission_for_id`** — Spring's id-based `hasPermission` overload
+  (default-deny, backward compatible).
+
+### Security
+
+- ACL evaluation is **default-deny**: a permission is granted only when an
+  applicable *granting* entry is found (locally or up the inheritance chain);
+  the **first entry matching a `(sid, permission)` wins**, so a deny placed
+  before a grant takes precedence (Spring's `DefaultPermissionGrantingStrategy`).
+  The inheritance walk is **bounded**, so a cyclic or pathologically deep parent
+  chain terminates and denies rather than looping.
+
 ## v26.6.34 — 2026-06-19
 
 **Spring Security parity — Tier 5a: LDAP / Active Directory authentication.**
