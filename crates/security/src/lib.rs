@@ -152,6 +152,7 @@ mod jwt;
 pub mod oauth2;
 mod ott;
 mod password;
+mod permission;
 mod problem;
 mod remember_me;
 mod request_cache;
@@ -207,6 +208,7 @@ pub use password::{
     Argon2PasswordEncoder, BcryptPasswordEncoder, DelegatingPasswordEncoder, NoOpPasswordEncoder,
     PasswordEncoder, DEFAULT_PASSWORD_ENCODER_ID, DEFAULT_ROUNDS,
 };
+pub use permission::{has_permission, set_permission_evaluator, PermissionEvaluator};
 pub use remember_me::{
     RememberMeServices, TokenBasedRememberMeServices, DEFAULT_REMEMBER_ME_SECONDS,
 };

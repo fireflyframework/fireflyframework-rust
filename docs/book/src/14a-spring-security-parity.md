@@ -21,7 +21,8 @@ In the **Status** column, :status-supported: marks a supported feature,
 | HTTP request authorization (`FilterChain`, RBAC, role hierarchy) | :status-supported: | Path-segment-aware matching, deny-by-default, first-match-wins |
 | Bearer / OAuth2 resource server (JWT) | :status-supported: | JWKS with RSA + **EC (ES256/384)** + **EdDSA**; `iss`/`aud`/`exp`/`nbf` validation; 60 s clock-skew leeway; RFC 6750 `WWW-Authenticate` challenge |
 | Symmetric JWT (`JwtService`) | :status-supported: | HS256/384/512, `exp` required, clock-skew leeway |
-| Method security (`#[pre_authorize]` / `#[post_authorize]`) | :status-supported: | Works uniformly across **bearer *and* session/OAuth2-login** auth |
+| Method security (`#[pre_authorize]` / `#[post_authorize]`) | :status-supported: | Works uniformly across **bearer *and* session/OAuth2-login** auth; keyword rules **and** SpEL-style expressions over arguments + principal |
+| Method-security depth (`@PreFilter`/`@PostFilter`, `PermissionEvaluator`) | :status-supported: | `#[pre_filter]` / `#[post_filter]` collection filtering; `PermissionEvaluator` + `has_permission` (`hasPermission(...)`), usable inside the expression forms |
 | Role checks (`hasRole`) | :status-supported: | Accepts Spring's `ROLE_` prefix *and* bare role names |
 | CORS | :status-supported: | Rejects the unsafe wildcard-origin + credentials combination |
 | Security response headers | :status-supported: | HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy; **HSTS is secure-request-only** by default |
@@ -104,6 +105,32 @@ The classic web authentication mechanisms, faithful to Spring's defaults:
   matches, so a locked-down `/api/**` and a permissive web surface coexist —
   Spring's `FilterChainProxy`.
 
+## Method security
+
+`#[pre_authorize]` / `#[post_authorize]` guard a service method against the
+ambient principal — no `Request` in the signature. Beyond fixed keyword rules
+(`role = "ADMIN"`, `any_authority = [..]`), they accept **expressions**, the
+Rust analog of Spring's SpEL:
+
+- **Argument + principal binding** — a non-keyword `#[pre_authorize(...)]` is a
+  boolean Rust expression evaluated *before* the body with the method's
+  parameters and `auth` (a `&Authentication`) in scope:
+  `#[pre_authorize(auth.has_role("ADMIN") || auth.principal == owner)]`
+  (Spring's `@PreAuthorize("#owner == authentication.name")`). `#[post_authorize]`
+  binds `result` + `auth` over the return value.
+- **`PermissionEvaluator`** — register one process-wide with
+  `set_permission_evaluator`, then call `has_permission(auth, target, permission)`
+  inside any pre/post expression (Spring's `hasPermission(#obj, 'read')`). With
+  no evaluator registered, every permission is **denied** (fail-closed).
+- **`#[pre_filter]` / `#[post_filter]`** — filter a collection by a per-element
+  predicate: `#[post_filter(element.owner == auth.principal)]` drops the rows the
+  caller doesn't own from the returned `Vec`; `#[pre_filter(items, …)]` does the
+  same to a `mut` argument before the body (Spring's `@PreFilter`/`@PostFilter`,
+  where `element` is the `filterObject`).
+
+All four fail closed: no ambient context denies with `Unauthenticated`, a false
+expression with `Forbidden`.
+
 ## Passwordless login
 
 Firefly ships the two Spring Security 6.4 passwordless mechanisms:
@@ -130,7 +157,7 @@ Parity is delivered in tiers, each its own increment:
 3. **Web mechanisms (done)** — form login, HTTP Basic, remember-me,
    `RequestCache` / `SavedRequest`, `SessionCreationPolicy`, multiple filter
    chains.
-4. **Method-security depth** — SpEL-style argument/principal binding,
+4. **Method-security depth (done)** — SpEL-style argument/principal binding,
    `@PreFilter`/`@PostFilter`, `PermissionEvaluator`.
 5. **OAuth2 ecosystem** — opaque-token introspection, the outbound
    authorized-client manager, RP-initiated logout, a mounted authorization

@@ -1,0 +1,5 @@
+error: #[post_authorize] injects a binding named `result` into the authorization expression; rename this parameter so the rule cannot silently read the framework value instead of your argument
+  --> tests/ui/fail/post_authorize_param_collision.rs:15:12
+   |
+15 | async fn f(result: i32) -> Result<i32, E> {
+   |            ^^^^^^

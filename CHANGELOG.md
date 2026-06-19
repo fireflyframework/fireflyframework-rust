@@ -2,6 +2,45 @@
 
 All notable changes to the Firefly Framework for Rust.
 
+## v26.6.32 — 2026-06-19
+
+**Spring Security parity — Tier 3: method-security depth.** Expression-based
+method security and domain-object permissions, the SpEL-equivalent layer over
+the existing `#[pre_authorize]` / `#[post_authorize]` macros. All additive (no
+behaviour change to existing code). Adversarially reviewed before release.
+
+### Added
+
+- **Expression-based `#[pre_authorize]`** — a non-keyword argument is now a
+  boolean Rust expression evaluated *before* the body with the method's
+  parameters and `auth` (a `&Authentication`) in scope (Spring's
+  `@PreAuthorize("#id == authentication.name")`), e.g.
+  `#[pre_authorize(auth.has_role("ADMIN") || auth.principal == owner)]`. The
+  keyword rules (`authenticated`, `role`, `any_role`, `authority`,
+  `any_authority`) are unchanged and fully backward-compatible. Fail-closed: no
+  ambient context denies with `Unauthenticated`, a false expression with
+  `Forbidden`.
+- **`PermissionEvaluator` + `has_permission`** — the Rust analog of Spring's
+  `PermissionEvaluator` / `hasPermission(target, permission)`. Register one
+  process-wide with `set_permission_evaluator`; call
+  `has_permission(auth, target, permission)` inside any pre/post expression. The
+  target is erased to `Any` so one evaluator serves every domain type by
+  downcasting. **Secure default: with no evaluator registered, every permission
+  is denied.**
+- **`#[pre_filter]` / `#[post_filter]`** — collection filtering (Spring's
+  `@PreFilter` / `@PostFilter`). `#[post_filter(element.owner == auth.principal)]`
+  retains only the elements of the returned collection the predicate accepts;
+  `#[pre_filter(items, …)]` filters a named owned `mut` collection argument
+  before the body. `element` is the per-element `&T` (Spring's `filterObject`);
+  no ambient context denies the call with `Unauthenticated`.
+
+### Known limitations (roadmap)
+
+- `PermissionEvaluator` is a process-global set-once registry (one evaluator per
+  process, like Spring's single bean); there is no per-scope override.
+- `#[pre_filter]` requires the targeted parameter to be an owned `mut`
+  collection with `retain` (e.g. `mut items: Vec<T>`).
+
 ## v26.6.31 — 2026-06-19
 
 **Spring Security parity — Tier 2: the web authentication mechanisms.** The

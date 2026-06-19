@@ -114,6 +114,95 @@ async fn pre_authorize_on_method_uses_authority() {
     assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
 }
 
+// --- pre_authorize: SpEL-style expression over arguments + principal -------
+
+/// Spring's `@PreAuthorize("#id == authentication.name")` — the caller may act
+/// only on their own id. A non-keyword argument is a boolean Rust expression
+/// evaluated with the method's parameters and `auth` (`&Authentication`) bound.
+#[firefly::pre_authorize(auth.principal == id)]
+async fn read_account(id: &str) -> Result<String, SvcErr> {
+    Ok(format!("account:{id}"))
+}
+
+/// Combines a role check with an ownership check over an argument.
+#[firefly::pre_authorize(auth.has_role("ADMIN") || auth.principal == owner)]
+async fn edit_doc(owner: &str) -> Result<&'static str, SvcErr> {
+    Ok("edited")
+}
+
+#[tokio::test]
+async fn pre_authorize_expression_binds_arguments_and_principal() {
+    // alice reading her own account → allowed.
+    let ok = with_authentication_scope(principal("alice", &[], &[]), read_account("alice")).await;
+    assert_eq!(ok.unwrap(), "account:alice");
+    // alice reading bob's account → forbidden.
+    let denied = with_authentication_scope(principal("alice", &[], &[]), read_account("bob")).await;
+    assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
+    // No ambient context → unauthenticated (the principal binding fails closed).
+    assert_eq!(
+        read_account("alice").await,
+        Err(SvcErr::Denied(SecurityError::Unauthenticated))
+    );
+}
+
+#[tokio::test]
+async fn pre_authorize_expression_combines_role_and_ownership() {
+    // The owner may edit their own doc.
+    let own = with_authentication_scope(principal("alice", &[], &[]), edit_doc("alice")).await;
+    assert_eq!(own, Ok("edited"));
+    // An ADMIN may edit anyone's doc.
+    let admin =
+        with_authentication_scope(principal("root", &["ADMIN"], &[]), edit_doc("bob")).await;
+    assert_eq!(admin, Ok("edited"));
+    // A non-owner non-admin is forbidden.
+    let denied = with_authentication_scope(principal("eve", &[], &[]), edit_doc("bob")).await;
+    assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
+}
+
+// --- pre_authorize: hasPermission via a PermissionEvaluator ----------------
+
+struct Account {
+    owner: String,
+}
+
+/// Grants `read` on an `Account` to its owner — Spring's `PermissionEvaluator`.
+struct AccountPermissions;
+impl firefly::security::PermissionEvaluator for AccountPermissions {
+    fn has_permission(
+        &self,
+        auth: &Authentication,
+        target: &dyn std::any::Any,
+        permission: &str,
+    ) -> bool {
+        target
+            .downcast_ref::<Account>()
+            .is_some_and(|a| permission == "read" && a.owner == auth.principal)
+    }
+}
+
+/// Spring's `@PreAuthorize("hasPermission(#account, 'read')")` — the expression
+/// form calls the registered evaluator with the bound `auth` and an argument.
+#[firefly::pre_authorize(firefly::security::has_permission(auth, account, "read"))]
+async fn read_statement(account: &Account) -> Result<&'static str, SvcErr> {
+    Ok("statement")
+}
+
+#[tokio::test]
+async fn pre_authorize_has_permission_consults_the_evaluator() {
+    // This is the only test in this binary that registers the evaluator.
+    let _ = firefly::security::set_permission_evaluator(std::sync::Arc::new(AccountPermissions));
+
+    let acct = Account {
+        owner: "alice".into(),
+    };
+    // The owner may read.
+    let ok = with_authentication_scope(principal("alice", &[], &[]), read_statement(&acct)).await;
+    assert_eq!(ok, Ok("statement"));
+    // A non-owner is forbidden.
+    let denied = with_authentication_scope(principal("bob", &[], &[]), read_statement(&acct)).await;
+    assert_eq!(denied, Err(SvcErr::Denied(SecurityError::Forbidden)));
+}
+
 // --- post_authorize: returnObject ownership check --------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,6 +232,67 @@ async fn post_authorize_filters_on_return_value() {
     // No ambient context → unauthenticated.
     assert_eq!(
         load_doc("alice").await,
+        Err(SvcErr::Denied(SecurityError::Unauthenticated))
+    );
+}
+
+// --- post_filter / pre_filter: collection filtering ------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+struct Owned {
+    owner: String,
+}
+
+fn owned(owner: &str) -> Owned {
+    Owned {
+        owner: owner.into(),
+    }
+}
+
+/// Spring's `@PostFilter("filterObject.owner == authentication.name")` — keep
+/// only the elements the caller owns.
+#[firefly::post_filter(element.owner == auth.principal)]
+async fn list_docs() -> Result<Vec<Owned>, SvcErr> {
+    Ok(vec![owned("alice"), owned("bob"), owned("alice")])
+}
+
+#[tokio::test]
+async fn post_filter_retains_only_owned_elements() {
+    // alice sees only her own rows.
+    let mine = with_authentication_scope(principal("alice", &[], &[]), list_docs())
+        .await
+        .unwrap();
+    assert_eq!(mine, vec![owned("alice"), owned("alice")]);
+    // bob sees only his (one).
+    let bobs = with_authentication_scope(principal("bob", &[], &[]), list_docs())
+        .await
+        .unwrap();
+    assert_eq!(bobs, vec![owned("bob")]);
+    // No ambient context → unauthenticated (the whole call fails closed).
+    assert_eq!(
+        list_docs().await,
+        Err(SvcErr::Denied(SecurityError::Unauthenticated))
+    );
+}
+
+/// Spring's `@PreFilter` — drop the elements the caller does not own from the
+/// `mut` argument before the body runs.
+#[firefly::pre_filter(items, element.owner == auth.principal)]
+async fn ingest(mut items: Vec<Owned>) -> Result<Vec<Owned>, SvcErr> {
+    Ok(items)
+}
+
+#[tokio::test]
+async fn pre_filter_drops_unowned_arguments_before_body() {
+    let input = vec![owned("alice"), owned("bob"), owned("carol")];
+    // The body only ever sees alice's elements.
+    let kept = with_authentication_scope(principal("alice", &[], &[]), ingest(input.clone()))
+        .await
+        .unwrap();
+    assert_eq!(kept, vec![owned("alice")]);
+    // No ambient context → unauthenticated, body never runs.
+    assert_eq!(
+        ingest(input).await,
         Err(SvcErr::Denied(SecurityError::Unauthenticated))
     );
 }

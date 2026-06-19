@@ -1,0 +1,5 @@
+error: #[pre_authorize] injects a binding named `auth` into the authorization expression; rename this parameter so the rule cannot silently read the framework value instead of your argument
+  --> tests/ui/fail/pre_authorize_param_collision.rs:15:12
+   |
+15 | async fn f(auth: &str, owner: &str) -> Result<(), E> {
+   |            ^^^^

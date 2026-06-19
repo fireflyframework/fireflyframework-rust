@@ -24,19 +24,30 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Expr, ItemFn, Lit, Meta, ReturnType};
+use syn::parse::Parser;
+use syn::punctuated::Punctuated;
+use syn::{Expr, ItemFn, Lit, Meta, ReturnType, Token};
 
 use crate::common::Facade;
 
-/// Expands `#[pre_authorize(<rule>)]` on a function that returns
+/// Expands `#[pre_authorize(<rule-or-expr>)]` on a function that returns
 /// `Result<T, E>` where `E: From<firefly_security::SecurityError>`.
 ///
-/// The rule is one of: `authenticated` (the default when the attribute is
-/// empty), `role = "X"`, `any_role = ["A", "B"]`, `authority = "X"`, or
-/// `any_authority = ["A", "B"]`.
+/// The argument is either a **keyword rule** — `authenticated` (the default
+/// when the attribute is empty), `role = "X"`, `any_role = ["A", "B"]`,
+/// `authority = "X"`, or `any_authority = ["A", "B"]` — or, for anything else, a
+/// boolean **Rust expression** evaluated *before* the body with the function's
+/// parameters and `auth` (a `&Authentication`) in scope (Spring's SpEL
+/// `@PreAuthorize("#id == authentication.name")`). A false expression denies
+/// with `Forbidden`; no ambient context denies with `Unauthenticated`.
+///
+/// The expression must **borrow**, not move, its parameters (it runs before the
+/// body, which still needs them) — write reference comparisons
+/// (`auth.principal == *id`), not by-value calls that consume an argument. A
+/// parameter named `auth` is rejected at compile time (it would shadow the
+/// injected principal binding); rename it.
 pub(crate) fn pre_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     let sec = Facade::default().security();
-    let rule = parse_rule(&sec, args)?;
 
     if matches!(func.sig.output, ReturnType::Default) {
         return Err(syn::Error::new_spanned(
@@ -47,12 +58,39 @@ pub(crate) fn pre_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Re
     }
 
     let block = &func.block;
-    // The `?` propagates the denial through `From<SecurityError>`; the granted
-    // `Authentication` it returns is intentionally discarded.
-    let new_block = quote! {
-        {
-            #sec::check_access(&#rule)?;
-            #block
+    let new_block = match classify_rule(&sec, args.clone())? {
+        // Keyword rule: `?` propagates the denial through `From<SecurityError>`;
+        // the granted `Authentication` it returns is intentionally discarded.
+        Some(rule) => quote! {
+            {
+                #sec::check_access(&#rule)?;
+                #block
+            }
+        },
+        // Expression form: bind the caller (deny-closed if absent), then
+        // evaluate the boolean expression with the parameters and `auth` bound.
+        None => {
+            // The expression sees a framework-injected `auth` binding; reject a
+            // colliding parameter rather than silently shadowing it (which would
+            // make the rule read the principal instead of the argument).
+            reject_reserved_params(&func, &["auth", "__auth", "__granted"], "#[pre_authorize]")?;
+            let expr: Expr = syn::parse2(args)?;
+            quote! {
+                {
+                    let __auth = #sec::current_authentication()
+                        .ok_or(#sec::SecurityError::Unauthenticated)?;
+                    let __granted: bool = {
+                        let auth = &__auth;
+                        #expr
+                    };
+                    if !__granted {
+                        return ::core::result::Result::Err(::core::convert::From::from(
+                            #sec::SecurityError::Forbidden,
+                        ));
+                    }
+                    #block
+                }
+            }
         }
     };
     func.block = syn::parse2(new_block)?;
@@ -67,6 +105,12 @@ pub(crate) fn pre_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Re
 /// Spring `returnObject`) and `auth` (a `&Authentication` of the caller). When
 /// it is `false` the call is denied with `Forbidden` and the value discarded;
 /// when no security context is active the call is `Unauthenticated`.
+///
+/// The body runs inside an `async move` block, so the predicate should reference
+/// only `result` and `auth`. Referencing another method parameter the body also
+/// uses works only if it is `Copy` (a non-`Copy` parameter is moved into the
+/// body and cannot be borrowed afterwards). Parameters named `result` or `auth`
+/// are rejected at compile time to prevent silent shadowing.
 pub(crate) fn post_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
     let sec = Facade::default().security();
 
@@ -91,6 +135,13 @@ pub(crate) fn post_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::R
              e.g. #[post_authorize(result.owner == auth.principal)]",
         ));
     }
+    // The expression sees framework-injected `result` / `auth` bindings; reject
+    // colliding parameters rather than silently authorizing the wrong value.
+    reject_reserved_params(
+        &func,
+        &["result", "auth", "__value", "__granted", "__err"],
+        "#[post_authorize]",
+    )?;
     let check: Expr = syn::parse2(args)?;
 
     let block = &func.block;
@@ -126,24 +177,191 @@ pub(crate) fn post_authorize_impl(args: TokenStream, mut func: ItemFn) -> syn::R
     Ok(quote!(#func))
 }
 
-/// Parses the `#[pre_authorize(...)]` attribute into an `AccessRule`
-/// constructor expression rooted at the security facade path `#sec`.
-fn parse_rule(sec: &TokenStream, args: TokenStream) -> syn::Result<TokenStream> {
-    if args.is_empty() {
-        return Ok(quote!(#sec::AccessRule::Authenticated));
+/// Expands `#[post_filter(<expr>)]` on an `async fn` returning `Result<C, E>`
+/// where `C` is a collection with `retain(impl FnMut(&T) -> bool)` (e.g.
+/// `Vec<T>`) and `E: From<firefly_security::SecurityError>` — Spring's
+/// `@PostFilter("filterObject.owner == authentication.name")`.
+///
+/// After a successful call, each element is retained only when `<expr>` (a
+/// boolean over `element`, a `&T`, and `auth`, a `&Authentication`) is true; the
+/// rest are dropped from the returned collection. No ambient context denies the
+/// whole call with `Unauthenticated`.
+///
+/// The body runs inside an `async move` block, so the predicate should reference
+/// only `element` and `auth` (a non-`Copy` parameter the body also uses is moved
+/// and cannot be borrowed in the predicate). Parameters named `element` or
+/// `auth` are rejected at compile time to prevent silent shadowing.
+pub(crate) fn post_filter_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
+    let sec = Facade::default().security();
+
+    if func.sig.asyncness.is_none() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[post_filter] requires an `async fn` — the body is awaited before its result is \
+             filtered",
+        ));
     }
-    let meta: Meta = syn::parse2(args)?;
-    match &meta {
-        // `#[pre_authorize(authenticated)]`
-        Meta::Path(path) if path.is_ident("authenticated") => {
-            Ok(quote!(#sec::AccessRule::Authenticated))
+    if matches!(func.sig.output, ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[post_filter] requires an `async fn` returning `Result<C, E>` where `C` is a \
+             collection (e.g. `Vec<T>`) and `E: From<firefly_security::SecurityError>`",
+        ));
+    }
+    if args.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[post_filter(<expr>)] needs a boolean expression over `element` (a `&T`) and `auth`, \
+             e.g. #[post_filter(element.owner == auth.principal)]",
+        ));
+    }
+    // The predicate sees framework-injected `element` / `auth` bindings; reject
+    // colliding parameters rather than silently shadowing them.
+    reject_reserved_params(
+        &func,
+        &["element", "auth", "__collection", "__auth", "__err"],
+        "#[post_filter]",
+    )?;
+    let predicate: Expr = syn::parse2(args)?;
+
+    let block = &func.block;
+    let new_block = quote! {
+        {
+            match (async move #block).await {
+                ::core::result::Result::Ok(mut __collection) => {
+                    match #sec::current_authentication() {
+                        ::core::option::Option::Some(__auth) => {
+                            {
+                                let auth = &__auth;
+                                __collection.retain(|element| { #predicate });
+                            }
+                            ::core::result::Result::Ok(__collection)
+                        }
+                        ::core::option::Option::None => ::core::result::Result::Err(
+                            ::core::convert::From::from(#sec::SecurityError::Unauthenticated),
+                        ),
+                    }
+                }
+                __err => __err,
+            }
         }
-        Meta::Path(path) => Err(syn::Error::new_spanned(
-            path,
-            "unknown rule; use `authenticated`, `role = \"..\"`, `any_role = [..]`, \
-             `authority = \"..\"`, or `any_authority = [..]`",
-        )),
-        // `key = value` forms.
+    };
+    func.block = syn::parse2(new_block)?;
+    Ok(quote!(#func))
+}
+
+/// Expands `#[pre_filter(<param>, <expr>)]` — Spring's
+/// `@PreFilter("filterObject...")`. Filters the named **owned `mut`**
+/// collection parameter `<param>` *before* the body runs, retaining only the
+/// elements for which `<expr>` (over `element`, a `&T`, and `auth`) is true.
+///
+/// The function must return `Result<_, E>` with
+/// `E: From<firefly_security::SecurityError>`; no ambient context denies with
+/// `Unauthenticated`. Declare the parameter `mut`, e.g.
+/// `async fn ingest(&self, mut items: Vec<Order>) -> Result<(), E>`.
+pub(crate) fn pre_filter_impl(args: TokenStream, mut func: ItemFn) -> syn::Result<TokenStream> {
+    let sec = Facade::default().security();
+
+    if matches!(func.sig.output, ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[pre_filter] requires a function returning `Result<_, E>` where \
+             `E: From<firefly_security::SecurityError>`",
+        ));
+    }
+
+    // Parse `<param>, <predicate>`: exactly two comma-separated expressions, the
+    // first a bare parameter identifier.
+    let parsed = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(args)?;
+    if parsed.len() != 2 {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[pre_filter(<param>, <expr>)] needs the collection parameter to filter and a \
+             boolean expression over `element` and `auth`, e.g. \
+             #[pre_filter(items, element.owner == auth.principal)]",
+        ));
+    }
+    let param =
+        match &parsed[0] {
+            Expr::Path(p) if p.path.get_ident().is_some() => p.path.get_ident().unwrap().clone(),
+            other => return Err(syn::Error::new_spanned(
+                other,
+                "the first argument to #[pre_filter] must be a parameter name (a bare identifier)",
+            )),
+        };
+    let predicate = &parsed[1];
+
+    // The predicate sees framework-injected `element` / `auth` bindings (and the
+    // generated `__auth`); reject colliding parameters — including the filtered
+    // one — rather than silently shadowing them.
+    reject_reserved_params(&func, &["element", "auth", "__auth"], "#[pre_filter]")?;
+
+    let block = &func.block;
+    let new_block = quote! {
+        {
+            let __auth = #sec::current_authentication()
+                .ok_or(#sec::SecurityError::Unauthenticated)?;
+            {
+                let auth = &__auth;
+                #param.retain(|element| { #predicate });
+            }
+            #block
+        }
+    };
+    func.block = syn::parse2(new_block)?;
+    Ok(quote!(#func))
+}
+
+/// Rejects a function parameter whose name collides with a binding the macro
+/// injects into the rule/predicate scope (e.g. `auth`, `result`, `element`, or
+/// an internal `__`-temporary). Without this, ordinary lexical shadowing would
+/// let the generated check read the framework value instead of the parameter
+/// the author intended — a silent authorization trap. The fix is to fail loudly
+/// at expansion time and ask the author to rename.
+fn reject_reserved_params(func: &ItemFn, reserved: &[&str], ctx: &str) -> syn::Result<()> {
+    for input in &func.sig.inputs {
+        let syn::FnArg::Typed(typed) = input else {
+            continue;
+        };
+        if let syn::Pat::Ident(pat_ident) = &*typed.pat {
+            let name = pat_ident.ident.to_string();
+            if reserved.contains(&name.as_str()) {
+                return Err(syn::Error::new_spanned(
+                    &pat_ident.ident,
+                    format!(
+                        "{ctx} injects a binding named `{name}` into the authorization \
+                         expression; rename this parameter so the rule cannot silently read the \
+                         framework value instead of your argument",
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Classifies the `#[pre_authorize(...)]` argument: `Some(rule)` for a known
+/// keyword rule (an `AccessRule` constructor rooted at `#sec`), or `None` when
+/// the argument is not a keyword rule and should be treated as a boolean
+/// expression. Errors only for a *malformed* keyword rule (e.g. `role = 42`).
+fn classify_rule(sec: &TokenStream, args: TokenStream) -> syn::Result<Option<TokenStream>> {
+    if args.is_empty() {
+        return Ok(Some(quote!(#sec::AccessRule::Authenticated)));
+    }
+    // A keyword rule parses as a `Meta`; anything that does not (e.g.
+    // `auth.principal == id`) falls through to the expression form.
+    let Ok(meta) = syn::parse2::<Meta>(args) else {
+        return Ok(None);
+    };
+    match &meta {
+        // `#[pre_authorize(authenticated)]` — any other bare path is an
+        // expression (e.g. a boolean variable/const in scope).
+        Meta::Path(path) if path.is_ident("authenticated") => {
+            Ok(Some(quote!(#sec::AccessRule::Authenticated)))
+        }
+        Meta::Path(_) => Ok(None),
+        // `key = value` forms. An unknown key is treated as an expression
+        // (so e.g. `a == b` — already not a Meta — never reaches here).
         Meta::NameValue(nv) => {
             let key = nv
                 .path
@@ -153,33 +371,26 @@ fn parse_rule(sec: &TokenStream, args: TokenStream) -> syn::Result<TokenStream> 
             match key.as_str() {
                 "role" => {
                     let s = expect_str(&nv.value)?;
-                    Ok(quote!(#sec::AccessRule::Role(#s)))
+                    Ok(Some(quote!(#sec::AccessRule::Role(#s))))
                 }
                 "authority" => {
                     let s = expect_str(&nv.value)?;
-                    Ok(quote!(#sec::AccessRule::Authority(#s)))
+                    Ok(Some(quote!(#sec::AccessRule::Authority(#s))))
                 }
                 "any_role" => {
                     let items = expect_str_array(&nv.value)?;
-                    Ok(quote!(#sec::AccessRule::AnyRole(&[#(#items),*])))
+                    Ok(Some(quote!(#sec::AccessRule::AnyRole(&[#(#items),*]))))
                 }
                 "any_authority" => {
                     let items = expect_str_array(&nv.value)?;
-                    Ok(quote!(#sec::AccessRule::AnyAuthority(&[#(#items),*])))
+                    Ok(Some(quote!(#sec::AccessRule::AnyAuthority(&[#(#items),*]))))
                 }
-                other => Err(syn::Error::new_spanned(
-                    &nv.path,
-                    format!(
-                        "unknown rule key `{other}`; use `role`, `any_role`, `authority`, \
-                         or `any_authority`"
-                    ),
-                )),
+                _ => Ok(None),
             }
         }
-        Meta::List(list) => Err(syn::Error::new_spanned(
-            list,
-            "expected `authenticated` or `key = value`, not a nested list",
-        )),
+        // A nested list is not a keyword rule (e.g. a call expression like
+        // `has_permission(...)`); treat as an expression.
+        Meta::List(_) => Ok(None),
     }
 }
 
