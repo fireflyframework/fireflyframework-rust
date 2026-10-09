@@ -1,8 +1,11 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Firefly Framework for Rust" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/banner-dark.svg">
+    <img src="assets/brand/banner-light.svg" alt="rsfly — Firefly for Rust" width="100%">
+  </picture>
 </p>
 
-<h1 align="center">Firefly Framework for Rust</h1>
+<h1 align="center">rsfly — Firefly for Rust</h1>
 
 <p align="center">
   <b>Spring Boot for Rust</b> — a production-grade platform for building
@@ -28,7 +31,7 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-> **Read the book — [Firefly Framework for Rust](docs/book/)** — the canonical,
+> **Read the book — [rsfly by example](docs/book/)** — the canonical,
 > best-in-class guide: a punchy [Quickstart](docs/book/src/02-quickstart.md)
 > (zero to a running reactive endpoint in minutes), the keystone
 > [Reactive Model](docs/book/src/05-reactive-model.md) chapter (`Mono`/`Flux`),
@@ -36,9 +39,14 @@
 > chapter, and full chapters on configuration, persistence, DDD, CQRS, EDA, event
 > sourcing, sagas, HTTP clients, security, observability, testing, and
 > production. Build it locally with `mdbook build docs/book` and open
-> `docs/book/book/index.html`, or read the offline editions:
-> [`docs/book/dist/firefly-rust-by-example.pdf`](docs/book/dist/firefly-rust-by-example.pdf)
-> and [`.epub`](docs/book/dist/firefly-rust-by-example.epub).
+> `docs/book/book/index.html`, or download the redesigned offline editions:
+> English [PDF](https://github.com/fireflyframework/fireflyframework-rust/releases/download/books-2026.10.08/firefly-rust-by-example.pdf)
+> · [EPUB](https://github.com/fireflyframework/fireflyframework-rust/releases/download/books-2026.10.08/firefly-rust-by-example.epub).
+> Español [PDF](https://github.com/fireflyframework/fireflyframework-rust/releases/download/books-2026.10.08/firefly-rust-by-example-es.pdf)
+> · [EPUB](https://github.com/fireflyframework/fireflyframework-rust/releases/download/books-2026.10.08/firefly-rust-by-example-es.epub).
+
+**rsfly** is the product name. Existing `firefly` / `firefly-*` crate names,
+imports, APIs and repository links remain unchanged.
 
 > **Two headline wins.** (1) A **Spring-Boot-for-Rust
 > developer experience**: add the one [`firefly`](crates/firefly/README.md)

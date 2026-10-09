@@ -1,4 +1,4 @@
-"""Markdown -> HTML for *Firefly for Rust by Example*.
+"""Markdown -> HTML for *rsfly by example*.
 
 The src/ chapters are authored in mdBook-flavoured Markdown, so this renderer
 is tuned to that dialect rather than python-markdown's admonition syntax:

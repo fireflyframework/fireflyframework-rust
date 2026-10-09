@@ -3,15 +3,15 @@
    only adds a warm Firefly accent, tighter typography, and styled callouts. */
 
 :root {
-    --firefly-amber: #f5a623;
-    --firefly-amber-soft: rgba(245, 166, 35, 0.12);
+    --firefly-amber: #ffb34a;
+    --firefly-amber-soft: rgba(255, 179, 74, 0.12);
     --firefly-red: #d64545;
 }
 
 /* Warm the link + sidebar-active accent toward the Firefly amber. */
 .content a:link,
 .content a:visited {
-    color: #e0922f;
+    color: #855414;
     text-decoration: none;
 }
 .content a:hover {
@@ -53,7 +53,7 @@ blockquote {
     border-radius: 0 6px 6px 0;
 }
 blockquote p:first-child strong:first-child {
-    color: #e0922f;
+    color: #855414;
 }
 
 /* The mapping tables (Reactor / Spring → firefly) deserve to feel canonical. */

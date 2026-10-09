@@ -1,4 +1,4 @@
-"""Build *Firefly for Rust by Example* into a designed PDF + EPUB from book.yaml.
+"""Build *rsfly by example* into a designed PDF + EPUB from book.yaml.
 
 Pipeline (ported and adapted from the PyFly book build):
   1. Read book.yaml -> front matter, parts, chapters (each referencing a src/
@@ -26,6 +26,7 @@ import os                               # noqa: E402
 import md                              # noqa: E402  (to set md.LANG for localized callout labels)
 from md import render_markdown          # noqa: E402
 from epub import EpubBuilder, Doc       # noqa: E402
+from brand import lockup
 from pdf import render_pdf              # noqa: E402
 
 BOOK = Path(__file__).resolve().parents[1]
@@ -57,6 +58,41 @@ def _inline_svg(path: Path) -> str:
     """Return an SVG's markup with any XML prolog stripped (safe to inline)."""
     svg = path.read_text(encoding="utf-8").strip()
     return re.sub(r'^<\?xml[^>]*\?>\s*', "", svg)
+
+
+def _covers(cfg: dict) -> dict[str, dict]:
+    covers = {}
+    for cid, prefix, label in (("cover", "cover", "Cover"),
+                               ("back-cover", "back_cover", "Back cover")):
+        svg_name = cfg.get(f"{prefix}_svg", "art/cover.svg" if cid == "cover" else None)
+        if svg_name is None:
+            continue
+        svg = BOOK / svg_name
+        image = BOOK / cfg.get(f"{prefix}_image", svg_name)
+        for path in (svg, image):
+            if not path.is_file():
+                raise FileNotFoundError(f"Configured {cid} asset is missing: {path}")
+        title = cfg.get("labels", {}).get(prefix, label)
+        covers[cid] = {"id": cid, "title": title, "svg": svg, "image": image,
+                       "alt": cfg.get(f"{prefix}_alt", f"{title}: {cfg['title']}")}
+    return covers
+
+
+def _add_epub_cover(epub: EpubBuilder, cover: dict) -> None:
+    cid = cover["id"]
+    href = f"art/{cid}{cover['image'].suffix}"
+    epub.add_file(cover["image"], href, f"{cid}-img",
+                  properties="cover-image" if cid == "cover" else "")
+    alt = escape(cover["alt"], {'"': "&quot;"})
+    epub.add_doc(Doc(id=cid, title=cover["title"],
+                     xhtml_body=f'<img src="{href}" alt="{alt}"/>',
+                     in_nav=False, kind=cid))
+
+
+def _pdf_cover(cover: dict) -> str:
+    alt = escape(cover["alt"], {'"': "&quot;"})
+    return (f'<div class="cover-page {cover["id"]}" role="img" aria-label="{alt}">'
+            f'{_inline_svg(cover["svg"])}</div>')
 
 
 def _front_class(fid: str) -> str:
@@ -183,33 +219,7 @@ def _toc_html(items: list[dict], *, href_fmt: str) -> str:
 
 def _divider_html(eyebrow: str, ptitle: str) -> str:
     eb = f'<span class="eyebrow part-eyebrow">{escape(eyebrow)}</span>' if eyebrow else ""
-    # A dark medallion holding the glowing firefly — the same motif as the
-    # cover and the chapter-opener panels, so the parts read as one family.
-    glyph = ('<svg class="part-glyph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">'
-             '<defs><linearGradient id="pgsky" x1="0" y1="0" x2="120" y2="120" '
-             'gradientUnits="userSpaceOnUse">'
-             '<stop offset="0" stop-color="#0e1217"/><stop offset="1" stop-color="#16100b"/>'
-             '</linearGradient></defs>'
-             '<circle cx="60" cy="60" r="54" fill="url(#pgsky)"/>'
-             '<circle cx="60" cy="60" r="54" fill="none" stroke="#f6a821" stroke-width="1.5" opacity="0.4"/>'
-             '<circle cx="60" cy="64" r="30" fill="#f6a821" opacity="0.12"/>'
-             '<path d="M32,90 C44,72 52,62 58,55" fill="none" stroke="#ffd980" '
-             'stroke-width="1.2" opacity="0.4" stroke-linecap="round"/>'
-             '<g transform="translate(60,56) rotate(-16)">'
-             '<circle cx="0" cy="20" r="15" fill="#f6a821" opacity="0.22"/>'
-             '<circle cx="0" cy="20" r="9" fill="#ffc24a" opacity="0.5"/>'
-             '<path d="M-2,-4 C-26,-20 -34,-1 -11,5 Z" fill="#ffd980" opacity="0.28"/>'
-             '<path d="M2,-4 C26,-20 34,-1 11,5 Z" fill="#ffd980" opacity="0.28"/>'
-             '<ellipse cx="0" cy="18" rx="7.5" ry="11" fill="#f6a821"/>'
-             '<ellipse cx="0" cy="19" rx="4" ry="6.5" fill="#fff2cf"/>'
-             '<ellipse cx="0" cy="1" rx="6" ry="9" fill="#1a130c" stroke="#c97e10" stroke-width="1.3"/>'
-             '<ellipse cx="0" cy="-9" rx="3.6" ry="4.4" fill="#1a130c" stroke="#c97e10" stroke-width="1.1"/>'
-             '<path d="M-2,-12 C-6,-19 -9,-20 -11,-22" fill="none" stroke="#c97e10" stroke-width="1.2" stroke-linecap="round"/>'
-             '<path d="M2,-12 C6,-19 9,-20 11,-22" fill="none" stroke="#c97e10" stroke-width="1.2" stroke-linecap="round"/>'
-             '</g>'
-             '<circle cx="88" cy="34" r="1.6" fill="#ffd980" opacity="0.7"/>'
-             '<circle cx="38" cy="40" r="1.3" fill="#bfe26a" opacity="0.7"/>'
-             '</svg>')
+    glyph = lockup(0, 0, 180, 130, key="part-rsfly").replace('<svg ', '<svg class="part-glyph" ', 1)
     return (f'<div class="part-divider-inner">{glyph}{eb}'
             f'<h1 class="part-title">{escape(ptitle)}</h1></div>')
 
@@ -219,6 +229,7 @@ def main() -> int:
     # e.g. BOOK_CONFIG=book-es.yaml for the Spanish edition.
     cfg_name = os.environ.get("BOOK_CONFIG", "book.yaml")
     cfg = yaml.safe_load((BOOK / cfg_name).read_text())
+    covers = _covers(cfg)
     # Localize structural labels + callout labels for this edition's language.
     md.LANG = cfg.get("language", "en")
     LABELS.update(cfg.get("labels", {}))
@@ -233,20 +244,16 @@ def main() -> int:
     do_pdf = only in ("", "--pdf")
     do_epub = only in ("", "--epub")
 
-    DIST.mkdir(parents=True, exist_ok=True)
-    cover_svg = BOOK / cfg.get("cover_svg", "art/cover.svg")
+    dist = Path(os.environ.get("BOOK_OUTPUT_DIR", str(DIST))).expanduser()
+    dist.mkdir(parents=True, exist_ok=True)
 
     # ---- EPUB ----
     if do_epub:
         epub = EpubBuilder(title=cfg["title"], author=cfg["author"],
                            language=cfg["language"], identifier=cfg["identifier"],
                            css=css_text)
-        if cover_svg.exists():
-            epub.add_file(cover_svg, "art/cover.svg", "cover-img", properties="cover-image")
-            epub.add_doc(Doc(id="cover", title="Cover",
-                             xhtml_body='<div class="cover-page">'
-                                        '<img src="art/cover.svg" alt="Cover"/></div>',
-                             in_nav=False, kind="front"))
+        if "cover" in covers:
+            _add_epub_cover(epub, covers["cover"])
         for it in items:
             if it["kind"] == "toc":
                 body = _toc_html(items, href_fmt="{cid}.xhtml")
@@ -265,13 +272,15 @@ def main() -> int:
                 epub.add_doc(Doc(id=it["id"], title=it["title"], xhtml_body=body,
                                  in_nav=True, kind="chapter",
                                  part=it.get("part"), num=it.get("num")))
-        epub.build(DIST / epub_name)
+        if "back-cover" in covers:
+            _add_epub_cover(epub, covers["back-cover"])
+        epub.build(dist / epub_name)
 
     # ---- PDF (single concatenated document) ----
     if do_pdf:
         parts_html: list[str] = []
-        if cover_svg.exists():
-            parts_html.append(f'<div class="cover-page">{_inline_svg(cover_svg)}</div>')
+        if "cover" in covers:
+            parts_html.append(_pdf_cover(covers["cover"]))
         for it in items:
             if it["kind"] == "toc":
                 body = _toc_html(items, href_fmt="#{cid}")
@@ -285,18 +294,22 @@ def main() -> int:
             else:  # chapter
                 body = _chapter_body(it)
                 parts_html.append(f'<section class="chapter" id="{it["id"]}">{body}</section>')
-        full = ("<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>"
+        if "back-cover" in covers:
+            parts_html.append(_pdf_cover(covers["back-cover"]))
+        full = (f'<!DOCTYPE html><html lang="{escape(cfg["language"])}">'
+                f'<head><meta charset="utf-8"><title>{escape(cfg["title"])}</title></head><body>'
                 + "\n".join(parts_html) + "</body></html>")
         render_pdf(full, base_url=BOOK,
                    css_paths=[THEME / "tokens.css", THEME / "pygments.css",
                               THEME / "book.css", THEME / "print.css"],
-                   out=DIST / pdf_name)
+                   out=dist / pdf_name,
+                   cover_pages={cid: cover["svg"] for cid, cover in covers.items()})
 
     nch = sum(1 for it in items if it["kind"] == "chapter")
     nfr = sum(1 for it in items if it["kind"] == "front")
     ndv = sum(1 for it in items if it["kind"] == "divider")
     print(f"Built {nch} chapter(s) + {nfr} front-matter + {ndv} part divider(s) "
-          f"+ cover + TOC -> {'PDF ' if do_pdf else ''}{'EPUB' if do_epub else ''} in {DIST}")
+          f"+ {len(covers)} covers + TOC -> {'PDF ' if do_pdf else ''}{'EPUB' if do_epub else ''} in {dist}")
     return 0
 
 

@@ -1,5 +1,5 @@
 [book]
-title = "Firefly Framework for Rust"
+title = "rsfly by example"
 authors = ["Firefly Framework contributors"]
 description = "The canonical guide to building reactive, event-driven, resilient microservices on Rust with the Firefly Framework."
 language = "en"

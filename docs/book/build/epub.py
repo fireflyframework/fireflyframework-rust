@@ -60,13 +60,15 @@ class EpubBuilder:
     def _xhtml(self, d: Doc) -> str:
         links = "\n".join(f'<link rel="stylesheet" href="style{i}.css"/>'
                           for i in range(len(self.css)))
-        sec_class = {"toc": "toc", "divider": "part-divider",
-                     "front": "frontmatter"}.get(d.kind, "chapter")
+        sec_class = {"toc": "toc", "divider": "part-divider", "front": "frontmatter",
+                     "cover": "cover-page", "back-cover": "cover-page back-cover"}.get(d.kind, "chapter")
+        semantics = {"cover": ' epub:type="cover"',
+                     "back-cover": ' epub:type="backmatter"'}.get(d.kind, "")
         return (f'<?xml version="1.0" encoding="utf-8"?>\n'
                 f'<html xmlns="http://www.w3.org/1999/xhtml" '
                 f'xmlns:epub="http://www.idpf.org/2007/ops" lang="{self.language}">\n'
                 f'<head><meta charset="utf-8"/><title>{escape(d.title)}</title>\n{links}\n</head>\n'
-                f'<body><section class="{sec_class}" id="{escape(d.id)}">'
+                f'<body><section class="{sec_class}" id="{escape(d.id)}"{semantics}>'
                 f'{d.xhtml_body}</section></body>\n</html>\n')
 
     def _nav(self) -> str:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-book.sh — render the designed *Firefly for Rust by Example* PDF + EPUB.
+# build-book.sh — render the designed *rsfly by example* PDF + EPUB.
 #
 # The pipeline is a WeasyPrint build (build/build.py) driven by book.yaml:
 #   1. Read book.yaml -> front matter, parts, chapters (each with an opener SVG).
@@ -13,6 +13,7 @@
 #   docs/book/build-book.sh            # build both PDF and EPUB
 #   docs/book/build-book.sh --pdf      # PDF only
 #   docs/book/build-book.sh --epub     # EPUB only
+#   docs/book/build-book.sh --test     # cover integration tests
 #
 # Requires the project venv at docs/book/.venv (weasyprint, markdown, pygments,
 # pyyaml) and Homebrew's pango/cairo/gobject under /opt/homebrew/lib.
@@ -29,16 +30,17 @@ export DYLD_FALLBACK_LIBRARY_PATH="${BREW_PREFIX}/lib:/usr/local/lib:${DYLD_FALL
 if [ ! -x "${VENV_PY}" ]; then
   echo "error: book venv not found at ${VENV_PY}" >&2
   echo "       create it with: python3 -m venv ${BOOK_DIR}/.venv && \\" >&2
-  echo "       ${BOOK_DIR}/.venv/bin/pip install weasyprint markdown pygments pyyaml" >&2
+  echo "       ${BOOK_DIR}/.venv/bin/pip install -r ${BOOK_DIR}/requirements.txt" >&2
   exit 1
 fi
 
 case "${1:-}" in
+  --test) exec "${VENV_PY}" -m unittest discover -s "${BOOK_DIR}/tests" -v ;;
   --pdf|--epub|"") ;;
-  *) echo "usage: build-book.sh [--pdf|--epub]" >&2; exit 2 ;;
+  *) echo "usage: build-book.sh [--pdf|--epub|--test]" >&2; exit 2 ;;
 esac
 
-# (Re)generate the cover + chapter-opener art so it always matches the manifest.
+# This generator owns chapter openers only. Branded covers are imported assets.
 "${VENV_PY}" "${BOOK_DIR}/build/gen_openers.py"
 
 exec "${VENV_PY}" "${BOOK_DIR}/build/build.py" "$@"

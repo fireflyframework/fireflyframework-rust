@@ -4,29 +4,29 @@
      font-family="Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif">
   <defs>
     <linearGradient id="parch" x1="0" y1="0" x2="0" y2="520" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#fdf7ec"/><stop offset="1" stop-color="#f4e7d0"/>
+      <stop offset="0" stop-color="#f3f1eb"/><stop offset="1" stop-color="#f3f1eb"/>
     </linearGradient>
     <radialGradient id="amb" cx="770" cy="40" r="460" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#f6a821" stop-opacity="0.13"/><stop offset="1" stop-color="#f6a821" stop-opacity="0"/>
+      <stop offset="0" stop-color="#ffb34a" stop-opacity="0.13"/><stop offset="1" stop-color="#ffb34a" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="amber" x1="0" y1="92" x2="0" y2="156" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffd87a"/><stop offset="1" stop-color="#f3a41d"/>
+      <stop offset="0" stop-color="#ffb34a"/><stop offset="1" stop-color="#ffb34a"/>
     </linearGradient>
     <linearGradient id="goldbar" x1="0" y1="174" x2="0" y2="216" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#f9ba43"/><stop offset="1" stop-color="#ee9b14"/>
+      <stop offset="0" stop-color="#ffb34a"/><stop offset="1" stop-color="#ffb34a"/>
     </linearGradient>
     <linearGradient id="bedrock" x1="60" y1="0" x2="840" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#241a10"/><stop offset="0.5" stop-color="#37270f"/><stop offset="1" stop-color="#241a10"/>
+      <stop offset="0" stop-color="#10110f"/><stop offset="0.5" stop-color="#272820"/><stop offset="1" stop-color="#10110f"/>
     </linearGradient>
-    <g id="ff"><circle r="9" fill="#f6a821" opacity="0.10"/><circle r="5" fill="#ffc24a" opacity="0.22"/><circle r="2.6" fill="#ffd980" opacity="0.7"/><circle r="1.3" fill="#fff6e0"/></g>
-    <g id="fg"><circle r="9" fill="#9bd24a" opacity="0.10"/><circle r="5" fill="#c2e85f" opacity="0.20"/><circle r="2.6" fill="#dff58a" opacity="0.7"/><circle r="1.3" fill="#fbffe2"/></g>
+    <g id="ff"><circle r="9" fill="#ffb34a" opacity="0.10"/><circle r="5" fill="#ffb34a" opacity="0.22"/><circle r="2.6" fill="#ffb34a" opacity="0.7"/><circle r="1.3" fill="#f3f1eb"/></g>
+    <g id="fg"><circle r="9" fill="#7a8460" opacity="0.10"/><circle r="5" fill="#7a8460" opacity="0.20"/><circle r="2.6" fill="#bfb8ab" opacity="0.7"/><circle r="1.3" fill="#f3f1eb"/></g>
   </defs>
 
   <!-- canvas -->
-  <rect x="0.5" y="0.5" width="899" height="519" rx="18" fill="url(#parch)" stroke="#e6d3ad"/>
+  <rect x="0.5" y="0.5" width="899" height="519" rx="18" fill="url(#parch)" stroke="#d8d4ca"/>
   <rect width="900" height="520" rx="18" fill="url(#amb)"/>
   <!-- background motes -->
-  <g fill="#e0b25a">
+  <g fill="#ffb34a">
     <circle cx="828" cy="38" r="1.4" opacity="0.5"/><circle cx="690" cy="30" r="1.0" opacity="0.4"/>
     <circle cx="44" cy="300" r="1.2" opacity="0.4"/><circle cx="862" cy="300" r="1.1" opacity="0.42"/>
     <circle cx="500" cy="20" r="1.0" opacity="0.35"/>
@@ -36,94 +36,94 @@
 
   <!-- title -->
   <use xlink:href="#ff" transform="translate(70,40) scale(1.25)"/>
-  <text x="92" y="46" font-size="22" font-weight="800" fill="#2a1d10" letter-spacing="0.3">Architecture at a glance</text>
-  <text x="840" y="44" text-anchor="end" font-size="12" font-weight="600" fill="#b18a52" letter-spacing="0.5">fireflyframework-rust</text>
-  <line x1="60" y1="62" x2="840" y2="62" stroke="#f6a821" stroke-width="1.4" opacity="0.45"/>
-  <text x="450" y="80" text-anchor="middle" font-size="11.5" font-style="italic" fill="#8a6f48">One dependency in; four strictly-layered tiers building left to right; a reactive core at the base.</text>
+  <text x="92" y="46" font-size="22" font-weight="800" fill="#10110f" letter-spacing="0.3">Architecture at a glance</text>
+  <svg x="748" y="5" width="88" height="64" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 335.52 242"><title>rsfly - Rust framework by Firefly</title><g fill="#10110f" transform="translate(20 130) scale(0.07 -0.07)"><g transform="translate(0 0)"><path d="M140 0L140 1080L299 1080L299 908Q310 927 323 945Q353 987 391 1014Q433 1048 486 1066Q539 1084 594 1087.5Q649 1091 697 1080L697 913Q641 928 574 921Q507 914 450 872Q398 835 369.5 782Q341 729 330 667.5Q319 606 319 542L319 0Z"/></g><g transform="translate(707 0)"><path d="M548 -29Q355 -29 231.5 55.5Q108 140 80 292L262 321Q284 233 363 181.5Q442 130 559 130Q670 130 733 176Q796 222 796 301Q796 347 775 375.5Q754 404 688.5 429Q623 454 491 489Q348 527 266 568Q184 609 149 663Q114 717 114 794Q114 889 166 960.5Q218 1032 311.5 1071Q405 1110 529 1110Q652 1110 749 1071Q846 1032 905.5 960.5Q965 889 976 794L794 761Q781 848 710.5 898Q640 948 529 951Q424 955 358.5 914Q293 873 293 803Q293 764 317.5 736Q342 708 408.5 683Q475 658 602 626Q745 590 827.5 547.5Q910 505 945 447.5Q980 390 980 306Q980 150 865 60.5Q750 -29 548 -29Z"/></g><g transform="translate(1768 0)"><path d="M243 0L243 933L60 933L60 1080L243 1080L243 1139Q243 1181 247 1224.5Q251 1268 265 1309.5Q279 1351 311 1386Q348 1427 392 1444.5Q436 1462 481.5 1466Q527 1470 568 1470L705 1470L705 1322L578 1322Q499 1322 460 1283.5Q421 1245 421 1167L421 1080L954 1080L954 1470L1132 1470L1132 0L954 0L954 933L421 933L421 0Z"/></g><g transform="translate(3060 0)"><g data-family-terminal="trail-y"><defs><linearGradient id="architecture-rsfly-family-rsfly-20-130-140" gradientUnits="userSpaceOnUse" x1="30" y1="1080" x2="554" y2="230"><stop offset="0" stop-color="#ffb34a" stop-opacity="0.2"/><stop offset="0.8" stop-color="#ffb34a" stop-opacity="1"/></linearGradient></defs><path d="M290 -480L468 4L30 1080L217 1080L554 230L870 1080L1051 1080L463 -480Z" fill="url(#architecture-rsfly-family-rsfly-20-130-140)"/></g></g></g><g fill="#62645b" transform="translate(25 210) scale(0.0155 -0.0155)"><path d="M625 -30Q476 -30 373 46Q314 89 271 150L271 0L139 0L139 1440L287 1440L287 953Q325 1001 375 1036Q479 1110 631 1110Q779 1110 885 1035Q991 960 1047.5 831Q1104 702 1104 541Q1104 379 1047 250Q990 121 883 45.5Q776 -30 625 -30ZM610 107Q723 107 798 164Q873 221 910.5 319.5Q948 418 948 541Q948 663 911 761Q874 859 798.5 916Q723 973 607 973Q494 973 419.5 918Q345 863 308 765.5Q271 668 271 541Q271 416 308 317.5Q345 219 420 163Q495 107 610 107Z" transform="translate(0 0)"/><path d="M294 -480L472 3L33 1080L189 1080L544 192L871 1080L1021 1080L441 -480Z" transform="translate(1131 0)"/></g><svg x="76" y="183" width="143" height="45.48" xmlns="http://www.w3.org/2000/svg" viewBox="5 -148 619.4 197"><defs><linearGradient id="architecture-rsfly-firefly-trail" gradientUnits="userSpaceOnUse" x1="567.4" y1="-108" x2="623.4" y2="-54"><stop offset="0" stop-color="#ffb34a" stop-opacity="0.2"/><stop offset="0.8" stop-color="#ffb34a" stop-opacity="1"/></linearGradient></defs><path d="M24.3 0L24.3 -93.3L6 -93.3L6 -108L24.3 -108L24.3 -113.9Q24.3 -118.1 24.7 -122.45Q25.1 -126.8 26.5 -130.95Q27.9 -135.1 31.1 -138.6Q34.8 -142.7 39.2 -144.45Q43.6 -146.2 48.15 -146.6Q52.7 -147 56.8 -147L70.5 -147L70.5 -132.2L57.8 -132.2Q49.9 -132.2 46 -128.35Q42.1 -124.5 42.1 -116.7L42.1 -108L70.5 -108L70.5 -93.3L42.1 -93.3L42.1 0ZM91.5 0L91.5 -108L109.3 -108L109.3 0ZM134.8 0L134.8 -108L150.7 -108L150.7 -90.8Q151.8 -92.7 153.1 -94.5Q156.1 -98.7 159.9 -101.4Q164.1 -104.8 169.4 -106.6Q174.7 -108.4 180.2 -108.75Q185.7 -109.1 190.5 -108L190.5 -91.3Q184.9 -92.8 178.2 -92.1Q171.5 -91.4 165.8 -87.2Q160.6 -83.5 157.75 -78.2Q154.9 -72.9 153.8 -66.75Q152.7 -60.6 152.7 -54.2L152.7 0ZM247.3 3Q231.4 3 219.55 -4.05Q207.7 -11.1 201.1 -23.75Q194.5 -36.4 194.5 -53.3Q194.5 -71 201 -83.95Q207.5 -96.9 219.15 -103.95Q230.8 -111 246.5 -111Q262.8 -111 274.25 -103.5Q285.7 -96 291.45 -82.1Q297.2 -68.2 296.4 -49L213.6 -49Q214.6 -33.5 222 -24.4Q230.6 -13.9 246.5 -13.9Q257.2 -13.9 265.1 -18.8Q273 -23.7 277.5 -32.9L294.6 -27Q288.3 -12.7 275.65 -4.85Q263 3 247.3 3ZM277.9 -63.3Q276.5 -77.4 270.3 -85.2Q262.5 -95 247.1 -95Q230.6 -95 222 -84.4Q215.5 -76.4 213.9 -63.3ZM324.4 0L324.4 -93.3L306.1 -93.3L306.1 -108L324.4 -108L324.4 -113.9Q324.4 -118.1 324.8 -122.45Q325.2 -126.8 326.6 -130.95Q328 -135.1 331.2 -138.6Q334.9 -142.7 339.3 -144.45Q343.7 -146.2 348.25 -146.6Q352.8 -147 356.9 -147L370.6 -147L370.6 -132.2L357.9 -132.2Q350 -132.2 346.1 -128.35Q342.2 -124.5 342.2 -116.7L342.2 -108L395.5 -108L395.5 -147L413.3 -147L413.3 0L395.5 0L395.5 -93.3L342.2 -93.3L342.2 0ZM452.8 48L470.6 -0.4L426.8 -108L445.5 -108L479.2 -23L510.8 -108L528.9 -108L470.1 48Z" fill="#10110f"/><circle cx="100.4" cy="-136.3" r="9.97" fill="#ffb34a"/><path d="M567.4 -108L623.4 -54L603.4 -54L547.4 -108Z" fill="url(#architecture-rsfly-firefly-trail)"/><path d="M623.4 -54L567.4 0L547.4 0L603.4 -54Z" fill="#ffb34a"/></svg></svg>
+  <line x1="60" y1="62" x2="840" y2="62" stroke="#ffb34a" stroke-width="1.4" opacity="0.45"/>
+  <text x="450" y="80" text-anchor="middle" font-size="11.5" font-style="italic" fill="#62645b">One dependency in; four strictly-layered tiers building left to right; a reactive core at the base.</text>
 
   <!-- front door (facade) -->
-  <rect x="60" y="98" width="780" height="62" rx="14" fill="#e3cfa8" opacity="0.55"/>
-  <rect x="60" y="94" width="780" height="62" rx="14" fill="url(#amber)" stroke="#d98f1e" stroke-width="1.4"/>
-  <rect x="74" y="100" width="752" height="2" rx="1" fill="#fffdf5" opacity="0.30"/>
+  <rect x="60" y="98" width="780" height="62" rx="14" fill="#d8d4ca" opacity="0.55"/>
+  <rect x="60" y="94" width="780" height="62" rx="14" fill="url(#amber)" stroke="#855414" stroke-width="1.4"/>
+  <rect x="74" y="100" width="752" height="2" rx="1" fill="#ffffff" opacity="0.30"/>
   <use xlink:href="#ff" transform="translate(98,126) scale(1.35)"/>
-  <text x="128" y="119" font-size="11" font-weight="800" fill="#6e4710" letter-spacing="1.6">THE FRONT DOOR</text>
-  <text x="128" y="141" font-size="16" font-weight="800" fill="#3a2310" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">firefly  +  firefly-macros</text>
-  <text x="826" y="119" text-anchor="end" font-size="11.5" fill="#6e4710" font-weight="600">one dependency &#183; use firefly::prelude::*;</text>
-  <text x="826" y="141" text-anchor="end" font-size="11.5" fill="#6e4710" font-weight="600">declarative macros &#183; stable __rt contract</text>
+  <text x="128" y="119" font-size="11" font-weight="800" fill="#855414" letter-spacing="1.6">THE FRONT DOOR</text>
+  <text x="128" y="141" font-size="16" font-weight="800" fill="#272820" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">firefly  +  firefly-macros</text>
+  <text x="826" y="119" text-anchor="end" font-size="11.5" fill="#855414" font-weight="600">one dependency &#183; use firefly::prelude::*;</text>
+  <text x="826" y="141" text-anchor="end" font-size="11.5" fill="#855414" font-weight="600">declarative macros &#183; stable __rt contract</text>
 
   <!-- front-door to tiers connectors -->
-  <g stroke="#e0a93a" stroke-width="1.5" stroke-dasharray="2 3" opacity="0.75">
+  <g stroke="#ffb34a" stroke-width="1.5" stroke-dasharray="2 3" opacity="0.75">
     <line x1="148.5" y1="158" x2="148.5" y2="173"/><line x1="349.5" y1="158" x2="349.5" y2="173"/>
     <line x1="550.5" y1="158" x2="550.5" y2="173"/><line x1="751.5" y1="158" x2="751.5" y2="173"/>
   </g>
 
   <!-- ===== TIER 1: FOUNDATIONAL ===== -->
-  <rect x="60" y="178" width="177" height="268" rx="12" fill="#e7d4b2" opacity="0.5"/>
-  <rect x="60" y="174" width="177" height="268" rx="12" fill="#fffdf8" stroke="#e3d0aa" stroke-width="1.4"/>
+  <rect x="60" y="178" width="177" height="268" rx="12" fill="#d8d4ca" opacity="0.5"/>
+  <rect x="60" y="174" width="177" height="268" rx="12" fill="#ffffff" stroke="#d8d4ca" stroke-width="1.4"/>
   <path d="M60,186 a12,12 0 0 1 12,-12 h153 a12,12 0 0 1 12,12 v30 h-177 z" fill="url(#goldbar)"/>
-  <circle cx="80" cy="195" r="11" fill="#fff6e0" opacity="0.9"/><text x="80" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#b06a16">1</text>
-  <text x="155" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#2a1d10" letter-spacing="0.4">FOUNDATIONAL</text>
-  <text x="148.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#a07e4e">reactive base &#183; cross-cutting</text>
-  <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+  <circle cx="80" cy="195" r="11" fill="#f3f1eb" opacity="0.9"/><text x="80" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#855414">1</text>
+  <text x="155" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#10110f" letter-spacing="0.4">FOUNDATIONAL</text>
+  <text x="148.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#855414">reactive base &#183; cross-cutting</text>
+  <g font-size="11.5" fill="#272820" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
     <text x="78" y="262">kernel</text><text x="78" y="284">web</text>
     <text x="78" y="306">config</text><text x="78" y="328">validators</text>
     <text x="78" y="350">container</text><text x="78" y="372">i18n</text>
-    <text x="78" y="394" fill="#a98f63">+ utils, session</text>
+    <text x="78" y="394" fill="#62645b">+ utils, session</text>
   </g>
 
   <!-- ===== TIER 2: PLATFORM ===== -->
-  <rect x="261" y="178" width="177" height="268" rx="12" fill="#e7d4b2" opacity="0.5"/>
-  <rect x="261" y="174" width="177" height="268" rx="12" fill="#fffdf8" stroke="#e3d0aa" stroke-width="1.4"/>
+  <rect x="261" y="178" width="177" height="268" rx="12" fill="#d8d4ca" opacity="0.5"/>
+  <rect x="261" y="174" width="177" height="268" rx="12" fill="#ffffff" stroke="#d8d4ca" stroke-width="1.4"/>
   <path d="M261,186 a12,12 0 0 1 12,-12 h153 a12,12 0 0 1 12,12 v30 h-177 z" fill="url(#goldbar)"/>
-  <circle cx="281" cy="195" r="11" fill="#fff6e0" opacity="0.9"/><text x="281" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#b06a16">2</text>
-  <text x="356" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#2a1d10" letter-spacing="0.4">PLATFORM</text>
-  <text x="349.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#a07e4e">engines &#183; defines ports</text>
-  <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+  <circle cx="281" cy="195" r="11" fill="#f3f1eb" opacity="0.9"/><text x="281" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#855414">2</text>
+  <text x="356" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#10110f" letter-spacing="0.4">PLATFORM</text>
+  <text x="349.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#855414">engines &#183; defines ports</text>
+  <g font-size="11.5" fill="#272820" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
     <text x="279" y="262">cqrs</text><text x="279" y="284">eda</text>
     <text x="279" y="306">eventsourcing</text><text x="279" y="328">orchestration</text>
     <text x="279" y="350">cache</text><text x="279" y="372">security</text>
-    <text x="279" y="394" fill="#a98f63">+ observability, &#8230;</text>
+    <text x="279" y="394" fill="#62645b">+ observability, &#8230;</text>
   </g>
 
   <!-- ===== TIER 3: ADAPTERS ===== -->
-  <rect x="462" y="178" width="177" height="268" rx="12" fill="#e7d4b2" opacity="0.5"/>
-  <rect x="462" y="174" width="177" height="268" rx="12" fill="#fffdf8" stroke="#e3d0aa" stroke-width="1.4"/>
+  <rect x="462" y="178" width="177" height="268" rx="12" fill="#d8d4ca" opacity="0.5"/>
+  <rect x="462" y="174" width="177" height="268" rx="12" fill="#ffffff" stroke="#d8d4ca" stroke-width="1.4"/>
   <path d="M462,186 a12,12 0 0 1 12,-12 h153 a12,12 0 0 1 12,12 v30 h-177 z" fill="url(#goldbar)"/>
-  <circle cx="482" cy="195" r="11" fill="#fff6e0" opacity="0.9"/><text x="482" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#b06a16">3</text>
-  <text x="557" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#2a1d10" letter-spacing="0.4">ADAPTERS</text>
-  <text x="550.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#a07e4e">implement the ports</text>
-  <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+  <circle cx="482" cy="195" r="11" fill="#f3f1eb" opacity="0.9"/><text x="482" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#855414">3</text>
+  <text x="557" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#10110f" letter-spacing="0.4">ADAPTERS</text>
+  <text x="550.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#855414">implement the ports</text>
+  <g font-size="11.5" fill="#272820" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
     <text x="480" y="262">data-sqlx</text><text x="480" y="284">data-mongodb</text>
     <text x="480" y="306">eda-kafka</text><text x="480" y="328">cache-redis</text>
     <text x="480" y="350">idp-* &#183; ecm-*</text><text x="480" y="372">notifications-*</text>
-    <text x="480" y="394" fill="#a98f63">+ client, webhooks</text>
+    <text x="480" y="394" fill="#62645b">+ client, webhooks</text>
   </g>
 
   <!-- ===== TIER 4: STARTERS ===== -->
-  <rect x="663" y="178" width="177" height="268" rx="12" fill="#e7d4b2" opacity="0.5"/>
-  <rect x="663" y="174" width="177" height="268" rx="12" fill="#fffdf8" stroke="#e3d0aa" stroke-width="1.4"/>
+  <rect x="663" y="178" width="177" height="268" rx="12" fill="#d8d4ca" opacity="0.5"/>
+  <rect x="663" y="174" width="177" height="268" rx="12" fill="#ffffff" stroke="#d8d4ca" stroke-width="1.4"/>
   <path d="M663,186 a12,12 0 0 1 12,-12 h153 a12,12 0 0 1 12,12 v30 h-177 z" fill="url(#goldbar)"/>
-  <circle cx="683" cy="195" r="11" fill="#fff6e0" opacity="0.9"/><text x="683" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#b06a16">4</text>
-  <text x="758" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#2a1d10" letter-spacing="0.4">STARTERS</text>
-  <text x="751.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#a07e4e">compose &#183; ship</text>
-  <g font-size="11.5" fill="#3a2a1c" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
+  <circle cx="683" cy="195" r="11" fill="#f3f1eb" opacity="0.9"/><text x="683" y="199" text-anchor="middle" font-size="12" font-weight="800" fill="#855414">4</text>
+  <text x="758" y="200" text-anchor="middle" font-size="14" font-weight="800" fill="#10110f" letter-spacing="0.4">STARTERS</text>
+  <text x="751.5" y="236" text-anchor="middle" font-size="9.5" font-style="italic" fill="#855414">compose &#183; ship</text>
+  <g font-size="11.5" fill="#272820" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">
     <text x="681" y="262">starter-core</text><text x="681" y="284">starter-web</text>
     <text x="681" y="306">starter-domain</text><text x="681" y="328">starter-data</text>
     <text x="681" y="350">admin</text><text x="681" y="372">cli</text>
-    <text x="681" y="394" fill="#a98f63">+ backoffice</text>
+    <text x="681" y="394" fill="#62645b">+ backoffice</text>
   </g>
 
   <!-- left-to-right "builds on" chevrons (direction explained in the subtitle) -->
-  <g fill="#d4793a">
+  <g fill="#ffb34a">
     <polygon points="243,300 259,310 243,320"/><polygon points="444,300 460,310 444,320"/><polygon points="645,300 661,310 645,320"/>
   </g>
 
   <!-- reactive bedrock -->
   <rect x="60" y="466" width="780" height="46" rx="13" fill="url(#bedrock)"/>
-  <circle cx="94" cy="489" r="12" fill="none" stroke="#9bd24a" stroke-width="1.4" opacity="0.65"/>
-  <ellipse cx="94" cy="489" rx="12" ry="4.5" fill="none" stroke="#c2e85f" stroke-width="1" opacity="0.5"/>
-  <circle cx="94" cy="489" r="3.4" fill="#dff58a"/>
-  <text x="120" y="484" font-size="13" font-weight="800" fill="#ffe9b0" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">firefly-reactive</text>
-  <text x="120" y="500" font-size="10.5" fill="#cdb389">the Mono / Flux reactive core every tier is built on</text>
-  <text x="824" y="492" text-anchor="end" font-size="10.5" fill="#8f7a52" font-weight="600" letter-spacing="0.4">tokio &#183; axum &#183; async-native</text>
+  <circle cx="94" cy="489" r="12" fill="none" stroke="#7a8460" stroke-width="1.4" opacity="0.65"/>
+  <ellipse cx="94" cy="489" rx="12" ry="4.5" fill="none" stroke="#7a8460" stroke-width="1" opacity="0.5"/>
+  <circle cx="94" cy="489" r="3.4" fill="#bfb8ab"/>
+  <text x="120" y="484" font-size="13" font-weight="800" fill="#f3f1eb" font-family="SF Mono,JetBrains Mono,Menlo,Consolas,monospace">firefly-reactive</text>
+  <text x="120" y="500" font-size="10.5" fill="#bfb8ab">the Mono / Flux reactive core every tier is built on</text>
+  <text x="824" y="492" text-anchor="end" font-size="10.5" fill="#62645b" font-weight="600" letter-spacing="0.4">tokio &#183; axum &#183; async-native</text>
 </svg>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""build-book.py — entry point for the designed *Firefly for Rust by Example*
+"""build-book.py — entry point for the designed *rsfly by example*
 PDF + EPUB pipeline.
 
 This is a thin launcher: it ensures Homebrew's gobject/pango/cairo are on the

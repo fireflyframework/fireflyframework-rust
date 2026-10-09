@@ -1,16 +1,12 @@
-"""Generate on-brand chapter-opener SVGs for *Firefly for Rust by Example*.
+"""Generate rsfly chapter openers with the canonical gradient-y family lockup.
 
-Each opener is a 720x300 banner sharing one visual language with the cover:
-a warm cream diagram field on the left, and a deep night-sky panel on the
-right holding a glowing **firefly** emblem (the same bioluminescent motif as
-the cover, not a literal gear). The emblem + palette are constant so the set
-reads as a family; the left-hand glyph differs per chapter so each opener
-previews that chapter's idea.
-
-Run:  python build/gen_openers.py        (writes art/openers/*.svg)
+The left-hand technical glyphs retain their original coordinates. The right
+panel uses the approved outlined artwork imported from the Firefly Brand Kit.
+Run: python build/gen_openers.py (writes art/openers/*.svg).
 """
 from __future__ import annotations
 from pathlib import Path
+from brand import lockup
 from xml.sax.saxutils import escape as _xml_escape
 
 ART = Path(__file__).resolve().parents[1] / "art" / "openers"
@@ -22,22 +18,22 @@ def esc(s: str) -> str:
     return _xml_escape(str(s))
 
 # ---- palette ---------------------------------------------------------------
-FIELD   = "#fdf6ea"   # warm cream banner field
-FIELD2  = "#f7ecd8"   # slightly deeper cream
-PANEL1  = "#0e1217"   # night-sky panel, cool top
-PANEL2  = "#16100b"   # night-sky panel, warm bottom
-AMBER   = "#f6a821"
-AMBER_B = "#ffc24a"   # bright amber
-AMBER_D = "#c97e10"
-RUST    = "#d4793a"
-RUST_D  = "#b5531f"
-INK     = "#3a2a1c"   # dark text / dark fills on the cream field
-MUTED   = "#9a8163"
-GEAR    = "#e8923f"
-NODE    = "#fffaf0"   # light card on the cream field
-CREAM   = "#f3e7cf"   # light text on the dark panel
-GREEN   = "#1f8a4c"
-GREEN_B = "#bfe26a"   # bioluminescent green-gold accent (matches the cover)
+FIELD   = "#f3f1eb"   # warm cream banner field
+FIELD2  = "#e9e7df"   # slightly deeper cream
+PANEL1  = "#10110f"   # night-sky panel, cool top
+PANEL2  = "#10110f"   # night-sky panel, warm bottom
+AMBER   = "#ffb34a"
+AMBER_B = "#ffb34a"   # bright amber
+AMBER_D = "#855414"
+RUST    = "#ffb34a"
+RUST_D  = "#855414"
+INK     = "#272820"   # dark text / dark fills on the cream field
+MUTED   = "#62645b"
+GEAR    = "#ffb34a"
+NODE    = "#ffffff"   # light card on the cream field
+CREAM   = "#f3f1eb"   # light text on the dark panel
+GREEN   = "#52613d"
+GREEN_B = "#7a8460"   # olive control accent
 
 W, H = 720, 300
 # the night-sky panel on the right
@@ -77,41 +73,8 @@ def defs() -> str:
 
 
 def emblem() -> str:
-    """The constant glowing-firefly emblem on the night-sky panel (right)."""
-    cx, cy = 601, 150
-    return (
-        f'<g transform="translate({cx},{cy})">'
-        # ambient bloom on the panel
-        f'<circle r="66" fill="{AMBER}" opacity="0.07"/>'
-        f'<circle r="40" fill="{AMBER_B}" opacity="0.10"/>'
-        # light trail curving in from lower-left (two strokes = a taper)
-        f'<path d="M-80,84 C-46,44 -24,18 -8,-2" fill="none" stroke="{AMBER}" '
-        f'stroke-width="2.4" opacity="0.10" stroke-linecap="round"/>'
-        f'<path d="M-80,84 C-46,44 -24,18 -8,-2" fill="none" stroke="#ffd980" '
-        f'stroke-width="1" opacity="0.22" stroke-linecap="round"/>'
-        # the firefly, gently tilted for life
-        '<g transform="rotate(-16)">'
-        f'<circle cx="0" cy="30" r="24" fill="{AMBER}" opacity="0.18"/>'
-        f'<circle cx="0" cy="30" r="14" fill="{AMBER_B}" opacity="0.45"/>'
-        # wings, swept back and translucent
-        f'<path d="M-3,-6 C-40,-30 -52,-2 -16,8 Z" fill="#ffd980" opacity="0.22"/>'
-        f'<path d="M3,-6 C40,-30 52,-2 16,8 Z" fill="#ffd980" opacity="0.22"/>'
-        # glowing abdomen
-        f'<ellipse cx="0" cy="26" rx="11" ry="16" fill="{AMBER}"/>'
-        f'<ellipse cx="0" cy="28" rx="6" ry="10" fill="#fff2cf"/>'
-        # dark thorax + head with an amber rim
-        f'<ellipse cx="0" cy="2" rx="9" ry="13" fill="#1a130c" stroke="{AMBER_D}" stroke-width="1.6"/>'
-        f'<ellipse cx="0" cy="-13" rx="5.5" ry="6.5" fill="#1a130c" stroke="{AMBER_D}" stroke-width="1.3"/>'
-        # antennae
-        f'<path d="M-3,-18 C-9,-28 -13,-30 -17,-33" fill="none" stroke="{AMBER_D}" stroke-width="1.5" stroke-linecap="round"/>'
-        f'<path d="M3,-18 C9,-28 13,-30 17,-33" fill="none" stroke="{AMBER_D}" stroke-width="1.5" stroke-linecap="round"/>'
-        '</g>'
-        # satellite motes (one bioluminescent green, matching the cover)
-        f'<circle cx="50" cy="-46" r="2" fill="#ffd980" opacity="0.7"/>'
-        f'<circle cx="62" cy="28" r="1.6" fill="{GREEN_B}" opacity="0.75"/>'
-        f'<circle cx="-54" cy="-40" r="1.6" fill="#ffd980" opacity="0.6"/>'
-        '</g>'
-    )
+    """Canonical outlined rsfly lockup on the existing dark panel."""
+    return lockup(506, 82, 184, 133, theme="dark", key="opener-rsfly")
 
 
 def frame(num: str, kicker: str) -> str:
@@ -124,7 +87,7 @@ def frame(num: str, kicker: str) -> str:
         f'<rect x="{PX}" y="{PY}" width="{PW}" height="{PH}" rx="16" fill="none" '
         f'stroke="{AMBER}" stroke-width="1" opacity="0.22"/>'
         # a few distant motes inside the panel
-        f'<g fill="#ffd980"><circle cx="528" cy="56" r="1.4" opacity="0.6"/>'
+        f'<g fill="#ffb34a"><circle cx="528" cy="56" r="1.4" opacity="0.6"/>'
         f'<circle cx="678" cy="236" r="1.4" opacity="0.55"/>'
         f'<circle cx="644" cy="66" r="1.1" opacity="0.5"/>'
         f'<circle cx="512" cy="210" r="1.1" opacity="0.45"/></g>'
@@ -142,7 +105,7 @@ def frame(num: str, kicker: str) -> str:
 def card(x, y, w, label, fill=NODE, stroke=RUST, tcol=INK, fs=14):
     return (
         f'<g transform="translate({x},{y})">'
-        f'<rect x="0" y="2.5" width="{w}" height="40" rx="9" fill="#d9c4a3" opacity="0.30"/>'
+        f'<rect x="0" y="2.5" width="{w}" height="40" rx="9" fill="#bfb8ab" opacity="0.30"/>'
         f'<rect x="0" y="0" width="{w}" height="40" rx="9" fill="{fill}" '
         f'stroke="{stroke}" stroke-width="1.8"/>'
         f'<text x="{w/2}" y="25" text-anchor="middle" fill="{tcol}" '
@@ -155,7 +118,7 @@ def chip(x, y, label, fill=AMBER):
     return (
         f'<g transform="translate({x},{y})">'
         f'<rect x="0" y="0" width="{w:.0f}" height="30" rx="15" fill="{fill}" opacity="0.92"/>'
-        f'<text x="{w/2:.0f}" y="20" text-anchor="middle" fill="#16110c" '
+        f'<text x="{w/2:.0f}" y="20" text-anchor="middle" fill="#10110f" '
         f'font-size="13" font-weight="700">{esc(label)}</text></g>'
     )
 
@@ -196,7 +159,7 @@ def s_choice():  # why firefly — chaos -> cohesion
              + card(120, 110, 96, "sqlx?", NODE, MUTED, MUTED, 13)
              + card(56, 164, 96, "DI?", NODE, MUTED, MUTED, 13))
     return (cards + arrow(232, 130, 296, 130)
-            + card(308, 108, 150, "Firefly Core", "url(#grh)", RUST_D, "#16110c", 16)
+            + card(308, 108, 150, "Firefly Core", "url(#grh)", RUST_D, "#10110f", 16)
             + spark(250, 72) + spark(280, 178, 5, AMBER, 0.8))
 
 
@@ -218,12 +181,12 @@ def s_config():
     for lbl, y in layers:
         out.append(card(56, y, 200, lbl, NODE, RUST, INK, 13))
     out.append(arrow(150, 174, 150, 206))
-    out.append(card(96, 208, 120, "Settings", "url(#grh)", RUST_D, "#16110c", 14))
+    out.append(card(96, 208, 120, "Settings", "url(#grh)", RUST_D, "#10110f", 14))
     return "".join(out)
 
 
 def s_di():
-    hub = card(120, 120, 120, "Context", "url(#grh)", RUST_D, "#16110c", 14)
+    hub = card(120, 120, 120, "Context", "url(#grh)", RUST_D, "#10110f", 14)
     beans = (chip(40, 58, "#[component]") + chip(40, 188, "Arc<dyn Port>")
              + chip(300, 60, "@autowired") + chip(300, 188, "lifecycle"))
     spokes = (f'<g stroke="{RUST}" stroke-width="2" opacity="0.5">'
@@ -235,7 +198,7 @@ def s_di():
 
 
 def s_wiring():
-    return (card(52, 70, 104, "Core", "url(#grh)", RUST_D, "#16110c", 14)
+    return (card(52, 70, 104, "Core", "url(#grh)", RUST_D, "#10110f", 14)
             + card(52, 130, 104, "cache", NODE, RUST, INK, 13)
             + card(52, 190, 104, "broker", NODE, RUST, INK, 13)
             + arrow(160, 90, 220, 130) + arrow(160, 150, 220, 150) + arrow(160, 210, 220, 170)
@@ -260,7 +223,7 @@ def s_reactive():
 def s_http():
     return (chip(48, 70, "GET /wallets") + chip(48, 134, "POST /wallets")
             + arrow(196, 130, 256, 130)
-            + card(266, 108, 120, "Router", "url(#grh)", RUST_D, "#16110c", 14)
+            + card(266, 108, 120, "Router", "url(#grh)", RUST_D, "#10110f", 14)
             + chip(300, 196, "200 OK", AMBER))
 
 
@@ -275,7 +238,7 @@ def s_persist():
 
 
 def s_ddd():
-    agg = card(170, 116, 150, "Wallet aggregate", "url(#grh)", RUST_D, "#16110c", 13)
+    agg = card(170, 116, 150, "Wallet aggregate", "url(#grh)", RUST_D, "#10110f", 13)
     vos = (chip(40, 70, "Money") + chip(40, 196, "WalletId")
            + chip(330, 70, "invariant") + chip(330, 196, "domain event"))
     return vos + agg
@@ -285,12 +248,12 @@ def s_cqrs():
     return (card(48, 64, 150, "DepositCommand", NODE, RUST, INK, 13)
             + card(48, 172, 150, "BalanceQuery", NODE, RUST, INK, 13)
             + arrow(202, 84, 262, 126) + arrow(202, 192, 262, 150)
-            + card(272, 108, 110, "Bus", "url(#grh)", RUST_D, "#16110c", 15)
+            + card(272, 108, 110, "Bus", "url(#grh)", RUST_D, "#10110f", 15)
             + arrow(384, 130, 410, 130))
 
 
 def s_eda():
-    hub = card(160, 120, 120, "EventBus", "url(#grh)", RUST_D, "#16110c", 13)
+    hub = card(160, 120, 120, "EventBus", "url(#grh)", RUST_D, "#10110f", 13)
     nodes = (chip(40, 64, "Kafka") + chip(40, 200, "RabbitMQ")
              + chip(320, 66, "listener") + chip(316, 196, "projection"))
     spokes = (f'<g stroke="{RUST}" stroke-width="2" opacity="0.5">'
@@ -305,12 +268,12 @@ def s_es():
     dots = "".join(card(40 + i*70, 116, 56, e, NODE, RUST, INK, 12)
                    for i, e in enumerate(["+10", "-3", "+5"]))
     return (dots + arrow(220, 136, 248, 136)
-            + card(258, 110, 120, "= balance 12", "url(#grh)", RUST_D, "#16110c", 13)
+            + card(258, 110, 120, "= balance 12", "url(#grh)", RUST_D, "#10110f", 13)
             + chip(40, 188, "replay the stream"))
 
 
 def s_clients():
-    return (card(48, 116, 120, "Lumen", "url(#grh)", RUST_D, "#16110c", 14)
+    return (card(48, 116, 120, "Lumen", "url(#grh)", RUST_D, "#10110f", 14)
             + arrow(172, 136, 250, 136)
             + card(260, 116, 130, "Payments API", NODE, RUST, INK, 13)
             + chip(60, 190, "WebClient · retry · breaker"))
@@ -318,7 +281,7 @@ def s_clients():
 
 def s_bff():
     return (chip(40, 130, "mobile") + arrow(120, 144, 170, 144)
-            + card(180, 120, 110, "BFF", "url(#grh)", RUST_D, "#16110c", 15)
+            + card(180, 120, 110, "BFF", "url(#grh)", RUST_D, "#10110f", 15)
             + arrow(292, 122, 330, 96) + arrow(292, 144, 340, 144) + arrow(292, 166, 330, 192)
             + chip(338, 80, "wallets") + chip(348, 130, "ledger") + chip(338, 180, "fx"))
 
@@ -358,7 +321,7 @@ def s_observe():
 
 def s_cache():
     return (chip(48, 80, "request") + arrow(132, 94, 180, 94)
-            + card(190, 72, 110, "Cache", "url(#grh)", RUST_D, "#16110c", 14)
+            + card(190, 72, 110, "Cache", "url(#grh)", RUST_D, "#10110f", 14)
             + card(190, 150, 110, "Resilience", NODE, RUST, INK, 13)
             + chip(316, 80, "cache hit") + chip(316, 162, "retry · breaker"))
 
@@ -383,13 +346,13 @@ def s_macros():
 def s_testing():
     return (card(48, 116, 130, "StepVerifier", NODE, RUST, INK, 13)
             + arrow(182, 136, 244, 136)
-            + card(254, 116, 120, "Testcontainers", "url(#grh)", RUST_D, "#16110c", 12)
+            + card(254, 116, 120, "Testcontainers", "url(#grh)", RUST_D, "#10110f", 12)
             + chip(60, 70, "all green", AMBER) + chip(60, 190, "real infra"))
 
 
 def s_cli():
     term = (f'<g transform="translate(48,80)"><rect x="0" y="0" width="280" height="140" rx="10" '
-            f'fill="#16110c"/><circle cx="18" cy="18" r="5" fill="{RUST}"/>'
+            f'fill="#10110f"/><circle cx="18" cy="18" r="5" fill="{RUST}"/>'
             f'<circle cx="36" cy="18" r="5" fill="{AMBER}"/><circle cx="54" cy="18" r="5" fill="{GREEN}"/>'
             f'<text x="18" y="62" fill="{AMBER}" font-size="16" font-family="{MONO}">$ firefly new</text>'
             f'<text x="18" y="92" fill="{NODE}" font-size="16" font-family="{MONO}">$ firefly run</text>'
@@ -402,14 +365,14 @@ def s_prod():
             + arrow(160, 136, 184, 136)
             + card(192, 116, 110, "image", NODE, RUST, INK, 13)
             + arrow(304, 136, 328, 136)
-            + card(336, 116, 60, "ship", "url(#grh)", RUST_D, "#16110c", 13)
+            + card(336, 116, 60, "ship", "url(#grh)", RUST_D, "#10110f", 13)
             + chip(60, 70, "12-factor") + chip(180, 196, "k8s · health · graceful"))
 
 
 def s_appa():
     return (card(40, 96, 130, "Spring Boot", NODE, MUTED, MUTED, 13)
             + arrow(174, 116, 234, 116)
-            + card(244, 96, 130, "Firefly", "url(#grh)", RUST_D, "#16110c", 14)
+            + card(244, 96, 130, "Firefly", "url(#grh)", RUST_D, "#10110f", 14)
             + chip(60, 178, "@Component → #[component]")
             + chip(60, 214, "@Transactional → #[transactional]"))
 
@@ -423,7 +386,7 @@ def s_appb():
 def s_bootstrap():
     # FireflyApplication::new("lumen").run() ignites the whole stack: one call
     # on the left fans out into the services the framework discovers & wires.
-    call = (card(48, 132, 150, "new().run()", "url(#grh)", RUST_D, "#16110c", 14)
+    call = (card(48, 132, 150, "new().run()", "url(#grh)", RUST_D, "#10110f", 14)
             + spark(60, 90, 5, AMBER, 0.85) + spark(178, 102, 4, AMBER_B, 0.8))
     fans = (arrow(202, 142, 270, 78) + arrow(202, 150, 274, 150) + arrow(202, 158, 270, 222))
     pieces = (chip(280, 64, "web + CQRS") + chip(284, 136, "scan beans")
@@ -436,7 +399,7 @@ def s_openapi():
     sources = (chip(40, 70, "#[rest_controller]") + chip(40, 196, "#[derive(Schema)]"))
     funnel = (arrow(196, 92, 256, 132) + arrow(196, 210, 256, 156))
     doc = (f'<g transform="translate(266,104)">'
-           f'<rect x="0" y="3" width="92" height="92" rx="9" fill="#d9c4a3" opacity="0.30"/>'
+           f'<rect x="0" y="3" width="92" height="92" rx="9" fill="#bfb8ab" opacity="0.30"/>'
            f'<rect x="0" y="0" width="92" height="92" rx="9" fill="{NODE}" '
            f'stroke="{RUST}" stroke-width="1.8"/>'
            # a little "spec" sheet: title bar + lines
@@ -457,7 +420,7 @@ def s_layered():
         y = 60 + i * 38
         fill = "url(#grh)" if i == 4 else NODE
         stroke = RUST_D if i == 4 else RUST
-        tcol = "#16110c" if i == 4 else INK
+        tcol = "#10110f" if i == 4 else INK
         # slight left inset per layer to read as a stack
         rows.append(card(44 + i * 6, y, 300 - i * 12, c, fill, stroke, tcol, 13))
     return "".join(rows) + spark(420, 96, 5, AMBER, 0.8) + spark(404, 196, 4, AMBER_B, 0.7)
