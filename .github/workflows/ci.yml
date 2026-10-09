@@ -30,7 +30,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          # Pin lint diagnostics; build and tests continue to target stable Rust.
+          toolchain: "1.96.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: System libraries (librdkafka native build + TLS/SASL)
