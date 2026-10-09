@@ -139,10 +139,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: WeasyPrint system libraries
-        run: sudo apt-get update && sudo apt-get install -y libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 libffi-dev
+        run: sudo apt-get update && sudo apt-get install -y libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 libffi-dev poppler-utils
       - name: book toolchain (venv)
         run: |
           python3 -m venv docs/book/.venv
-          docs/book/.venv/bin/pip install --quiet weasyprint markdown pygments pyyaml
-      - name: build PDF + EPUB
-        run: docs/book/build-book.sh
+          docs/book/.venv/bin/pip install --quiet -r docs/book/requirements.txt
+      - name: cover integration tests
+        run: docs/book/build-book.sh --test
+      - name: build English and Spanish PDF + EPUB
+        env:
+          BOOK_OUTPUT_DIR: ${{ runner.temp }}/rust-book-editions
+        run: |
+          docs/book/build-book.sh
+          BOOK_CONFIG=book-es.yaml docs/book/build-book.sh

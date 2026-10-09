@@ -1,0 +1,67 @@
+{
+  "edition": "books-2026.10.08",
+  "source": "Firefly Framework Brand Kit / 11-Books/rust",
+  "frameworkSourceCommit": "e18e12e207921bf06cb42cf81c883160b45b15a2",
+  "dimensions": {
+    "width": 1500,
+    "height": 1850,
+    "pdfTrim": "7.5in \u00d7 9.25in"
+  },
+  "typography": "Outlined Manrope",
+  "mark": "Canonical rsfly gradient-y wordmark and Firefly Framework identity",
+  "assets": [
+    {
+      "file": "back-cover-es.png",
+      "sha256": "7e2076e980d95fc3607d43b778a8f117d1565c46df6444e61ae509be28b118f5"
+    },
+    {
+      "file": "back-cover-es.svg",
+      "sha256": "036487d60198e560ec8026dd8204ce154941228c5cfda98d0f66bf0c94be03d7"
+    },
+    {
+      "file": "back-cover.png",
+      "sha256": "1881c4fc5e142efa605c09de26b31aa7066b2e8fbf057b80e52fcc1c1e13a786"
+    },
+    {
+      "file": "back-cover.svg",
+      "sha256": "f5498638b860fc9ca5124769b99d1ef3099f46dd86c865661054f51c6b99b029"
+    },
+    {
+      "file": "cover-es.png",
+      "sha256": "d1f2403beadb7c9eee21fb4489e14d3ee5cc70c9340f326c2f4b4445cf787e55"
+    },
+    {
+      "file": "cover-es.svg",
+      "sha256": "603f3c0048644a784d21cc0a0926f1a126651715bced3eef6d0bb3bebb5008d6"
+    },
+    {
+      "file": "cover.png",
+      "sha256": "8c31fdbe7638a8adaff94e89aa5e53cdfb04aa509f866fbab89b0b8ca6498f91"
+    },
+    {
+      "file": "cover.svg",
+      "sha256": "382e4bd6042a0e8bb562eb733e0c501cffad4ce7645951dae0b29a821d1ec63a"
+    },
+    {
+      "file": "firefly-logo.svg",
+      "sha256": "d696c438ba9cb8d00e4830e5b62b9c756e23374f28c8d5244ab0e20df3a452ee"
+    },
+    {
+      "file": "rsfly-dark.png",
+      "sha256": "151ebd37f0dedcc47b5480392aec552f56aa2667c8046224aa63433fcd196d7b"
+    },
+    {
+      "file": "rsfly-dark.svg",
+      "sha256": "e76ffb35c3891eaf804516dcda616dcb3e5d17ab1604159bcd8027ed84d75772"
+    },
+    {
+      "file": "rsfly-light.png",
+      "sha256": "2661e4826df55cbf89991a8cd8fdeff814465fcbfc7a854a3b7c02fe5906f702"
+    },
+    {
+      "file": "rsfly-light.svg",
+      "sha256": "d696c438ba9cb8d00e4830e5b62b9c756e23374f28c8d5244ab0e20df3a452ee"
+    }
+  ],
+  "interiorSource": "Firefly Framework Brand Kit / 12-Frameworks/rust"
+}

@@ -1,10 +1,12 @@
 /* book.css — shared structural + typographic styling for both the PDF and the
-   EPUB editions of "Firefly for Rust by Example".
+   EPUB editions of "rsfly by example".
    tokens.css + pygments.css are loaded alongside this file by the build (the
    EPUB links all three stylesheets; the PDF passes them to WeasyPrint), so no
    @import is needed here — and @import breaks strict EPUB validation. */
 
 /* ============ base ============ */
+.cover-page{ margin:0; padding:0; line-height:0; }
+.cover-page > img{ display:block; width:100%; height:auto; max-width:100%; }
 html{ -webkit-text-size-adjust:100%; }
 body{
   color:var(--ink); background:var(--page);
@@ -54,13 +56,13 @@ blockquote{ margin:1.1rem 0; padding:.2rem 0 .2rem 1rem; border-left:3px solid v
   color:var(--ink-soft); font-style:italic; }
 
 /* inline code */
-code{ background:#f3ecdf; color:var(--rust-deep); padding:.05em .34em; border-radius:4px;
+code{ background:#f3f1eb; color:var(--rust-deep); padding:.05em .34em; border-radius:4px;
   font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace; font-size:.84em;
   word-break:break-word; }
 
 /* ============ code listings ============ */
 .listing{ margin:1.15rem 0; }
-.filetab{ display:inline-block; background:#f3ead9; color:var(--rust-deep);
+.filetab{ display:inline-block; background:#f3f1eb; color:var(--rust-deep);
   font:700 .7rem/1 "SF Mono","JetBrains Mono",Menlo,monospace;
   padding:.42rem .7rem; border:1px solid var(--code-border); border-bottom:none;
   border-radius:8px 8px 0 0; letter-spacing:.02em; }
@@ -85,14 +87,14 @@ figcaption b,figcaption strong{ color:var(--rust-deep); }
 /* ============ tables ============ */
 table{ width:100%; border-collapse:collapse; margin:1.1rem 0; font-size:.88rem; line-height:1.45; }
 th,td{ border:1px solid var(--code-border); padding:.48rem .7rem; text-align:left; vertical-align:top; }
-thead th{ background:#fbf0da; color:var(--rust-deep); font-weight:700;
+thead th{ background:#f3f1eb; color:var(--rust-deep); font-weight:700;
   font-family:"Avenir Next",Avenir,Helvetica,Arial,sans-serif; }
-tbody tr:nth-child(even){ background:#fdfaf2; }
-td code,th code{ background:#f3ecdf; }
+tbody tr:nth-child(even){ background:#f9f8f4; }
+td code,th code{ background:#f3f1eb; }
 
 /* ============ callouts ============ */
 .admonition{ border-radius:10px; padding:.78rem 1rem; margin:1.15rem 0; font-size:.9rem;
-  line-height:1.55; border:1px solid var(--rule); border-left-width:4px; background:#faf6ee; }
+  line-height:1.55; border:1px solid var(--rule); border-left-width:4px; background:#f3f1eb; }
 .admonition>:last-child{ margin-bottom:0; }
 .admonition>:first-child{ margin-top:0; }
 .admonition-title{ font-weight:800; font-size:.69rem; letter-spacing:.08em; text-transform:uppercase;
@@ -101,15 +103,15 @@ td code,th code{ background:#f3ecdf; }
 .adm-ico{ flex:none; width:15px; height:15px; }
 /* Status icons in capability/coverage matrices (see md.py _STATUS_ICON). */
 .status-ico{ width:16px; height:16px; vertical-align:-0.18em; }
-.admonition.note{ background:var(--note-bg); border-color:#cfe0fb; border-left-color:var(--note); }
+.admonition.note{ background:var(--note-bg); border-color:#b4bdb8; border-left-color:var(--note); }
 .admonition.note>.admonition-title{ color:var(--note); }
-.admonition.tip{ background:var(--tip-bg); border-color:#cdeccd; border-left-color:var(--tip); }
+.admonition.tip{ background:var(--tip-bg); border-color:#b4bdb8; border-left-color:var(--tip); }
 .admonition.tip>.admonition-title{ color:var(--tip); }
-.admonition.warning{ background:var(--warn-bg); border-color:#fcd9c2; border-left-color:var(--warn); }
+.admonition.warning{ background:var(--warn-bg); border-color:#ffb34a; border-left-color:var(--warn); }
 .admonition.warning>.admonition-title{ color:var(--warn); }
-.admonition.spring{ background:var(--spring-bg); border-color:#d4e9bd; border-left-color:var(--spring); }
+.admonition.spring{ background:var(--spring-bg); border-color:#b4bdb8; border-left-color:var(--spring); }
 .admonition.spring>.admonition-title{ color:var(--spring-deep); }
-.admonition.reactor{ background:var(--reactor-bg); border-color:#ddd0fb; border-left-color:var(--reactor); }
+.admonition.reactor{ background:var(--reactor-bg); border-color:#b4bdb8; border-left-color:var(--reactor); }
 .admonition.reactor>.admonition-title{ color:var(--reactor-deep); }
 
 /* ============ recap / exercises (applied to the section H2) ============ */
@@ -160,8 +162,9 @@ nav#toc li.toc-part > ol a{ font-weight:400; color:var(--ink); }
 }
 .part-title::after{ content:""; display:block; width:4rem; height:5px; border-radius:3px;
   margin:1.1rem auto 0; background:linear-gradient(90deg,var(--amber),var(--rust)); }
-.part-divider svg.part-glyph{ width:120px; height:auto; margin:0 auto 1.6rem; display:block; }
+.part-divider svg.part-glyph{ width:180px; height:auto; margin:0 auto 1.6rem; display:block; }
 
 /* ============ Front-matter title page ============ */
 .frontmatter h1.chtitle{ font-size:2.6rem; }
 .frontmatter h3{ color:var(--rust-deep); font-weight:600; }
+.frontmatter.title-page h1.chtitle::after{ margin-right:auto; margin-left:auto; }

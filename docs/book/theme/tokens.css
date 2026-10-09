@@ -1,23 +1,23 @@
-/* Design tokens for "Firefly for Rust by Example".
-   Firefly brand: warm amber/gold on dark; Rust-orange accents for the
-   language-specific touches. Loaded first; book.css + print.css build on it. */
+/* Design tokens for "rsfly by example".
+   Firefly brand palette, shared with the approved rsfly artwork.
+   Loaded first; book.css + print.css build on it. */
 :root{
   /* amber / gold — the firefly glow */
-  --amber:#f6a821; --amber-bright:#ffbf3f; --amber-soft:#ffd87a; --amber-deep:#c97e10;
-  /* rust-orange — the language accent */
-  --rust:#d4793a; --rust-deep:#b5531f; --rust-soft:#e8a06a;
+  --amber:#ffb34a; --amber-bright:#ffb34a; --amber-soft:#fff1dd; --amber-deep:#855414;
+  /* Preserve existing token names for the shared brand accent. */
+  --rust:#ffb34a; --rust-deep:#855414; --rust-soft:#fff1dd;
   /* ink / paper */
-  --ink:#1b1714; --ink-soft:#3a322c; --muted:#8a7f74; --page:#fffdf8;
-  --ink-deep:#120f0c;
+  --ink:#272820; --ink-soft:#474a42; --muted:#62645b; --page:#ffffff;
+  --ink-deep:#10110f;
   /* headings sit in a warm near-black */
-  --head:#2a211a; --head-soft:#43352a;
+  --head:#10110f; --head-soft:#474a42;
   /* code surfaces */
-  --code-bg:#fbf7ef; --code-border:#ece1cf; --code-ink:#2b2620;
-  --rule:#ece3d6;
+  --code-bg:#f3f1eb; --code-border:#d8d4ca; --code-ink:#272820;
+  --rule:#d8d4ca;
   /* callouts */
-  --note:#2563c9; --note-bg:#eef4ff;
-  --tip:#1f8a4c; --tip-bg:#ecf9f0;
-  --warn:#c2410c; --warn-bg:#fff3ec;
-  --spring:#43b02a; --spring-bg:#f2faea; --spring-deep:#2c8a1c;
-  --reactor:#7c3aed; --reactor-bg:#f5f0ff; --reactor-deep:#5b21b6;
+  --note:#456578; --note-bg:#edf1f3;
+  --tip:#52613d; --tip-bg:#f0f2eb;
+  --warn:#855414; --warn-bg:#fff1dd;
+  --spring:#7a8460; --spring-bg:#f0f2eb; --spring-deep:#52613d;
+  --reactor:#6b8795; --reactor-bg:#edf1f3; --reactor-deep:#456578;
 }

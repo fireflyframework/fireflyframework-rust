@@ -1,27 +1,14 @@
-"""Generate the on-brand inline concept diagrams for *Firefly for Rust by Example*.
+"""Generate the on-brand inline concept diagrams for *rsfly by example*.
 
 These are the in-text technical figures (NOT the chapter openers — see
 ``gen_openers.py`` for those). Each diagram is a self-contained ``<figure class="fig">``
 holding one ``<svg>`` plus a ``<figcaption>``, matching the markup the CQRS,
 event-sourcing and saga chapters already embed.
 
-Design language (shared with the cover, the openers, and ``theme/tokens.css``):
-
-  * Cards are rounded rects ``rx=9..10``, cream fill ``#fdf6ea`` (or ``#fffaf0``),
-    stroke ``#e0cda8`` width ``1.5``. Accent/highlight cards use fill ``#fff6e6``
-    stroke ``#e0b96a``.
-  * Connectors are rust ``#d4793a`` ``stroke-width=3`` with arrowheads drawn as
-    explicit ``<polygon>`` triangles (never ``<marker>``).
-  * Titles ``#2a1d10`` / ``#3a2a1c`` in the sans stack; sub-labels ``#7a6450``
-    smaller; code/type tokens in the mono stack. Gold accents ``#f6a821`` /
-    ``#ffc24a`` used sparingly.
-
-WeasyPrint SVG constraints (violating these breaks PDF rendering):
-
-  * solid fills ONLY — no gradients, no ``<filter>``, no ``<marker>`` in shared
-    ``<defs>``;
-  * arrowheads are explicit polygons;
-  * every ``viewBox`` is set and every SVG is self-contained (no external fonts).
+Design language uses the approved Firefly charcoal/paper/amber/gold palette.
+Technical shapes, labels and connector coordinates are preserved. A separate
+footer embeds the canonical rsfly gradient-y lockup. Diagram arrows retain
+explicit triangle heads for reliable WeasyPrint rendering.
 
 The COMPUTED-LAYOUT primitives (``card``/``chip``/``arrow``/``lane``/``label``)
 and the auto-positioning helpers (``flow_row``/``stack``/``grid``/``lanes``) keep
@@ -35,31 +22,32 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from brand import diagram_footer
 from xml.sax.saxutils import escape as _xml_escape
 
 ART = Path(__file__).resolve().parents[1] / "art" / "diagrams"
 
 # --- palette (mirrors tokens.css + the existing inline figures) --------------
-FIELD    = "#fdf6ea"   # cream card fill
-FIELD2   = "#fffaf0"   # lighter cream card fill
-ACCENT   = "#fff6e6"   # highlight/accent card fill
-ACCENT_S = "#e0b96a"   # highlight/accent card stroke
-CARD_S   = "#e0cda8"   # default card stroke
-RUST     = "#d4793a"   # connectors, accent stroke
-RUST_D   = "#b5531f"   # deeper rust (arrowheads/emphasis)
-AMBER    = "#f6a821"
-AMBER_B  = "#ffc24a"
-GREEN    = "#1f8a4c"   # query / success accent (matches admin "green" badges)
+FIELD    = "#f3f1eb"   # cream card fill
+FIELD2   = "#ffffff"   # lighter cream card fill
+ACCENT   = "#fff1dd"   # highlight/accent card fill
+ACCENT_S = "#855414"   # highlight/accent card stroke
+CARD_S   = "#d8d4ca"   # default card stroke
+RUST     = "#ffb34a"   # connectors, accent stroke
+RUST_D   = "#855414"   # deeper rust (arrowheads/emphasis)
+AMBER    = "#ffb34a"
+AMBER_B  = "#ffb34a"
+GREEN    = "#52613d"   # query / success accent (matches admin "green" badges)
 GREEN_BG = "#ecf9f0"
-BLUE     = "#2563c9"   # command / note accent (matches admin "blue" badges)
+BLUE     = "#456578"   # command / note accent (matches admin "blue" badges)
 BLUE_BG  = "#eef4ff"
-RED      = "#b03a2e"   # failure / compensation (matches existing saga figs)
+RED      = "#a83c32"   # failure / compensation (matches existing saga figs)
 RED_BG   = "#fdecea"
-TITLE    = "#2a1d10"   # card titles
-TITLE2   = "#3a2a1c"   # secondary titles
-SUB      = "#7a6450"   # sub-labels
-LANE_BG  = "#f7ecd8"   # swimlane background
-LANE_S   = "#e6d4b0"   # swimlane stroke
+TITLE    = "#10110f"   # card titles
+TITLE2   = "#272820"   # secondary titles
+SUB      = "#62645b"   # sub-labels
+LANE_BG  = "#e9e7df"   # swimlane background
+LANE_S   = "#d8d4ca"   # swimlane stroke
 
 FONT = "Avenir Next,Avenir,Helvetica Neue,Helvetica,Arial,sans-serif"
 MONO = "SF Mono,JetBrains Mono,Menlo,Consolas,monospace"
@@ -100,7 +88,7 @@ def card(x, y, w, h, title, *, sub=None, mono=False, accent=False,
     out = [
         # soft drop shadow plate, then the card
         f'<rect x="{x:.1f}" y="{y + 2.5:.1f}" width="{w:.1f}" height="{h:.1f}" '
-        f'rx="9" fill="#d9c4a3" opacity="0.22"/>',
+        f'rx="9" fill="#bfb8ab" opacity="0.22"/>',
         f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="9" '
         f'fill="{f}" stroke="{s}" stroke-width="1.5"/>',
         f'<text x="{x + w / 2:.1f}" y="{ty:.1f}" text-anchor="middle" '
@@ -115,7 +103,7 @@ def card(x, y, w, h, title, *, sub=None, mono=False, accent=False,
     return "".join(out)
 
 
-def chip(x, y, text, *, fill=AMBER, tcol="#16110c", mono=False, h=26.0):
+def chip(x, y, text, *, fill=AMBER, tcol="#10110f", mono=False, h=26.0):
     """A small pill/chip; width auto-sizes to the text."""
     fam = MONO if mono else FONT
     cw = 18 + len(str(text)) * (7.2 if mono else 7.0)
@@ -271,7 +259,7 @@ def lanes(named, *, x0=24, y0=44, lane_w=560, row_h=58, gap=14, label_w=0,
 def figure(vw, vh, body, caption, aria):
     """Wrap an SVG body in the standard ``<figure class="fig">`` markup the book
     embeds. ``caption`` may contain inline HTML (e.g. ``<code>`` spans)."""
-    return (
+    markup = (
         '<figure class="fig">\n'
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {vw} {vh}" role="img"\n'
         f'     aria-label="{esc(aria)}"\n'
@@ -280,13 +268,16 @@ def figure(vw, vh, body, caption, aria):
         '</svg>\n'
         f'<figcaption>{caption}</figcaption>\n'
         '</figure>\n')
+    start, end = markup.index("<svg"), markup.index("</svg>") + len("</svg>")
+    return markup[:start] + diagram_footer(markup[start:end], key="figure-rsfly") + markup[end:]
+
 
 
 def _bare(fig_html: str) -> str:
     """Strip the ``<figure>``/``<figcaption>`` wrapper, leaving the bare ``<svg>``
     for the preview files written to art/diagrams/."""
     start = fig_html.index("<svg")
-    end = fig_html.index("</svg>") + len("</svg>")
+    end = fig_html.rindex("</svg>") + len("</svg>")
     return fig_html[start:end] + "\n"
 
 
@@ -381,7 +372,7 @@ def fig_di_graph():
     b = []
     # the container plate behind everything
     b.append(f'<rect x="16" y="14" width="528" height="272" rx="14" '
-             f'fill="#fbf3e3" stroke="{LANE_S}" stroke-width="1.3"/>')
+             f'fill="#f3f1eb" stroke="{LANE_S}" stroke-width="1.3"/>')
     b.append(label(36, 36, "Container  ·  scan() wires beans in dependency order",
                    size=12, weight="700", fill=TITLE2, anchor="start"))
     # controller at top, two collaborators below, two ports at the bottom
@@ -630,7 +621,7 @@ def fig_tcc():
                       ("(none — nothing held)", RED, RED_BG)])]
     for ri, (rname, cells) in enumerate(rows):
         ry = 60 + ri * 74
-        b.append(label(20, ry + 28, rname, size=11.5, weight="700", fill="#8a6d3b",
+        b.append(label(20, ry + 28, rname, size=11.5, weight="700", fill="#62645b",
                        anchor="start"))
         for ci, (txt, stroke, fill) in enumerate(cells):
             x = cx[ci] - cw / 2
@@ -772,7 +763,7 @@ def fig_openapi():
     b.append(arrow(224, 175, 318, 130, label=None))
     # spec card with little "lines"
     b.append(f'<rect x="320" y="80" width="120" height="92" rx="9" '
-             f'fill="#d9c4a3" opacity="0.22"/>')
+             f'fill="#bfb8ab" opacity="0.22"/>')
     b.append(f'<rect x="320" y="78" width="120" height="92" rx="9" '
              f'fill="{ACCENT}" stroke="{ACCENT_S}" stroke-width="1.5"/>')
     b.append(f'<rect x="338" y="94" width="84" height="9" rx="4.5" fill="{RUST}"/>')

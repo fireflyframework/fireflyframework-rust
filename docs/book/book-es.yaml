@@ -1,13 +1,18 @@
-# Edición en español (ES) — misma estructura que book.yaml; arte/openers compartidos.
+# Edición en español (ES): cubiertas localizadas y capítulos originales.
 # Construir con: BOOK_CONFIG=book-es.yaml bash docs/book/build-book.sh
-title: Firefly para Rust con Ejemplos
-subtitle: Microservicios reactivos y orientados a eventos con el framework Firefly
+title: rsfly by example
+subtitle: Servicios tipados con Tokio, Axum y SQLx
 author: Firefly Software Foundation
 publisher: Firefly Software Foundation
 language: es
 identifier: urn:uuid:5b2e9c70-1a4d-4f88-bc31-7e0a6d2f9c14
 rights: Copyright (c) 2026 Firefly Software Foundation. Licensed under Apache-2.0.
-cover_svg: art/cover.svg
+cover_svg: art/cover-es.svg
+cover_image: art/cover-es.png
+cover_alt: "Portada de rsfly by example: servicios tipados con Tokio, Axum y SQLx."
+back_cover_svg: art/back-cover-es.svg
+back_cover_image: art/back-cover-es.png
+back_cover_alt: "Contraportada de rsfly by example: servicios Rust conectados mediante una arquitectura de aplicación compartida."
 trim_width: 7.5in
 trim_height: 9.25in
 src_dir: src-es
@@ -191,6 +196,8 @@ back: []
 pdf_name: firefly-rust-by-example-es.pdf
 epub_name: firefly-rust-by-example-es.epub
 labels:
+  cover: Portada
+  back_cover: Contraportada
   chapter: Capítulo
   appendix: Apéndice
   contents: Contenido
